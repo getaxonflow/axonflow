@@ -31,7 +31,6 @@
 #   platform+ee     -> test.yml unit-tests-enterprise, unit-tests-enterprise-realpg
 #   ee              -> tier-gate-contract.yml x2 (merge queue)
 #   portal          -> test-customer-portal-modes.yml test-backend
-# and the bespoke job -> risk-scorer-tests.yml x2 (go-version-file, not go-version)
 name: Cache Seed
 
 on:
@@ -52,6 +51,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.sha }}
@@ -114,6 +114,13 @@ jobs:
             echo "--- go mod download: $d"
             (cd "$d" && go mod download)
           done
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
+          matrix: ${{ toJSON(matrix) }}
 
   # The ee/ tree is stripped from the community mirror, so these three seeds
   # exist only where ee/ does. Gated on the repository the same way
@@ -158,29 +165,13 @@ jobs:
             echo "--- go mod download: $d"
             (cd "$d" && go mod download)
           done
-
-  # risk-scorer-tests.yml pins Go via go-version-file, not go-version, and the
-  # version spec is part of setup-go's cache key - so its key cannot come from
-  # the matrix above and gets its own verbatim mirror.
-  seed-risk-scorer:
-    name: Seed risk-scorer (go-version-file)
-    # Its cache key hashes ee/go.sum, which the community mirror does not carry.
-    if: github.event_name != 'schedule' && github.repository != 'getaxonflow/axonflow'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
         with:
-          go-version-file: platform/go.mod
-          cache-dependency-path: ee/go.sum
-
-      - name: Download modules
-        run: |
-          set -euo pipefail
-          (cd ee && go mod download)
+          status: ${{ job.status }}
+          token: ${{ github.token }}
+          matrix: ${{ toJSON(matrix) }}
 
   # golangci-lint cache seed (2026-09-03, CI-cost round 3). lint.yml restores
   # ~/.cache/golangci-lint + ~/.cache/go-build with restore-keys, but GitHub
@@ -230,4 +221,10 @@ jobs:
           # cache is populated either way, so report and exit 0.
           [ "$status" -eq 0 ] || echo "::warning::lint findings on main - cache populated regardless"
           du -sh ~/.cache/golangci-lint ~/.cache/go-build 2>/dev/null || true
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 

@@ -112,13 +112,17 @@ func TestCapabilityScope_RealPG(t *testing.T) {
 	sharedpolicy.SetGlobalEngine(engine)
 	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(orig) })
 
-	// Mirror a strict partner-like posture (their env blocks on SQLi; the
-	// shipped defaults are SQLI=warn / PII=warn in this harness, under which
-	// matches only warn and the corpus below could not tell scoped from
-	// merely-warned). PII=block also makes the NIK-via-Jira assertion prove
-	// the full DoD line: "NIK via Jira tool still blocks per posture".
-	t.Setenv("SQLI_ACTION", "block")
-	t.Setenv("PII_ACTION", "block")
+	// Mirror a strict partner-like organization that recorded sqli=block and
+	// pii=block overrides. The seeded security-sqli rows store warn (core/124),
+	// under which matches only warn and the corpus below could not tell scoped
+	// from merely-warned. pii=block also makes the NIK-via-Jira assertion prove
+	// the full DoD line: "NIK via Jira tool still blocks per posture". evalWith
+	// resolves no organization, so the overrides are pinned into the MCP mode
+	// config's override slot (#3961: no environment variable sets them).
+	pinMCPOverride(t, func(c *ModeDetectionConfig) {
+		c.SQLIAction = DetectionActionBlock
+		c.PIIAction = DetectionActionBlock
+	})
 
 	ctx := context.Background()
 	const tenant = "captest-tenant"
@@ -130,10 +134,7 @@ func TestCapabilityScope_RealPG(t *testing.T) {
 	evalWith := func(connectorType, text string) sharedpolicy.RequestResult {
 		t.Helper()
 		mcpCfg := ResolveMCPDetectionConfig(ctx, "")
-		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", "", connectorType, connectorType, connectorType, "execute", text, nil, mcpCfg, true, nil)
-		if out.EvalUnavailable || out.DynamicBlocked {
-			t.Fatalf("unexpected dynamic-policy outcome for %q: %+v", connectorType, out)
-		}
+		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", connectorType, connectorType, text, nil, mcpCfg)
 		if out.StaticResult == nil {
 			t.Fatalf("static engine did not run for connector %q — detection config gated it off?", connectorType)
 		}
@@ -248,10 +249,10 @@ func TestCapabilityScope_RealPG(t *testing.T) {
 	// ------------------------------------------------------------------
 	{
 		mcpCfg := ResolveMCPDetectionConfig(ctx, "")
-		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", "",
-			"jira_get_issue" /* connectorName: registry-colliding */, "", /* toolIdentity: managed plane */
-			"", /* capabilityScopeIdentity: managed plane */
-			"query", `SELECT id FROM users; DROP TABLE users; --`, nil, mcpCfg, true, nil)
+		out := evaluateInputPolicies(ctx, tenant, "", "captest-user",
+			"jira_get_issue", /* connectorName: registry-colliding */
+			"",               /* capabilityScopeIdentity: managed plane */
+			`SELECT id FROM users; DROP TABLE users; --`, nil, mcpCfg)
 		if out.StaticResult == nil || !out.StaticResult.Blocked {
 			t.Error("managed-connector plane must keep FULL evaluation regardless of a registry-colliding connector NAME")
 		}

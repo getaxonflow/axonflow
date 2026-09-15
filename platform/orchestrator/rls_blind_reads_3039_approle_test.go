@@ -30,6 +30,7 @@ import (
 
 	"axonflow/platform/agent/approletest"
 	"axonflow/platform/shared/execution"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 type approleFixture struct {
@@ -121,6 +122,19 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	repo.SetCrossOrgDB(f.adminDB)
 	ctx := context.Background()
 
+	// THE SEED MOVED TO THE OWNER, AND THE HANDLE IS NOT THE OBVIOUS ONE
+	// (#4010). This test's subject is the READ path (#3039): a policy created
+	// and then read back under the app role, with a bare-read control proving
+	// RLS is enforced. The create was only ever setup - and migrations/core/172
+	// (#3880) revoked INSERT from the app role, so it now fails by design.
+	//
+	// It seeds through masterDB rather than adminDB because 172:289-296 revokes
+	// the writes from axonflow_platform_admin TOO; the owner is deliberately
+	// left unbound (172:40-57) and is the only handle here that can still write
+	// these tables. Every read assertion below is unchanged, and the frozen
+	// contract is asserted separately rather than replacing them.
+	seedRepo := NewPolicyRepository(f.masterDB)
+
 	policy := &PolicyResource{
 		Name:        "RLS Read-Back Probe",
 		Description: "policy created and read back under app_role",
@@ -136,8 +150,28 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 		// (single-tenant org), which is why omitting it used to look harmless.
 		OrganizationID: org,
 	}
-	if err := repo.Create(ctx, policy); err != nil {
-		t.Fatalf("Create under app_role: %v", err)
+	if err := seedRepo.Create(ctx, policy); err != nil {
+		t.Fatalf("seed Create as owner: %v", err)
+	}
+
+	// THE FROZEN CONTRACT, asserted where the old contract used to be. The same
+	// Create through the APP ROLE must now be refused, and refused for the
+	// PRIVILEGE reason: 42501 is also the row-level-security WITH CHECK code, so
+	// a test satisfied by "it failed" would pass against an org-scoping bug.
+	// legacyfreeze.IsFrozen is the production classifier the route uses, so
+	// this proves it recognises the real error from a really frozen table -
+	// which the handler unit test can only simulate.
+	frozen := *policy
+	frozen.ID = ""
+	frozen.Name = "RLS Read-Back Probe (frozen path)"
+	err := repo.Create(ctx, &frozen)
+	if err == nil {
+		t.Fatal("a legacy policy INSERT under axonflow_app_role SUCCEEDED; migrations/core/172 revoked it, so the " +
+			"v11 freeze is not in force on this deployment")
+	}
+	if !legacyfreeze.IsFrozen(err) {
+		t.Fatalf("the app-role Create failed for a reason that is not the freeze: %v. 42501 is also the RLS WITH "+
+			"CHECK code, and only the message separates them", err)
 	}
 
 	// Vacuity control — the old bare read saw nothing.
@@ -239,8 +273,22 @@ func TestDynamicPolicyEngineGateCacheUnderAppRole(t *testing.T) {
 		// #3490: see the note on the read-back probe above: org_id selects.
 		OrganizationID: org,
 	}
-	if err := repo.Create(ctx, policy); err != nil {
-		t.Fatalf("Create under app_role: %v", err)
+	// Seeded as the OWNER since core/172 froze the app role's writes (#4010);
+	// this test's subject is the gate-cache refresh, not the create. See the
+	// note in TestPolicyRepositoryReadsUnderAppRole for why masterDB and not
+	// adminDB.
+	if err := NewPolicyRepository(f.masterDB).Create(ctx, policy); err != nil {
+		t.Fatalf("seed Create as owner: %v", err)
+	}
+	// The frozen contract, asserted by its CAUSE rather than by "it failed".
+	if err := repo.Create(ctx, &PolicyResource{
+		Name: "Gate Cache Probe (frozen path)", Type: "context_aware", Category: "dynamic-compliance",
+		Conditions: policy.Conditions, Actions: policy.Actions, Priority: 901, Enabled: true,
+		TenantID: org, OrganizationID: org,
+	}); err == nil {
+		t.Fatal("a legacy policy INSERT under axonflow_app_role SUCCEEDED; core/172's freeze is not in force")
+	} else if !legacyfreeze.IsFrozen(err) {
+		t.Fatalf("the app-role Create failed for a reason that is not the freeze: %v", err)
 	}
 
 	// Vacuity control: an engine whose refresh pool is the app-role pool —

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // GovernedTool -- Framework-Agnostic Tool Governance Example (Go)
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
@@ -176,7 +179,7 @@ func testPiiInToolInput(ctx context.Context, client *axonflow.AxonFlowClient) {
 			fmt.Printf("   Direct check: Input blocked (%s)\n", direct.BlockReason)
 		} else {
 			piiDetected = direct.PoliciesEvaluated > 0
-			fmt.Printf("   Direct check: %d policies evaluated (PII_ACTION may be warn/log)\n", direct.PoliciesEvaluated)
+			fmt.Printf("   Direct check: %d policies evaluated (allowed: stored request action for SSN is warn)\n", direct.PoliciesEvaluated)
 		}
 	}
 
@@ -242,7 +245,7 @@ func testPiiInToolOutput(ctx context.Context, client *axonflow.AxonFlowClient) {
 		} else if strings.Contains(resultStr, "***") || strings.Contains(resultStr, "REDACTED") {
 			fmt.Println("   GovernedTool: Output redacted")
 		} else {
-			fmt.Println("   GovernedTool: Output returned (PII_ACTION may be warn/log)")
+			fmt.Println("   GovernedTool: Output returned without redaction")
 		}
 		if len(resultStr) > 200 {
 			resultStr = resultStr[:200]

@@ -31,62 +31,57 @@ import (
 	"time"
 )
 
+// alteredHelperSignatures names both halves of the promotion helper as core/175
+// leaves them: the VOID forwarder under the original name, and the body under
+// _returning. Both carry the TIMESTAMPTZ fourth parameter core/142 retyped.
+var alteredHelperSignatures = []string{
+	"promote_deployment_org_license(VARCHAR, VARCHAR, INTEGER, TIMESTAMPTZ)",
+	"promote_deployment_org_license_returning(VARCHAR, VARCHAR, INTEGER, TIMESTAMPTZ)",
+}
+
 func TestMigration117_PromoteDeploymentOrgLicenseUnderForceRLS(t *testing.T) {
 	if os.Getenv("TEST_PG_INTEGRATION") != "1" {
 		t.Skip("TEST_PG_INTEGRATION not set — skipping real-Postgres test")
 	}
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping")
-	}
-
 	ctx := context.Background()
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	db := migrationSchemaDB(t)
 	defer db.Close()
-	// GUC + SET ROLE continuity across statements requires a single connection.
-	db.SetMaxOpenConns(1)
-
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-
-	// Reset schema so prior tests' artifacts don't pollute migration application.
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	// GUCs required by migrations in the 1..104 range (mig 017 dblink password,
-	// mig 094 deployment org/kind preconditions).
-	for _, kv := range [][2]string{
-		{"app.db_password", "test-pass"},
-		{"app.deployment_kind", "dev"},
-		{"app.deployment_org_id", "mig117-test-bootstrap"},
-	} {
-		if _, err := db.Exec(`SELECT set_config($1, $2, false)`, kv[0], kv[1]); err != nil {
-			t.Fatalf("set %s: %v", kv[0], err)
-		}
-	}
 
 	t.Cleanup(func() {
 		_, _ = db.ExecContext(ctx, "RESET ROLE")
 		_, _ = db.ExecContext(ctx, "DELETE FROM organizations WHERE org_id LIKE 'mig117-test-%'")
 	})
 
-	// Apply core migrations 1..104 (organizations + FORCE RLS on organizations
-	// via mig 103 + the mig-104 SECURITY DEFINER helper precedent), then apply
-	// mig 117 directly. Applying only up to 104 avoids pulling 105..116
-	// (grafana-password template substitution, industry policy seeds) which
-	// this test does not need.
-	runMigrationsRange(t, db, 1, 104)
-	body, err := os.ReadFile("../../migrations/core/117_promote_deployment_org_license.sql")
-	if err != nil {
-		t.Fatalf("read mig 117: %v", err)
-	}
-	if _, err := db.Exec(string(body)); err != nil {
-		t.Fatalf("apply mig 117: %v", err)
-	}
+	// THE CHAIN IS migrationSchemaDB'S, AND IT IS UNBOUNDED (#4034).
+	//
+	// This test applied 1..104 and then migration 117 on its own, to avoid
+	// pulling 105..116. That fixture stopped describing the product when
+	// core/175 landed: the perpetual-licence pin drives the REAL agent helper
+	// promoteDeploymentOrgTier, and since 175 that helper calls
+	// promote_deployment_org_license_returning, which a 104+117 schema does not
+	// have. Its first execution anywhere -- gate run 34559845210 -- said so in
+	// the product's own words:
+	//
+	//	pq: function promote_deployment_org_license_returning(unknown, unknown,
+	//	unknown, unknown) does not exist
+	//
+	// The first repair was `runMigrationsRange(t, db, 1, 175)`, which fixed the
+	// instance and KEPT the defect: a hand-maintained upper bound is a fixture
+	// somebody has to bump for every migration touching its subject, and
+	// core/176 already existed when it was written. approletest deleted exactly
+	// such a literal in #3490 after 55 migrations of drift, one of which changed
+	// a column TYPE.
+	//
+	// So the bound is gone rather than raised. migrationSchemaDB applies every
+	// core migration present and provisions both login roles, and it is also
+	// where the session GUCs are set -- core/028 reads app.db_password with
+	// current_setting(..., false), so a missing value is an error rather than an
+	// empty string.
+	//
+	// Two consequences the assertions below depend on, both from migrations now
+	// in range: core/142 retyped the helper's fourth parameter to TIMESTAMPTZ,
+	// and core/175 made the old name a VOID forwarder whose body lives in
+	// _returning.
 
 	// Helper is installed + SECURITY DEFINER.
 	var secDef bool
@@ -238,14 +233,26 @@ func TestMigration117_PromoteDeploymentOrgLicenseUnderForceRLS(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "RESET ROLE"); err != nil {
 			t.Fatalf("reset role: %v", err)
 		}
-		if _, err := db.ExecContext(ctx,
-			`ALTER FUNCTION promote_deployment_org_license(VARCHAR, VARCHAR, INTEGER, TIMESTAMP) SECURITY INVOKER`,
-		); err != nil {
-			t.Fatalf("ALTER SECURITY INVOKER: %v", err)
+		// BOTH FUNCTIONS, AND THE POST-142 SIGNATURE.
+		//
+		// core/175 split this helper: the old name is a VOID forwarder and the
+		// body moved to promote_deployment_org_license_returning. Altering the
+		// forwarder alone proves nothing -- it delegates to a body that is
+		// still SECURITY DEFINER, so the write would succeed and this pin would
+		// report "SECURITY DEFINER is not load-bearing" about a mutation that
+		// never reached the privileged code. core/142 retyped the fourth
+		// parameter to TIMESTAMPTZ, so the TIMESTAMP signature this used to
+		// name no longer exists at all.
+		for _, sig := range alteredHelperSignatures {
+			if _, err := db.ExecContext(ctx, `ALTER FUNCTION `+sig+` SECURITY INVOKER`); err != nil {
+				t.Fatalf("ALTER %s SECURITY INVOKER: %v", sig, err)
+			}
 		}
 		t.Cleanup(func() {
 			_, _ = db.ExecContext(ctx, "RESET ROLE")
-			_, _ = db.ExecContext(ctx, `ALTER FUNCTION promote_deployment_org_license(VARCHAR, VARCHAR, INTEGER, TIMESTAMP) SECURITY DEFINER`)
+			for _, sig := range alteredHelperSignatures {
+				_, _ = db.ExecContext(ctx, `ALTER FUNCTION `+sig+` SECURITY DEFINER`)
+			}
 		})
 		if _, err := db.ExecContext(ctx, "SET ROLE axonflow_app_role"); err != nil {
 			t.Fatalf("set app_role: %v", err)

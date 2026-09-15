@@ -6,6 +6,7 @@ package workflow_control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -92,20 +93,43 @@ type StepGateEvaluation struct {
 	// Empty means no enqueue was attempted, which is the ordinary case for an
 	// allow/block decision and for a deployment with no HITL adapter wired.
 	ApprovalEnqueue string
+	// Plane, Engine, SubjectType, PolicyBundle and EngineDecisionID are the
+	// anchored decision (PRD v11 §5.7): the plane's own label, the engine, the
+	// type of principal the step was decided for, the digest of the policy set
+	// and the engine's decision id. The answer carries the engine, the subject
+	// type and the bundle; the audit row carries all five. Empty from an
+	// evaluator that is not an anchored seam.
+	Plane            string
+	Engine           string
+	SubjectType      string
+	PolicyBundle     string
+	EngineDecisionID string
 }
 
-// DefaultPolicyEvaluator is a no-op evaluator that allows all steps
-// Used when no policy engine is configured (community default behavior)
-type DefaultPolicyEvaluator struct{}
+// unwiredPolicyEvaluator is the evaluator a Service gets when none is wired.
+//
+// IT WITHHOLDS EVERY STEP (#4254). It used to allow every step ("No policies
+// configured"), so a service built without an evaluator admitted every gated
+// step as a governance decision nobody made. A serving orchestrator always
+// builds the service with the step gate's adapter, which decides on the
+// anchored engine; a service that reaches this fallback has no enforcer to
+// decide with, so it fails closed and names that cause in the terms the step
+// gate's seam uses.
+type unwiredPolicyEvaluator struct{}
 
-// EvaluateStepGate allows all steps by default
-func (d *DefaultPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+// EvaluateStepGate withholds the step, naming why.
+func (unwiredPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+	// "<message> (<cause>)", the shape the step gate's seam names a cause in (R3 B-L3).
+	const reason = "no policy evaluator is wired to this service, so the step is withheld (enforcer_not_wired)"
+	decision := GateDecisionBlock // fail closed: nothing is wired to decide
+	ids := []string{"decision_enforcement_unavailable"}
+	matches := []PolicyMatch{{PolicyID: ids[0], PolicyName: ids[0], Action: string(decision), Reason: reason}}
 	return &StepGateEvaluation{
-		Decision:          GateDecisionAllow,
-		Reason:            "No policies configured",
-		PolicyIDs:         []string{},
-		PoliciesEvaluated: []PolicyMatch{},
-		PoliciesMatched:   []PolicyMatch{},
+		Decision:          decision,
+		Reason:            reason,
+		PolicyIDs:         ids,
+		PoliciesEvaluated: matches,
+		PoliciesMatched:   matches,
 	}
 }
 
@@ -137,6 +161,14 @@ type HITLMirrorResolver interface {
 	// are both normal, and neither may fail the approval the operator just
 	// performed on the workflow plane.
 	ResolveStepMirror(ctx context.Context, orgID, tenantID, workflowID, stepID, status, reviewerID, comment string)
+
+	// StepMirrorExpiry reads that row's expiry (#4254): when the approval it
+	// records stops being grantable, and whether the queue has already expired
+	// it. found is false when no row exists - no adapter was wired when the
+	// gate fired, or the enqueue was refused - which declares no expiry. An
+	// error is a read that failed, and ApproveStep refuses on it rather than
+	// approving blind.
+	StepMirrorExpiry(ctx context.Context, orgID, tenantID, workflowID, stepID string) (expiresAt time.Time, expired bool, found bool, err error)
 }
 
 // WorkflowExecutionTracker interface for unified execution tracking
@@ -187,6 +219,13 @@ type WorkflowAuditEntry struct {
 	UserEmail string
 	UserRole  string
 	Metadata  map[string]interface{}
+	// Plane, Engine, SubjectType, PolicyBundle and EngineDecisionID carry a
+	// step_gate's anchored decision to the row (PRD v11 §5.7).
+	Plane            string
+	Engine           string
+	SubjectType      string
+	PolicyBundle     string
+	EngineDecisionID string
 }
 
 // WebhookNotifier fires webhook notifications for WCP events.
@@ -215,7 +254,7 @@ type ServiceConfig struct {
 // NewService creates a new workflow control service
 func NewService(repo Repository, policyEvaluator PolicyEvaluator, config *ServiceConfig) *Service {
 	if policyEvaluator == nil {
-		policyEvaluator = &DefaultPolicyEvaluator{}
+		policyEvaluator = unwiredPolicyEvaluator{}
 	}
 	baseURL := ""
 	if config != nil {
@@ -910,6 +949,9 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		ApprovalEnqueue:   evaluation.ApprovalEnqueue,
 		PoliciesEvaluated: evaluation.PoliciesEvaluated,
 		PoliciesMatched:   evaluation.PoliciesMatched,
+		Engine:            evaluation.Engine,
+		SubjectType:       evaluation.SubjectType,
+		PolicyBundle:      evaluation.PolicyBundle,
 		Cached:            false,
 		DecisionSource:    "fresh",
 		RetryContext:      buildRetryContext(rcStep, req.IncludePriorOutput),
@@ -996,6 +1038,12 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		// from the attribution-only userID.
 		UserEmail: req.Email,
 		Metadata:  auditMeta,
+		// The anchored decision, under the plane's own label (PRD v11 §5.7).
+		Plane:            evaluation.Plane,
+		Engine:           evaluation.Engine,
+		SubjectType:      evaluation.SubjectType,
+		PolicyBundle:     evaluation.PolicyBundle,
+		EngineDecisionID: evaluation.EngineDecisionID,
 	})
 
 	// Unified execution tracking
@@ -1074,6 +1122,13 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID,
 
 	if step.ApprovalStatus == nil || *step.ApprovalStatus != ApprovalStatusPending {
 		return fmt.Errorf("step is not pending approval")
+	}
+
+	// #4254: a timed-out approval is a deny. The step's queue row records when
+	// its approval stops being grantable, so an approval after that is refused
+	// on every edition, before anything is written.
+	if err := s.refuseLapsedApproval(ctx, workflow, stepID); err != nil {
+		return err
 	}
 
 	if err := s.repo.UpdateStepApproval(ctx, workflowID, stepID, ApprovalStatusApproved, approvedBy, comment); err != nil {
@@ -1781,6 +1836,42 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 		ResumeCount:           cp.ResumeCount + 1,
 		Message:               fmt.Sprintf("Workflow resumed from checkpoint at step %s (index %d)", cp.StepID, cp.StepIndex),
 	}, nil
+}
+
+// ErrApprovalExpired refuses an approval after its queue row's expiry. A
+// timed-out approval is a deny (ADR-065), and the queue row is the record of
+// when the approval times out (#4254).
+var ErrApprovalExpired = errors.New("approval_expired")
+
+// ErrApprovalStateUnreadable refuses an approval whose queue row's expiry could
+// not be read: approving without it could grant an approval that has already
+// timed out (#4254).
+var ErrApprovalStateUnreadable = errors.New("approval_state_unreadable")
+
+// refuseLapsedApproval refuses an approval the step's queue row says has timed
+// out, on every edition, before anything is written (#4254). The row is the
+// source: the expiry is never recomputed from the policy. No resolver, or no
+// row, declares no expiry, and the approval proceeds as it always has. A read
+// that fails refuses, naming ErrApprovalStateUnreadable; the read's own error is
+// logged and never returned, because it can carry driver detail.
+func (s *Service) refuseLapsedApproval(ctx context.Context, workflow *Workflow, stepID string) error {
+	if s.hitlMirror == nil {
+		return nil
+	}
+	expiresAt, expired, found, err := s.hitlMirror.StepMirrorExpiry(ctx, workflow.OrgID, workflow.TenantID, workflow.WorkflowID, stepID)
+	if err != nil {
+		s.logger.Printf("[WorkflowControl] Step approval refused: workflow=%s step=%s: the approval's expiry could not be read: %v",
+			logutil.Sanitize(workflow.WorkflowID), logutil.Sanitize(stepID), err)
+		return fmt.Errorf("%w: the approval's expiry could not be read, so the step is not approved (fail-closed)", ErrApprovalStateUnreadable)
+	}
+	if !found {
+		return nil
+	}
+	if expired || !expiresAt.After(time.Now()) {
+		return fmt.Errorf("%w: the approval for step %s timed out at %s, and a timed-out approval is a deny",
+			ErrApprovalExpired, stepID, expiresAt.UTC().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // resolveHITLMirror is the single call site shape for the #3408 mirror

@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.14.0 | **SDKs:** 9.0.0
+**Platform Version:** 11.0.0 | **SDKs:** 9.4.0
 
 AxonFlow offers three integration modes to fit different requirements. This guide helps you choose the right one for your application.
 
@@ -78,7 +78,7 @@ flowchart TB
 | Rate limiting | Automatic | Automatic (pre-check) |
 | **MCP Connectors** | | |
 | MCP static policies | ✅ Full | ✅ Full |
-| MCP dynamic policies | ✅ Full | ✅ Full |
+| MCP tenant dynamic policies | ❌ Retired in v11 | ❌ Retired in v11 |
 | MCP audit logging | ✅ Automatic | ✅ Automatic |
 | **Control** | | |
 | LLM provider | AxonFlow routes | You choose |
@@ -356,11 +356,6 @@ console.log(`PII redacted: ${result.redacted}`);
 if (result.policyInfo?.exfiltrationCheck?.withinLimits) {
   console.log('Query within limits');
 }
-
-// Check tenant policies (if enabled)
-if (result.policyInfo?.dynamicPolicyInfo?.orchestratorReachable) {
-  console.log(`Policies evaluated: ${result.policyInfo.dynamicPolicyInfo.policiesEvaluated}`);
-}
 ```
 
 ### Policy Enforcement (v3.1.0+)
@@ -369,7 +364,7 @@ MCP queries go through two-phase policy evaluation:
 
 | Phase | Checks | Action |
 |-------|--------|--------|
-| **REQUEST** | SQLi patterns, Critical PII in query | Block |
+| **REQUEST** | Prompt injection and Indonesian KTP in the statement (the shipped posture's blocks); other PII is advisory unless the organization's posture is `pii=redact`, which masks it | Block / Redact |
 | **RESPONSE** | PII in data, Exfiltration limits | Redact/Block |
 
 ### Exfiltration Protection (v3.2.0+)
@@ -381,14 +376,9 @@ MCP_MAX_ROWS_PER_QUERY=10000      # Default: 10,000 rows
 MCP_MAX_BYTES_PER_QUERY=10485760  # Default: 10MB
 ```
 
-### Tenant Policies (v3.2.0+, Optional)
+### Tenant Policies (retired on MCP in v11)
 
-Enable runtime tenant policy evaluation for rate limiting, budgets, time-based access:
-
-```bash
-MCP_DYNAMIC_POLICIES_ENABLED=true   # Enable (default: false)
-MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
-```
+Tenant dynamic policies no longer decide MCP requests: the anchored decision engine (ADR-065) decides them from the organization's typed policy document (PRD v11 §1.2), and a request it cannot decide is refused rather than let through (§1.7). `MCP_DYNAMIC_POLICIES_ENABLED`, `MCP_DYNAMIC_POLICIES_GRACEFUL` and the plane's other v3.2.0 variables are retired, and setting any of them refuses boot.
 
 ---
 
@@ -411,5 +401,5 @@ MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
 
 - [Proxy Mode Guide](./proxy-mode.md) - Deep dive into Proxy Mode
 - [Gateway Mode Migration Guide](./gateway-mode.md) - Deep dive into Gateway Mode
-- [MCP Connector Architecture](../../technical-docs/MCP_CONNECTOR_ARCHITECTURE.md) - Full MCP architecture
+- [MCP overview](https://docs.getaxonflow.com/docs/mcp/overview/) - Full MCP architecture
 - [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) - Full method coverage matrix across all SDKs

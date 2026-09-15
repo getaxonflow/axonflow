@@ -1,7 +1,11 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -217,22 +221,43 @@ func TestPatternEvaluator_InvalidPattern(t *testing.T) {
 	}
 }
 
+// TestPatternEvaluator_ContextExtraction pins that the window a validator
+// receives is the one SetContextWindow configured, on both phases, and that it
+// clamps at the input's edges. It drives Evaluate and EvaluateAll with a
+// capturing validator rather than calling a helper, because the property is the
+// WIRING: a scan that built its context with a different window would pass a
+// test of the arithmetic alone.
 func TestPatternEvaluator_ContextExtraction(t *testing.T) {
 	evaluator := NewPatternEvaluator(true)
 	evaluator.SetContextWindow(10)
 
-	text := "prefix_1234567890_suffix"
-	context := evaluator.extractContext(text, 7, 17)
-
-	// Should include 10 chars before and after
-	if len(context) == 0 {
-		t.Error("extractContext() returned empty string")
+	var got []string
+	policy := &CompiledPolicy{
+		PolicyID: "ctx", Pattern: regexp.MustCompile(`\d{10}`), Enabled: true,
+		Validator: func(match, context string) (bool, float64) {
+			got = append(got, context)
+			return true, 1.0
+		},
 	}
 
-	// Check boundary handling
-	context = evaluator.extractContext("short", 0, 5)
-	if context != "short" {
-		t.Errorf("extractContext() boundary handling failed, got %q", context)
+	text := "a long prefix_1234567890_suffix that runs on"
+	start := strings.Index(text, "1234567890")
+	want := text[start-10 : start+10+10]
+
+	if m := evaluator.Evaluate(text, policy); m == nil {
+		t.Fatal("Evaluate found no match")
+	}
+	if ms := evaluator.EvaluateAll(text, policy); len(ms) != 1 {
+		t.Fatalf("EvaluateAll found %d matches, want 1", len(ms))
+	}
+	if len(got) != 2 || got[0] != want || got[1] != want {
+		t.Errorf("validators received %q, want %q on both phases (10 characters either side)", got, want)
+	}
+
+	// Clamped at both edges of an input shorter than the window.
+	got = nil
+	if m := evaluator.Evaluate("x1234567890", policy); m == nil || len(got) != 1 || got[0] != "x1234567890" {
+		t.Errorf("an input shorter than the window gave context %q, want the whole input", got)
 	}
 }
 

@@ -1,5 +1,8 @@
 //go:build !enterprise
 
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 // The COMMUNITY half of the ADR-065 capability handshake split (#3704).
@@ -10,13 +13,18 @@ package agent
 // enterprise_implementation and is physically absent from this build (ADR-066
 // Decision 5).
 //
-// This is not a weaker safety posture; it is today's. An enforcement point that
-// declares it cannot discharge a mandatory obligation is still handed that
-// obligation here, and it still fails closed at its own seam rather than
-// forwarding ungoverned content - which is precisely what happens on this
-// build today, because nothing asks. The Enterprise build turns the same
-// outcome into a deny the platform can see, audit and count, reached before the
-// content is held.
+// This is not a weaker safety posture. A mandatory obligation the enforcement
+// point declares it cannot discharge is refused unsupported_obligation on EVERY
+// edition wherever the engine composes it against the admitted profile
+// (contract composeSet), and wherever /api/v1/decide or the gateway pre-check
+// attaches a checksum validator's field_redact (attachValidatorRedactions).
+// What this build leaves out is enterprise_implementation: this handler-level
+// refusal over the legacy obligation slice (applyPEPCapabilityRefusal, below),
+// naming and counting the enforcement point's capability gap
+// (applyAnchoredCapabilityRefusal), and applyMCPRedactionRefusal, the only
+// refusal of a validator's masking on the MCP passes. On this build those
+// passes hand the masked content over, and an enforcement point that declared
+// it cannot substitute it still fails closed at its own seam.
 
 // applyPEPCapabilityRefusal returns the verdict untouched.
 //

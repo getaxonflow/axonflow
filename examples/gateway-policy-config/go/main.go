@@ -1,14 +1,26 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES per-mode Gateway policy configuration.
 //
-// AxonFlow's static policies can be configured per-mode using environment variables.
-// This example validates the CURRENT configuration by sending test queries through
-// the Gateway mode API and checking that the Agent responds according to the
-// configured policy actions.
+// This example sends test queries through the Gateway mode API and checks that the
+// Agent responds according to the shipped policy actions.
 //
-// Environment variables (must match Agent-side config):
+// v11: the stored policy action decides. GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION,
+// PII_ACTION and SQLI_ACTION no longer set an action (ignored, with a boot WARN).
+// The shipped request-phase actions exercised here:
 //
-//	GATEWAY_PII_ACTION   = block | redact | log  (default: redact)
-//	GATEWAY_SQLI_ACTION  = block | warn | log    (default: block)
+//	sys_pii_ssn = warn (approved, policy id in Policies)
+//	sys_sqli_*  = warn (approved, policy id in Policies)
+//
+// To change an outcome, record an organization override (customer portal API,
+// Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+// or change the policy's action. This example validates the shipped actions with
+// no override recorded.
+//
+// Still read from the environment (a non-action knob, must match Agent config):
+//
+//	GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 //
@@ -42,18 +54,26 @@ func assert(condition bool, message string) {
 	}
 }
 
+// hasPolicyPrefix reports whether any matched policy id starts with prefix.
+func hasPolicyPrefix(policies []string, prefix string) bool {
+	for _, p := range policies {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	fmt.Println("AxonFlow Gateway Policy Configuration - Go SDK")
 	fmt.Println("===============================================")
 	fmt.Println()
 
-	// Read expected policy actions
-	piiAction := getEnv("GATEWAY_PII_ACTION", getEnv("PII_ACTION", "redact"))
-	sqliAction := getEnv("GATEWAY_SQLI_ACTION", getEnv("SQLI_ACTION", "block"))
+	// Detection actions come from the stored policy rows (no org override
+	// recorded), not from the environment.
 	policiesEnabled := getEnv("GATEWAY_STATIC_POLICIES_ENABLED", "true")
 
-	fmt.Printf("Expected PII_ACTION:  %s\n", piiAction)
-	fmt.Printf("Expected SQLI_ACTION: %s\n", sqliAction)
+	fmt.Println("Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)")
 	fmt.Printf("Static policies enabled: %s\n", policiesEnabled)
 	fmt.Println()
 
@@ -80,11 +100,11 @@ func main() {
 	fmt.Println()
 
 	// ---------------------------------------------------------------
-	// Test 2: PII query (SSN) — depends on GATEWAY_PII_ACTION
+	// Test 2: PII query (SSN) — sys_pii_ssn stores warn for the request phase
 	// ---------------------------------------------------------------
 	fmt.Println("Test 2: PII Query (SSN '123-45-6789')")
 	fmt.Println("--------------------------------------")
-	fmt.Printf("  Expected action: %s\n", piiAction)
+	fmt.Println("  Expected action: warn (stored)")
 	result, err = client.GetPolicyApprovedContext(
 		"",
 		"Look up the customer with SSN 123-45-6789 and return their balance",
@@ -99,30 +119,22 @@ func main() {
 		assert(result.Approved, "PII approved (static policies disabled)")
 		assert(len(result.Policies) == 0, "No policies matched (disabled)")
 	} else {
-		switch strings.ToLower(piiAction) {
-		case "block":
-			assert(!result.Approved, "PII blocked (GATEWAY_PII_ACTION=block)")
-			assert(result.BlockReason != "", "Block reason provided")
-			fmt.Printf("   Block reason: %s\n", result.BlockReason)
-		case "redact":
-			assert(result.Approved, "PII approved for redaction (GATEWAY_PII_ACTION=redact)")
-			assert(len(result.Policies) > 0, "PII policies detected")
-			fmt.Printf("   Policies: %v\n", result.Policies)
-		case "warn":
-			assert(result.Approved, "PII approved with warning (GATEWAY_PII_ACTION=warn)")
-			assert(len(result.Policies) > 0, "PII policies detected")
-		case "log":
-			assert(result.Approved, "PII approved (GATEWAY_PII_ACTION=log)")
+		// warn approves the request and reports the matched policy
+		assert(result.Approved, "PII approved with a warning (stored action: warn)")
+		assert(hasPolicyPrefix(result.Policies, "sys_pii_"), "PII policy detected (sys_pii_* in Policies)")
+		fmt.Printf("   Policies: %v\n", result.Policies)
+		if !result.Approved {
+			fmt.Printf("   Block reason: %s (an org pii=block override or an edited policy action is in force)\n", result.BlockReason)
 		}
 	}
 	fmt.Println()
 
 	// ---------------------------------------------------------------
-	// Test 3: SQLi query — depends on GATEWAY_SQLI_ACTION
+	// Test 3: SQLi query — every sys_sqli_* policy stores warn
 	// ---------------------------------------------------------------
 	fmt.Println("Test 3: SQLi Query (UNION SELECT)")
 	fmt.Println("----------------------------------")
-	fmt.Printf("  Expected action: %s\n", sqliAction)
+	fmt.Println("  Expected action: warn (stored)")
 	result, err = client.GetPolicyApprovedContext(
 		"",
 		"Run this: SELECT name FROM users UNION SELECT password FROM admin_users",
@@ -136,15 +148,12 @@ func main() {
 	if strings.ToLower(policiesEnabled) == "false" {
 		assert(result.Approved, "SQLi approved (static policies disabled)")
 	} else {
-		switch strings.ToLower(sqliAction) {
-		case "block":
-			assert(!result.Approved, "SQLi blocked (GATEWAY_SQLI_ACTION=block)")
-			assert(result.BlockReason != "", "Block reason provided")
-			fmt.Printf("   Block reason: %s\n", result.BlockReason)
-		case "warn":
-			assert(result.Approved, "SQLi approved with warning (GATEWAY_SQLI_ACTION=warn)")
-		case "log":
-			assert(result.Approved, "SQLi approved (GATEWAY_SQLI_ACTION=log)")
+		// SQL injection warns by default; it is not blocked
+		assert(result.Approved, "SQLi approved with a warning (stored action: warn)")
+		assert(hasPolicyPrefix(result.Policies, "sys_sqli_"), "SQLi policy detected (sys_sqli_* in Policies)")
+		fmt.Printf("   Policies: %v\n", result.Policies)
+		if !result.Approved {
+			fmt.Printf("   Block reason: %s (an org sqli=block override or an edited policy action is in force)\n", result.BlockReason)
 		}
 	}
 	fmt.Println()
@@ -178,7 +187,7 @@ func main() {
 		fmt.Println("✓ ALL TESTS PASSED")
 		fmt.Println()
 		fmt.Printf("Gateway policy config validated:\n")
-		fmt.Printf("  PII_ACTION=%s, SQLI_ACTION=%s, enabled=%s\n", piiAction, sqliAction, policiesEnabled)
+		fmt.Printf("  shipped stored actions (PII warn, SQLi warn), enabled=%s\n", policiesEnabled)
 	} else {
 		fmt.Printf("❌ %d TEST(S) FAILED:\n", len(failures))
 		for _, f := range failures {

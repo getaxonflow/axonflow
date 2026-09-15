@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.14.0
+**Platform Version:** 11.0.0
 
 **Status:** Active in Production
 
@@ -190,7 +190,7 @@ Our security team continuously monitors RLS:
 
 ## Additional Resources
 
-- **Technical Documentation:** See `technical-docs/RLS_ARCHITECTURE.md`
+- **Design record:** ADR-053, RLS enforcement and the v9 identity migration (enterprise repository only, not in the community mirror: `technical-docs/architecture-decisions/ADR-053-rls-enforcement-v9.md`)
 - **Security Whitepaper:** [axonflow.com/security](https://axonflow.com/security)
 - **Compliance Docs:** [axonflow.com/compliance](https://axonflow.com/compliance)
 

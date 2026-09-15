@@ -2,14 +2,6 @@
 
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package license
 
@@ -237,8 +229,12 @@ func TestTierLimits(t *testing.T) {
 	if CommunityLimits.TenantPolicies != 20 {
 		t.Errorf("CommunityLimits.TenantPolicies = %d, want 20", CommunityLimits.TenantPolicies)
 	}
-	if CommunityLimits.OrgPolicies != 0 {
-		t.Errorf("CommunityLimits.OrgPolicies = %d, want 0", CommunityLimits.OrgPolicies)
+	// 20 (#3906, #3907). It was 0 until 2026-09-08 on the sentence
+	// "organization-root authoring is Enterprise-only", which the ruling
+	// withdrew: in the ADR-065 model every customer-authored policy is
+	// organization-root, so that value read as "Community authors nothing".
+	if CommunityLimits.OrgPolicies != 20 {
+		t.Errorf("CommunityLimits.OrgPolicies = %d, want 20", CommunityLimits.OrgPolicies)
 	}
 	if CommunityLimits.CustomPolicyConnectors != 2 {
 		t.Errorf("CommunityLimits.CustomPolicyConnectors = %d, want 2", CommunityLimits.CustomPolicyConnectors)
@@ -250,8 +246,10 @@ func TestTierLimits(t *testing.T) {
 	if EvaluationLimits.TenantPolicies != 50 {
 		t.Errorf("EvaluationLimits.TenantPolicies = %d, want 50", EvaluationLimits.TenantPolicies)
 	}
-	if EvaluationLimits.OrgPolicies != 5 {
-		t.Errorf("EvaluationLimits.OrgPolicies = %d, want 5", EvaluationLimits.OrgPolicies)
+	// 50 (#3906, #3907), having been 5 and then briefly 0. See the field
+	// comment in tier_limits.go for why the 0 was withdrawn.
+	if EvaluationLimits.OrgPolicies != 50 {
+		t.Errorf("EvaluationLimits.OrgPolicies = %d, want 50", EvaluationLimits.OrgPolicies)
 	}
 	if EvaluationLimits.CustomPolicyConnectors != 5 {
 		t.Errorf("EvaluationLimits.CustomPolicyConnectors = %d, want 5", EvaluationLimits.CustomPolicyConnectors)

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates Evaluation tier licensing and tier-aware policy limits
 // using the AxonFlow Go SDK.
 //

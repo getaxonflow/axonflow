@@ -7,8 +7,8 @@ import "testing"
 // sys_pii_singapore_nric (`[STFGM]\d{7}[A-Z]`) and sys_pii_singapore_fin
 // (`[FG]\d{7}[A-Z]`) are CategoryPIISingapore → nil category default (accept-all),
 // and EvaluateAll has no confidence threshold, so before this fix every
-// letter+7digit+letter id (asset tags, SKUs, order refs) fired and — under
-// PII_ACTION=redact — was masked. These tests pin the adjacent-label gates.
+// letter+7digit+letter id (asset tags, SKUs, order refs) fired and — under a
+// redact action — was masked. These tests pin the adjacent-label gates.
 
 func TestValidatorForPolicyID_SingaporeIC(t *testing.T) {
 	if v := ValidatorForPolicyID("sys_pii_singapore_nric"); v == nil {

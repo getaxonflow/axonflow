@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -35,15 +27,17 @@ func (r planeUnevaluableRecorder) RecordUnevaluable(reason string) {
 
 // One recorder per call site named in condition_evaluator.go's convergence
 // record (1a-1e) — the same package-level ConditionEvaluator values
-// (dbConditionEvaluator, mcpConditionEvaluator, policyTestEvaluator) this
+// (dbConditionEvaluator, policyTestEvaluator) this
 // file's siblings already declare. Package-level, not per-request, for the
 // same reason those evaluators are: no per-call state, constructed once.
 //
 // #3319: memoryUnevaluableRecorder (plane: "memory") was deleted here — its
 // only caller, the retired in-memory DynamicPolicyEngine (dynamic_policy_engine.go),
 // no longer exists. There is one engine now ("database").
+//
+// mcpUnevaluableRecorder (plane: "mcp") was deleted with its only caller,
+// the MCP dynamic-policy endpoint, which v11 removed.
 var (
 	dbUnevaluableRecorder         sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "database"}
-	mcpUnevaluableRecorder        sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "mcp"}
 	policyTestUnevaluableRecorder sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "policy_test"}
 )

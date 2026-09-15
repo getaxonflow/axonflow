@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -5,8 +8,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"axonflow/platform/decision/legacycompile"
 )
 
 // Phase represents when a policy is evaluated in the request lifecycle.
@@ -188,6 +189,16 @@ const (
 	CategoryMediaBiometric PolicyCategory = "media-biometric" // Face/biometric data detection (GDPR Art. 9)
 	CategoryMediaDocument  PolicyCategory = "media-document"  // Sensitive document classification
 	CategoryMediaPII       PolicyCategory = "media-pii"       // PII detected in images via OCR
+
+	// Pre-canonical categories (#4131). migrations/core/010 and core/014 seeded
+	// eight organization-template rows under these v10 spellings, and core/127
+	// canonicalised only the compliance spellings, so the rows still carry
+	// them. They are deliberately NOT members of AllPolicyCategories: no
+	// category-default validator and no organization override category reaches
+	// them. LegacyTemplateCategories says where they are admitted.
+	CategoryLegacySQLInjection     PolicyCategory = "sql_injection"
+	CategoryLegacyDangerousQueries PolicyCategory = "dangerous_queries"
+	CategoryLegacyPIIDetection     PolicyCategory = "pii_detection"
 )
 
 // Severity levels for policies.
@@ -219,7 +230,7 @@ type CompiledPolicy struct {
 
 	// Pattern matching
 	Pattern    *regexp.Regexp // Pre-compiled regex for performance
-	PatternStr string         // Original pattern string
+	PatternStr string         // The pattern Pattern compiles: the stored one after the case rule (EffectivePattern)
 
 	// Phase configuration
 	Phase          Phase  // When to evaluate: "request", "response", "both"
@@ -246,25 +257,12 @@ type CompiledPolicy struct {
 	// segments at all.
 	SegmentID string
 
-	// UpdatedAt is the row's updated_at, rendered in the one stable spelling
-	// both halves of an ADR-065 shadow snapshot key use, and empty when the
-	// column held SQL NULL.
-	//
-	// It is carried for ONE purpose and no enforcement path reads it: the
-	// decision shadow (#3564) keys a compiled bundle on (policy_id,
-	// updated_at) of the set the plane actually evaluated, so a bundle
-	// compiled from a policy that has since been edited is recognised as
-	// describing a different policy set instead of producing a difference the
-	// migration did not cause. An empty value makes the comparison
-	// not-comparable, which is the safe direction.
-	UpdatedAt string
-
 	// Optional validator for semantic validation
 	Validator ValidatorFunc
 }
 
 // GetActionForPhase returns the appropriate action for the given phase.
-// Follows the tiered detection philosophy (Issue #891, ADR-026):
+// Follows the tiered detection philosophy (Issue #891, ADR-025):
 // - Security patterns (SQLi, dangerous queries): block
 // - PII patterns: redact (non-blocking, preserves UX)
 // - Admin access: warn
@@ -326,7 +324,7 @@ func (p *CompiledPolicy) AppliesToSegments(callerSegments []string) bool {
 // declares, in a stable order.
 //
 // It exists because two ADR-065 migration pin tables - the action-resolution
-// table and the detection-posture lever table - have to be complete against
+// table and the declared category table - have to be complete against
 // this enum in BOTH directions: a category with no row goes unpinned, and a
 // MISSPELLED row pins nothing while inflating the counts a reader trusts.
 // Enumerating from a hand-maintained list in each test is the drift those
@@ -392,60 +390,98 @@ func AllTextPIICategories() []PolicyCategory {
 	}
 }
 
-// PostureLeverForCategory names the detection-posture lever that governs a
-// category's runtime action, or "" when no lever governs it.
+// LegacyTemplateCategories returns the three pre-canonical categories the
+// organization template's rows still carry (#4131): its DROP and TRUNCATE
+// prevention, its two SQL-injection rows and its four PII rows. The /api/request
+// proxy spreads them into its category filter so those eight rows bind there,
+// as the template's other fourteen already did. No other enforcing plane admits
+// them (the policy-test surface shares the proxy's list):
+// canonicalising the stored categories would bind them on every plane whose
+// filter names the canonical ones, and that is a posture decision (#4230).
+// platform/decision/legacycompile restates the list as data (admission.go) and
+// the agent's category-admission weld holds the two equal.
+func LegacyTemplateCategories() []PolicyCategory {
+	return []PolicyCategory{
+		CategoryLegacySQLInjection,
+		CategoryLegacyDangerousQueries,
+		CategoryLegacyPIIDetection,
+	}
+}
+
+// OrgOverrideCategoryFor names the detection_action_overrides category whose
+// RECORDED organization override replaces a policy's resolved action in this
+// policy category, or "" when no override category reaches it (#3961).
 //
-// #3441 (M1), building on the #3360 ruling: for the detection categories the
-// shared engine never uses static_policies.action at all. EvalOptions
-// .ActionOverrides replaces it unconditionally (engine.go), and that map is
-// built from the profile / *_ACTION env / per-org detection override chain. A
-// surface that renders the stored action as the operative one is therefore
-// stating something the engine ignores, and this function is how a surface
-// finds out which rows those are.
+// Since v11 an organization's recorded override is the only thing that can
+// replace a stored action. Before, the answer to this question was an
+// environment variable (PII_ACTION, SQLI_ACTION, ...) that replaced the action
+// for EVERY organization of a deployment, unauthored and unaudited; those are
+// gone (agent.RemovedPostureEnvVars). So the portal's Policies page and the
+// agent's audit advisory now name an override an organization can see and set,
+// not a string in somebody's environment.
 //
 // It is the SHARED source for that question, deliberately not a third copy:
 // agent/detection_config.go BuildActionOverrides decides the set at
-// enforcement time, agent/policy_result_convert.go leverNameForCategory names
-// it in the audit advisory, and the customer portal has to name it on the
-// Policies page. Three independent switches over one fact would diverge, and
-// the divergence would be invisible in both directions (a category that gained
-// a lever but not a disclosure reads as authoritative; one that lost a lever
-// reads as ignored). TestPostureLeverMatchesBuildActionOverrides in the agent
-// package - the only package that can see both - pins the two together.
+// enforcement time, agent/policy_result_convert.go names it in the audit
+// advisory, and the customer portal names it on the Policies page. Three
+// independent switches over one fact would diverge, and the divergence would be
+// invisible in both directions. TestOrgOverrideCategoryMatchesBuildActionOverrides
+// in the agent package - the only package that can see both - pins the two
+// together.
 //
-// Categories with NO lever entry (compliance-*, fincrime, admin-access,
-// data-exfiltration, media-*) return "": no posture lever displaces them.
+// sensitive-data returns "": the override table's CHECK constraint lists no
+// category for it, so its stored action always decides. Categories with no
+// override category (compliance-*, fincrime, admin-access, data-exfiltration,
+// media-*) likewise keep their stored action.
 //
 // "" is NOT a promise that static_policies.action is what runs. The shared
 // engine's RUNTIME loader (PolicyLoader, loader.go) does not SELECT that
 // column on any of its queries - they read phase, action_request,
 // action_response - so on every shared-engine plane the base action column is
 // read by nothing; GetActionForPhase resolves the phase column, or a
-// category/severity fallback when it is NULL. The base column is read only by
-// the proxy plane's Phase-2 tier engine, through
-// StaticPolicyRepository.GetEffective.
+// category/severity fallback when it is NULL. The base column was read at
+// runtime only by the proxy plane's Phase-2 tier engine, through
+// StaticPolicyRepository.GetEffective, until #4253 deleted it; since then only
+// the effective-policies read uses GetEffective.
 //
 // Be precise about the FILE rather than the type: loader.go carries two
-// disjoint column sets, and an earlier version of this comment said the file
-// never selects the column, which is false. effectivePolicyColumns (same file,
-// used by ScanEffectivePolicyRows for the GetEffective admin/API path) selects
+// disjoint column sets. effectivePolicyColumns (same file, used by
+// ScanEffectivePolicyRows for the GetEffective admin/API path) selects
 // sp.action and none of the phase columns. That disjointness is the mechanism
-// by which the two drift, which is why migration core/124 exists. This function answers exactly one
-// question - does a POSTURE LEVER replace the resolved action - and callers
-// must not widen it into a claim about the action column.
-func PostureLeverForCategory(cat PolicyCategory) string {
+// by which the two drift, which is why migration core/124 exists. This function
+// answers exactly one question - which recorded override can replace the
+// resolved action - and callers must not widen it into a claim about the action
+// column.
+func OrgOverrideCategoryFor(cat PolicyCategory) string {
 	switch {
 	case IsPIIPolicyCategory(cat):
-		return "PII_ACTION"
+		return "pii"
 	case cat == CategorySecuritySQLi:
-		return "SQLI_ACTION"
-	case cat == CategorySensitiveData:
-		return "SENSITIVE_DATA_ACTION"
+		return "sqli"
 	case cat == CategorySecurityDangerous:
-		return "DANGEROUS_COMMAND_ACTION"
+		return "dangerous_command"
 	default:
 		return ""
 	}
+}
+
+// OrgOverrideReach returns the policy categories a recorded override of
+// category replaces the action of, in AllPolicyCategories order. It is the
+// inverse of OrgOverrideCategoryFor over the declared categories, so which
+// categories an override reaches and which override names a category cannot
+// disagree. A category that names no override - "", dangerous_query,
+// obligation_fallback, or one the table does not admit - reaches nothing.
+func OrgOverrideReach(category string) []PolicyCategory {
+	if category == "" {
+		return nil
+	}
+	var out []PolicyCategory
+	for _, c := range AllPolicyCategories() {
+		if OrgOverrideCategoryFor(c) == category {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // isSecurityPolicyCategory returns true if the category is a security category.
@@ -554,24 +590,6 @@ type EvalOptions struct {
 	OrgScope *string
 	UserID   string
 
-	// Plane names the ADR-065 enforcement plane this evaluation belongs to
-	// (#3564, session v10.3-A).
-	//
-	// It is DATA, not a decision: nothing in the enforcement path branches on
-	// it, and the only consumer is the decision shadow's observation site,
-	// which uses it to attribute a comparison to the surface it came from -
-	// ADR-065 gate 18 is stated per plane. The declared planes are
-	// legacycompile.AllPlanes(); the nineteen call sites behind them are
-	// enumerated in platform/decision/legacycompile/legacy_call_sites.tsv, and
-	// TestEveryPolicyCallSiteNamesItsPlane derives the required set from that
-	// artifact so a new call site fails on the PR that adds it.
-	//
-	// Its zero value is REFUSED by the observation site rather than defaulted.
-	// An observation attributed to no plane cannot be counted at all, and
-	// attributing it to some plane would move a denominator an operator is
-	// reading to decide whether a plane may cut over.
-	Plane legacycompile.Plane
-
 	// Request context
 	ConnectorName string
 	Parameters    map[string]interface{} // Optional parameters to scan individually
@@ -611,63 +629,20 @@ type EvalOptions struct {
 	// FAIL-CLOSED by construction: every segment-scoped row is excluded,
 	// which is always the SAFE default for a caller with no resolved
 	// identity (this is restriction-only — it can never cause a
-	// non-segment-scoped policy, SegmentID == "", to be skipped). Callers
-	// that have not yet resolved a segment set for their plane MUST pass nil
-	// explicitly rather than omit the field silently — see the call sites in
-	// agent/openai_compat_handler.go and orchestrator/response_processor.go
-	// for the documented per-plane deferral. agent/gateway_handlers.go
-	// resolves and passes a real segment set as of #3312 (ADR-060 Slice 3)
-	// and is no longer a deferral; agent/openai_compat_handler.go remains
-	// one because that plane has no verified human-actor principal to
-	// resolve segments from at all (see its own call-site comment) — its
-	// real fix is #3410.
+	// non-segment-scoped policy, SegmentID == "", to be skipped).
 	//
-	// agent/mcp_handler.go is NO LONGER a deferral as of #3447.
-	// evaluateInputPolicies / evaluateOutputPolicies receive a real,
-	// fail-closed-resolved set — request phase and response phase — from
-	// BOTH of their caller families:
+	// One plane still passes a resolved set: the /api/request proxy
+	// (agent/run.go clientRequestHandler, and its policy-test preview), which
+	// resolves it fail-closed before evaluating. Every other caller passes
+	// none. The gateway pre-check, /decide, the MCP-server tools and the four
+	// MCP REST routes are decided by the anchored engine, which reads no
+	// segments (PRD v11 §1.2); agent/openai_compat_handler.go and
+	// orchestrator/response_processor.go have no verified human-actor
+	// principal to resolve one from (see their call-site comments).
 	//
-	//   - the MCP-server JSON-RPC plane's check_policy/check_output tools
-	//     (mcp_server_handler.go), via resolveMCPServerSegmentsForPolicy
-	//     (agent/mcp_identity.go) since #3430; and
-	//   - the four legacy MCP REST handlers in mcp_handler.go itself —
-	//     mcpQueryHandler, mcpExecuteHandler, mcpCheckInputHandler,
-	//     mcpCheckOutputHandler — via resolveHumanActorSegmentsForPolicy
-	//     (agent/human_actor_segment_gate.go) since #3447. Those four
-	//     authenticate the end user with ResolveUser's per-user JWT
-	//     (validateUserToken), and #3447 keys resolution on that VALIDATED
-	//     token's email claim; a verified member is now enforced on both
-	//     planes, where before a one-URL edit switched every segment-scoped
-	//     policy off for them.
-	//
-	// agent/decision_handler.go's /decide is NO LONGER a deferral either, as
-	// of #3456: handleDecide resolves the same way the four MCP REST handlers
-	// do — one fail-closed call to resolveHumanActorSegmentsForPolicy
-	// (agent/human_actor_segment_gate.go), keyed on the validated
-	// DecideRequest.user_token's email claim — and passes the result here.
-	// /decide has only this request-phase call site (runDynamicPolicy=false,
-	// no response phase), so that one resolution covers the whole plane.
-	//
-	// On these planes the "nil is fail-closed by construction" reading
-	// above stops being sufficient, and #3430 R3 says why: nil excludes
-	// every segment-scoped row, which is safe for the POLICY but not for
-	// the PLANE if the caller can choose to arrive without an identity. The
-	// two caller families answer that differently, on purpose:
-	//
-	//   - MCP-server JSON-RPC: a caller with no validated per-user token is
-	//     REFUSED before evaluation whenever HasSegmentScopedPolicies
-	//     reports the phase's policy set can depend on membership (#3430).
-	//   - MCP REST and /decide: a caller with no token gets the unchanged
-	//     ADR-060 baseline — org-only, no refusal, no policy census. What
-	//     keeps that from being a selectable opt-out is #3476
-	//     (require_user_token), which lets an org reject a token-less caller
-	//     at AUTHENTICATION. A RESOLVER ERROR for a caller who HAS a
-	//     principal still denies there, with guard id
-	//     segment_resolution_failed, before this field is ever populated.
-	//
-	// Either way, read this field's nil as "resolved to no segments / this
-	// plane does not resolve one", never as "resolution failed" or
-	// "resolution was skipped because identity was weak".
+	// Read nil as "resolved to no segments / this plane does not resolve
+	// one", never as "resolution failed" or "resolution was skipped because
+	// identity was weak".
 	Segments []string
 }
 
@@ -699,6 +674,12 @@ type RequestResult struct {
 	PoliciesEvaluated int
 	MatchedPolicies   []PolicyMatch
 	ProcessingTimeMs  int64
+
+	// Observation is this evaluation's detector facts (detector_facts.go): the
+	// row facts an enforcing seam hands the anchored engine as its detector
+	// inputs (#3895). Set on every evaluation. A caller reads it; it never
+	// constructs one.
+	Observation *Observation
 }
 
 // ResponseResult contains the results of response-phase policy evaluation.
@@ -735,6 +716,10 @@ type ResponseResult struct {
 	PoliciesEvaluated int
 	MatchedPolicies   []PolicyMatch
 	ProcessingTimeMs  int64
+
+	// Observation is this evaluation's detector facts: the response-phase twin
+	// of RequestResult.Observation, read by an enforcing response pass (#3564).
+	Observation *Observation
 }
 
 // PolicyMatch records details of a policy that matched.
@@ -746,7 +731,7 @@ type PolicyMatch struct {
 	Action     Action
 	// StoredAction is the EXPLICIT action the policy row stores for the
 	// evaluated phase (the action_request/action_response column value),
-	// BEFORE any EvalOptions.ActionOverrides posture lever replaced it
+	// BEFORE any EvalOptions.ActionOverrides organization override replaced it
 	// (#3360). Empty when the row stores NULL for the phase: the engine then
 	// resolves through GetActionForPhase's category fallback, which is not a
 	// stored value and is never reported as displaced. When non-empty and
@@ -788,10 +773,6 @@ type PolicyInfo struct {
 	// ExfiltrationCheck contains data extraction limit information (Issue #966).
 	// Present when exfiltration checking is enabled, nil otherwise.
 	ExfiltrationCheck *ExfiltrationCheckInfo `json:"exfiltration_check,omitempty"`
-
-	// DynamicPolicyInfo contains dynamic policy evaluation results (Issue #968).
-	// Present when dynamic policy evaluation is enabled, nil otherwise.
-	DynamicPolicyInfo *DynamicPolicyInfo `json:"dynamic_policy_info,omitempty"`
 }
 
 // PolicyMatchInfo is the serializable version of PolicyMatch for API responses.
@@ -909,6 +890,12 @@ type EngineConfig struct {
 	// evaluates regardless of tool identity). Safety valve for the behavior
 	// change; strictly MORE evaluation, never less.
 	DisableCapabilityScoping bool
+
+	// InstalledDetectors are the detectors of the policy packs this deployment
+	// installed (PRD v11 §1.9), compiled by CompileInstalledDetectors. The
+	// loader appends them to every load, so every evaluation reports their
+	// facts; they are never static_policies rows.
+	InstalledDetectors []CompiledPolicy
 }
 
 // DefaultEngineConfig returns the recommended production configuration.
@@ -990,190 +977,6 @@ type EvaluatorStats struct {
 // Dynamic Policy Evaluation Types (Issue #968)
 // =============================================================================
 
-// DynamicPolicyConfig configures dynamic policy evaluation for MCP requests.
-// Dynamic policies are evaluated via Orchestrator before connector execution.
-//
-// The Orchestrator endpoint is determined automatically using the same logic as
-// other Agent→Orchestrator calls (ORCHESTRATOR_URL env var, Docker detection, or localhost).
-//
-// Configuration via environment variables:
-//   - MCP_DYNAMIC_POLICIES_ENABLED: Enable/disable (default: false)
-//   - MCP_DYNAMIC_POLICIES_TIMEOUT: Orchestrator call timeout (default: 5s)
-//   - MCP_DYNAMIC_POLICIES_GRACEFUL: Continue if Orchestrator unavailable (default: true)
-//   - MCP_DYNAMIC_POLICIES_CONNECTORS: Comma-separated connectors (empty = all)
-type DynamicPolicyConfig struct {
-	// Enabled controls whether dynamic policy evaluation is performed.
-	// Disabled by default - must be explicitly enabled.
-	Enabled bool `json:"enabled"`
-
-	// OrchestratorEndpoint is the base URL for the Orchestrator service.
-	// Default: http://localhost:8081 (same-host deployment)
-	OrchestratorEndpoint string `json:"orchestrator_endpoint"`
-
-	// Timeout is the maximum time to wait for Orchestrator response.
-	// Default: 5 seconds
-	Timeout time.Duration `json:"timeout"`
-
-	// GracefulDegradation controls behavior when Orchestrator is unavailable.
-	// If true (default), requests proceed without dynamic policy evaluation.
-	// If false, requests are blocked when Orchestrator is unavailable.
-	GracefulDegradation bool `json:"graceful_degradation"`
-
-	// EnabledConnectors lists connectors that use dynamic policies.
-	// Empty list means all connectors are enabled.
-	// Community edition has 2 connectors with custom policies limit, Evaluation has 5.
-	EnabledConnectors []string `json:"enabled_connectors"`
-
-	// MaxCustomPolicyConnectorsCommunity is the limit for connectors with custom policies in community edition.
-	// All connectors can be registered in all tiers; only tenant-level policies are limited.
-	MaxCustomPolicyConnectorsCommunity int `json:"max_custom_policy_connectors_community"`
-
-	// MaxCustomPolicyConnectorsEvaluation is the limit for connectors with custom policies in evaluation edition.
-	// Enterprise has unlimited connectors with custom policies.
-	MaxCustomPolicyConnectorsEvaluation int `json:"max_custom_policy_connectors_evaluation"`
-}
-
-// DefaultDynamicPolicyConfig returns production-safe defaults.
-// Dynamic policies are disabled by default for backward compatibility.
-func DefaultDynamicPolicyConfig() DynamicPolicyConfig {
-	return DynamicPolicyConfig{
-		Enabled:                             false,
-		OrchestratorEndpoint:                "http://localhost:8081",
-		Timeout:                             5 * time.Second,
-		GracefulDegradation:                 true,
-		EnabledConnectors:                   nil, // All connectors when enabled
-		MaxCustomPolicyConnectorsCommunity:  2,   // Community: max connectors with custom policies
-		MaxCustomPolicyConnectorsEvaluation: 5,   // Evaluation: max connectors with custom policies
-	}
-}
-
-// UnlimitedCustomPolicyConnectors is the limit value meaning "no ceiling".
-const UnlimitedCustomPolicyConnectors = -1
-
-// Defaults applied ONLY by the exported CustomPolicyConnectorLimitForTier when
-// the corresponding config field is unset. The consumers deliberately do not
-// apply them - see connectorTierClass.
-const (
-	defaultCommunityConnectorLimit  = 2
-	defaultEvaluationConnectorLimit = 5
-)
-
-// connectorTierClass is the ONE classification of a licence tier for the
-// connector ceiling. Everything that needs the ceiling classifies here and then
-// reads the number it wants, so a tier cannot mean two things on two paths.
-//
-// # THE TIER SET FOLLOWS THE LICENCE PACKAGE, AND A TEST SAYS SO
-//
-// platform/agent/license.GetTierLimits maps
-// `TierProfessional, TierEnterprise, TierEnterprisePlus` alike onto
-// EnterpriseLimits (CustomPolicyConnectors: -1), in all three of its
-// definitions. The two switches this replaces recognised only "enterprise" and
-// let `professional` and `plus` fall into the COMMUNITY ceiling of 2 - latent
-// while the licence path was reachable from `community` and unset alone, and
-// ARMED by #3713 routing community-saas, evaluation and unrecognised modes onto
-// it.
-//
-// This is a hand-written correspondence, not an import: platform/shared cannot
-// take platform/agent/license as a dependency of the ceiling itself without
-// making every config read do licence I/O. So the correspondence is PINNED from
-// the other side - platform/agent/connector_tier_authority_test.go fails if
-// license.GetTierLimits and this classification ever disagree for any tier the
-// licence package defines. R3 measured that without it, planting
-// `EnterpriseLimits.CustomPolicyConnectors: -1 -> 3` was invisible here.
-//
-// Case is folded because the exported method is documented to take the licence
-// package's capitalised spellings while resolveConnectorLimitTier lower-cases.
-// That makes the accepting set a strict SUPERSET of the authority's (which
-// matches exactly); no spelling is narrowed by it.
-type connectorTierClass int
-
-const (
-	tierClassCommunity connectorTierClass = iota
-	tierClassEvaluation
-	tierClassUnlimited
-)
-
-// classifyConnectorTier is the single tier→class decision.
-//
-// An unrecognised tier gets the Community class: the narrowest, and the same
-// direction the deployment-mode axis fails.
-func classifyConnectorTier(tier string) connectorTierClass {
-	switch strings.ToLower(tier) {
-	case "enterprise", "professional", "plus":
-		return tierClassUnlimited
-	case "evaluation":
-		return tierClassEvaluation
-	default:
-		return tierClassCommunity
-	}
-}
-
-// configuredConnectorLimit returns the ceiling the CONSUMERS apply: the raw
-// configured field, with no default substituted.
-//
-// # WHY RAW, AND WHY THAT IS NOT A DETAIL (R3 round 2)
-//
-// The two switches this replaced read config.Max… raw, so a field left at its
-// zero value fell through their `limit > 0` guard and meant NO CEILING. The
-// first version of this consolidation reused the exported method's
-// `if field > 0 … else <literal>` fallback and thereby changed that: a config
-// with the fields unset went from unlimited to a ceiling of 2, and UpdateConfig
-// began REFUSING a configuration it had previously accepted. Nothing in the
-// tree reaches it, because every config starts from DefaultDynamicPolicyConfig
-// - but these functions are exported in a source-available repo, and JSON that
-// omits max_custom_policy_connectors_community decodes to exactly that.
-//
-// An undeclared behaviour change is what this PR exists to avoid, so the
-// consumers keep the raw read and the `limit > 0` guard stays LIVE. The
-// literal defaults belong to the exported method, which documents them.
-func configuredConnectorLimit(c DynamicPolicyConfig, tier string) int {
-	switch classifyConnectorTier(tier) {
-	case tierClassUnlimited:
-		return UnlimitedCustomPolicyConnectors
-	case tierClassEvaluation:
-		return c.MaxCustomPolicyConnectorsEvaluation
-	default:
-		return c.MaxCustomPolicyConnectorsCommunity
-	}
-}
-
-// CustomPolicyConnectorLimitForTier returns the custom policy connector limit based on the license tier.
-// This limits the number of connectors that can have tenant-level policies (rate limiting, budgets,
-// time/role access) enabled. All connectors can be registered in all tiers.
-// Returns UnlimitedCustomPolicyConnectors (-1) for the paid tiers.
-//
-// Unlike the consumers, this method substitutes a documented default when the
-// config field is unset — behaviour it has always had and which is preserved
-// exactly. Until #3713 it was a SECOND mapping that DISAGREED with the switches
-// actually applying the ceiling, reading `Plus` and `Professional` as unlimited
-// where those fell through to the Community default of 2. Nothing called it, so
-// the disagreement was invisible — and "unreferenced" is not "harmless", because
-// the next caller picks whichever copy they find first.
-//
-// A nil receiver returns the Community default rather than panicking: the body
-// this replaced returned before touching the receiver for the four paid
-// spellings, so a nil-receiver call that used to succeed must not start
-// crashing (R3 round 2).
-func (c *DynamicPolicyConfig) CustomPolicyConnectorLimitForTier(tier string) int {
-	class := classifyConnectorTier(tier)
-	if class == tierClassUnlimited {
-		return UnlimitedCustomPolicyConnectors
-	}
-	if c == nil {
-		if class == tierClassEvaluation {
-			return defaultEvaluationConnectorLimit
-		}
-		return defaultCommunityConnectorLimit
-	}
-	if limit := configuredConnectorLimit(*c, tier); limit > 0 {
-		return limit
-	}
-	if class == tierClassEvaluation {
-		return defaultEvaluationConnectorLimit
-	}
-	return defaultCommunityConnectorLimit
-}
-
 // DynamicPolicyRequest is sent to Orchestrator for policy evaluation.
 type DynamicPolicyRequest struct {
 	// Request context
@@ -1236,18 +1039,6 @@ type DynamicPolicyMatch struct {
 	PolicyType string `json:"policy_type"` // rate-limit, budget, time-access, role-access
 	Action     string `json:"action"`      // allow, block, warn
 	Reason     string `json:"reason,omitempty"`
-}
-
-// DynamicPolicyInfo is the API-serializable structure for dynamic policy results.
-// Included in PolicyInfo when dynamic policy evaluation is enabled.
-type DynamicPolicyInfo struct {
-	// Evaluation results
-	PoliciesEvaluated int                  `json:"policies_evaluated"`
-	MatchedPolicies   []DynamicPolicyMatch `json:"matched_policies,omitempty"`
-
-	// Orchestrator metadata
-	OrchestratorReachable bool  `json:"orchestrator_reachable"`
-	ProcessingTimeMs      int64 `json:"processing_time_ms"`
 }
 
 // =============================================================================

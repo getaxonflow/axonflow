@@ -122,7 +122,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	say(stderr, "environment %s\n", digest)
-	for _, p := range env.BundleDigests() {
+	pins, err := env.BundleDigests()
+	if err != nil {
+		// exitPin, NOT exitUsage (#3700). A bundle whose content does not hash
+		// to its advertised digest cannot be pinned, and that is a statement
+		// about the ARTIFACTS - "these are not the artifacts your record was
+		// taken against" - not about how the operator invoked this command.
+		// Returning exitUsage here made the refusal this change exists to
+		// produce report as a usage error, which is the one exit code an
+		// operator reads as their own mistake.
+		say(stderr, "decision-replay: %v\n", err)
+		return exitPin
+	}
+	for _, p := range pins {
 		say(stderr, "  bundle %-14s %s\n", p.Root, p.Digest)
 	}
 

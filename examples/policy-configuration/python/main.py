@@ -3,21 +3,23 @@
 AxonFlow Policy Configuration - Python SDK
 
 This example demonstrates and VALIDATES policy configuration using the pre-check API.
-AxonFlow's static policies can be configured using environment variables.
-This example validates the CURRENT configuration by sending test queries through
-the pre-check API (get_policy_approved_context) and checking that the Agent responds
-according to the configured policy actions.
+This example sends test queries through the pre-check API
+(get_policy_approved_context) and checks that the Agent responds according to the
+shipped policy actions.
 
-Environment variables (must match Agent-side config):
-  PII_ACTION   = block | redact | warn | log  (default: redact)
-  SQLI_ACTION  = block | warn | log           (default: block)
+v11: the stored policy action decides. Environment variables no longer set
+detection actions (PII_ACTION, SQLI_ACTION and their GATEWAY_/MCP_ variants are
+ignored, with a boot WARN). The shipped request-phase actions exercised here:
+  sys_pii_ssn, sys_pii_credit_card = warn (approved, policy id in policies)
+  sys_sqli_*                       = warn (approved, policy id in policies)
+
+To change an outcome, record an organization override (customer portal API,
+Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+or change the policy's action. This example validates the shipped actions with
+no override recorded.
+
+Still read from the environment (a non-action knob, must match Agent config):
   GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
-
-Mode-specific overrides (higher precedence):
-  GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION
-
-IMPORTANT: Changing policy behavior requires restarting the AxonFlow Agent with
-different env vars. This example validates behavior for the CURRENT configuration.
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 This ensures CI/CD pipelines catch regressions.
@@ -39,6 +41,11 @@ def get_env(key: str, default: str) -> str:
     return os.getenv(key, default)
 
 
+def has_policy_prefix(policies: list[str] | None, prefix: str) -> bool:
+    """Return True if any matched policy id starts with prefix."""
+    return any(p.startswith(prefix) for p in (policies or []))
+
+
 def assert_check(condition: bool, message: str) -> None:
     """Check a condition and record failure if false."""
     if not condition:
@@ -53,14 +60,11 @@ async def main() -> int:
     print("=" * 52)
     print()
 
-    # Read expected policy actions (must match Agent-side config)
-    # Pre-check API uses the Gateway engine, so read Gateway-specific overrides first
-    pii_action = get_env("GATEWAY_PII_ACTION", get_env("PII_ACTION", "redact")).lower()
-    sqli_action = get_env("GATEWAY_SQLI_ACTION", get_env("SQLI_ACTION", "block")).lower()
+    # The pre-check API uses the Gateway engine. Detection actions come from the
+    # stored policy rows (no org override recorded), not from the environment.
     policies_enabled = get_env("GATEWAY_STATIC_POLICIES_ENABLED", "true").lower()
 
-    print(f"Expected PII_ACTION:  {pii_action}")
-    print(f"Expected SQLI_ACTION: {sqli_action}")
+    print("Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)")
     print(f"Static policies enabled: {policies_enabled}")
     print()
 
@@ -90,11 +94,11 @@ async def main() -> int:
         print()
 
         # -----------------------------------------------------------
-        # Test 2: PII query (SSN) -- behavior depends on PII_ACTION
+        # Test 2: PII query (SSN) -- sys_pii_ssn stores warn for the request phase
         # -----------------------------------------------------------
         print("Test 2: PII Query (SSN '123-45-6789')")
         print("-" * 38)
-        print(f"  Expected action: {pii_action}")
+        print("  Expected action: warn (stored)")
 
         try:
             result = await client.get_policy_approved_context(
@@ -109,32 +113,24 @@ async def main() -> int:
             # When static policies are disabled, everything passes through
             assert_check(result.approved, "PII query approved (static policies disabled)")
             assert_check(len(result.policies) == 0, "No policies matched (static policies disabled)")
-        elif pii_action == "block":
-            assert_check(not result.approved, "PII query blocked (PII_ACTION=block)")
-            assert_check(result.block_reason is not None and result.block_reason != "", "Block reason provided")
-            if result.block_reason:
-                print(f"   Block reason: {result.block_reason}")
-        elif pii_action == "redact":
-            # In redact mode, request phase approves but flags PII
-            assert_check(result.approved, "PII query approved in request phase (PII_ACTION=redact)")
-            assert_check(len(result.policies) > 0, "PII policies detected")
-            print(f"   Policies: {result.policies}")
-        elif pii_action == "warn":
-            assert_check(result.approved, "PII query approved (PII_ACTION=warn)")
-            assert_check(len(result.policies) > 0, "PII policies detected for warning")
-        elif pii_action == "log":
-            assert_check(result.approved, "PII query approved (PII_ACTION=log)")
         else:
-            print(f"   Unknown PII_ACTION: {pii_action}")
-            failures.append(f"Unknown PII_ACTION: {pii_action}")
+            # warn approves the request and reports the matched policy
+            assert_check(result.approved, "PII query approved with a warning (stored action: warn)")
+            assert_check(has_policy_prefix(result.policies, "sys_pii_"), "PII policy detected (sys_pii_* in policies)")
+            print(f"   Policies: {result.policies}")
+            if not result.approved:
+                print(
+                    f"   Block reason: {result.block_reason} "
+                    "(an org pii=block override or an edited policy action is in force)"
+                )
         print()
 
         # -----------------------------------------------------------
-        # Test 3: SQLi query -- behavior depends on SQLI_ACTION
+        # Test 3: SQLi query -- every sys_sqli_* policy stores warn
         # -----------------------------------------------------------
         print("Test 3: SQL Injection (UNION SELECT)")
         print("-" * 37)
-        print(f"  Expected action: {sqli_action}")
+        print("  Expected action: warn (stored)")
 
         try:
             result = await client.get_policy_approved_context(
@@ -147,18 +143,16 @@ async def main() -> int:
 
         if policies_enabled == "false":
             assert_check(result.approved, "SQLi query approved (static policies disabled)")
-        elif sqli_action == "block":
-            assert_check(not result.approved, "SQLi query blocked (SQLI_ACTION=block)")
-            assert_check(result.block_reason is not None and result.block_reason != "", "Block reason provided")
-            if result.block_reason:
-                print(f"   Block reason: {result.block_reason}")
-        elif sqli_action == "warn":
-            assert_check(result.approved, "SQLi query approved with warning (SQLI_ACTION=warn)")
-        elif sqli_action == "log":
-            assert_check(result.approved, "SQLi query approved (SQLI_ACTION=log)")
         else:
-            print(f"   Unknown SQLI_ACTION: {sqli_action}")
-            failures.append(f"Unknown SQLI_ACTION: {sqli_action}")
+            # SQL injection warns by default; it is not blocked
+            assert_check(result.approved, "SQLi query approved with a warning (stored action: warn)")
+            assert_check(has_policy_prefix(result.policies, "sys_sqli_"), "SQLi policy detected (sys_sqli_* in policies)")
+            print(f"   Policies: {result.policies}")
+            if not result.approved:
+                print(
+                    f"   Block reason: {result.block_reason} "
+                    "(an org sqli=block override or an edited policy action is in force)"
+                )
         print()
 
         # -----------------------------------------------------------
@@ -178,13 +172,10 @@ async def main() -> int:
 
         if policies_enabled == "false":
             assert_check(result.approved, "Credit card query approved (static policies disabled)")
-        elif pii_action == "block":
-            assert_check(not result.approved, "Credit card blocked (PII_ACTION=block)")
-        elif pii_action == "redact":
-            assert_check(result.approved, "Credit card approved for redaction (PII_ACTION=redact)")
-            assert_check(len(result.policies) > 0, "Credit card PII detected")
-        elif pii_action in ("warn", "log"):
-            assert_check(result.approved, f"Credit card approved (PII_ACTION={pii_action})")
+        else:
+            # sys_pii_credit_card stores warn for the request phase
+            assert_check(result.approved, "Credit card approved with a warning (stored action: warn)")
+            assert_check(has_policy_prefix(result.policies, "sys_pii_"), "Credit card PII detected (sys_pii_* in policies)")
         print()
 
     # -----------------------------------------------------------
@@ -195,7 +186,7 @@ async def main() -> int:
         print("ALL TESTS PASSED")
         print()
         print("Policy configuration validated:")
-        print(f"  PII_ACTION={pii_action}, SQLI_ACTION={sqli_action}, enabled={policies_enabled}")
+        print(f"  shipped stored actions (PII warn, SQLi warn), enabled={policies_enabled}")
         return 0
     else:
         print(f"{len(failures)} TEST(S) FAILED:")

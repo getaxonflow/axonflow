@@ -1,7 +1,7 @@
 -- Migration 036: Update Policy Action Defaults
 -- Date: 2026-01-05
 -- Purpose: Change default actions for tiered detection (Issue #891)
--- Related: ADR-026 - Tiered Detection Defaults
+-- Related: ADR-025 - Tiered Detection Defaults
 --
 -- Philosophy: Block high-confidence threats, warn on heuristics, redact PII.
 --

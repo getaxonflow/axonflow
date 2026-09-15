@@ -12,18 +12,16 @@
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
- * Default Behavior (Issue #891):
- *   PII detection defaults to "redact" mode - requests are APPROVED but flagged
- *   with requiresRedaction=true for downstream redaction by the Orchestrator.
- *   Set PII_ACTION=block to restore blocking behavior.
+ * Default Behavior (v11):
  *
- * Policy Configuration (env vars):
- *   PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
- *   GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
- *
- *   When PII_ACTION=block: requests with critical PII are blocked (approved=false)
- *   When PII_ACTION=log:   PII is detected and logged but passes through unmodified
- *   When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+ *   The stored action of each matched PII policy decides. On the request side
+ *   (this pre-check) the shipped SSN, credit card, PAN and Aadhaar policies store
+ *   action_request=warn: the request is APPROVED and the matched policy ids are
+ *   returned with it. Their stored response action is redact, so redaction
+ *   happens on the response side. Environment variables no longer set detection
+ *   actions. To change an outcome, record an organization override (Enterprise
+ *   customer portal: PUT /api/v1/detection-posture/pii {"action":"block"}) or
+ *   change the policy's action.
  *
  * Run with: npx ts-node index.ts
  * Prerequisites: docker compose up -d
@@ -34,7 +32,7 @@ import { AxonFlow } from '@axonflow/sdk';
 interface TestCase {
   name: string;
   query: string;
-  expectRedact: boolean;
+  expectDetect: boolean;
 }
 
 const failures: string[] = [];
@@ -56,7 +54,7 @@ async function main(): Promise<void> {
   console.log('AxonFlow PII Detection - TypeScript SDK');
   console.log('='.repeat(40));
   console.log();
-  console.log('Default Mode: redact (PII flagged for redaction, not blocked)');
+  console.log('Stored policy actions decide: request-side PII warns (approved, policy recorded)');
   console.log();
 
   const axonflow = new AxonFlow({
@@ -67,43 +65,43 @@ async function main(): Promise<void> {
   });
 
   // PII test cases
-  // expectRedact: true = critical PII (requiresRedaction=true)
-  // expectRedact: false = non-critical or no PII (logged but not flagged)
+  // expectDetect: true = critical PII (a policy matches; stored request action is warn)
+  // expectDetect: false = non-critical or no PII (approved, no redaction flag)
   const testCases: TestCase[] = [
     {
       name: 'Safe Query (No PII)',
       query: 'What is the capital of France?',
-      expectRedact: false,
+      expectDetect: false,
     },
     {
       name: 'US Social Security Number (Critical PII)',
       query: 'Process refund for customer with SSN 123-45-6789',
-      expectRedact: true,
+      expectDetect: true,
     },
     {
       name: 'Credit Card Number (Critical PII)',
       query: 'Charge card 4111-1111-1111-1111 for $99.99',
-      expectRedact: true,
+      expectDetect: true,
     },
     {
       name: 'India PAN (Critical PII)',
       query: 'Verify PAN number ABCPD1234E for tax filing',
-      expectRedact: true,
+      expectDetect: true,
     },
     {
       name: 'India Aadhaar (Critical PII)',
       query: 'Link Aadhaar 2345 6789 0123 to account',
-      expectRedact: true,
+      expectDetect: true,
     },
     {
       name: 'Email Address (Non-Critical PII)',
       query: 'Send invoice to john.doe@gmail.com',
-      expectRedact: false, // Medium severity - logged but not flagged
+      expectDetect: false, // Medium severity - logged but not flagged
     },
     {
       name: 'Phone Number (Non-Critical PII)',
       query: 'Call customer at +1-555-123-4567',
-      expectRedact: false, // Medium severity - logged but not flagged
+      expectDetect: false, // Medium severity - logged but not flagged
     },
   ];
 
@@ -136,63 +134,26 @@ async function main(): Promise<void> {
         console.log('   Status: APPROVED');
       }
     } else {
-      // Request was blocked (only if PII_ACTION=block)
+      // Blocked only when an organization override or a policy edit sets block
       console.log('   Status: BLOCKED');
       console.log(`   Reason: ${result.blockReason}`);
     }
+    const policies = result.policies || [];
+    if (policies.length > 0) {
+      console.log(`   Policies: ${policies.join(', ')}`);
+    }
 
-    // Get actual redaction status (blocked also counts as "requires handling")
-    const actualRequiresRedaction = result.requiresRedaction || !result.approved;
-
-    // Verify expected behavior
-    if (test.expectRedact) {
-      assertCheck(actualRequiresRedaction, 'Critical PII detected and flagged for redaction');
+    // Verify expected behavior against the shipped stored actions
+    if (test.expectDetect) {
+      assertCheck(result.approved, 'Request approved (stored request action is warn, not block)');
+      assertCheck(policies.length > 0, 'Critical PII detected (policy matched)');
     } else {
       assertCheck(
-        !actualRequiresRedaction && result.approved,
+        !result.requiresRedaction && result.approved,
         'No critical PII detected, request approved'
       );
     }
 
-    console.log();
-  }
-
-  // ========================================
-  // Policy Configuration Tests (PII_ACTION)
-  // ========================================
-  const piiAction = getEnv('PII_ACTION', 'redact');
-  console.log(`Policy Config: PII_ACTION=${piiAction}`);
-  console.log();
-
-  if (piiAction === 'block') {
-    console.log('Test (config): PII_ACTION=block - SSN should be BLOCKED');
-    let configResult;
-    try {
-      configResult = await axonflow.getPolicyApprovedContext({
-        userToken: 'pii-config-test-user',
-        query: 'Customer SSN is 999-88-7777',
-      });
-    } catch (error) {
-      console.log(`   FATAL: getPolicyApprovedContext failed: ${error}`);
-      process.exit(1);
-    }
-    assertCheck(!configResult.approved, 'PII_ACTION=block: SSN query is blocked (not approved)');
-    assertCheck(configResult.blockReason !== '', 'PII_ACTION=block: block reason is provided');
-    console.log();
-  } else if (piiAction === 'log') {
-    console.log('Test (config): PII_ACTION=log - SSN should pass through unmodified');
-    let configResult;
-    try {
-      configResult = await axonflow.getPolicyApprovedContext({
-        userToken: 'pii-config-test-user',
-        query: 'Customer SSN is 999-88-7777',
-      });
-    } catch (error) {
-      console.log(`   FATAL: getPolicyApprovedContext failed: ${error}`);
-      process.exit(1);
-    }
-    assertCheck(configResult.approved, 'PII_ACTION=log: SSN query is approved (pass-through)');
-    assertCheck(!configResult.requiresRedaction, 'PII_ACTION=log: no redaction required (log only)');
     console.log();
   }
 

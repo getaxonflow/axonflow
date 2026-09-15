@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -12,16 +15,17 @@ import (
 // compiler both read.
 const resolutionTablePath = "../../decision/legacycompile/legacy_resolution.tsv"
 
-// TestLegacyResolutionTableDescribesGetActionForPhase pins the ADR-065 shadow
-// harness's model of THIS function to the function itself.
+// TestLegacyResolutionTableDescribesGetActionForPhase pins the ADR-065 migration
+// compiler's model of THIS function to the function itself.
 //
 // # Why the pin exists
 //
 // platform/decision/legacycompile reimplements GetActionForPhase, because the
 // decision module is a separate Go module with its own pinned OPA and cannot
-// import this one. That reimplementation is the LEGACY side of a differential
-// harness, and a legacy side that is merely believed to match the legacy
-// engine is worth nothing: the whole exercise assumes it IS the legacy engine.
+// import this one. That reimplementation is the compiler's legacy-resolution
+// model, which this table pins, and a model that is merely believed to match
+// the legacy engine is worth nothing: the corpus it compiles assumes it IS the
+// legacy engine.
 //
 // # Why a checked-in table rather than a shared function
 //
@@ -126,8 +130,21 @@ func TestLegacyResolutionTableCoversTheSourceEnum(t *testing.T) {
 	// And the reverse: every `PolicyCategory = "..."` in types.go must appear
 	// in the list. This is the direction that catches a NEW category, which is
 	// the one that would otherwise be modelled by an unpinned code path.
+	//
+	// The one ruled exception is LegacyTemplateCategories (#4131): the v10
+	// spellings the organization template's rows still carry, declared so the
+	// proxy can admit them and NOT canonical, so they are resolved by the
+	// undeclared-category fallback the sentinel row pins. They must stay
+	// disjoint from the canonical list, or a v10 spelling would be pinned twice
+	// under two meanings.
 	declared := map[string]bool{}
 	for _, c := range AllPolicyCategories() {
+		declared[string(c)] = true
+	}
+	for _, c := range LegacyTemplateCategories() {
+		if declared[string(c)] {
+			t.Fatalf("LegacyTemplateCategories names %q, which AllPolicyCategories also names; a v10 spelling is either canonical or legacy, never both", c)
+		}
 		declared[string(c)] = true
 	}
 	for _, line := range strings.Split(text, "\n") {

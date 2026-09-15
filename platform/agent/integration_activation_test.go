@@ -1,4 +1,5 @@
 // Copyright 2025-2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
 package agent
 
 import (
@@ -458,6 +459,8 @@ func TestKnownIntegrations_PolicyPrefixMatchesPolicyIDs(t *testing.T) {
 		"cursor":         "int_cursor",
 		"codex":          "int_codex",
 		"claude-desktop": "int_desktop",
+		"n8n":            "int_n8n",
+		"google-adk":     "int_adk",
 	}
 
 	for _, ki := range knownIntegrations {

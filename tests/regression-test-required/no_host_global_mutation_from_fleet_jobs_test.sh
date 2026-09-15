@@ -50,6 +50,23 @@
 # is scoped to fleet jobs rather than banning the idiom everywhere - a rule
 # that fires on legitimate hosted usage would be wrong and would be ignored.
 set -euo pipefail
+# A required guard must not read bytecode compiled from source that is no
+# longer on disk. This suite IMPORTS a helper from tests/regression-test-required/lib/,
+# so CPython caches it, and the cache is invalidated on (mtime, SIZE) - a pair
+# that misses a SAME-LENGTH edit written and reverted inside one second. That is
+# exactly the cadence of a positive-control probe loop, and on #3877 it reported
+# two branches as guarded that were, on a cold cache, still green when disabled.
+# The cache buys a guard nothing. See #3919.
+export PYTHONDONTWRITEBYTECODE=1
+# ...and that closes only the WRITE half. CPython still EXECUTES an existing
+# .pyc whose (mtime, size) header matches the source, so the sentence above -
+# "must not READ bytecode compiled from source no longer on disk" - is not
+# delivered by the line above on its own. Proved against this branch: a cache
+# poisoned by anything that ran without the variable, with the source left
+# pristine, was executed by this guard and it asserted on code that was not
+# there. Relocating the cache moves the READ off the in-tree directory as well,
+# which is what makes the claim true. See #3919.
+export PYTHONPYCACHEPREFIX="$(mktemp -d)"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 # THIS TREE MAY BE THE COMMUNITY MIRROR, WHERE THERE IS NO FLEET TO CENSUS.

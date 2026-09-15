@@ -263,7 +263,7 @@ func main() {
 	}
 
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint: agentURL, // ADR-026: Agent proxies all routes (single entry point)
+		Endpoint: agentURL, // ADR-024: Agent proxies all routes (single entry point)
 		ClientID: "demo-org", // Tenant ID for dynamic policy evaluation
 		Debug:    os.Getenv("AXONFLOW_DEBUG") == "true",
 	})

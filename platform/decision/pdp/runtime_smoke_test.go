@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -61,6 +64,7 @@ func buildTestEngine(t *testing.T, d *Document) *Engine {
 	ts := NewTrustStore()
 	ts.Authorize(d.Root, "k1", pub)
 	e, err := NewEngine(context.Background(), EngineConfig{
+		SystemCorpus:  Unanchored("an in-package test builds a fixture document to exercise one rule of the decision algebra; it never activates the shipped system corpus"),
 		Bundles:       []*Bundle{b},
 		Documents:     []*Document{d},
 		TrustStore:    ts,

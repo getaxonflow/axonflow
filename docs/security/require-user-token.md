@@ -121,7 +121,7 @@ This is the one place `require_user_token`'s resolver deliberately does
 **not** mirror `detection_override.go`'s posture-lookup pattern.
 `detection_override.go` governs a *detection* posture, where "keep running
 under yesterday's settings" is the safe answer to a lookup failure, so it
-fails **safe** to the deployment-global config. `require_user_token` governs
+fails **safe** to no override, so the stored policy actions apply. `require_user_token` governs
 an **authentication** gate: its entire job is to make an org's "callers must
 present an identity" promise not optional. A lookup failure that silently
 resolved to "not required" would let a DB hiccup quietly disable the control
@@ -134,7 +134,7 @@ the fail-closed `true`, never `false`.
 
 ## Which Planes Enforce It
 
-`require_user_token` is wired into **six gate points**, all Enterprise-only
+`require_user_token` is wired into **seven gate points**, all Enterprise-only
 (`AuthKindEnterprise`; community mode never reaches the branch that
 resolves this posture at all, so a token-less community caller is never
 refused regardless of the flag):
@@ -147,6 +147,7 @@ refused regardless of the flag):
 | `POST /api/v1/mcp/check-input` | `mcp_handler.go` | `401`, audited `user_token_required` |
 | `POST /api/v1/mcp/check-output` | `mcp_handler.go` | `401`, audited `user_token_required` |
 | MCP-server JSON-RPC plane (`POST /api/v1/mcp-server`) | `mcp_server_handler.go`, `authenticateMCPSession` | `401` at authentication (see below - this plane audits no auth failure at all) |
+| The policy-test preview of `/api/request` (#4253) | `run.go`, `policyTestHandler` | `401`, not audited: the preview writes no `audit_logs` row |
 
 On the four REST routes and `/decide`, the condition guarding the refusal is
 `AuthKindEnterprise && req.UserToken == "" && ResolveRequireUserToken(ctx,
@@ -169,13 +170,21 @@ deployment whose validators failed to register. Both are closed by keying on
 ### The Gateway Pre-Check Plane Is Out of Scope, on Purpose
 
 The gateway pre-check plane (`run.go`'s `clientRequestHandler`, #3312) is
-**not** one of the six gate points, and does not need to be: it already
+**not** one of the seven gate points, and does not need to be: it already
 refuses a caller without a valid token **unconditionally**. Any
 `ResolveUser` failure is refused as `user_token_invalid`, with no policy
 census at all, because this plane never had the synthetic-service-identity
 compatibility fallback the six gate points above do. `require_user_token`
 exists precisely because that other planes *do* have that fallback; a plane
 with no fallback to begin with has nothing for this flag to change.
+
+Its policy-test preview is the exception in `run.go`, and it is gated (#4253). The
+preview's body carries no user token, so it decides for the calling
+credential: on Enterprise, as the credential's service identity, the way
+`/api/v1/decide` decides a token-less caller. Where the organization requires
+a user token, `/api/request` itself would refuse a token-less caller, so the
+preview refuses too, `401`, rather than preview a credential decision the
+organization does not allow.
 
 ### `POST /v1/chat/completions` (OpenAI-Compat) Is NOT Covered
 
@@ -202,39 +211,23 @@ which depends on **#3279**.
 Operators relying on `require_user_token` should know that this endpoint is
 outside its guarantee.
 
-### `/decide` and the Four REST Routes: Segment Enforcement Is Token-Conditional
+### `/decide`, the Four REST Routes and the MCP-Server Tools: No Segment Enforcement
 
-As of the verified-human segment promotion that landed with this flag's
-stack, `/decide`, `mcpQueryHandler`, `mcpExecuteHandler`,
-`mcpCheckInputHandler`, and `mcpCheckOutputHandler` all resolve the caller's
-segments through `resolveHumanActorSegmentsForPolicy` before policy
-evaluation, and a segment-resolution failure for a verified caller denies
-fail-closed. **A segment-scoped policy IS enforced on these five planes, but
-only for a caller presenting a validated per-user token.** The segments key
-on the validated token's email claim; there is still no ADR-043/044
-fleet-token flow on these routes.
+In v11 the anchored engine authors the verdict on `/decide`, on the four MCP
+REST routes (`mcpQueryHandler`, `mcpExecuteHandler`, `mcpCheckInputHandler`,
+`mcpCheckOutputHandler`) and on the MCP-server `check_policy` and
+`check_output` tools, and it reads no governance segments (PRD v11 §1.2). An
+organization's segment-scoped policy therefore decides nothing on these
+planes, for a caller with a validated per-user token or without one, and a
+segment-resolution failure refuses nothing there. The per-plane segment gates
+that used to stand in front of them are removed.
 
-That conditionality is exactly why this flag matters here: a token-less
-caller is still evaluated org-only with no refusal, so a member can shed a
-segment-scoped restriction by simply not sending a token, unless
-`require_user_token` is on for the org, which removes the token-less path
-entirely. Treat the flag as the enforcement switch for segment scoping on
-these planes, and keep an org-scoped policy behind any segment-scoped one
-until it is on.
-
-The **MCP-server JSON-RPC plane's** `check_policy`/`check_output` tools were
-the first place in the platform where a segment-scoped policy could actually
-block a caller (ADR-060 P3, #3430); the five planes above joined it in the
-same train that shipped this flag. That plane's segment gate
-(`resolveMCPServerSegmentsForPolicy`, `platform/agent/mcp_identity.go`) is
-already independently fail-closed for any caller with no validated per-user
-principal, whenever the org has an enabled segment-scoped policy for that
-phase - a protection #3430 shipped and this flag does not duplicate.
-`require_user_token`'s contribution on this specific plane is to refuse the
-caller **earlier** (at authentication, before a session is even created)
-rather than relying solely on that downstream, per-tool gate - which matters
-for every OTHER tool on this plane (audit search, override create/delete,
-decision listing) that has no segment gate of its own at all.
+`require_user_token` keeps its own guarantee on these planes: a token-less
+caller is refused at authentication - on the MCP-server plane, before a
+session is even created - so every tool, including audit search, override
+create and delete, and decision listing, is reached only by a caller who
+proved who they are. What the flag no longer does is switch segment scoping
+on: these planes have none to switch.
 
 ## The Two Audit Markers
 

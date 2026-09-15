@@ -47,6 +47,8 @@ One JSON file per detector category:
 - `must_trigger_without_scoping` is a corpus-health check, not part of either
   metric: it re-runs the benign statement with an unclassified identity and
   requires a trigger.
-- Posture: scoring assumes a blocking posture for the category under test
-  (`SQLI_ACTION=block`, `PII_ACTION=block` for `expect: block` PII cases);
-  under warn-postures `block` expectations degrade to `detect`.
+- Posture: scoring assumes a blocking posture for the category under test:
+  the organization's recorded `sqli=block` detection override, and `pii=block`
+  for `expect: block` PII cases (since v11, #3961, no environment variable sets
+  an action). Under the stored actions or a warn override, `block`
+  expectations degrade to `detect`.

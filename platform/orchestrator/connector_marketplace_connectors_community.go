@@ -1,5 +1,8 @@
 //go:build !enterprise
 
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package orchestrator
 
 import (

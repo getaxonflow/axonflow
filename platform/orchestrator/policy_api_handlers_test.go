@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -21,6 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/policypath"
 )
 
 // mockPolicyService implements PolicyServicer for testing
@@ -34,6 +30,16 @@ type mockPolicyService struct {
 	getPolicyVersionsFunc func(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
 	exportPoliciesFunc    func(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error)
 	importPoliciesFunc    func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
+	mayWriteLegacyFunc    func(ctx context.Context) (bool, error)
+}
+
+// MayWriteLegacyPolicies defaults to an owner pool (may write), so the import
+// tests below exercise the route past the pre-read freeze guard, as before it.
+func (m *mockPolicyService) MayWriteLegacyPolicies(ctx context.Context) (bool, error) {
+	if m.mayWriteLegacyFunc != nil {
+		return m.mayWriteLegacyFunc(ctx)
+	}
+	return true, nil
 }
 
 func (m *mockPolicyService) CreatePolicy(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error) {
@@ -133,17 +139,6 @@ func TestNewPolicyAPIHandler(t *testing.T) {
 	if handler.service != mock {
 		t.Error("Expected handler to have the provided service")
 	}
-}
-
-func TestPolicyAPIHandler_RegisterRoutes(t *testing.T) {
-	mock := &mockPolicyService{}
-	handler := NewPolicyAPIHandler(mock)
-	mux := http.NewServeMux()
-
-	handler.RegisterRoutes(mux)
-
-	// Verify routes are registered by checking the mux
-	// We can't directly check registered routes, but we can verify no panic
 }
 
 func TestPolicyAPIHandler_HandlePolicies_NoTenantID(t *testing.T) {
@@ -431,6 +426,51 @@ func TestPolicyAPIHandler_HandlePolicyByID_InvalidUUID(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error.Message, "Invalid policy ID format") {
 		t.Errorf("Expected message about invalid UUID, got %s", resp.Error.Message)
+	}
+}
+
+// TestPolicyAPIHandler_PolicyByIDPrefixIsUnchanged pins the prefix
+// handlePolicyByID trims. The literal moved out of the handler into
+// policypath.Policies; this states the bytes independently, so a change to the
+// constant cannot silently change which request paths the handler parses.
+func TestPolicyAPIHandler_PolicyByIDPrefixIsUnchanged(t *testing.T) {
+	if got, want := policypath.Policies+"/", "/api/v1/policies/"; got != want {
+		t.Fatalf("policypath.Policies+\"/\" = %q, want %q", got, want)
+	}
+}
+
+// TestPolicyAPIWrappers_RewriteToThePolicyByIDPath pins the path each gorilla
+// wrapper in run.go hands handlePolicyByID. The rewrites build their prefix from
+// policypath.Policies; this states the bytes they must produce independently, so
+// a change on either side cannot silently change which policy operation a
+// request reaches. Without a tenant the handler answers 401 before any service
+// call and after the rewrite, so the rewritten path is observable.
+func TestPolicyAPIWrappers_RewriteToThePolicyByIDPath(t *testing.T) {
+	prev := policyAPIHandler
+	policyAPIHandler = NewPolicyAPIHandler(nil)
+	t.Cleanup(func() { policyAPIHandler = prev })
+
+	for _, c := range []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		want    string
+	}{
+		{"get update delete", policyAPIGetUpdateDeleteHandler, http.MethodGet, "/api/v1/policies/pol-1"},
+		{"test", policyAPITestHandler, http.MethodPost, "/api/v1/policies/pol-1/test"},
+		{"versions", policyAPIVersionsHandler, http.MethodGet, "/api/v1/policies/pol-1/versions"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req := mux.SetURLVars(httptest.NewRequest(c.method, "/routed-by-mux", nil), map[string]string{"id": "pol-1"})
+			w := httptest.NewRecorder()
+			c.handler(w, req)
+			if req.URL.Path != c.want {
+				t.Errorf("handed handlePolicyByID %q, want %q", req.URL.Path, c.want)
+			}
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status %d, want 401: without a tenant the request stops before any service call", w.Code)
+			}
+		})
 	}
 }
 

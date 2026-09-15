@@ -114,7 +114,6 @@ The examples verify these tier-related error codes:
 | `POLICY_LIMIT_EXCEEDED` | Tenant policy limit reached | Upgrade tier or delete policies |
 | `ORG_TIER_EVALUATION_OR_HIGHER` | Org policies require Evaluation+ | Get free Evaluation license |
 | `ORG_POLICY_LIMIT_EXCEEDED` | Org policy limit reached (Evaluation) | Upgrade to Enterprise |
-| `CONNECTOR_LIMIT_EXCEEDED` | Custom policy connector limit reached | Upgrade tier |
 
 ## Graceful Degradation
 

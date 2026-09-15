@@ -42,8 +42,8 @@ import (
 //
 // ⚠ FAIL-CLOSED, NOT FAIL-SAFE — the one place this file must NOT mirror
 // detection_override.go. detection_override.go is a detection POSTURE lever:
-// a lookup error there falls back to the deployment-global config, because
-// "governance keeps running under yesterday's settings" is the safe failure.
+// a lookup error there resolves no override, so the stored policy actions
+// decide - "governance keeps running on the policies" is the safe failure.
 // require_user_token is an AUTHENTICATION gate: its entire job is to make an
 // org's "callers must present an identity" promise NOT optional, so a lookup
 // failure must never silently resolve to "false" (not required) — that would
@@ -182,8 +182,8 @@ func newRequireUserTokenCache(reader requireUserTokenReader, ttl time.Duration, 
 // get returns the cached (or freshly-resolved) require_user_token posture for
 // orgID. Never returns an error: a lookup failure resolves + caches true
 // (fail CLOSED) — the opposite fallback direction from
-// detectionOverrideCache.get, which fails safe to the deployment-global
-// config. See the file-level doc comment for why.
+// detectionOverrideCache.get, which fails safe to no override (the stored
+// policy actions). See the file-level doc comment for why.
 func (c *requireUserTokenCache) get(ctx context.Context, orgID string) bool {
 	now := time.Now()
 
@@ -301,17 +301,15 @@ func resolveRequireUserTokenTTL() time.Duration {
 // decision table.
 func ResolveRequireUserToken(ctx context.Context, orgID string) bool {
 	if orgID == "" {
-		// An enterprise caller CAN reach here with no org binding: the
-		// boot-time licence check (run.go, "License org_id mismatch") is
-		// `result.OrgID != "" && result.OrgID != deploymentOrgID`, so it
-		// fatals only on a MISMATCH and deliberately tolerates a licence
-		// carrying NO org_id at all. Such a licence boots, and every request
-		// authenticated with it arrives with Client.OrgID == "".
+		// A LICENCE CAN NO LONGER BRING AN EMPTY ORG HERE: boot refuses a
+		// process licence naming no organization and authentication refuses
+		// such a client licence (refuseOrgLessLicence). This branch stays for
+		// any other caller that reaches here unbound.
 		//
 		// Falling back to the env default here would be a hole rather than a
 		// neutral default: an operator who set require_user_token = true on
 		// their org would find the control silently not applying to exactly
-		// that credential. So resolve against the DEPLOYMENT's canonical org
+		// that caller. So resolve against the DEPLOYMENT's canonical org
 		// identity instead — the same substitution the rest of the codebase
 		// already makes for an empty org_id (migration 094 Pass-2 backfills
 		// empty-org_id audit rows from ORG_ID, and the boot check itself logs

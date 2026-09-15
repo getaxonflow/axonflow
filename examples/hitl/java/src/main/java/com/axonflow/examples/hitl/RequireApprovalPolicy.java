@@ -149,9 +149,11 @@ public class RequireApprovalPolicy {
                         "Block reason mentions approval (got: " + blockReason + ")"
                     );
                 } else {
-                    // Community mode: auto-approved
-                    System.out.println("   NOT BLOCKED (community mode auto-approve)");
-                    assertCheck(true, "Community mode: matching query auto-approved (expected)");
+                    // Not held. Community auto-approves, and from v11.0.0 /api/request
+                    // holds no request on either edition (#4253); approval holds return as
+                    // typed approval_challenge obligations with #4254.
+                    System.out.println("   NOT BLOCKED (Community auto-approves; /api/request holds nothing since v11.0.0, #4253)");
+                    assertCheck(true, "Matching query not held (Community auto-approve, or /api/request since v11.0.0, #4253)");
                 }
             } catch (Exception e) {
                 String errMsg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";

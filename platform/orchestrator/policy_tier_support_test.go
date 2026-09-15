@@ -24,9 +24,6 @@ func TestDefaultLicenseChecker(t *testing.T) {
 	if limit := checker.OrgPolicyLimit(); limit != 0 {
 		t.Errorf("DefaultLicenseChecker.OrgPolicyLimit() = %d, want 0", limit)
 	}
-	if limit := checker.CustomPolicyConnectorLimit(); limit != license.CommunityLimits.CustomPolicyConnectors {
-		t.Errorf("DefaultLicenseChecker.CustomPolicyConnectorLimit() = %d, want %d", limit, license.CommunityLimits.CustomPolicyConnectors)
-	}
 	if days := checker.AuditRetentionDays(); days != 3 {
 		t.Errorf("DefaultLicenseChecker.AuditRetentionDays() = %d, want 3", days)
 	}
@@ -102,11 +99,11 @@ func TestEnvLicenseChecker_Community(t *testing.T) {
 	if limit := checker.PolicyLimit(); limit != 20 {
 		t.Errorf("EnvLicenseChecker.PolicyLimit() = %d, want 20", limit)
 	}
-	if limit := checker.OrgPolicyLimit(); limit != 0 {
-		t.Errorf("EnvLicenseChecker.OrgPolicyLimit() = %d, want 0", limit)
-	}
-	if limit := checker.CustomPolicyConnectorLimit(); limit != 2 {
-		t.Errorf("EnvLicenseChecker.CustomPolicyConnectorLimit() = %d, want 2", limit)
+	// 20 (#3906/#3907), not 0. Read from the ONE limits table rather than
+	// written here, so the assertion moves with a ruling instead of surviving
+	// one.
+	if want, limit := license.CommunityLimits.OrgPolicies, checker.OrgPolicyLimit(); limit != want {
+		t.Errorf("EnvLicenseChecker.OrgPolicyLimit() = %d, want %d", limit, want)
 	}
 	if days := checker.AuditRetentionDays(); days != 3 {
 		t.Errorf("EnvLicenseChecker.AuditRetentionDays() = %d, want 3", days)

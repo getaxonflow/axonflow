@@ -18,9 +18,9 @@ import (
 //
 // X-User-Email / X-User-ID / X-Session-Id are client-assertable: any governed
 // caller can set them, so honoring them unconditionally lets a compromised or
-// malicious PEP forge the audit identity of another principal (and, on the
-// check-input / MCP-server planes, hijack another user's ADR-044 session
-// override — a deny→allow flip). All four governance planes (/api/v1/decide,
+// malicious PEP forge the audit identity of another principal (and, before
+// v11 retired ADR-044 session overrides (#4252), hijack another user's
+// session override — a deny→allow flip). All four governance planes (/api/v1/decide,
 // /api/v1/mcp/check-input, /api/v1/mcp/check-output, MCP-server tools/call)
 // therefore read these headers ONLY through the helpers below:
 //
@@ -34,8 +34,8 @@ import (
 //     re-sets the identity headers from a validated source (desktop proxy,
 //     JumpCloud-managed plugin settings, gateway jwtAuth claim). The headers
 //     then attribute audit rows (audit_logs.user_email / session_id) and, as
-//     before this gate existed, scope the per-user ADR-044 session-override
-//     feature.
+//     before this gate existed, scoped the per-user ADR-044 session-override
+//     feature (retired in v11, #4252).
 //
 // SECURITY INVARIANT: with the gate OFF a request's verdict and audit
 // identity are byte-identical with and without these headers. The headers
@@ -43,7 +43,7 @@ import (
 // tenant/org resolution on any plane, gate on or off — EXCEPT the two
 // documented identity-SCOPED features, which key on the same trusted
 // identity as attribution and only under the gate: (1) the ADR-044 per-user
-// session-override apply, and (2) per-user dynamic-policy evaluation on the
+// session-override apply (retired in v11, #4252), and (2) per-user dynamic-policy evaluation on the
 // MCP-server plane, whose session userID (header-derived when trusted) feeds
 // user-scoped rate limits / budgets exactly as it did for pre-gate trusted
 // fleets. With the gate off both key on the validated / client-scoped
@@ -233,6 +233,11 @@ type mcpIdentityInputs struct {
 	// call still fails. That is #3062 exactly, inside the change that closes
 	// #3062's class, which is why it is tested FIRST in the refusal switch.
 	tokenResolvedIdentity bool
+
+	// validatedToken is the identity that validated token produced, set exactly
+	// when tokenResolvedIdentity is. An enforcing seam admits the session's
+	// subject from its verified claims (#3564); nothing else reads it.
+	validatedToken *sharedidentity.ValidatedIdentity
 }
 
 // captureMCPIdentityInputs snapshots the HEADER half of the identity-resolution
@@ -330,9 +335,34 @@ func errSharedIdentityRefusal(session *mcpSession, feature string) error {
 // with no error even under AuthKindEnterprise. Only the enterprise arm in a
 // non-community deployment validates a JWT for real, and an ABSENT token
 // errors there, so this triple is exactly "a per-user JWT was validated".
+//
+// The deployment-mode half is deploymentCanVerifyUserIdentity, which
+// callerUserIdentity reads too, so "verified" means one thing everywhere.
 func callerHasVerifiedUserIdentity(authKind AuthKind, userErr *AuthError, presentedToken string) bool {
-	if isCommunityMode() || isCommunitySaasMode() {
+	if !deploymentCanVerifyUserIdentity() {
 		return false
 	}
 	return userErr == nil && authKind == AuthKindEnterprise && presentedToken != ""
+}
+
+// callerUserIdentity classifies a request's per-user identity for an enforcing
+// seam's subject builder (requestSubject).
+//
+// Three answers, and the third is the one that matters: a token THIS
+// deployment verifies - an Enterprise credential on a deployment with a
+// per-user path - that was presented and did not verify is userUnverified,
+// never userAbsent. Every handler in front of a seam already refuses it; this
+// is the fact the seam holds that line with. A token on a deployment that
+// verifies none (community, community-SaaS) is not a user identity at all -
+// validateUserToken returns a fixed user for any token there - so the request
+// is userAbsent and its credential is the principal.
+func callerUserIdentity(authKind AuthKind, userErr *AuthError, presentedToken string) userIdentity {
+	switch {
+	case callerHasVerifiedUserIdentity(authKind, userErr, presentedToken):
+		return userVerified
+	case deploymentCanVerifyUserIdentity() && authKind == AuthKindEnterprise && presentedToken != "":
+		return userUnverified
+	default:
+		return userAbsent
+	}
 }

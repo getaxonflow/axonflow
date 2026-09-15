@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** 9.0.0 | **Platform Version:** 9.14.0
+**SDK Version:** 9.4.0 | **Platform Version:** 11.0.0
 
 ---
 
@@ -170,8 +170,8 @@ The `AxonFlow` client exposes methods across several functional areas:
 | **Proxy Mode** | `proxyLLMCall()` | Route LLM calls through AxonFlow Agent |
 | **Gateway Mode** | `getPolicyApprovedContext()`, `auditLLMCall()` | Pre-check and audit direct LLM calls |
 | **Health** | `healthCheck()`, `orchestratorHealthCheck()` | Check Agent and Orchestrator status |
-| **Static Policies** | `listStaticPolicies()`, `createStaticPolicy()`, `updateStaticPolicy()`, `deleteStaticPolicy()`, `toggleStaticPolicy()`, `testPattern()` | CRUD and management of regex-based policies |
-| **Dynamic Policies** | `listDynamicPolicies()`, `createDynamicPolicy()`, `updateDynamicPolicy()`, `deleteDynamicPolicy()`, `toggleDynamicPolicy()` | CRUD for context-aware policies |
+| **Static Policies** | `listStaticPolicies()`, `createStaticPolicy()`, `updateStaticPolicy()`, `deleteStaticPolicy()`, `toggleStaticPolicy()`, `testPattern()` | CRUD and management of regex-based policies (in v11 create, update, delete and toggle reach routes that refuse the write; see the specification) |
+| **Dynamic Policies** | `listDynamicPolicies()`, `createDynamicPolicy()`, `updateDynamicPolicy()`, `deleteDynamicPolicy()`, `toggleDynamicPolicy()` | CRUD for context-aware policies (in v11 create, update, delete and toggle answer `409 LEGACY_POLICY_WRITE_FROZEN`) |
 | **Policy Overrides** | `createPolicyOverride()`, `deletePolicyOverride()`, `listPolicyOverrides()` | Per-tenant policy overrides |
 | **Multi-Agent Planning** | `generatePlan()`, `executePlan()`, `getPlanStatus()`, `cancelPlan()`, `updatePlan()`, `resumePlan()`, `rollbackPlan()`, `getPlanVersions()` | MAP lifecycle |
 | **Connectors** | `listConnectors()`, `installConnector()`, `uninstallConnector()`, `queryConnector()`, `mcpQuery()`, `mcpExecute()` | MCP connector management |
@@ -258,4 +258,4 @@ Application
 
 ---
 
-*This document describes the architecture of the AxonFlow TypeScript SDK v9.3.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
+*This document describes the architecture of the AxonFlow TypeScript SDK v9.4.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*

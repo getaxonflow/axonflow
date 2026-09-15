@@ -13,6 +13,8 @@ The `require_approval` action pauses request execution and creates an approval r
 | **Enterprise** | Full HITL queue with human review workflow |
 | **Community** | Auto-approves immediately (upgrade path) |
 
+> **v11.0.0:** `/api/request` holds no request on either edition (#4253), so step 3 reports the matching query as not held. Approval holds return as typed `approval_challenge` obligations with #4254.
+
 ## Use Cases
 
 - **EU AI Act Article 14**: Human oversight for high-risk AI decisions

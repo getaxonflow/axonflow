@@ -1,0 +1,23 @@
+# Go files whose licence header may differ from the canonical two lines
+# (`// Copyright <year> AxonFlow` + `// SPDX-License-Identifier: BUSL-1.1`),
+# read by tests/regression-test-required/go_licence_header_test.sh and by
+# scripts/licence/normalise-go-headers.py through lib/go_licence_header.py.
+#
+# Three tab-separated columns: pattern, kind, reason. A pattern is an exact
+# repo-relative path, a directory prefix ending in `/`, or a glob. Kinds:
+#
+#   spdx:<ID>   the file's single SPDX identifier is <ID>, and no other licence
+#               text appears; a file that later declares BUSL-1.1 fails the row
+#   generated   the file carries a `// Code generated` marker; the generator
+#               owns its header
+#   deferred    the files may LACK a header, or carry an incomplete one, for
+#               the reason given; a second licence is never deferred; the row
+#               FAILS once every matching file is canonical
+#   escalated   non-canonical pending the ruling named in the reason; same
+#               staleness rule as deferred
+#
+# Every row must match at least one file, so a row cannot outlive what it
+# excuses. The reason column is not decoration: a row without one is refused.
+platform/gateway-adapters/agentgateway/api/*.pb.go	generated	protoc output; the generator writes the header and a hand edit is lost on the next regeneration
+examples/integrations/decision-mode-mcp-adapter/	spdx:MIT	declares MIT deliberately as a copyable adapter; whether example code is MIT is an operator licensing decision, recorded as a row on #3726 (master ruling, W0-E, 2026-09-08)
+platform/decision/registry/	deferred	W0-B and W2-B own the detector registry during the v11 W0 window (brief W0-E do-not-touch list); headers land with that lane (#3726 row)

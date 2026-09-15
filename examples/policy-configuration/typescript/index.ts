@@ -2,21 +2,23 @@
  * AxonFlow Policy Configuration - TypeScript SDK
  *
  * This example demonstrates and VALIDATES policy configuration using the pre-check API.
- * AxonFlow's static policies can be configured using environment variables.
- * This example validates the CURRENT configuration by sending test queries through
- * the pre-check API (getPolicyApprovedContext) and checking that the Agent responds
- * according to the configured policy actions.
+ * This example sends test queries through the pre-check API
+ * (getPolicyApprovedContext) and checks that the Agent responds according to the
+ * shipped policy actions.
  *
- * Environment variables (must match Agent-side config):
- *   PII_ACTION   = block | redact | warn | log  (default: redact)
- *   SQLI_ACTION  = block | warn | log           (default: block)
+ * v11: the stored policy action decides. Environment variables no longer set
+ * detection actions (PII_ACTION, SQLI_ACTION and their GATEWAY_/MCP_ variants are
+ * ignored, with a boot WARN). The shipped request-phase actions exercised here:
+ *   sys_pii_ssn, sys_pii_credit_card = warn (approved, policy id in policies)
+ *   sys_sqli_*                       = warn (approved, policy id in policies)
+ *
+ * To change an outcome, record an organization override (customer portal API,
+ * Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+ * or change the policy's action. This example validates the shipped actions with
+ * no override recorded.
+ *
+ * Still read from the environment (a non-action knob, must match Agent config):
  *   GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
- *
- * Mode-specific overrides (higher precedence):
- *   GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION
- *
- * IMPORTANT: Changing policy behavior requires restarting the AxonFlow Agent with
- * different env vars. This example validates behavior for the CURRENT configuration.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
@@ -33,6 +35,10 @@ function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
 }
 
+function hasPolicyPrefix(policies: string[] | undefined, prefix: string): boolean {
+  return (policies ?? []).some((p) => p.startsWith(prefix));
+}
+
 function assertCheck(condition: boolean, message: string): void {
   if (condition) {
     console.log(`   PASS: ${message}`);
@@ -47,14 +53,11 @@ async function main(): Promise<void> {
   console.log('='.repeat(55));
   console.log();
 
-  // Read expected policy actions (must match Agent-side config)
-  // Pre-check API uses the Gateway engine, so read Gateway-specific overrides first
-  const piiAction = getEnv('GATEWAY_PII_ACTION', getEnv('PII_ACTION', 'redact')).toLowerCase();
-  const sqliAction = getEnv('GATEWAY_SQLI_ACTION', getEnv('SQLI_ACTION', 'block')).toLowerCase();
+  // The pre-check API uses the Gateway engine. Detection actions come from the
+  // stored policy rows (no org override recorded), not from the environment.
   const policiesEnabled = getEnv('GATEWAY_STATIC_POLICIES_ENABLED', 'true').toLowerCase();
 
-  console.log(`Expected PII_ACTION:  ${piiAction}`);
-  console.log(`Expected SQLI_ACTION: ${sqliAction}`);
+  console.log('Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)');
   console.log(`Static policies enabled: ${policiesEnabled}`);
   console.log();
 
@@ -87,11 +90,11 @@ async function main(): Promise<void> {
   console.log();
 
   // -----------------------------------------------------------
-  // Test 2: PII query (SSN) -- behavior depends on PII_ACTION
+  // Test 2: PII query (SSN) -- sys_pii_ssn stores warn for the request phase
   // -----------------------------------------------------------
   console.log("Test 2: PII Query (SSN '123-45-6789')");
   console.log('-'.repeat(38));
-  console.log(`  Expected action: ${piiAction}`);
+  console.log('  Expected action: warn (stored)');
 
   try {
     result = await axonflow.getPolicyApprovedContext({
@@ -108,40 +111,22 @@ async function main(): Promise<void> {
     assertCheck(result.approved, 'PII query approved (static policies disabled)');
     assertCheck((result.policies?.length ?? 0) === 0, 'No policies matched (static policies disabled)');
   } else {
-    switch (piiAction) {
-      case 'block':
-        assertCheck(!result.approved, 'PII query blocked (PII_ACTION=block)');
-        assertCheck(!!result.blockReason, 'Block reason provided');
-        if (result.blockReason) {
-          console.log(`   Block reason: ${result.blockReason}`);
-        }
-        break;
-      case 'redact':
-        // In redact mode, request phase approves but flags PII
-        assertCheck(result.approved, 'PII query approved in request phase (PII_ACTION=redact)');
-        assertCheck((result.policies?.length ?? 0) > 0, 'PII policies detected');
-        console.log(`   Policies: ${result.policies?.join(', ')}`);
-        break;
-      case 'warn':
-        assertCheck(result.approved, 'PII query approved (PII_ACTION=warn)');
-        assertCheck((result.policies?.length ?? 0) > 0, 'PII policies detected for warning');
-        break;
-      case 'log':
-        assertCheck(result.approved, 'PII query approved (PII_ACTION=log)');
-        break;
-      default:
-        console.log(`   Unknown PII_ACTION: ${piiAction}`);
-        failures.push(`Unknown PII_ACTION: ${piiAction}`);
+    // warn approves the request and reports the matched policy
+    assertCheck(result.approved, 'PII query approved with a warning (stored action: warn)');
+    assertCheck(hasPolicyPrefix(result.policies, 'sys_pii_'), 'PII policy detected (sys_pii_* in policies)');
+    console.log(`   Policies: ${result.policies?.join(', ')}`);
+    if (!result.approved) {
+      console.log(`   Block reason: ${result.blockReason} (an org pii=block override or an edited policy action is in force)`);
     }
   }
   console.log();
 
   // -----------------------------------------------------------
-  // Test 3: SQLi query -- behavior depends on SQLI_ACTION
+  // Test 3: SQLi query -- every sys_sqli_* policy stores warn
   // -----------------------------------------------------------
   console.log('Test 3: SQL Injection (UNION SELECT)');
   console.log('-'.repeat(37));
-  console.log(`  Expected action: ${sqliAction}`);
+  console.log('  Expected action: warn (stored)');
 
   try {
     result = await axonflow.getPolicyApprovedContext({
@@ -156,23 +141,12 @@ async function main(): Promise<void> {
   if (policiesEnabled === 'false') {
     assertCheck(result.approved, 'SQLi query approved (static policies disabled)');
   } else {
-    switch (sqliAction) {
-      case 'block':
-        assertCheck(!result.approved, 'SQLi query blocked (SQLI_ACTION=block)');
-        assertCheck(!!result.blockReason, 'Block reason provided');
-        if (result.blockReason) {
-          console.log(`   Block reason: ${result.blockReason}`);
-        }
-        break;
-      case 'warn':
-        assertCheck(result.approved, 'SQLi query approved with warning (SQLI_ACTION=warn)');
-        break;
-      case 'log':
-        assertCheck(result.approved, 'SQLi query approved (SQLI_ACTION=log)');
-        break;
-      default:
-        console.log(`   Unknown SQLI_ACTION: ${sqliAction}`);
-        failures.push(`Unknown SQLI_ACTION: ${sqliAction}`);
+    // SQL injection warns by default; it is not blocked
+    assertCheck(result.approved, 'SQLi query approved with a warning (stored action: warn)');
+    assertCheck(hasPolicyPrefix(result.policies, 'sys_sqli_'), 'SQLi policy detected (sys_sqli_* in policies)');
+    console.log(`   Policies: ${result.policies?.join(', ')}`);
+    if (!result.approved) {
+      console.log(`   Block reason: ${result.blockReason} (an org sqli=block override or an edited policy action is in force)`);
     }
   }
   console.log();
@@ -196,19 +170,9 @@ async function main(): Promise<void> {
   if (policiesEnabled === 'false') {
     assertCheck(result.approved, 'Credit card query approved (static policies disabled)');
   } else {
-    switch (piiAction) {
-      case 'block':
-        assertCheck(!result.approved, 'Credit card blocked (PII_ACTION=block)');
-        break;
-      case 'redact':
-        assertCheck(result.approved, 'Credit card approved for redaction (PII_ACTION=redact)');
-        assertCheck((result.policies?.length ?? 0) > 0, 'Credit card PII detected');
-        break;
-      case 'warn':
-      case 'log':
-        assertCheck(result.approved, `Credit card approved (PII_ACTION=${piiAction})`);
-        break;
-    }
+    // sys_pii_credit_card stores warn for the request phase
+    assertCheck(result.approved, 'Credit card approved with a warning (stored action: warn)');
+    assertCheck(hasPolicyPrefix(result.policies, 'sys_pii_'), 'Credit card PII detected (sys_pii_* in policies)');
   }
   console.log();
 
@@ -220,7 +184,7 @@ async function main(): Promise<void> {
     console.log('ALL TESTS PASSED');
     console.log();
     console.log('Policy configuration validated:');
-    console.log(`  PII_ACTION=${piiAction}, SQLI_ACTION=${sqliAction}, enabled=${policiesEnabled}`);
+    console.log(`  shipped stored actions (PII warn, SQLi warn), enabled=${policiesEnabled}`);
   } else {
     console.log(`${failures.length} TEST(S) FAILED:`);
     failures.forEach((f) => {

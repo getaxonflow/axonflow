@@ -56,6 +56,21 @@ import (
 // subject-type vocabulary changes. Do not bump it for additive changes that
 // cannot alter how an existing valid principal encodes.
 //
+// THE SUBJECT-TYPE VOCABULARY IS NO LONGER DECLARED IN THIS FILE (#3711). It
+// is contract.PrincipalTypes(), and SubjectType is an alias of
+// contract.PrincipalType, so a change to the vocabulary is a change in
+// axonflow/platform/decision and this constant still has to move with it. Read
+// that as a widening of the rule above rather than an exception to it: the
+// trigger is the vocabulary changing, wherever it now lives.
+//
+// #3711 itself did NOT bump this, and the reason is worth stating so the next
+// reader does not take the omission for an oversight. That change narrowed
+// what the DECISION CONTRACT accepts - it closed contract.ID's open type regex
+// to the same six - and changed nothing about what this package mints or how
+// it encodes. Every principal identity produced before it is byte-identical
+// after it, so no outstanding proof is invalidated and a bump would have
+// invalidated every one of them for no change in meaning.
+//
 // identity/2 (#3709 row 3): the admissible realm-id character set narrowed
 // from "any printable, colon-free, whitespace-free rune" to the decision
 // contract's qualifier grammar. A principal such as `User::acme+prod:00u1`
@@ -78,51 +93,45 @@ const maxPrincipalComponent = 512
 
 // SubjectType is the closed vocabulary of canonical principal kinds.
 //
+// It IS contract.PrincipalType - an alias, not a second type (#3711). Until
+// v11 this package held its own closed set of six while the decision contract
+// matched an open regex, so the canonical wire form had two definitions and
+// only this one was versioned. The vocabulary now lives in the decision
+// contract, the one module both sides can import (axonflow/platform requires
+// axonflow/platform/decision; the reverse import is impossible), and this
+// package's names are that type's names. TestTheSubjectVocabularyIsTheContractsPrincipalVocabulary
+// reads both and pins them equal, so a seventh type cannot be added on one
+// side alone.
+//
 // It is closed on purpose. An unknown subject type is an error, never a
 // permissive default: a plane that accepted an unrecognized type would be
 // accepting a subject whose semantics no policy author has ever seen.
-type SubjectType string
+type SubjectType = contract.PrincipalType
 
 const (
 	// SubjectUser is a human identity.
-	SubjectUser SubjectType = "User"
+	SubjectUser SubjectType = contract.PrincipalUser
 	// SubjectService is a non-human service account in a directory.
-	SubjectService SubjectType = "Service"
+	SubjectService SubjectType = contract.PrincipalService
 	// SubjectWorkload is a cryptographically attested workload (SPIFFE and
 	// comparable schemes).
-	SubjectWorkload SubjectType = "Workload"
+	SubjectWorkload SubjectType = contract.PrincipalWorkload
 	// SubjectAgent is an AxonFlow-registered autonomous agent.
-	SubjectAgent SubjectType = "Agent"
+	SubjectAgent SubjectType = contract.PrincipalAgent
 	// SubjectClient is an authenticated calling application. It is
 	// ATTRIBUTION, not authority: ADR-065 invariant 2. A Client principal may
 	// appear in an actor chain and may be audited; it must never be the
 	// authority a grant is scoped to.
-	SubjectClient SubjectType = "Client"
+	SubjectClient SubjectType = contract.PrincipalClient
 	// SubjectGroup is a realm-qualified directory group.
-	SubjectGroup SubjectType = "Group"
+	SubjectGroup SubjectType = contract.PrincipalGroup
 )
 
-// subjectTypes is the admissible set, in a stable order for diagnostics.
-var subjectTypes = []SubjectType{
-	SubjectUser, SubjectService, SubjectWorkload, SubjectAgent, SubjectClient, SubjectGroup,
-}
-
-// IsValid reports whether t is a member of the closed vocabulary.
-func (t SubjectType) IsValid() bool {
-	for _, known := range subjectTypes {
-		if t == known {
-			return true
-		}
-	}
-	return false
-}
-
-// SubjectTypes returns a copy of the admissible subject types. Callers get a
-// copy so a consumer cannot mutate the package's vocabulary.
+// SubjectTypes returns the admissible subject types: exactly
+// contract.PrincipalTypes(), which already returns a copy, so a consumer
+// cannot mutate the vocabulary through either name.
 func SubjectTypes() []SubjectType {
-	out := make([]SubjectType, len(subjectTypes))
-	copy(out, subjectTypes)
-	return out
+	return contract.PrincipalTypes()
 }
 
 // RealmID identifies a TrustRealm within one organization.
@@ -220,7 +229,7 @@ func NewPrincipalID(realm RealmID, t SubjectType, subject string) (PrincipalID, 
 		return PrincipalID{}, err
 	}
 	if !t.IsValid() {
-		return PrincipalID{}, fmt.Errorf("identity: %q is not a known subject type (known: %v)", string(t), subjectTypes)
+		return PrincipalID{}, fmt.Errorf("identity: %q is not a known subject type (known: %v)", string(t), SubjectTypes())
 	}
 	if err := validateSubjectID(subject); err != nil {
 		return PrincipalID{}, err
@@ -246,6 +255,87 @@ func (p PrincipalID) Validate() error {
 	}
 	_, err := NewPrincipalID(p.Realm, p.Type, p.Subject)
 	return err
+}
+
+// SubjectKey returns the realm-qualified key that identifies WHO this
+// principal is, with the classification left out, and whether the value has
+// one at all.
+//
+// # THE TYPE IS A CLASSIFICATION, AND == INCLUDES IT (#3878)
+//
+// PrincipalID is a comparable struct, so `a == b` compares Realm, Type and
+// Subject, and that is the right comparison for a NODE in a classified
+// structure - a directory graph vertex, a map of entities keyed by what they
+// are. It is the wrong comparison for the question "is this the same subject",
+// because Type is asserted independently by whichever source produced each
+// value: an actor chain's classification comes from the request's token, an
+// approver pool's comes from a directory, and the same person reaches the two
+// classified two ways. Comparing all three fields then answers "no" for one
+// person, which is how a requester stayed eligible to approve their own
+// escalation.
+//
+// The realm IS part of the key and is never folded. Two subjects with the same
+// id in different realms are different principals; that is the property that
+// makes a realm collision impossible rather than merely unlikely, and it is
+// stated on the type itself.
+//
+// THE SUBJECT IS NOT CASE-FOLDED, and the difference from contract.ID is
+// deliberate rather than an oversight. contract.CanonicalLocal folds because
+// the local segment there is an email and the roles store resolves one
+// case-insensitively. Subject here is the realm's own immutable identifier -
+// an Okta id, a SPIFFE id - and nothing establishes case-insensitivity for
+// those. Folding one because folding the other helped is how a fix becomes a
+// defect.
+//
+// The second return is false for a value with no realm or no subject, which
+// includes the zero PrincipalID. Such a value has no identity to compare and
+// must never match another one; see SameSubject.
+func (p PrincipalID) SubjectKey() (string, bool) {
+	if p.Realm == "" || p.Subject == "" {
+		return "", false
+	}
+	return string(p.Realm) + principalRealmSep + p.Subject, true
+}
+
+// SameSubject reports whether two principal identifiers denote the same
+// subject, ignoring the classification each one carries.
+//
+// A value with no realm or no subject matches NOTHING, including another such
+// value. The zero PrincipalID is not a principal and never matches anything;
+// reading "no identity" as an identity two values share is the EX-47 shape, an
+// undetermined fact read as a determinate one.
+//
+// # IT FOLDS SubjectGroup TOO, AND THAT IS THE SAFE DIRECTION EVERYWHERE IT IS
+// USED
+//
+// A Group is a SET of subjects rather than a subject, so `Group::r:x` and
+// `User::r:x` are arguably two things and not one - which is the sharpest
+// question that can be asked of this function. Folding them here is
+// nonetheless correct at every site that calls it, because at every one of
+// them the fold points the SAFE way: self-exclusion strikes out one more
+// candidate approver, the eligible-set collapse counts one fewer, and
+// AdmitChain refuses a Group hop outright before reaching any comparison. A
+// control that recognises too many things as the requester refuses; one that
+// recognises too few approves.
+//
+// Where merging them WOULD be wrong - the normalized directory graph, where a
+// group has members and a subject does not - the code does not use this. It
+// keys on the whole PrincipalID, and
+// TestTheDirectoryGraphKeepsASubjectAndAGroupOfTheSameIdApart drives exactly
+// this pair through both: SameSubject calls them one subject and the graph
+// refuses to answer for the group where it answers for the subject.
+//
+// Use this to ask WHO. Use == to ask which classified entry.
+func (p PrincipalID) SameSubject(other PrincipalID) bool {
+	a, ok := p.SubjectKey()
+	if !ok {
+		return false
+	}
+	b, ok := other.SubjectKey()
+	if !ok {
+		return false
+	}
+	return a == b
 }
 
 // String renders the canonical wire form. A PrincipalID built by a constructor

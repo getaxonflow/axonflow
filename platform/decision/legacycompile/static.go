@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -9,6 +12,7 @@ import (
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/pdp"
+	"axonflow/platform/decision/registry"
 )
 
 // DetectorSignalPath is the attribute path a compiled static policy reads.
@@ -26,8 +30,16 @@ import (
 // the legacy engine the same situation - the pattern never evaluated - was
 // simply no match, which permits. The shadow diff will report this as an
 // expected change, which is exactly where it belongs.
+// IT DELEGATES (#3884). `registry.DetectorID.SignalPath` is the one derivation
+// of this path and this function is its caller, not a second spelling of it.
+// The registry keys detector records on the same identifier, so two spellings
+// would be two answers that agree until one changes - and the failure would be
+// a policy reading an attribute path no enforcement point ever populates, which
+// is a permanently UNKNOWN detector and therefore an Indeterminate decision.
+// The dependency direction is the safe one: this package is the migration tool
+// and the registry is permanent.
 func DetectorSignalPath(policyID string) string {
-	return "signal.detector." + sanitizePathSegment(policyID)
+	return registry.DetectorID(policyID).SignalPath()
 }
 
 // sanitizePathSegment renders a policy id as one attribute-path segment,
@@ -43,19 +55,15 @@ func DetectorSignalPath(policyID string) string {
 // The encoding here is injective: "_" is doubled, every other non-permitted
 // rune becomes "_<hex>_", and an id that would otherwise be ambiguous cannot
 // arise because "_" is the only escape introducer and it is always escaped.
+// IT DELEGATES (#3884). The encoding lives in `platform/decision/registry`,
+// which keys detector records on the identifier this produces. Two
+// implementations of one bijection are two answers that agree until one
+// changes, and here the disagreement would be silent: a policy would read an
+// attribute path no enforcement point populates. `UnsanitizePolicyID` below is
+// the INVERSE and stays here, held to this by TestSanitizeRoundTripsAndMatches
+// TheRegistrysEncoding.
 func sanitizePathSegment(in string) string {
-	var b strings.Builder
-	for _, r := range in {
-		switch {
-		case r == '_':
-			b.WriteString("__")
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteString("_" + strconv.FormatInt(int64(r), 16) + "_")
-		}
-	}
-	return b.String()
+	return registry.EncodePathSegment(in)
 }
 
 // PolicyIDFor renders the ADR-065 policy identifier for one compiled output.
@@ -134,10 +142,15 @@ func UnsanitizePolicyID(s string) (string, bool) {
 //
 // This is the #3397 model. `loadFromDatabase` scans positionally into a
 // policyRow whose ID, PolicyID, Name, Category, Tier, Pattern, Severity and
-// TenantID are `string`, Enabled is `bool`, Priority is `int` and CreatedAt is
-// `time.Time`. A NULL arriving in any of them fails the scan and the reader
-// moves to the next row, logging once; the load still reports success, so the
-// policy is simply not enforced.
+// TenantID are `string`, Enabled is `bool`, Priority is `int`, Metadata is
+// `json.RawMessage` and CreatedAt is `time.Time`. A NULL arriving in any of
+// them fails the scan and the reader moves to the next row, logging once; the
+// load still reports success, so the policy is simply not enforced.
+// json.RawMessage belongs on the list: it is neither a pointer nor a Scanner,
+// and database/sql takes a NULL only into *any, *[]byte, *sql.RawBytes, a
+// pointer or a Scanner, so a NULL metadata (JSONB with no NOT NULL, core/010)
+// fails the scan like the rest. The list missed it until #4078's
+// guard read the reader instead of trusting a hand-kept list.
 //
 // `LoadSystemPolicies` scans the same shape MINUS created_at (16 destinations,
 // not 17) and does not log at all. Modelling the union is the conservative
@@ -152,31 +165,8 @@ var legacyScanDestinationsRuntime = []struct {
 	{"id", "string"}, {"policy_id", "string"}, {"name", "string"},
 	{"category", "string"}, {"tier", "string"}, {"pattern", "string"},
 	{"severity", "string"}, {"enabled", "bool"}, {"priority", "int"},
-	{"tenant_id", "string"}, {"created_at", "time.Time"},
-}
-
-// legacyScanDestinationsEffective lists the same for the EFFECTIVE read path.
-//
-// EffectivePolicyRow (loader.go) makes Description, OrgID, SegmentID, Tags,
-// Metadata, CreatedBy and UpdatedBy nullable, and keeps Action, Tier, Priority,
-// Enabled, TenantID, Version, CreatedAt and UpdatedAt non-nullable.
-//
-// The two TIMESTAMP columns are easy to miss and they matter: both are
-// `time.Time`, not `sql.NullTime`, and both are `DEFAULT NOW()` without NOT
-// NULL in migrations/core/010, so a NULL in either fails the scan and
-// ScanEffectivePolicyRows logs-and-continues. Omitting them made the compiler
-// emit an ADR-065 constraint on the proxy tier for a row GetEffective never
-// returns - a deny with no legacy counterpart, on the one plane the operator is
-// least likely to check.
-var legacyScanDestinationsEffective = []struct {
-	Column string
-	GoType string
-}{
-	{"id", "string"}, {"policy_id", "string"}, {"name", "string"},
-	{"category", "string"}, {"pattern", "string"}, {"severity", "string"},
-	{"action", "string"}, {"tier", "string"}, {"priority", "int"},
-	{"enabled", "bool"}, {"tenant_id", "string"}, {"version", "int"},
-	{"created_at", "time.Time"}, {"updated_at", "time.Time"},
+	{"tenant_id", "string"}, {"metadata", "json.RawMessage"},
+	{"created_at", "time.Time"},
 }
 
 // legacyScanDestinationsDynamic is the same model for the DYNAMIC substrate.
@@ -184,33 +174,47 @@ var legacyScanDestinationsEffective = []struct {
 // #3397 is not a static-only defect and modelling it on one substrate of two
 // would leave an undisclosed hole in this package's headline claim.
 // RefreshDynamicPolicies (platform/shared/policy/loader.go) scans positionally
-// into a DynamicPolicyRow whose Name, Description, Conditions, Actions,
-// PolicyID, PolicyType, Category and RiskLevel are `string`, Priority is `int`
-// and AllowOverride is `bool` - and on a scan error it logs and continues,
-// exactly like its static sibling.
+// into a DynamicPolicyRow and, on a scan error, logs and continues, exactly
+// like its static sibling.
 //
-// Three of those destinations take a NULLable column: description (TEXT, no
-// NOT NULL, core/010), priority (DEFAULT 50, core/030) and category
-// (VARCHAR(50), core/030). TenantID, OrgID, SegmentID and CreatedAt are
-// nullable TYPES and cannot drop the row.
+// Like the two static models, this lists every column the reader SELECTs
+// WITHOUT a COALESCE and scans into a destination that cannot hold NULL: id,
+// name, conditions, actions and policy_id (all NOT NULL, core/010) and
+// priority (a default but no NOT NULL, core/010). dynamicScanDropColumns
+// reports the ones whose NULL the capture can carry, which is priority alone.
+//
+// It used to list description and category, reasoning from the SCHEMA (both
+// columns are nullable) and never from the QUERY, which COALESCEs both - and
+// policy_type, risk_level and allow_override - in the SQL itself, so a NULL in
+// any of them reaches the scan as a value and cannot fail it (#4078). That
+// declared a loaded row enforced nowhere. TestScanDropModelsMatchTheLoaderQueries
+// now derives all three models from the loader's queries and scans, and fails
+// when a model and its reader part.
 var legacyScanDestinationsDynamic = []struct {
 	Column string
 	GoType string
 }{
-	{"description", "string"}, {"priority", "int"}, {"category", "string"},
+	{"id", "string"}, {"name", "string"}, {"conditions", "string"},
+	{"actions", "string"}, {"priority", "int"}, {"policy_id", "string"},
 }
 
 // dynamicScanDropColumns returns the columns whose NULL would fail the dynamic
 // refresh's scan, in a stable order.
 func dynamicScanDropColumns(row DynamicRow) []string {
-	nulls := map[string]bool{
-		"description": row.DescriptionNull,
-		"priority":    row.PriorityNull,
-		"category":    row.CategoryNull,
-	}
+	return nullScanDestinations(row.raw, legacyScanDestinationsDynamic)
+}
+
+// nullScanDestinations returns each modelled column the raw row carries as
+// NULL or does not carry at all, as "column (type)", in a stable order. It is
+// the one judge of a scan drop: the models are the list, and the row is the
+// evidence, so a column a model gains is checked with no second list to keep.
+func nullScanDestinations(raw RawRow, model []struct {
+	Column string
+	GoType string
+}) []string {
 	var out []string
-	for _, d := range legacyScanDestinationsDynamic {
-		if nulls[d.Column] {
+	for _, d := range model {
+		if raw.isNull(d.Column) || !raw.has(d.Column) {
 			out = append(out, d.Column+" ("+d.GoType+")")
 		}
 	}
@@ -219,26 +223,9 @@ func dynamicScanDropColumns(row DynamicRow) []string {
 }
 
 // scanDropColumns returns the columns whose NULL would fail the legacy scan on
-// a read path, in a stable order.
-func scanDropColumns(row StaticRow, path ReadPath) []string {
-	dest := legacyScanDestinationsRuntime
-	if path == ReadPathEffectiveAction {
-		dest = legacyScanDestinationsEffective
-	}
-	nulls := map[string]bool{
-		"tier": row.TierNull, "tenant_id": row.TenantIDNull,
-		"priority": row.PriorityNull, "enabled": row.EnabledNull,
-		"created_at": row.CreatedAtNull, "updated_at": row.UpdatedAtNull,
-		"version": row.VersionNull, "action": row.ActionNull,
-	}
-	var out []string
-	for _, d := range dest {
-		if nulls[d.Column] {
-			out = append(out, d.Column+" ("+d.GoType+")")
-		}
-	}
-	sort.Strings(out)
-	return out
+// the runtime read path, in a stable order.
+func scanDropColumns(row StaticRow) []string {
+	return nullScanDestinations(row.raw, legacyScanDestinationsRuntime)
 }
 
 // compileStatic compiles one static_policies row into a Record.
@@ -249,7 +236,7 @@ func compileStatic(raw RawRow, row StaticRow, opts Options) Record {
 	rec := Record{
 		Source: SourceRef{
 			Table: raw.Table, OrgScope: raw.OrgScope, ID: row.ID,
-			PolicyID: row.PolicyID, Version: row.Version, RowDigest: digestRow(raw),
+			PolicyID: row.PolicyID, Name: row.Name, Version: row.Version, RowDigest: digestRow(raw),
 		},
 	}
 
@@ -291,13 +278,13 @@ func compileStatic(raw RawRow, row StaticRow, opts Options) Record {
 		rec.Planes = append(rec.Planes, pr...)
 	}
 
-	// The central migration finding: do the two read paths agree? This is a
-	// ROW-level fact, computed across planes rather than inside one, because
-	// no single plane can see it.
-	if d := readPathDivergence(rec.Planes); d != "" {
-		rec.Reasons = append(rec.Reasons, Reason{
-			Code: ReasonReadPathActionDivergence, Issue: "#3563", Detail: d,
-		})
+	// #3899: the tenant column, read and deliberately not translated. Emitted
+	// at ROW level rather than per plane or per policy because it is a fact
+	// about the row's column, and repeating it once per emitted policy would
+	// make the proposal's reason counts describe the fan-out rather than the
+	// input.
+	if r := tenantColumnReason(row.TenantID, row.Tier, staticRootFor(row)); r != nil {
+		rec.Reasons = append(rec.Reasons, *r)
 	}
 	rec.Reasons = append(rec.Reasons, Reason{
 		Code: ReasonPatternNotTypedCondition,
@@ -322,41 +309,13 @@ func describeBool(v, isNull bool) string {
 func compileStaticForPlane(row StaticRow, spec PlaneSpec, opts Options) []PlaneResult {
 	var out []PlaneResult
 
-	if spec.StaticReadPath == ReadPathEffectiveAction {
-		// The effective read path evaluates exactly one phase (the tier engine
-		// runs on the request), so its one result carries that phase.
-		pr := PlaneResult{Plane: spec.Plane, Phase: spec.Phases[0], ReadPath: spec.StaticReadPath,
-			AttributePaths: []string{DetectorSignalPath(row.PolicyID)}}
-		if drops := scanDropColumns(row, spec.StaticReadPath); len(drops) > 0 {
-			pr.Reasons = append(pr.Reasons, Reason{
-				Code: ReasonLegacyScanDrop, Issue: "#3397", Plane: spec.Plane,
-				Detail: "NULL in non-nullable scan destination(s): " + strings.Join(drops, ", ") +
-					" - GetEffective's scan errors and the row is not enforced on this plane",
-			})
-			out = append(out, pr)
-			return out
-		}
-		pr.StoredAction = row.Action
-		pr.ResolvedAction = string(LegacyAction(row.Action))
-		// The tier engine reads the action column verbatim. No phase
-		// resolution, no category fallback, and no posture lever: it never
-		// sees EvalOptions.ActionOverrides.
-		pol, reasons := policyFor(row, spec, "", LegacyAction(row.Action), opts)
-		pr.Reasons = append(pr.Reasons, reasons...)
-		if pol != nil {
-			pr.Policies = append(pr.Policies, *pol)
-		}
-		out = append(out, pr)
-		return out
-	}
-
 	// Runtime phase-column path.
 	rowPhase := row.Phase
 	if row.PhaseNull || rowPhase == "" {
 		// compilePolicy defaults a NULL phase to PhaseBoth.
 		rowPhase = PhaseBoth
 	}
-	drops := scanDropColumns(row, spec.StaticReadPath)
+	drops := scanDropColumns(row)
 
 	for _, ph := range spec.Phases {
 		if rowPhase != PhaseBoth && rowPhase != ph {
@@ -403,13 +362,38 @@ func compileStaticForPlane(row StaticRow, spec PlaneSpec, opts Options) []PlaneR
 		pr.ResolvedAction = string(resolved)
 
 		enforced := resolved
-		if spec.PostureLever {
-			if displaced, did := opts.Posture.Apply(row.Category, resolved); did {
+		if arm := retiredTierPassArm(spec, row, resolved); arm != "" {
+			// What /api/request's retired second pass read (#4253): the row's
+			// STORED action column, which no surviving plane reads. PRD v11 §1 item
+			// 1 evaluates every control that named that pass here, so where an arm
+			// applies, the stored action, not the phase column, is what this plane
+			// enforces. It is a stated divergence from the phase resolution, never
+			// a silent one; an organization's category action below may still
+			// displace it, as it may any resolved action.
+			stored := LegacyAction(row.Action)
+			pr.Reasons = append(pr.Reasons, Reason{
+				Code: ReasonRetiredTierPassAction, Issue: "#4253", Plane: spec.Plane,
+				Detail: fmt.Sprintf("%s: the %s-phase column resolves %q and the row's stored action column is %q; /api/request's retired second pass read the stored column, so this plane enforces %q",
+					arm, ph, resolved, row.Action, stored),
+			})
+			enforced = stored
+			// The retired pass RESOLVED the stored column, and the corpus collapses
+			// an organization row by ranking each plane's resolution, so this
+			// plane's resolution is the stored action, as the tier plane's was.
+			// The phase column's resolution stays stated in the reason above.
+			pr.ResolvedAction = string(stored)
+		}
+		if spec.PassesOrgOverrides {
+			if displaced, did := opts.CategoryActions.Apply(row.Category, resolved); did {
+				// What is displaced is what this plane would otherwise enforce:
+				// the stored action where a retired-pass arm applied, the phase
+				// resolution everywhere else.
+				before := enforced
 				enforced = displaced
 				pr.Reasons = append(pr.Reasons, Reason{
-					Code: ReasonPostureLeverDisplaces, Issue: "#3360", Plane: spec.Plane,
-					Detail: fmt.Sprintf("%s displaces the resolved action %q with %q on this plane",
-						PostureLeverFor(row.Category), resolved, displaced),
+					Code: ReasonOrgOverrideDisplaces, Issue: "#3961", Plane: spec.Plane,
+					Detail: fmt.Sprintf("the action assigned to category %q displaces the enforced action %q with %q on this plane",
+						row.Category, before, displaced),
 				})
 			}
 		}
@@ -420,13 +404,19 @@ func compileStaticForPlane(row StaticRow, spec PlaneSpec, opts Options) []PlaneR
 			// before it persists.
 			if forced != enforced {
 				pr.Reasons = append(pr.Reasons, Reason{
-					Code: ReasonPostureLeverDisplaces, Issue: "#3360", Plane: spec.Plane,
+					Code: ReasonPlaneCoercesAction, Issue: "#3360", Plane: spec.Plane,
 					Detail: fmt.Sprintf("this plane COERCES %q for category %q regardless of the deployment posture, replacing the resolved action %q",
 						forced, row.Category, enforced),
 				})
 			}
 			enforced = forced
 		}
+
+		// RECORDED AT THE ONE SITE WHERE `enforced` IS FINALLY KNOWN - after the
+		// category action above and after the plane coercion above it, and on the
+		// same value handed to policyFor. Setting it anywhere earlier would
+		// publish an action the compiled policy does not carry.
+		pr.EnforcedAction = string(enforced)
 
 		pol, reasons := policyFor(row, spec, ph, enforced, opts)
 		pr.Reasons = append(pr.Reasons, reasons...)
@@ -454,19 +444,12 @@ func nullOrEmpty(present bool) string {
 // constraint and everything else becomes a requirement or an inspection,
 // rather than all of them becoming one policy with a severity field.
 func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts Options) (*pdp.Policy, []Reason) {
-	var reasons []Reason
 	if !isKnownAction(act) {
-		return nil, []Reason{{
-			Code: ReasonUnknownLegacyAction, Plane: spec.Plane,
-			Detail: fmt.Sprintf("action %q is outside the set the legacy engines understand (%v); it is not coerced to a neighbour", act, KnownActions()),
-		}}
+		return nil, unknownActionReasons(spec.Plane, act)
 	}
 
 	id := PolicyIDFor("static_policies", row.PolicyID, spec.Plane, ph)
-	root := pdp.RootOrganization
-	if row.Tier == "system" || row.TenantID == "global" {
-		root = pdp.RootSystem
-	}
+	root := staticRootFor(row)
 	scope := pdp.Scope{Organization: true}
 	if !row.SegmentIDNull && row.SegmentID != "" {
 		// ADR-060 segment targeting becomes group scope, which is the
@@ -494,12 +477,7 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 			row.PolicyID, row.Category, row.Severity, row.Pattern, spec.Plane),
 	}
 
-	switch act {
-	case ActionBlock, ActionDeny:
-		base.Authority = contract.AuthorityConstraint
-		return &base, reasons
-
-	case ActionRequireApproval:
+	if act == ActionRequireApproval {
 		pool, ok := opts.ApprovalPool(row.OrgID, row.TenantID)
 		if !ok {
 			return nil, []Reason{{
@@ -508,15 +486,41 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 					"supply Options.ApprovalPools for this org to compile it",
 			}}
 		}
-		base.Authority = contract.AuthorityRequirement
-		base.Mandatory = true
-		base.Obligations = []contract.Obligation{{
-			Type:          contract.ObApprovalChallenge,
-			Params:        map[string]string{"quorum": strconv.Itoa(pool.Quorum), "eligible": strings.Join(pool.Eligible, ",")},
-			Mandatory:     true,
-			SourcePolicy:  id,
-			SchemaVersion: 1,
-		}}
+		return ApprovalPolicy(base, pool), nil
+	}
+	return ActionPolicy(base, act, row.Category, row.Severity, opts.ContentTarget, spec.Plane)
+}
+
+// unknownActionReasons is the refusal of an action outside KnownActions.
+func unknownActionReasons(plane Plane, act LegacyAction) []Reason {
+	return []Reason{{
+		Code: ReasonUnknownLegacyAction, Plane: plane,
+		Detail: fmt.Sprintf("action %q is outside the set the legacy engines understand (%v); it is not coerced to a neighbour", act, KnownActions()),
+	}}
+}
+
+// ActionPolicy shapes base - a policy whose id, root, scope, action selector
+// and condition are already set - into the control one legacy action means.
+//
+// IT IS THE ONE ACTION MAPPING. policyFor applies it to the action a static row
+// resolves to, and an organization's recorded detection override applies it to
+// the control the override displaces (#4045), so one action cannot compile to
+// two shapes depending on which of the two asked. category and severity are the
+// censused row's, carried into the obligations that record them, and
+// contentTarget is the field path a redaction targets.
+//
+// require_approval is not mapped here: its obligation needs an approval pool,
+// which each caller resolves for itself, and no override can record one. It is
+// ApprovalPolicy's.
+func ActionPolicy(base pdp.Policy, act LegacyAction, category, severity, contentTarget string, plane Plane) (*pdp.Policy, []Reason) {
+	if !isKnownAction(act) {
+		return nil, unknownActionReasons(plane, act)
+	}
+	var reasons []Reason
+	id := base.ID
+	switch act {
+	case ActionBlock, ActionDeny:
+		base.Authority = contract.AuthorityConstraint
 		return &base, reasons
 
 	case ActionRedact:
@@ -524,14 +528,14 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 		base.Mandatory = true
 		base.Obligations = []contract.Obligation{{
 			Type:          contract.ObFieldRedact,
-			Target:        opts.ContentTarget,
+			Target:        contentTarget,
 			Mandatory:     true,
 			SourcePolicy:  id,
 			SchemaVersion: 1,
 		}}
 		reasons = append(reasons, Reason{
-			Code: ReasonRedactTargetNotStored, Plane: spec.Plane,
-			Detail: fmt.Sprintf("static_policies stores no field path for a redaction - the target was the span the detector matched at runtime - so the obligation targets the plane's content root %q", opts.ContentTarget),
+			Code: ReasonRedactTargetNotStored, Plane: plane,
+			Detail: fmt.Sprintf("static_policies stores no field path for a redaction - the target was the span the detector matched at runtime - so the obligation targets the plane's content root %q", contentTarget),
 		})
 		return &base, reasons
 
@@ -539,7 +543,7 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 		base.Authority = contract.AuthorityRequirement
 		base.Obligations = []contract.Obligation{{
 			Type:          contract.ObNotification,
-			Params:        map[string]string{"severity": row.Severity, "category": row.Category},
+			Params:        map[string]string{"severity": severity, "category": category},
 			SourcePolicy:  id,
 			SchemaVersion: 1,
 		}}
@@ -549,7 +553,7 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 		base.Authority = contract.AuthorityRequirement
 		base.Obligations = []contract.Obligation{{
 			Type:          contract.ObImmutableAudit,
-			Params:        map[string]string{"category": row.Category, "severity": row.Severity},
+			Params:        map[string]string{"category": category, "severity": severity},
 			SourcePolicy:  id,
 			SchemaVersion: 1,
 		}}
@@ -564,75 +568,98 @@ func policyFor(row StaticRow, spec PlaneSpec, ph Phase, act LegacyAction, opts O
 		base.Authority = contract.AuthorityInspection
 		base.Obligations = []contract.Obligation{{
 			Type:          contract.ObImmutableAudit,
-			Params:        map[string]string{"category": row.Category, "observed": "allow"},
+			Params:        map[string]string{"category": category, "observed": "allow"},
 			SourcePolicy:  id,
 			SchemaVersion: 1,
 		}}
 		return &base, reasons
 	}
 	return nil, []Reason{{
-		Code: ReasonNoActionableOutcome, Plane: spec.Plane,
-		Detail: fmt.Sprintf("action %q has no mapping arm", act),
+		Code: ReasonNoActionableOutcome, Plane: plane,
+		Detail: fmt.Sprintf("action %q has no mapping arm here; require_approval is compiled by ApprovalPolicy, over a pool its caller resolves", act),
 	}}
 }
 
-// readPathDivergence renders the disagreement between the two read paths, or
-// "" when they agree.
-func readPathDivergence(planes []PlaneResult) string {
-	runtime := map[string]bool{}
-	effective := map[string]bool{}
-	for _, p := range planes {
-		switch p.ReadPath {
-		case ReadPathRuntimePhase:
-			if p.ResolvedAction != "" {
-				runtime[p.ResolvedAction] = true
-			}
-		case ReadPathEffectiveAction:
-			if p.ResolvedAction != "" {
-				effective[p.ResolvedAction] = true
-			}
-		}
-	}
-	if len(runtime) == 0 && len(effective) == 0 {
-		// Neither path resolves anything: the row is unenforced everywhere and
-		// there is no divergence to report.
-		return ""
-	}
-	if len(runtime) == 0 || len(effective) == 0 {
-		// One side resolves and the other does not. Reading that as agreement
-		// is how the package's central finding fails closed to SILENCE: a row
-		// with a NULL version or updated_at scan-drops on the effective path
-		// while every runtime plane still enforces it, so it does nothing on
-		// the proxy tier and acts everywhere else - which is the most
-		// divergent a row can be.
-		return fmt.Sprintf(
-			"the runtime read path (phase columns) resolves %v and the effective read path (action column) resolves %v; "+
-				"one path enforces this row and the other does not reach it at all",
-			sortedKeys(runtime), sortedKeys(effective))
-	}
-	same := true
-	for a := range runtime {
-		if !effective[a] {
-			same = false
-			break
-		}
-	}
-	if same && len(runtime) == len(effective) {
-		return ""
-	}
-	return fmt.Sprintf(
-		"the runtime read path (phase columns) resolves %v and the effective read path (action column) resolves %v; "+
-			"what this row does depends on which plane asked, which is the split ADR-065 Phase 5 removes",
-		sortedKeys(runtime), sortedKeys(effective))
+// ApprovalPolicy shapes base - a policy whose id, root, scope, action selector
+// and condition are already set - into the control require_approval means: a
+// mandatory requirement carrying one approval_challenge that names pool's quorum
+// and eligible set, attributed to base.ID.
+//
+// IT IS THE ONE APPROVAL MAPPING, as ActionPolicy is the one mapping of every
+// other action. policyFor applies it to a static row, dynamicPolicyFor to a
+// dynamic action and a policy pack (platform/decision/policypack) to a pack
+// detector, so require_approval cannot compile to two shapes depending on which
+// source asked.
+//
+// It takes an ALREADY-RESOLVED pool. Where the pool comes from differs by caller
+// - Options.ApprovalPool per row for the two substrates, the deployment's realms
+// for a pack - and so does the refusal when there is none
+// (ReasonApprovalPoolNotStored carries a different detail per substrate), which
+// is why the refusal stays at each call site.
+//
+// The obligation's SourcePolicy is base.ID rather than an argument, so it cannot
+// be attributed to a policy other than the one it is attached to.
+// TestApprovalPolicyIsTheOneMappingForBothSubstrates pins both halves: every
+// source's approval control is this shape, and this is the only place an
+// approval_challenge is constructed.
+func ApprovalPolicy(base pdp.Policy, pool ApprovalPool) *pdp.Policy {
+	base.Authority = contract.AuthorityRequirement
+	base.Mandatory = true
+	base.Obligations = []contract.Obligation{{
+		Type:          contract.ObApprovalChallenge,
+		Params:        map[string]string{"quorum": strconv.Itoa(pool.Quorum), "eligible": strings.Join(pool.Eligible, ",")},
+		Mandatory:     true,
+		SourcePolicy:  base.ID,
+		SchemaVersion: 1,
+	}}
+	return &base
 }
 
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// The two arms of PlaneSpec.EnforcesRetiredTierPassRead, as the reason names them.
+const (
+	retiredTierPassSystemBlock    = "system stored block"
+	retiredTierPassTemplateAction = "template stored action outranks the phase resolution"
+)
+
+// retiredTierPassArm names the arm of PlaneSpec.EnforcesRetiredTierPassRead that
+// applies to a row whose phase column resolved `resolved` on a plane, or "" when
+// none does (#4253).
+//
+// The asymmetry is the corpus's, not this rule's. A system row compiles to one
+// policy PER SCOPE (#4046), so the retired pass's read of a system row was its
+// own proxy_tier-only variant: the stored block it refused on is kept, and a
+// lesser read leaves the corpus with the plane. A non-system row - the
+// organization template in the shipped corpus, an organization's own row in the
+// legacy import - compiles to ONE policy, its most restrictive plane compilation
+// (corpusRestrictiveness), and until #4253 that was the retired pass's read of
+// its stored column wherever the read outranked the phase resolution. So for such
+// a row the stored action is kept wherever it outranks, ranked as the corpus
+// ranks it - save a stored hold (require_approval), whose successor is the
+// orchestrator's typed approval challenge (#4254), not a refusal here.
+func retiredTierPassArm(spec PlaneSpec, row StaticRow, resolved LegacyAction) string {
+	if !spec.EnforcesRetiredTierPassRead {
+		return ""
 	}
-	sort.Strings(out)
-	return out
+	stored := LegacyAction(row.Action)
+	if row.Tier == "system" {
+		if stored == ActionBlock && resolved != ActionBlock {
+			return retiredTierPassSystemBlock
+		}
+		return ""
+	}
+	if stored == ActionRequireApproval {
+		// A stored hold is not kept. The route's hold exit retired with the pass
+		// (#4253), and holds return with the orchestrator's typed approval
+		// challenge (#4254); keeping one here would make /api/request REFUSE what
+		// the pass held.
+		return ""
+	}
+	storedRank, _, storedOK := corpusRestrictiveness(string(stored))
+	resolvedRank, _, resolvedOK := corpusRestrictiveness(string(resolved))
+	if storedOK && resolvedOK && storedRank > resolvedRank {
+		return retiredTierPassTemplateAction
+	}
+	return ""
 }
 
 // statusFrom derives the row status from what the compilation produced. It is
@@ -677,4 +704,18 @@ func statusFrom(rec Record) Status {
 		return StatusUncompilable
 	}
 	return StatusCompiled
+}
+
+// staticRootFor is the ONE derivation of a static row's authority root.
+//
+// It was inline in policyFor until #3899 needed the same answer at row level to
+// decide whether a tenant column is worth reporting. Two copies of "is this
+// row the platform's own" would be two chances to disagree about it, and the
+// disagreement would be invisible: the reason would describe a row the
+// compiled policy had classified the other way.
+func staticRootFor(row StaticRow) pdp.Root {
+	if row.Tier == "system" || row.TenantID == "global" {
+		return pdp.RootSystem
+	}
+	return pdp.RootOrganization
 }

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -36,7 +28,6 @@ import (
 
 	sharedpolicy "axonflow/platform/shared/policy"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -333,24 +324,16 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-AxonFlow-Decision-Id", decisionID)
 	w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
-	// Policy evaluation via the shared policy engine.
+	// The shared policy engine's detectors run over the request text.
 	queryText := extractTextFromMessages(req.Messages)
-	// #2581: resolve per-org posture (org with no override → deployment-global).
+	// #2581: resolve per-org posture (org with no override → the stored policy actions decide).
 	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 
-	var policyResult *StaticPolicyResult
-	var blockingPolicyID string
-	sharedEngine := sharedpolicy.GetGlobalEngine()
-
-	if !gwDetectionCfg.Enabled {
-		policyResult = &StaticPolicyResult{
-			Blocked:           false,
-			TriggeredPolicies: []string{},
-			ChecksPerformed:   []string{"gateway_static_policies_disabled"},
-		}
-	} else if sharedEngine != nil {
-		requestResult := sharedEngine.EvaluateRequest(ctx, queryText, sharedpolicy.EvalOptions{
-			Plane:    legacycompile.PlaneOpenAICompatible,
+	// evaluation is the shared engine's run over the request: the anchored
+	// engine's detector input, and nil when the engine evaluated nothing.
+	var evaluation *sharedpolicy.RequestResult
+	if sharedEngine := sharedpolicy.GetGlobalEngine(); gwDetectionCfg.Enabled && sharedEngine != nil {
+		evaluation = sharedEngine.EvaluateRequest(ctx, queryText, sharedpolicy.EvalOptions{
 			TenantID: user.TenantID,
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
@@ -377,17 +360,47 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			// identity to resolve segment membership from).
 			Segments: nil,
 		})
-		policyResult = convertSharedResultToStatic(requestResult)
-		if requestResult != nil && requestResult.BlockedBy != nil {
-			blockingPolicyID = requestResult.BlockedBy.PolicyID
-		}
-	} else {
-		policyResult = &StaticPolicyResult{
-			Blocked:           false,
-			TriggeredPolicies: []string{},
-			ChecksPerformed:   []string{"no_policy_engine"},
-		}
+		recordStoredActionDisplacement(evaluation)
 	}
+
+	// #4092: THE ANCHORED ENGINE AUTHORS THIS ROUTE'S POLICY VERDICT (PRD v11
+	// §1.1). The shared engine's evaluation above is its detector input, and
+	// the anchored verdict is the policyResult the deny path and the forward
+	// read. The route carries no per-user identity, so every request is
+	// evaluated for its client credential (openai_compatible_enforcing_seam.go).
+	enforced := enforceRequestPass(ctx, openaiCompatibleSeamScope, requestPassInput{
+		orgID:        orgID,
+		decisionID:   decisionID,
+		stage:        DecisionStageLLM,
+		query:        queryText,
+		auth:         authResult,
+		user:         user,
+		userIdentity: userAbsent,
+		observation:  observationOf(evaluation),
+	})
+	w.Header().Set(openaiCompatibleEngineHeader, enforced.engine)
+	if enforced.subjectType != "" {
+		w.Header().Set(openaiCompatibleSubjectTypeHeader, enforced.subjectType)
+	}
+	if enforced.policyBundle != "" {
+		w.Header().Set(openaiCompatiblePolicyBundleHeader, enforced.policyBundle)
+	}
+	if enforced.unavailable != "" {
+		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
+		// the legacy engine's verdict because a dependency failed would turn
+		// enforcement off during exactly the incidents it exists for.
+		recordAnchoredEnforcement(openaiCompatibleSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, AuditVerdictError,
+			[]string{"decision_enforcement_unavailable"}, time.Since(startTime).Milliseconds(), []string{enforced.unavailable},
+			traceID, nil, false,
+			&decisionAuditInput{clientID: clientID, plane: PlaneOpenAICompat, correlationID: correlationID, decisionEngine: enforced.engine})
+		openaiCompatRequests.WithLabelValues("error").Inc()
+		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
+		sendOpenAIError(w, enforceCauseMessages[enforced.unavailable], "server_error", "decision_enforcement_unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	policyResult, reasonCode := enforced.staticPolicyResult(openaiCompatibleSeamScope)
+	blockingPolicyID := enforced.blockingPolicyID
 
 	// On policy deny, return an OpenAI-compatible error.
 	if policyResult.Blocked {
@@ -412,24 +425,27 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		// — the #2642 gateway / #2682 connector-exec pattern. The llm_call_audits row
 		// is a DIFFERENT table; the two are complementary, not a double-write.
 		auditInput := &decisionAuditInput{
-			clientID:      clientID,
-			userEmail:     user.Email,
-			userRole:      user.Role,
-			userID:        user.ID,
-			query:         queryText,
-			plane:         PlaneOpenAICompat,
-			correlationID: correlationID,
-			// #3365: evaluation-time display names for the denied ids.
-			policyNames: policyResult.PolicyNames,
+			clientID:             clientID,
+			userEmail:            user.Email,
+			userRole:             user.Role,
+			userID:               user.ID,
+			query:                queryText,
+			plane:                PlaneOpenAICompat,
+			correlationID:        correlationID,
+			decisionEngine:       enforced.engine,
+			decisionSubjectType:  enforced.subjectType,
+			decisionPolicyBundle: enforced.policyBundle,
+			decisionReasonCode:   reasonCode,
 		}
+		auditInput.carryAnchoredIdentity(enforced)
 		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID, nil, false, auditInput)
 		w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
 		// Record audit for the denied request.
-		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, "openai", req.Model, 0, 0, 0, 0, time.Since(startTime).Milliseconds(), VerdictDeny, blockingPolicyID)
+		recordOpenAICompatAudit(enforced, decisionID, clientID, orgID, tenantID, "openai", req.Model, 0, 0, 0, 0, time.Since(startTime).Milliseconds(), VerdictDeny, blockingPolicyID)
 
 		// Circuit breaker violation recording.
-		if circuitBreakerInstance != nil && blockingPolicyID != "" {
+		if circuitBreakerInstance != nil && blockingPolicyID != "" && violationFeedsCircuitBreaker(reasonCode) {
 			if err := circuitBreakerInstance.RecordPolicyViolation(ctx, orgID, tenantID, clientID, blockingPolicyID); err != nil {
 				log.Printf("⚠️ [OpenAI-Compat] Circuit breaker RecordPolicyViolation error: %v", err)
 			}
@@ -437,10 +453,15 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 
 		openaiCompatRequests.WithLabelValues("denied").Inc()
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
+		recordAnchoredEnforcement(openaiCompatibleSeamScope, enforced.engine, VerdictDeny, reasonCode)
 
 		sendOpenAIError(w, fmt.Sprintf("Request blocked by policy: %s", policyResult.Reason), "policy_violation", "policy_denied", http.StatusBadRequest)
 		return
 	}
+	// The policy verdict is FINAL HERE: what follows is the forward and the
+	// provider's own answer, which is not a policy verdict, so the allow is
+	// counted before it (#3564).
+	recordAnchoredEnforcement(openaiCompatibleSeamScope, enforced.engine, VerdictAllow, reasonCode)
 
 	// Resolve upstream provider.
 	providerBaseURL, providerName, _ := resolveProviderBaseURL(req.Model)
@@ -471,7 +492,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
 		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
-		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
+		recordOpenAICompatAudit(enforced, decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		log.Printf("[OpenAI-Compat] upstream request error: %v", err)
 		sendOpenAIError(w, "Upstream provider request failed", "server_error", "", http.StatusBadGateway)
@@ -494,7 +515,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
 		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
-		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
+		recordOpenAICompatAudit(enforced, decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(upstreamResp.StatusCode)
@@ -510,7 +531,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
 		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
-		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
+		recordOpenAICompatAudit(enforced, decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -554,7 +575,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
 	// Record audit.
-	recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, promptTokens, completionTokens, totalTokens, estimatedCost, providerLatencyMs, VerdictAllow, "")
+	recordOpenAICompatAudit(enforced, decisionID, clientID, orgID, tenantID, providerName, req.Model, promptTokens, completionTokens, totalTokens, estimatedCost, providerLatencyMs, VerdictAllow, "")
 
 	// Record Prometheus token metrics. Use the provider-returned model name
 	// (bounded set) rather than user input to prevent label cardinality explosion.
@@ -598,11 +619,15 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 // two writers already normalise through nullIfBlankOrg, so this one goes
 // through the same helper and the column now has one representation of the
 // absent case.
-func recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, provider, model string, promptTokens, completionTokens, totalTokens int, estimatedCost float64, latencyMs int64, verdict, blockingPolicy string) {
+func recordOpenAICompatAudit(enforced requestPassEnforcement, decisionID, clientID, orgID, tenantID, provider, model string, promptTokens, completionTokens, totalTokens int, estimatedCost float64, latencyMs int64, verdict, blockingPolicy string) {
 	if authDB == nil {
 		return
 	}
 
+	// engine, subject_type and policy_bundle say which engine decided, for
+	// which type of principal and against which policy set (PRD v11 §1.6):
+	// on this route an allowed request writes no audit_logs row (#3424), so
+	// this row is where an allow's decision is recorded.
 	metadata := map[string]interface{}{
 		"source":          "openai_compat",
 		"decision_id":     decisionID,
@@ -610,6 +635,9 @@ func recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, provider, mo
 		"tenant_id":       tenantID,
 		"verdict":         verdict,
 		"blocking_policy": blockingPolicy,
+		"engine":          enforced.engine,
+		"subject_type":    enforced.subjectType,
+		"policy_bundle":   enforced.policyBundle,
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 

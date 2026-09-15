@@ -35,7 +35,6 @@ var reviewedPlanes = []string{
 	"policy_simulation",
 	"policy_test",
 	"proxy_request",
-	"proxy_tier",
 	"wcp",
 }
 

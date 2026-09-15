@@ -400,6 +400,13 @@ type StepGateResponse struct {
 	ApprovalURL       string        `json:"approval_url,omitempty"`
 	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
 	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)
+	// Engine, SubjectType and PolicyBundle name how the step was decided (PRD v11
+	// §5.7): the engine (anchored), the type of principal it was decided for and
+	// the digest of the policy set. Omitted on a cached replay, which reproduces
+	// a stored decision without deciding again.
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
 	// Cached indicates whether this response was served from a prior decision
 	// rather than a fresh policy evaluation. True when retry_policy is "idempotent"
 	// (the default) and the step was previously evaluated.
@@ -487,7 +494,7 @@ type PolicyMatch struct {
 	Action            string `json:"action"`
 	Reason            string `json:"reason,omitempty"`
 	RiskLevel         string `json:"risk_level,omitempty"`         // low|medium|high|critical (ADR-044)
-	AllowOverride     bool   `json:"allow_override,omitempty"`     // false forbids session override (ADR-044)
+	AllowOverride     bool   `json:"allow_override,omitempty"`     // the policy's allow_override column (ADR-044); no session override is read in v11
 	MatchedRule       string `json:"matched_rule,omitempty"`       // human-readable description of what matched (ADR-043)
 	PolicyDescription string `json:"policy_description,omitempty"` // policy description for end-user display (ADR-043)
 }

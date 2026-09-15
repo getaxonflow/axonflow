@@ -150,16 +150,26 @@ mkdir -p "$tmp/.github"
 cp -R .github/workflows "$tmp/.github/workflows"
 
 drop_one_pin() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$2" <<'PY'
 import io, re, sys
-p = sys.argv[1] + "/.github/nightly-suite-paths.yml"
+p, suite = sys.argv[1] + "/.github/nightly-suite-paths.yml", sys.argv[2]
 s = io.open(p, encoding="utf-8").read()
-s = s.replace("  - platform/decision/pdp/**\n", "", 1)
-io.open(p, "w", encoding="utf-8").write(s)
+# THE DROP IS PLANTED IN THE PINNED SUITE'S OWN BLOCK. Other suites list the same
+# path, and removing its first occurrence in the file plants the drop wherever
+# that is - in a block the pin does not read - so the control would fail while
+# the guard was working.
+line = "  - platform/decision/pdp/**\n"
+start = s.index("  " + suite + ":\n")
+nxt = re.search(r"^  \S+:\n", s[start + 1:], re.M)
+end = start + 1 + nxt.start() if nxt else len(s)
+at = s.find(line, start, end)
+if at < 0:
+    sys.exit("the pinned suite's block lists no platform/decision/pdp/** to drop")
+io.open(p, "w", encoding="utf-8").write(s[:at] + s[at + len(line):])
 PY
 }
 cp "$MAN" "$tmp/.github/nightly-suite-paths.yml"
-drop_one_pin "$tmp"
+drop_one_pin "$tmp" "$PIN_SUITE" || { echo "FAIL: the pin control could not be planted"; exit 1; }
 c1=$(check "$tmp" | tail -n +2 | grep -c 'lost the #3774 path platform/decision/pdp')
 [ "$c1" -ge 1 ] && echo "ok: dropping ONE pinned path IS caught" || {
   echo "FAIL: a dropped pinned path went unnoticed - the pin is inert"; exit 1; }

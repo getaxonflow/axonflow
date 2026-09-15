@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: September 2026** | **Platform: v10.4.0** | **SDKs: Python / Go / TypeScript / Java v9.3.0 + Rust v0.10.0 (preview)**
+**Last Updated: September 2026** | **Platform Version:** v11.0.0 | **SDK Version:** v9.4.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.11.0 (preview)
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -31,7 +31,7 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.3.0) plus Rust (preview v0.10.0).
+AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.4.0) plus Rust (preview v0.11.0).
 
 | Document | Description |
 |----------|-------------|
@@ -51,7 +51,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.
 ### Java SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:9.3.0`
+- **Install:** Maven `com.getaxonflow:axonflow-sdk:9.4.0`
 
 ### TypeScript SDK
 
@@ -65,7 +65,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust)
 - **Install:** `cargo add axonflow-sdk-rust`
-- Preview line at v0.10.0 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction) and the v0.9.0 AuthZEN-native decide surface (generated wire types, typed refusals).
+- Preview line at v0.11.0 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction) and the v0.9.0 AuthZEN-native decide surface (generated wire types, typed refusals).
 
 ## Reference
 
@@ -76,7 +76,7 @@ Technical specifications and architecture documentation.
 | [Configurable Agents](./reference/configurable-agents.md) | Configure agents via YAML |
 | [LLM Architecture](./reference/llm-architecture.md) | LLM provider system architecture |
 | [Policy Templates](./reference/policy-templates.md) | Policy templates API |
-| [Secrets & Logging](./reference/secrets-logging-checklist.md) | Security checklist |
+| Secrets & Logging | Security checklist. `reference/secrets-logging-checklist.md` is excluded from the community sync (`sync-community-repo.yml`), so this row is a name, not a link - it would 404 for a community reader. |
 | [License Migration](./reference/license-migration.md) | License key migration guide |
 | [Architecture](./ARCHITECTURE.md) | Platform architecture and the five runtime modes |
 | [Compatibility Matrix](./COMPATIBILITY_MATRIX.md) | Platform ↔ SDK version compatibility |

@@ -1,13 +1,15 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
+	"sort"
 	"sync"
 	"time"
 )
@@ -70,6 +72,8 @@ func NewUnifiedPolicyEngine(db *sql.DB, config EngineConfig, auditQueue AuditQue
 
 	// Initialize loader
 	engine.loader = NewPolicyLoader(db, engine.cache)
+	// The installed policy packs' detectors ride on every load (installed_packs.go).
+	engine.loader.installed = config.InstalledDetectors
 
 	// Initialize evaluator
 	engine.evaluator = NewPatternEvaluator(config.EnableValidators)
@@ -95,15 +99,16 @@ func NewUnifiedPolicyEngine(db *sql.DB, config EngineConfig, auditQueue AuditQue
 // EvaluateRequest evaluates input for REQUEST phase policies.
 // This is called before connector.Query() to block dangerous queries.
 //
-// Performance: Returns immediately on first blocking match for minimal latency.
-// Error handling: Graceful degradation if database unavailable (configurable).
+// Every detector runs, past a block too: the detector facts it returns are what
+// the enforcing seams decide from, and a detector it skipped would read unknown
+// to the anchored engine. Blocked, BlockedBy and BlockReason are the first
+// block's. A policy load that fails blocks the request, fail-closed (#2862),
+// whatever GracefulDegradation says.
 func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string, opts EvalOptions) *RequestResult {
 	startTime := time.Now()
 
-	// ADR-065 decision shadow (#3564). Nil when the shadow could not observe
-	// on this deployment, and every method on a nil trace is a no-op, so an
-	// off deployment pays one atomic load and allocates nothing.
-	trace := newShadowTrace()
+	// The detector facts every enforcing seam decides from (detector_facts.go).
+	trace := newDetectorTrace()
 
 	result := &RequestResult{
 		Blocked:         false,
@@ -132,16 +137,15 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		result.BlockReason = "Policy engine unavailable"
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
 		log.Printf("[PolicyEngine] Failed to load policies, blocking request (fail-closed): %v", err)
-		trace.emit(ctx, PhaseRequest, opts, nil, !result.Blocked, true)
+		result.Observation = trace.facts(nil)
 		return result
 	}
 
 	result.PoliciesEvaluated = len(policies)
-	// The set BEFORE the three filters narrow it: it is what the loader
-	// returned for this phase, and its (policy_id, updated_at) pairs are what
-	// identify the policy version this evaluation ran against. A row the
-	// filters remove is still part of that version - it simply did not run,
-	// which the tri-state records as unknown rather than as a non-match.
+	// The set BEFORE the three filters narrow it. A row the category or segment
+	// filter removes did not run, which the anchored engine reads as unknown
+	// rather than as a non-match; a row capability scoping removes was decided
+	// not to apply, which it reads as a non-match (detectorTrace.scopeOut).
 	trace.setLoaded(policies)
 
 	// Filter by categories if specified
@@ -152,7 +156,9 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	// Capability-scoped evaluation (#2801): skip execution-class detectors for
 	// tools positively classified text-document. No-op for empty/unknown
 	// identities (fail-closed).
-	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
+	capabilityScoped := e.filterByToolCapability(policies, opts.ToolIdentity)
+	trace.scopeOut(opts.ToolIdentity, policies, capabilityScoped)
+	policies = capabilityScoped
 
 	// Segment applicability gate (ADR-060, #2989/#3266): a segment-scoped
 	// policy applies only for a caller whose Segments contains it. Applied
@@ -185,8 +191,17 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 			match.Action = action
 			result.MatchedPolicies = append(result.MatchedPolicies, *match)
 
-			// Check if this is a blocking action
-			if match.Action == ActionBlock {
+			// THE FIRST BLOCK IS THE VERDICT, AND THE LOOP DOES NOT STOP THERE.
+			// Blocked, BlockedBy, BlockReason and the violation are the first
+			// block's, as they always were, so a legacy reader of this result
+			// reads what it read before. But every enforcing seam decides from
+			// this pass's detector facts, and a detector the loop never reached
+			// reads UNKNOWN to the anchored engine: a legacy block row the
+			// anchored bundle does not carry (a seeded pack row, an
+			// organization's own pre-v11 row) would turn every request it matches
+			// into an unknown_constraint refusal. So every detector runs, and a
+			// later block changes nothing.
+			if match.Action == ActionBlock && !result.Blocked {
 				result.Blocked = true
 				result.BlockedBy = policy
 				result.BlockReason = policy.Description
@@ -196,7 +211,6 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 
 				// Record violation
 				e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
-				break // Stop on first block for performance
 			}
 		}
 	}
@@ -208,34 +222,25 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	// in the API response. The FIRST occurrence's FieldPath is preserved;
 	// subsequent matches still drive the block decision but don't add another
 	// entry to the list.
-	if !result.Blocked && len(opts.Parameters) > 0 {
+	//
+	// The scan runs whether or not the query string blocked, for the reason
+	// given at the first loop's block: its matches are detector facts too.
+	// The keys are walked in sorted order, so the first block, and with it
+	// BlockedBy, is the same on every evaluation of the same request.
+	if len(opts.Parameters) > 0 {
 		alreadyMatched := make(map[string]bool, len(result.MatchedPolicies))
 		for _, m := range result.MatchedPolicies {
 			alreadyMatched[m.PolicyID] = true
 		}
 
-		for key, val := range opts.Parameters {
-			paramStr := ""
-			switch v := val.(type) {
-			case string:
-				paramStr = v
-			case map[string]interface{}, []interface{}:
-				if data, err := json.Marshal(v); err == nil {
-					paramStr = string(data)
-				}
-			case float64:
-				// JSON decodes numbers as float64. Use decimal notation to preserve
-				// digit sequences for PII pattern matching (credit cards, SSNs, etc).
-				// fmt.Sprintf("%v") produces scientific notation for large values.
-				paramStr = strconv.FormatFloat(v, 'f', -1, 64)
-			case int64:
-				paramStr = strconv.FormatInt(v, 10)
-			case bool:
-				continue // booleans have no PII/compliance/injection risk
-			default:
-				paramStr = fmt.Sprintf("%v", v)
-			}
-			if paramStr == "" {
+		keys := make([]string, 0, len(opts.Parameters))
+		for key := range opts.Parameters {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			paramStr, scanned := ParameterScanText(opts.Parameters[key])
+			if !scanned {
 				continue
 			}
 
@@ -258,17 +263,13 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 						alreadyMatched[match.PolicyID] = true
 					}
 
-					if match.Action == ActionBlock {
+					if match.Action == ActionBlock && !result.Blocked {
 						result.Blocked = true
 						result.BlockedBy = policy
 						result.BlockReason = fmt.Sprintf("Blocked by policy %s in parameter '%s'", policy.Name, key)
 						e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
-						break
 					}
 				}
-			}
-			if result.Blocked {
-				break
 			}
 		}
 	}
@@ -280,10 +281,11 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		go e.metrics.RecordEvaluation(ctx, "request", opts, result.MatchedPolicies, result.Blocked, result.ProcessingTimeMs)
 	}
 
-	// The ADR-065 shadow, LAST, after the verdict is final. It returns
-	// nothing: there is no value here for this function to read, so no edit to
-	// this function can make the shadow's opinion reach `result`.
-	trace.emit(ctx, PhaseRequest, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
+	// The detector facts, LAST, after the verdict is final: the row facts an
+	// enforcing seam reads as its detector inputs (decide, #3895).
+	// EvaluateResponse assigns its response pass's facts the same way, for the
+	// MCP response seam (#3564).
+	result.Observation = trace.facts(result.MatchedPolicies)
 
 	return result
 }
@@ -303,8 +305,8 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		MatchedPolicies: make([]PolicyMatch, 0),
 	}
 
-	// ADR-065 decision shadow (#3564); see the request phase for the argument.
-	trace := newShadowTrace()
+	// The detector facts; see the request phase.
+	trace := newDetectorTrace()
 
 	// Apply default tenant if not specified
 	if opts.TenantID == "" {
@@ -327,19 +329,18 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		if e.config.GracefulDegradation {
 			log.Printf("[PolicyEngine] Failed to load policies, returning unprocessed (evaluation_error): %v", err)
 			result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
-			trace.emit(ctx, PhaseResponse, opts, nil, !result.Blocked, true)
+			result.Observation = trace.facts(nil)
 			return result
 		}
 		result.Blocked = true
 		result.BlockReason = "Policy engine unavailable"
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
-		trace.emit(ctx, PhaseResponse, opts, nil, !result.Blocked, true)
+		result.Observation = trace.facts(nil)
 		return result
 	}
 
 	result.PoliciesEvaluated = len(policies)
-	// See the request phase: the set BEFORE the filters is the policy version
-	// this evaluation ran against.
+	// See the request phase: the set BEFORE the filters.
 	trace.setLoaded(policies)
 
 	// Filter by categories if specified
@@ -351,7 +352,9 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	// phase — a text-document tool's OUTPUT is document text, not a statement
 	// any downstream executor runs. The content-borne families (PII,
 	// sensitive-data, prompt-injection redaction per core/128) are untouched.
-	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
+	capabilityScoped := e.filterByToolCapability(policies, opts.ToolIdentity)
+	trace.scopeOut(opts.ToolIdentity, policies, capabilityScoped)
+	policies = capabilityScoped
 
 	// Segment applicability gate (ADR-060, #2989/#3266): same rule as the
 	// request phase — a segment-scoped policy applies only for a caller
@@ -363,12 +366,17 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	scannable := e.toScannable(content)
 	if scannable == "" {
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
-		// NOTHING WAS SCANNED, so no detector ran and every row is unknown.
-		// This is deliberately still observed: it is a real evaluation the
-		// plane performed and permitted, and an empty response body is exactly
-		// the kind of traffic that would otherwise make a plane look busier
-		// than the window it actually contributes to.
-		trace.emit(ctx, PhaseResponse, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
+		// NOTHING TO SCAN IS A DETERMINED ANSWER, not an unknown one: every
+		// detector that survived the filters looked at the content and found no
+		// text in it to match - an execute with no message, rows of numbers.
+		// Reporting them not-run would read every detector-reading control
+		// UNKNOWN on the anchored engine and withhold a response that carries
+		// nothing a detector could find. The request phase already reads empty
+		// input this way, because its loop runs every detector over it.
+		for i := range policies {
+			trace.markRan(policies[i].PolicyID)
+		}
+		result.Observation = trace.facts(result.MatchedPolicies)
 		return result
 	}
 
@@ -413,34 +421,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 
 	// Apply redactions if not blocked
 	if !result.Blocked && len(redactionPlans) > 0 {
-		// Limit redactions if configured. Statement-removal plans (prompt-injection
-		// sanitization, #2738) are SECURITY-critical and must never be dropped by the
-		// cap, so keep them all and apply the cap only to the span (PII) plans -
-		// otherwise a response crafted with many PII-shaped tokens ahead of the
-		// injection match could push the injection plan past MaxRedactions and let it
-		// through unsanitized.
-		if opts.MaxRedactions > 0 && len(redactionPlans) > opts.MaxRedactions {
-			kept := make([]RedactionPlan, 0, opts.MaxRedactions)
-			spanBudget := opts.MaxRedactions
-			for _, p := range redactionPlans {
-				if p.Strategy == StrategyRemoveStatement {
-					kept = append(kept, p)
-					continue
-				}
-				if spanBudget > 0 {
-					kept = append(kept, p)
-					spanBudget--
-					continue
-				}
-				// DROPPED, AND THE SHADOW HAS TO KNOW. The policy stays in
-				// result.MatchedPolicies - it did match - so without this the
-				// shadow would attribute a field_redact to a policy that
-				// produced no redaction, on BOTH sides, and record the
-				// resulting agreement as a match.
-				trace.noteRedactionDropped(p.Match.PolicyID)
-			}
-			redactionPlans = kept
-		}
+		redactionPlans = capRedactionPlans(redactionPlans, opts.MaxRedactions, nil)
 
 		// Detect content type
 		contentType := e.detectContentType(content)
@@ -460,11 +441,169 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		go e.metrics.RecordEvaluation(ctx, "response", opts, result.MatchedPolicies, result.Blocked, result.ProcessingTimeMs)
 	}
 
-	// The ADR-065 shadow, LAST, after the verdict and every redaction are
-	// final. It returns nothing.
-	trace.emit(ctx, PhaseResponse, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
+	// The detector facts, LAST, after the verdict and every redaction are final.
+	result.Observation = trace.facts(result.MatchedPolicies)
 
 	return result
+}
+
+// capRedactionPlans limits the SPAN plans to max (0 means unlimited) and keeps
+// every statement-removal plan.
+//
+// Statement-removal plans (prompt-injection sanitization, #2738) are
+// SECURITY-critical and must never be dropped by the cap, so the cap applies to
+// the span (PII) plans only - otherwise a response crafted with many PII-shaped
+// tokens ahead of the injection match could push the injection plan past the
+// limit and let it through unsanitized. dropped, when set, is handed every plan
+// the cap discards.
+func capRedactionPlans(plans []RedactionPlan, max int, dropped func(RedactionPlan)) []RedactionPlan {
+	if max <= 0 || len(plans) <= max {
+		return plans
+	}
+	kept := make([]RedactionPlan, 0, max)
+	spanBudget := max
+	for _, p := range plans {
+		if p.Strategy == StrategyRemoveStatement {
+			kept = append(kept, p)
+			continue
+		}
+		if spanBudget > 0 {
+			kept = append(kept, p)
+			spanBudget--
+			continue
+		}
+		if dropped != nil {
+			dropped(p)
+		}
+	}
+	return kept
+}
+
+// RedactDecided applies the redaction transform for exactly the policies a
+// decision taken ELSEWHERE requires, over the content it is handed (#3564).
+//
+// # WHY IT IS A TRANSFORM AND NOT AN EVALUATION
+//
+// An enforcing pass has the anchored engine's decision: which requirements
+// matched and demand field_redact. Discharging that obligation is masking what
+// those requirements' detectors matched - not re-deciding. So this resolves no
+// action (a named policy is redacted whatever its row stores, and an unnamed
+// one never is), blocks nothing, records no evaluation metric and returns no
+// detector facts: the decision already read the facts of the evaluation that
+// produced them, and a transform that re-stated them could only disagree.
+//
+// # THE PHASE IS THE PASS'S, AND IT IS STATED
+//
+// phase is the phase whose content is masked: the response pass masks what it
+// releases, and the MCP request pass masks the statement it hands back. The
+// policies are loaded for that phase, because a detector the phase does not
+// load never scanned this content - a request-only row has no response-phase
+// span to mask, and masking with it would be a transform no decision required.
+//
+// It re-runs each named policy's detector because the redactor applies the
+// spans a detector matches. The policies are loaded and filtered exactly as the
+// phase's evaluation loads and filters them under the same options, and two
+// shapes FAIL rather than returning a partial transform:
+//
+//   - a named policy the phase does not load under these options - the
+//     decision requires masking for a detector this content was never scanned
+//     by;
+//   - a span plan the cap would drop - the obligation would be discharged for
+//     some spans and not others while the record says it was discharged.
+func (e *UnifiedPolicyEngine) RedactDecided(ctx context.Context, content interface{}, phase Phase, opts EvalOptions, policyIDs []string) (*ResponseResult, error) {
+	if phase != PhaseRequest && phase != PhaseResponse {
+		return nil, fmt.Errorf("policy engine: redacting needs the request or the response phase, got %q", phase)
+	}
+	if opts.TenantID == "" {
+		opts.TenantID = e.config.DefaultTenant
+	}
+	loaded, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrgScope, phase)
+	if err != nil {
+		return nil, fmt.Errorf("policy engine: loading the %s-phase policies to redact: %w", phase, err)
+	}
+	policies := loaded
+	if len(opts.Categories) > 0 || len(opts.SkipCategories) > 0 {
+		policies = e.filterByCategories(policies, opts.Categories, opts.SkipCategories)
+	}
+	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
+	policies = e.filterBySegments(policies, opts.Segments)
+
+	want := make(map[string]bool, len(policyIDs))
+	for _, id := range policyIDs {
+		want[id] = true
+	}
+	result := &ResponseResult{
+		Content:           content,
+		RedactedFields:    make([]RedactedField, 0),
+		MatchedPolicies:   make([]PolicyMatch, 0),
+		PoliciesEvaluated: len(loaded),
+	}
+	scannable := e.toScannable(content)
+	var plans []RedactionPlan
+	for i := range policies {
+		policy := &policies[i]
+		if !want[policy.PolicyID] {
+			continue
+		}
+		delete(want, policy.PolicyID)
+		if scannable == "" {
+			continue
+		}
+		for _, match := range e.evaluator.EvaluateAll(scannable, policy) {
+			match.StoredAction = policy.ActionResponse
+			if phase == PhaseRequest {
+				match.StoredAction = policy.ActionRequest
+			}
+			match.Action = ActionRedact
+			result.MatchedPolicies = append(result.MatchedPolicies, match)
+			plans = append(plans, RedactionPlan{
+				Match:    match,
+				Policy:   *policy,
+				Strategy: GetRedactionStrategy(policy.Category, policy.Severity),
+			})
+		}
+	}
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for id := range want {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("policy engine: the decision requires redacting what %v matched, and the %s phase does not load them under these options", missing, phase)
+	}
+	if len(plans) == 0 {
+		return result, nil
+	}
+	// A DROPPED PLAN IS NOT NECESSARILY AN UNMASKED SPAN. The redactor groups
+	// span plans by pattern and masks every occurrence of a kept pattern, so a
+	// dropped plan leaves content unmasked only when no kept plan shares its
+	// pattern. That case is refused, naming the policies; the other is the
+	// redactor doing what it always does.
+	var dropped []RedactionPlan
+	plans = capRedactionPlans(plans, opts.MaxRedactions, func(p RedactionPlan) { dropped = append(dropped, p) })
+	if len(dropped) > 0 {
+		kept := map[string]bool{}
+		for _, p := range plans {
+			kept[p.Policy.PatternStr] = true
+		}
+		unmasked := map[string]bool{}
+		for _, p := range dropped {
+			if !kept[p.Policy.PatternStr] {
+				unmasked[p.Policy.PolicyID] = true
+			}
+		}
+		if len(unmasked) > 0 {
+			ids := make([]string, 0, len(unmasked))
+			for id := range unmasked {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			return nil, fmt.Errorf("policy engine: the redaction limit (%d) would leave what %v matched unmasked, so the decision's redaction cannot be discharged", opts.MaxRedactions, ids)
+		}
+	}
+	result.Content, result.RedactedFields = e.redactor.Apply(content, e.detectContentType(content), plans)
+	result.Redacted = len(result.RedactedFields) > 0
+	return result, nil
 }
 
 // recordLoadError records a policy-load failure metric, distinguishing the
@@ -518,9 +657,9 @@ func (e *UnifiedPolicyEngine) EnabledPIICategories(ctx context.Context, tenantID
 //
 // Sensitive-data is a seeded system category (migration core/035: passwords, API
 // keys, tokens, secrets, credentials, connection strings); its runtime action is
-// driven by the profile / SENSITIVE_DATA_ACTION lever via ActionOverrides
-// (default warn, strict/compliance block). Folding the category in here is what
-// makes that lever reach the request AND response planes (#2705) — previously
+// its policies' stored action (warn; core/177 made the phase columns explicit),
+// with no override category (#3961). Folding the category in here is what makes
+// that action reach the request AND response planes (#2705) — previously
 // only PII categories were evaluated, so secrets were never block/warn-enforced.
 func (e *UnifiedPolicyEngine) EnabledSensitiveDataCategories(ctx context.Context, tenantID string, orgID *string, phase Phase) []PolicyCategory {
 	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
@@ -547,8 +686,9 @@ func (e *UnifiedPolicyEngine) EnabledSensitiveDataCategories(ctx context.Context
 // commands (migration core/059) and indirect prompt-injection patterns
 // (migration core/116: instruction-override, role-reassignment, system-prompt
 // exfiltration, template/bracket markers; R&C section 5.1, OWASP LLM01). Its
-// runtime action is driven by the profile / DANGEROUS_COMMAND_ACTION lever via
-// ActionOverrides (default/strict/compliance block, dev warn). Folding the
+// runtime action is its policies' stored action (block on request; redact on the
+// injection rows' response phase), replaced only by an organization's recorded
+// dangerous_command override (#3961). Folding the
 // category in here on PhaseResponse is what makes a malicious instruction
 // returned in tool OUTPUT re-enter governance (#2727); previously only the
 // request plane evaluated it (these policies seeded phase='request'), so an
@@ -583,55 +723,6 @@ func (e *UnifiedPolicyEngine) PoliciesLoadable(ctx context.Context, tenantID str
 	}
 	_, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
 	return err
-}
-
-// HasSegmentScopedPolicies reports whether the effective policy set for
-// (tenant, org, phase) contains at least one ENABLED segment-scoped row
-// (SegmentID != "", ADR-060 #2989/#3266) - that is, whether the verdict for
-// this (tenant, org, phase) can depend on the caller's governance-segment
-// membership at all.
-//
-// It exists for the fail-closed question filterBySegments cannot answer on
-// its own: a caller whose segment membership is INDETERMINATE (no validated
-// per-user identity to resolve against) must not be evaluated against a
-// silently narrowed policy set, because a nil Segments excludes every
-// segment-scoped row (AppliesToSegments) and that exclusion is
-// indistinguishable from "resolved to no segments". A plane that cannot
-// determine the caller's segments must therefore DENY when this returns
-// true, and may proceed org-only when it returns false. #3430 wires exactly
-// that on the agent MCP-server JSON-RPC plane
-// (resolveMCPServerSegmentsForPolicy, platform/agent/mcp_identity.go).
-//
-// Two returns, deliberately: ok == false means the policy set could not be
-// LOADED, so the answer is unknown and the caller MUST fail closed - the
-// same trap PoliciesLoadable exists for above (a single bool would collapse
-// "no segment-scoped rows" and "could not tell" into the fail-OPEN answer).
-//
-// Deliberately conservative on ONE axis: it inspects the whole enabled
-// policy set for the phase, BEFORE the category / tool-capability filters a
-// given caller's evaluation would additionally apply. A segment-scoped row
-// in a category this particular plane does not evaluate therefore still
-// answers true. That direction is the safe one (a spurious deny, never a
-// spurious allow), and segment-scoped rows are deliberately operator-created
-// and rare; modelling each caller's category set here would duplicate the
-// evaluation path's filters and drift from them.
-//
-// Cache-backed (the same loader cache the subsequent EvaluateRequest /
-// EvaluateResponse call hits), so it warms rather than duplicates that load.
-func (e *UnifiedPolicyEngine) HasSegmentScopedPolicies(ctx context.Context, tenantID string, orgID *string, phase Phase) (present bool, ok bool) {
-	if tenantID == "" {
-		tenantID = e.config.DefaultTenant
-	}
-	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
-	if err != nil {
-		return false, false
-	}
-	for i := range policies {
-		if policies[i].Enabled && policies[i].SegmentID != "" {
-			return true, true
-		}
-	}
-	return false, true
 }
 
 // InvalidateCache forces a cache refresh for a tenant.

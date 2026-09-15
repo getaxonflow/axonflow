@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -50,16 +42,6 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 		wantPolicy  []string
 		wantReasons []string
 	}{
-		{
-			name: "sqli block → deny",
-			outcome: OutputPolicyOutcome{
-				SQLiBlocked: true,
-				SQLiPattern: "UNION SELECT",
-			},
-			wantVerdict: mcpVerdictBlocked,
-			wantPolicy:  []string{"sqli_response_scan"},
-			wantReasons: []string{"SQL injection detected in response: UNION SELECT"},
-		},
 		{
 			name: "static block (e.g. Indonesia NIK hard-deny) → deny with matched policy ids",
 			outcome: OutputPolicyOutcome{
@@ -134,20 +116,6 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 			wantVerdict: mcpVerdictAllowed,
 			wantPolicy:  nil,
 			wantReasons: nil,
-		},
-		{
-			name: "deny precedence: SQLi wins over a present static result",
-			outcome: OutputPolicyOutcome{
-				SQLiBlocked: true,
-				SQLiPattern: "; DROP TABLE",
-				StaticResult: &sharedpolicy.ResponseResult{
-					Blocked:     true,
-					BlockReason: "should not be used",
-				},
-			},
-			wantVerdict: mcpVerdictBlocked,
-			wantPolicy:  []string{"sqli_response_scan"},
-			wantReasons: []string{"SQL injection detected in response: ; DROP TABLE"},
 		},
 	}
 
@@ -291,10 +259,6 @@ func TestMCPCheckOutputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 	origDB := usageDB
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
-
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)

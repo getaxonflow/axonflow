@@ -61,6 +61,7 @@ import (
 	"axonflow/platform/agent/approletest"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 const prC2RLSViolationCode = "42501"
@@ -265,7 +266,14 @@ func TestPRC2_Orchestrator_WithOrgScope_Sites(t *testing.T) {
 	// ============================================================
 	// Site #17 + #18: dynamic_policies INSERT (now includes org_id col)
 	// ============================================================
-	t.Run("dynamic_policies_insert_happy", func(t *testing.T) {
+	// THERE IS NO HAPPY PATH ON THIS TABLE ANY MORE (#4010, #3880).
+	//
+	// This subtest asserted that an app-role INSERT into dynamic_policies
+	// SUCCEEDS. migrations/core/172 revoked INSERT/UPDATE/DELETE/TRUNCATE from
+	// axonflow_app_role, so the assertion is now wrong by design rather than
+	// broken - the v11 freeze is the contract, and this is where it gets
+	// asserted for this site.
+	t.Run("dynamic_policies_insert_is_frozen", func(t *testing.T) {
 		appRoleDB, err := sql.Open("postgres", env.AppRoleDSN)
 		if err != nil {
 			t.Fatalf("open app-role DSN: %v", err)
@@ -283,15 +291,54 @@ func TestPRC2_Orchestrator_WithOrgScope_Sites(t *testing.T) {
 			`, uuid.New().String(), orgID)
 			return execErr
 		})
-		if err != nil {
-			t.Fatalf("happy-path dynamic_policies insert failed: %v", err)
+		if err == nil {
+			t.Fatal("an app-role INSERT into dynamic_policies SUCCEEDED; core/172 revoked it, so the v11 legacy " +
+				"policy freeze is not in force on this deployment")
+		}
+		// BY ITS CAUSE, not by its SQLSTATE. Everything below in this file
+		// asserts 42501 alone, and 42501 is ALSO the row-level-security WITH
+		// CHECK code - so a bare code check here would be satisfied by an
+		// org-scoping bug just as readily as by the freeze.
+		if !legacyfreeze.IsFrozen(err) {
+			t.Fatalf("the app-role INSERT failed for a reason that is not the freeze: %v", err)
 		}
 	})
 
-	t.Run("dynamic_policies_insert_mutation_omit_org_id_col", func(t *testing.T) {
+	// THIS MUTATION NOW PASSES FOR A DIFFERENT REASON, AND THAT IS THE FINDING
+	// (#4010).
+	//
+	// It was written to prove the RLS WITH CHECK: omit org_id, the row lands
+	// NULL, `org_id = get_current_org_id()` evaluates false, 42501. After
+	// core/172 the PRIVILEGE check fires FIRST - the role may not INSERT at all
+	// - and raises the SAME 42501 before RLS is ever evaluated. Keyed on the
+	// code alone, as the rest of this file is, it would go on passing while
+	// proving nothing it claims.
+	//
+	// So it now asserts the cause it actually has, and the RLS half is recorded
+	// as LOST rather than left looking covered.
+	//
+	// WHY THE PROOF CANNOT BE RECOVERED IN THIS FIXTURE, enumerated rather than
+	// assumed: approletest provisions exactly three identities, and none can
+	// demonstrate a WITH CHECK violation on a frozen table.
+	//
+	//	master            superuser, BYPASSRLS       - RLS never evaluated
+	//	axonflow_app_role NOBYPASSRLS                - INSERT revoked (172:289-290)
+	//	platform_admin    BYPASSRLS                  - INSERT revoked (172:295-296)
+	//
+	// The only NOBYPASSRLS role has lost the privilege, and the two that keep it
+	// bypass RLS. Proving WITH CHECK on these tables again needs a fourth role
+	// that is NOBYPASSRLS and still granted - which no migration creates and
+	// which this lane is not the place to invent.
+	//
+	// The WITH CHECK rule itself is unchanged and is still proven on the six
+	// NON-frozen sites in this same test - connector_configs, policy_metrics,
+	// orchestrator_audit_logs, policy_overrides, llm_providers and
+	// hitl_approval_queue - so what is lost is the proof on THIS table, not the
+	// property.
+	t.Run("dynamic_policies_insert_is_frozen_before_rls_is_reached", func(t *testing.T) {
 		// Mutation: GUC IS set, but the INSERT col list OMITS org_id (the
-		// pre-PR-C2 bug shape). The row lands with org_id=NULL → WITH CHECK
-		// `org_id = get_current_org_id()` evaluates NULL=value → false → 42501.
+		// pre-PR-C2 bug shape). Pre-freeze this reached WITH CHECK; now the
+		// privilege revoke refuses it first.
 		appRoleDB, err := sql.Open("postgres", env.AppRoleDSN)
 		if err != nil {
 			t.Fatalf("open app-role DSN: %v", err)
@@ -308,8 +355,13 @@ func TestPRC2_Orchestrator_WithOrgScope_Sites(t *testing.T) {
 			`, uuid.New().String())
 			return execErr
 		})
-		if code := pgErrCodeC2(err); code != prC2RLSViolationCode {
-			t.Fatalf("mutation (omit org_id col): expected 42501, got err=%v (code=%q)", err, code)
+		if err == nil {
+			t.Fatal("an app-role INSERT into dynamic_policies SUCCEEDED; core/172's freeze is not in force")
+		}
+		if !legacyfreeze.IsFrozen(err) {
+			t.Fatalf("expected the core/172 privilege refusal, got err=%v (code=%q). If this is an RLS WITH CHECK "+
+				"violation then the freeze is NOT in force and this site is being refused for the pre-#3880 reason",
+				err, pgErrCodeC2(err))
 		}
 	})
 

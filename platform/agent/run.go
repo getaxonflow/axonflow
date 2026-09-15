@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -24,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,14 +32,12 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/circuitbreaker"
-	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/marketplace"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/common/usage"
-	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/orchestrator/cost"
 	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/shared/edition"
@@ -57,6 +46,7 @@ import (
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/retiredenv"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 )
@@ -280,14 +270,16 @@ func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deployment
 }
 
 // promoteDeploymentOrgTier upserts the deployment org's organizations row to
-// the licensed tier / max_nodes / expires_at via the mig-117 SECURITY DEFINER
-// helper promote_deployment_org_license (#2535). This is the durable fix for
+// the licensed tier / max_nodes / expires_at via the SECURITY DEFINER helper
+// promote_deployment_org_license_returning (#2535, #4007). The durable fix for
 // the agent storing the parsed license tier in-memory only: the portal,
 // node-limit enforcement, and compliance-evidence paths read organizations.tier
 // from the DB, which migration 094 seeds 'Community' (ON CONFLICT DO NOTHING)
 // and nothing else promotes.
 //
-// The write is issued as `SELECT promote_deployment_org_license(...)` so it
+// The write is issued as `SELECT ... FROM promote_deployment_org_license_returning(...)`
+// (#4007 moved the row-reporting body under that name; the old name remains as
+// a VOID forwarder so older binaries keep working) so it
 // executes as the function's OWNER — the migration/table-owning role, which
 // bypasses FORCE RLS on organizations (mig 103). This is the same RLS-safe
 // posture register_org (mig 104) relies on, and it means a raw INSERT/UPDATE
@@ -299,27 +291,26 @@ func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deployment
 // Failures are logged, NOT fatal: the agent's in-memory tier (and /health) are
 // already correct, so a transient DB hiccup here must not crash the agent — the
 // next boot re-attempts the sync.
+//
+// #3957 item 1: it now READS THE ROW BACK. "The write did not error" is not the
+// same claim as "the row holds the licensed values", and the gap between them
+// is where a licensed deployment sits at Community/2-nodes with nothing saying
+// so — see license_tier_sync.go for why that outranks every other item on that
+// audit, and for the mig-117 shape in which this call SUCCEEDS having written
+// nothing.
 func promoteDeploymentOrgTier(db *sql.DB, orgID, tier string, maxNodes int, expiresAt time.Time) {
-	// A zero ExpiresAt (no-expiry / perpetual license) is passed as SQL NULL so
-	// it matches organizations.expires_at's nullable column and the portal's
-	// "NULL expires_at = unbounded" status logic (license.go).
-	var expiresArg interface{}
-	if !expiresAt.IsZero() {
-		expiresArg = expiresAt.UTC()
-	}
-	if _, err := db.Exec(
-		"SELECT promote_deployment_org_license($1, $2, $3, $4)",
-		orgID, tier, maxNodes, expiresArg,
-	); err != nil {
-		log.Printf("⚠️  Failed to sync licensed tier into organizations row for org=%s: %v "+
-			"(agent /health tier is correct in-memory; portal + other DB consumers may show a "+
-			"stale tier until the next successful boot)", orgID, err)
-		return
-	}
-	log.Printf("✅ Synced licensed tier into organizations.tier: org=%s tier=%s max_nodes=%d (#2535)", orgID, tier, maxNodes)
+	want := licenseSyncValues{Tier: tier, MaxNodes: maxNodes, ExpiresAt: expiresAt}
+
+	// ONE CALL. The helper writes and then reports the row from INSIDE its own
+	// SECURITY DEFINER body (core/175), so the read has the write's privileges
+	// rather than this connection's - see license_tier_sync.go for why a SELECT
+	// issued here instead would rest on a FORCE RLS precondition nobody has
+	// measured.
+	got, gotRow, callErr := promoteAndReadDeploymentOrgLicense(db, orgID, want)
+	publishLicenseSync(verifyLicenseSync(want, got, gotRow, callErr), orgID)
 }
 
-// Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
+// Internal service URLs - auto-discovered based on environment (ADR-024: Single Entry Point)
 // Docker Compose services communicate via service names on the axonflow-network.
 // No configuration required - the Agent detects Docker and uses appropriate URLs.
 const (
@@ -347,7 +338,6 @@ var (
 	orchestratorURL        = getOrchestratorURL()         // Auto-discovered based on environment
 	authDB                 *sql.DB                        // Database for Option 3 authentication
 	usageDB                *sql.DB                        // Database for usage metering
-	tierAwarePolicyEngine  *TierAwarePolicyEngine         // Tier-aware policy engine for tenant-specific policies
 	meteringService        *marketplace.MeteringService   // AWS Marketplace metering
 	costService            *cost.Service                  // Cost tracking and budget enforcement (Issue #1082)
 	circuitBreakerInstance *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
@@ -381,41 +371,41 @@ var (
 	// deployments), so no handler needs a nil-check. Signing happens in the
 	// tracker's async workers, OFF the decision hot path.
 	decisionChainTracker *DecisionChainTracker
-	// fincrimeEngine is the Fraud & Risk Add-on Engine A seam (ADR-061 /
-	// #3329): context validation, pluggable deterministic evaluators, and
-	// the Engine B scorer client. Constructed EXPLICITLY in Run() (never
-	// init() factory registration, #3268); nil on community builds and the
-	// nil path is a strict no-op inside evaluateInputPolicies, so no caller
-	// needs a nil-check.
-	fincrimeEngine *fincrime.Engine
-	// fincrimeHITLBridge routes scorer above-threshold decisions into the
-	// HITL approval queue on the /decide plane (the first real HITLBridge
-	// caller; see hitl_bridge.go #3065 note). nil-safe at the call site:
-	// when HITL wiring is unavailable the needs_approval verdict still
-	// returns, only the queue entry is skipped (logged).
-	fincrimeHITLBridge *HITLBridge
 )
 
+// categorySecurityAdmin is the seeded sys_admin_* rows' category (core/031),
+// which shared/policy has no constant for: its CategoryAdminAccess spells
+// "admin-access", a mismatch #3323 owns. #4253 admits it on /api/request alone;
+// legacycompile's proxyAdmission says why.
+const categorySecurityAdmin sharedpolicy.PolicyCategory = "security-admin"
+
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
-// Used by both clientRequestHandler and policyTestHandler to avoid divergence.
+// Read by proxyDetectorPass, which /api/request and its preview share.
 //
 // #2965: the PII portion is sourced from sharedpolicy.AllTextPIICategories() (the
 // single canonical pii-* list) rather than hand-listed here — the old hand list
 // omitted pii-indonesia, so the KTP/NIK policy was filtered out BEFORE evaluation
 // on this plane and a matching query was silently ungoverned under every posture.
 //
-// #3529: the COMPLIANCE portion is now sourced from
-// sharedpolicy.AllComplianceCategories() for the same reason the PII portion
-// was. The hand list carried four of the six categories that function
-// returned, so compliance-gdpr and compliance-hipaa were filtered out before
-// evaluation on this plane, and any new compliance family (the four US ones
-// added by #3529) would have been too.
-var proxyPolicyCategories = append(append([]sharedpolicy.PolicyCategory{
+// #3529: the COMPLIANCE portion is sourced from sharedpolicy.AllComplianceCategories()
+// for the same reason: the hand list dropped compliance-gdpr and compliance-hipaa.
+//
+// #4131: sharedpolicy.LegacyTemplateCategories() admits the organization template's
+// DROP/TRUNCATE, SQL-injection and PII rows, whose v10 categories core/127 never
+// canonicalised; without it this plane filtered all eight out before evaluation.
+//
+// #4253: categorySecurityAdmin admits the four sys_admin_* rows, whose stored
+// block the route's retired second pass enforced and legacycompile now binds on
+// this plane (PlaneSpec.EnforcesRetiredTierPassRead). The organization template's
+// nine rows that rule also keeps are admitted already, by the compliance and
+// LegacyTemplateCategories portions above.
+var proxyPolicyCategories = append(append(append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecuritySQLi,
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategoryAdminAccess,
+	categorySecurityAdmin,
 	sharedpolicy.CategorySensitiveData,
-}, sharedpolicy.AllComplianceCategories()...), sharedpolicy.AllTextPIICategories()...)
+}, sharedpolicy.AllComplianceCategories()...), sharedpolicy.AllTextPIICategories()...), sharedpolicy.LegacyTemplateCategories()...)
 
 // Prometheus metrics
 var (
@@ -541,29 +531,18 @@ type MediaContentRequest struct {
 }
 
 type ClientResponse struct {
-	Success     bool                   `json:"success"`
-	Data        interface{}            `json:"data,omitempty"`
-	Result      string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
-	PlanID      string                 `json:"plan_id,omitempty"`  // For multi-agent planning
-	Steps       []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
-	Metadata    map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
-	Error       string                 `json:"error,omitempty"`
-	Blocked     bool                   `json:"blocked"`
-	BlockReason string                 `json:"block_reason,omitempty"`
-	// ApprovalRequestID is the hitl_approval_queue entry raised for a request
-	// this response is holding for human review (#3509). Present only on a
-	// require_approval hold, and only when the entry was actually created: an
-	// empty value on a held response means no reviewer will see the request
-	// (pending cap reached, tier without the queue, or a failed write), and a
-	// caller must treat it as a refusal rather than as something pending.
-	//
-	// It is a SEPARATE field rather than an addition to block_reason precisely
-	// because every shipped SDK matches the "require_approval" sentinel
-	// literally to enter its HITL branch.
-	ApprovalRequestID string                `json:"approval_request_id,omitempty"`
-	PolicyInfo        *PolicyEvaluationInfo `json:"policy_info,omitempty"`
-	BudgetInfo        *BudgetInfo           `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
-	MediaAnalysis     interface{}           `json:"media_analysis,omitempty"` // Media governance analysis results
+	Success       bool                   `json:"success"`
+	Data          interface{}            `json:"data,omitempty"`
+	Result        string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
+	PlanID        string                 `json:"plan_id,omitempty"`  // For multi-agent planning
+	Steps         []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
+	Metadata      map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
+	Error         string                 `json:"error,omitempty"`
+	Blocked       bool                   `json:"blocked"`
+	BlockReason   string                 `json:"block_reason,omitempty"`
+	PolicyInfo    *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
+	BudgetInfo    *BudgetInfo            `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
+	MediaAnalysis interface{}            `json:"media_analysis,omitempty"` // Media governance analysis results
 }
 
 type PolicyEvaluationInfo struct {
@@ -732,6 +711,29 @@ var (
 // phase (database connections, migrations, Redis, etc.). Other routes are added
 // after initialization completes. The server NEVER shuts down - eliminating any
 // transition gaps that could cause health check failures.
+// buildAgentHandler assembles the handler the agent actually serves, from the
+// CORS-wrapped router inward.
+//
+// # WHY THIS IS A NAMED FUNCTION AND NOT ONE INLINE LINE
+//
+// Same argument as the orchestrator's buildOrchestratorHandler, and the same
+// history: a wrap that exists only inside a goroutine inside
+// initServerImmediately is a wrap no test can observe, so deleting it leaves
+// every unit test green. The orchestrator learned that when reverting the whole
+// of #3068 broke nothing that was watching.
+//
+// # WHAT IT WRAPS, AND WHY OUTERMOST (#3817)
+//
+// sharedidentity.SyntheticProbeMiddleware stamps the request context with the
+// synthetic-probe fact. It sits OUTSIDE CORS and outside every auth middleware
+// because the fact is needed by observation sites deep inside the identity
+// plane - which receive a context and no request - and because a stamp
+// applied per handler is a stamp eleven Authenticate callers can forget. It
+// decides nothing: the value sets one metric label.
+func buildAgentHandler(corsWrapped http.Handler) http.Handler {
+	return sharedidentity.SyntheticProbeMiddleware(corsWrapped)
+}
+
 func initServerImmediately(port string) {
 	globalRouter = mux.NewRouter()
 
@@ -758,7 +760,7 @@ func initServerImmediately(port string) {
 
 	// Start server immediately in goroutine - health checks will pass right away
 	go func() {
-		handler := globalCORS.Handler(globalRouter)
+		handler := buildAgentHandler(globalCORS.Handler(globalRouter))
 		log.Printf("🚀 AxonFlow Agent starting on port %s (status: starting)", port)
 		if err := http.ListenAndServe(":"+port, handler); err != nil {
 			log.Fatalf("Server error: %v", err)
@@ -809,6 +811,26 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
+		// #3593: the tier-admission ledger's health, so an operator reading a
+		// dependency_unreachable refusal can see the cause here. On THIS
+		// handler because this is the one /health is registered to (line ~781);
+		// healthHandler below carries the same member and is registered
+		// nowhere, which the first version of this change got the wrong way
+		// round - the runtime suite read `null` off a live agent.
+		"tier_admission": tierAdmissionHealth(),
+	}
+	// #3957 item 1: whether the LICENSED tier verifiably reached the database,
+	// beside the in-memory `tier` above that it can now be compared against.
+	// This handler and not healthHandler below, for the reason the
+	// tier_admission comment records: that one is registered nowhere, and the
+	// first version of THAT change read `null` off a live agent.
+	//
+	// OMITTED when no promotion was attempted (community / community-saas /
+	// central-agent modes have no licence to sync), so a client can tell "not
+	// applicable" from "attempted and unverified" — the same rule the
+	// platform-identity members below follow.
+	if ls := licenseSyncHealth(); ls != nil {
+		body["license_sync"] = ls
 	}
 	// Platform-identity members (#3660): `edition` and `deployment_mode`,
 	// ADDITIVE beside `tier`. They are here because /health is the response the
@@ -824,9 +846,33 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	for k, v := range heartbeat.HealthIdentityMembers(edition.Current) {
 		body[k] = v
 	}
+	// #3895 PR-A2: which planes the anchored engine decides on this process,
+	// so an operator reads the decision posture off a running deployment
+	// rather than off its environment (PRD v11 §5.1).
+	if posture := decisionPostureHealth(); posture != nil {
+		body["decision"] = posture
+	}
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
+}
+
+// wireEnforcingSeams installs the anchored enforcer that authors every scope in
+// enforcingSeams (#3895 PR-A2, #3564), and refuses to boot when it cannot.
+//
+// FATAL, NOT DEGRADED. The anchored engine is the only author of these scopes'
+// verdicts (PRD v11 §1.1); a process that serves them with no enforcer would
+// fail every request closed, an outage that reads as a policy decision. A
+// container that will not start is the failure an operator sees immediately.
+func wireEnforcingSeams(db *sql.DB) {
+	if err := installAnchoredEnforcer(db, identityAdmission); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	names := make([]string, 0, len(enforcingSeams))
+	for _, seam := range enforcingSeams {
+		names = append(names, seam.scope.String())
+	}
+	log.Printf("✅ [ANCHORED-ENFORCE] the ADR-065 decision plane authors every verdict on: %s", strings.Join(names, ", "))
 }
 
 // currentLicenseTier returns the tier captured at license validation, or
@@ -877,15 +923,6 @@ func Run() {
 	// exists, so there is no concurrent read/write on it.
 	InitProxyTokenGenerator()
 
-	// #3509: validate AXONFLOW_HITL_GRANT_TTL_SECONDS before anything can serve
-	// a request. Deliberately here and not inside the HITL wiring block further
-	// down: that block sits behind the DB-connected branch, so an operator who
-	// set the value and then hit a database problem would boot with the flag
-	// unvalidated. This value decides how long an approved human-oversight
-	// decision stays spendable, and guessing at it either way is invisible
-	// afterwards.
-	hitlGrantTTLOrFatal()
-
 	initServerImmediately(port)
 
 	// License validation (optional for central agent deployments and community mode)
@@ -931,12 +968,16 @@ func Run() {
 		if !result.Valid {
 			log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
 		}
+		if err := refuseOrgLessLicence(result); err != nil {
+			log.Fatalf("❌ %v", err)
+		}
 
 		// Validate license org_id matches deployment ORG_ID.
 		// ORG_ID is the canonical deployment identity (set in docker-compose/env).
 		// License org_id must match — mismatch means data will split across orgs.
+		// A licence naming no organization was refused just above.
 		deploymentOrgID := getDeploymentOrgID()
-		if result.OrgID != "" && result.OrgID != deploymentOrgID {
+		if result.OrgID != deploymentOrgID {
 			log.Fatalf("❌ License org_id mismatch: license has org_id=%q but deployment ORG_ID=%q. "+
 				"These must match or data will be split across organizations. "+
 				"Either update ORG_ID in your docker-compose/env to match the license, "+
@@ -1026,7 +1067,7 @@ func Run() {
 			migrationsPath = "/app/migrations/"
 		}
 
-		// Multi-path migration collection (ADR-012)
+		// Multi-path migration collection (ADR-011)
 		// Collects migrations from core/, enterprise/, industry/* based on DEPLOYMENT_MODE
 		//
 		// A collection failure is FATAL, not a warning. It used to
@@ -1080,86 +1121,35 @@ func Run() {
 
 			defer func() { _ = migrationDB.Close() }()
 
-			// Ensure schema_migrations table exists (run migration 020 first if needed)
-			ensureSchemaMigrationsTable(migrationDB)
-
-			// Set Postgres session variables that downstream migration SQL
-			// reads via current_setting(): app.db_password (migration 017
-			// dblink_exec) + app.deployment_org_id (migration 094 Pass-2
-			// org_id backfill) + app.deployment_kind (migration 094 prod-
-			// safety precondition, #2320). Extracted to
-			// setMigrationSessionVars so the wiring is unit-testable; the
-			// inline form was untested for years and the v9 Pass-2 backfill
-			// regressed on it (Epic #2230 Follow-up A).
-			setMigrationSessionVars(migrationDB, dbPassword, getDeploymentOrgID(), getDeploymentKind())
-
-			// Get list of applied migrations (keyed by composite version/name).
-			// See migrations/core/096_schema_migrations_dedup_composite.sql
-			// for why we cannot dedup on version alone — files like
-			// 025_decision_chain.sql + 025_hitl_oversight_queue.sql share
-			// the version prefix and must be tracked independently.
-			appliedMigrations := getAppliedMigrations(migrationDB)
-
-			successCount := 0
-			skippedCount := 0
-			for _, migration := range migrations {
-				filename := filepath.Base(migration.Path)
-
-				// Skip if already applied (composite version/name key)
-				if appliedMigrations[migrationKey(migration.Version, migration.Name)] {
-					log.Printf("⏭️  Migration %s [%s] already applied (skipping)", filename, migration.Category)
-					skippedCount++
-					continue
-				}
-
-				// Read migration file
-				sqlBytes, err := os.ReadFile(migration.Path)
-				if err != nil {
-					log.Printf("⚠️  Failed to read migration %s: %v", filename, err)
-					continue
-				}
-
-				// Substitute GRAFANA_PASSWORD for migration 107 (grafana_database)
-				sqlContent, err := substituteGrafanaPassword(string(sqlBytes))
-				if err != nil {
-					log.Fatalf("Migration %s failed: %v", filename, err)
-				}
-				if sqlContent == "" {
-					log.Printf("⚠️  Skipping %s (Grafana not deployed)", filename)
-					skippedCount++
-					continue
-				}
-
-				// Execute migration (not in transaction to allow migrations to manage their own transactions)
-				startTime := time.Now()
-				_, err = migrationDB.Exec(sqlContent)
-				executionTimeMs := int(time.Since(startTime).Milliseconds())
-
-				if err != nil {
-					// Record failure
-					recordMigrationFailure(migrationDB, migration.Version, filename, err, executionTimeMs)
-
-					// Fail immediately on migration error (Principle 3: No Silent Failures)
-					log.Printf("❌ Migration %s [%s] FAILED: %v", filename, migration.Category, err)
-					log.Fatalf("Database migrations failed. Exiting to prevent incomplete setup.")
-				}
-
-				// Record success
-				recordMigrationSuccess(migrationDB, migration.Version, filename, executionTimeMs)
-				log.Printf("✅ Migration %s [%s] applied successfully (%dms)", filename, migration.Category, executionTimeMs)
-				successCount++
+			// The boot migration runner is RunMigrations (migration_helpers.go): the
+			// schema_migrations table, the session variables the migration SQL reads,
+			// the applied set, every migration in order, then #3905's view-write
+			// closure. It is one function so the v10.2.0 -> v11 upgrade test (#3894)
+			// drives the code this boot runs rather than a copy of it. Each failure
+			// exits with the message it logged when the loop was inline here.
+			if _, _, err := RunMigrations(migrationDB, migrations, MigrationSessionVars{
+				DBPassword:      dbPassword,
+				DeploymentOrgID: getDeploymentOrgID(),
+				DeploymentKind:  getDeploymentKind(),
+			}); err != nil {
+				fatalMigrationError(err)
 			}
 
-			log.Printf("✅ Database migrations completed: %d applied, %d skipped, %d total", successCount, skippedCount, len(migrations))
+			// PRD v11 §1.5: the once-only import of legacy per-policy overrides into
+			// an unpublished typed draft per organization (migrations/core/183). After
+			// the enforcer, so every migration has applied; never fatal, because an
+			// organization whose import fails has no record and is tried again at the
+			// next boot, and nothing any engine enforces depends on it.
+			importPolicyOverrideDrafts(migrationDB)
 
 			// #2535: sync the validated license tier into the deployment org's
 			// organizations.tier row. Runs here — after migrations, on the
-			// migrationDB connection on which the mig-117 helper was just
+			// migrationDB connection on which the promote helpers were just
 			// defined. The org_id is passed to the helper explicitly (it does
 			// NOT read app.deployment_org_id), so this does not depend on which
 			// pooled connection set_config landed on. The promotion goes through
-			// the SECURITY DEFINER helper promote_deployment_org_license (a
-			// SELECT, executed as the function owner) so the write is RLS-safe
+			// the SECURITY DEFINER helper promote_deployment_org_license_returning
+			// (#4007; a SELECT, executed as the function owner) so the write is RLS-safe
 			// under AXONFLOW_DB_USE_APP_ROLE rather than a raw INSERT/UPDATE that
 			// FORCE RLS on organizations (mig 103) would reject. No-op in
 			// community / central-agent modes (licenseValidated == false).
@@ -1169,9 +1159,24 @@ func Run() {
 		}
 	}
 
+	// Installed policy packs (PRD v11 §1.9, #4126), loaded before the shared
+	// engine below is built, because their detectors ride on its every load. A
+	// variable naming a pack this image cannot install refuses the process here.
+	if err := installPolicyPacks(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+
 	// Initialize database, audit manager, and policy engine.
-	// DB mode: full enforcement with DB-loaded policies + DB audit.
-	// No-DB mode: engine with nil DB (community fallback) + JSONL audit.
+	//
+	// There is no no-DB mode here. The else arm is fatal: without PostgreSQL
+	// the agent cannot enforce policy, write audit rows or hold the tier-limit
+	// ledger, so it refuses to start rather than serving traffic with those
+	// switched off. The comment that used to sit here still described a
+	// removed "engine with nil DB (community fallback) + JSONL audit" fallback,
+	// which reads as though unsetting DATABASE_URL degrades the agent instead
+	// of stopping it - and therefore as though it were a way to serve traffic
+	// with the #3593 scale limits unenforced. It is not, and
+	// TestNoDatabaseMeansNoServingRatherThanNoLimit keeps it that way.
 	if dbURL != "" {
 		var err error
 		bootCtx := context.Background()
@@ -1207,6 +1212,19 @@ func Run() {
 		// return ErrEnterpriseOnly) — a harmless no-op there.
 		ensureFleetValidatorsRegistered()
 
+		// #3593: tier scale limits. The ledger, the node lease store and the
+		// refusal audit sink all ride the application pool; the seen-set is
+		// warmed for the deployment organization in the background; and this
+		// agent admits ITSELF as a node before it serves - fatal only on a
+		// positive "another node holds the only lease" answer, never on an
+		// unreachable store (see admitNodeAtBoot).
+		initTierAdmission(usageDB, getDeploymentOrgID())
+		// Drain the admission's background write queue on the way out. A
+		// queued telemetry record is a principal this process knows and the
+		// ledger does not; see shutdownTierAdmission for what losing one costs.
+		defer shutdownTierAdmission()
+		admitNodeAtBoot(bootCtx, getDeploymentOrgID())
+
 		// Audit manager with DB — writes to Postgres
 		initAuditManager(usageDB)
 		if auditManager != nil {
@@ -1222,14 +1240,11 @@ func Run() {
 			}
 		}
 
-		// Tier-aware policy engine (tenant-specific policies from DB)
-		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
-		log.Println("✅ Tier-aware policy engine initialized")
-
 		// Per-org detection-action overrides (#2581). Wires the short-TTL cache
-		// to authDB so the MCP + gateway check paths can resolve a per-org PII /
-		// SQLi / dangerous-* posture on top of the deployment-global env config.
-		// No-op in no-DB mode (cache stays nil → global config used everywhere).
+		// to authDB so the MCP + gateway check paths can resolve an organization's
+		// recorded PII / SQLi / dangerous-* override - the only thing that may
+		// replace a stored policy action (#3961). No-op in no-DB mode (cache stays
+		// nil → no override resolves; the stored actions decide everywhere).
 		InitDetectionOverrides(authDB)
 
 		// Per-org require_user_token posture (#3476, ADR-060 follow-up). Wires
@@ -1309,6 +1324,18 @@ func Run() {
 			"which includes PostgreSQL. See: https://docs.getaxonflow.com/docs/deployment/quickstart")
 	}
 
+	// v11 retired the decision mode and its shadow observer (PRD v11 §1.1,
+	// §5.1), and no process flag narrows what the decision plane decides
+	// (§1.7): a process whose environment still sets one refuses to start,
+	// naming it, rather than running in a posture its own configuration
+	// misdescribes.
+	if err := retiredenv.Refuse(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	if err := refuseNarrowedDetection(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+
 	// ADR-065 identity compatibility adapters (#3550). Installed here, AFTER
 	// the database block, because the built-in trust realms are derived from
 	// what that block actually wired (a SCIM directory, a revocation deny-list,
@@ -1316,22 +1343,15 @@ func Run() {
 	// are positive declarations that a source does not exist rather than
 	// absences.
 	//
-	// It runs unconditionally, in every deployment mode, so an unrecognized
-	// AXONFLOW_IDENTITY_COMPAT_MODE refuses to boot even on a deployment where
-	// nothing else would consult it. Default (unset) is off, and off touches
-	// nothing on the authentication path.
-	initIdentityCompat()
+	// It runs unconditionally, in every deployment mode.
+	initIdentityPlane()
 
-	// ADR-065 per-plane decision shadow (#3564). AFTER initIdentityCompat and
-	// after ensureFleetValidatorsRegistered, because it reads the same
-	// per-organization settings store the identity axis does - the two modes
-	// are two columns of one row and must come from one store on one TTL.
-	//
-	// Runs unconditionally, in both DB and no-DB mode, so an unrecognized
-	// AXONFLOW_DECISION_SHADOW_MODE refuses to boot even on a deployment where
-	// nothing else would consult it. Default (unset) is off, and off costs one
-	// atomic load per policy evaluation and nothing else.
-	initDecisionShadow(usageDB)
+	// ADR-065: the anchored engine is the only author of every enforcing
+	// plane's verdict (PRD v11 §1.1). AFTER initIdentityPlane, because every
+	// request's subject is admitted through the identity plane it bootstraps.
+	// A process that cannot wire the enforcer cannot decide anything, so it
+	// refuses to start (wireEnforcingSeams).
+	wireEnforcingSeams(usageDB)
 
 	// DB-independent initializations (work in both DB and no-DB mode)
 	sharedpolicy.InitGlobalExfiltrationChecker()
@@ -1339,14 +1359,12 @@ func Run() {
 	log.Printf("✅ Exfiltration checker initialized (enabled=%v, maxRows=%d, maxBytes=%d)",
 		exfilLimits.Enabled, exfilLimits.MaxRowsPerQuery, exfilLimits.MaxBytesPerQuery)
 
-	sharedpolicy.InitGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalOrchestratorEndpoint(getOrchestratorURL())
-	dynamicEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	if dynamicEval != nil {
-		config := dynamicEval.GetConfig()
-		log.Printf("✅ Dynamic policy evaluator initialized (enabled=%v, endpoint=%s, graceful=%v)",
-			config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
-	}
+	// The removed detection-posture variables (#3961): one WARN line and one
+	// axonflow_ignored_posture_env_total increment per variable still set. Boot
+	// continues - the stored policy actions decide - so a deployment upgrading
+	// with PII_ACTION in its environment learns it here instead of from a
+	// verdict that changed without explanation.
+	ReportIgnoredPostureEnv("agent")
 
 	InitDetectionConfigs()
 	log.Println("✅ Detection configs cached (MCP + Gateway static policy settings)")
@@ -1443,7 +1461,7 @@ func Run() {
 		defer meteringService.Stop()
 	}
 
-	// Initialize MCP connector registry (ADR-007: three-tier configuration)
+	// Initialize MCP connector registry (ADR-006: three-tier configuration)
 	// Configuration priority: Database > Config File (AXONFLOW_CONFIG_FILE) > Environment Variables
 	if configFile := os.Getenv("AXONFLOW_CONFIG_FILE"); configFile != "" {
 		log.Printf("[MCP] Using config file from AXONFLOW_CONFIG_FILE: %s", configFile)
@@ -1463,7 +1481,7 @@ func Run() {
 		}()
 	}
 
-	// Initialize TenantConnectorRegistry for per-tenant connector management (ADR-007)
+	// Initialize TenantConnectorRegistry for per-tenant connector management (ADR-006)
 	// This provides dynamic connector loading with three-tier configuration:
 	// Database > Config File > Environment Variables
 	tenantConnectorEnabled := os.Getenv("TENANT_CONNECTOR_REGISTRY_ENABLED") != "false"
@@ -1476,7 +1494,7 @@ func Run() {
 			connectorFactory := DefaultConnectorFactory()
 			tenantRegistry := InitTenantConnectorRegistry(runtimeConfigSvc, connectorFactory)
 			if tenantRegistry != nil {
-				log.Println("AxonFlow Agent initialized with per-tenant connector registry (ADR-007)")
+				log.Println("AxonFlow Agent initialized with per-tenant connector registry (ADR-006)")
 				// Start periodic cleanup of expired connectors (StartPeriodicCleanup spawns its own goroutine)
 				tenantRegistry.StartPeriodicCleanup(context.Background(), 5*time.Minute)
 				// Ensure tenant connectors are properly disconnected on shutdown
@@ -1556,9 +1574,8 @@ func Run() {
 	// BuiltinRealmDeployment exists to prevent. Community builds resolve to a
 	// no-op.
 	RegisterCAEPReceiver(globalRouter, usageDB)
-	RegisterEnforcePrecondition(globalRouter)
 
-	// Register connector refresh API endpoints (ADR-007)
+	// Register connector refresh API endpoints (ADR-006)
 	// These endpoints allow manual cache invalidation for connector configurations.
 	// #3067 (S-6): RegisterConnectorRefreshHandlers now wraps every route in
 	// apiAuthMiddleware and binds the tenancy to the authenticated credential,
@@ -1613,7 +1630,7 @@ func Run() {
 	// the shared policy engine, forwards to upstream, records audit.
 	RegisterOpenAICompatHandlers(globalRouter)
 
-	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
+	// Register Static Policy API endpoints (ADR-019: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
 
@@ -1752,11 +1769,6 @@ func Run() {
 	// `hitl_approval_queue` table directly. Single enforcement chokepoint
 	// for the tier gate + pending cap + history.
 	mcpHITLService = hitlService
-	// ADR-061 / #3329: route FinCrime scorer above-threshold decisions into
-	// the same HITL Service chokepoint (tier gate + pending cap + history)
-	// via the bridge, so a scored needs_approval verdict is a REVIEWABLE
-	// queue entry, not just a wire verdict.
-	fincrimeHITLBridge = NewHITLBridge(hitlServiceBridgeAdapter{svc: hitlService})
 	hitlHandler := hitl.NewHandler(hitlService)
 	// HITL routes need apiAuthMiddleware so X-Org-ID/X-Tenant-ID headers are set
 	// from auth credentials (same pattern as circuit breaker).
@@ -1820,18 +1832,6 @@ func Run() {
 	if cbErrorThreshold != 10 || cbPolicyViolationThreshold != 20 {
 		log.Printf("[CB] thresholds overridden: error=%d policy_violation=%d (defaults are 10/20)", cbErrorThreshold, cbPolicyViolationThreshold)
 	}
-	// ADR-061 / #3329: Fraud & Risk Add-on Engine A seam. Explicit
-	// construction (never init() registration, #3268). Returns nil on
-	// community builds; on enterprise builds the engine is always present
-	// (context validation is the protocol-integrity control) and the Engine
-	// B scorer client attaches only when AXONFLOW_FINCRIME_SCORER_URL is
-	// set. Consulted from evaluateInputPolicies, which covers the decide +
-	// MCP query/execute/check-input planes from one seam.
-	fincrimeEngine = fincrime.NewEngineFromEnv()
-	if fincrimeEngine.ScorerConfigured() {
-		log.Printf("[FinCrime] Engine A seam wired with Engine B scorer client")
-	}
-
 	notifService := circuitbreaker.NewNotificationService(cbRepo)
 	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
 	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
@@ -1897,7 +1897,7 @@ func Run() {
 		}
 	}
 
-	// Register Reverse Proxy routes (ADR-026: Single Entry Point Architecture)
+	// Register Reverse Proxy routes (ADR-024: Single Entry Point Architecture)
 	// Proxies requests to Orchestrator and Portal based on path
 	proxyConfig := GetProxyConfig()
 	proxyHandler, err := NewReverseProxyHandler(proxyConfig)
@@ -1906,7 +1906,7 @@ func Run() {
 		log.Println("   SDK clients will need to connect directly to backend services")
 	} else {
 		proxyHandler.RegisterProxyRoutes(globalRouter)
-		log.Println("✅ Reverse proxy initialized (ADR-026: Single Entry Point)")
+		log.Println("✅ Reverse proxy initialized (ADR-024: Single Entry Point)")
 	}
 
 	// Community SaaS: self-registration endpoint (no auth — bootstrap credential)
@@ -2083,6 +2083,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
+		// #3593: the tier-admission ledger's health, so an operator reading a
+		// dependency_unreachable refusal can see the cause here.
+		"tier_admission": tierAdmissionHealth(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
@@ -2171,8 +2174,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Canonical audit_logs coverage for the agent /api/request proxy plane
 	// (#2684 — closes the audit-coverage gate DEFERRED for clientRequestHandler).
-	// Every TERMINAL deny below — circuit breaker, static/tenant policy, HITL
-	// gate, budget — records an explainable plane=agent row through the
+	// Every TERMINAL deny below — circuit breaker, the anchored refusal,
+	// budget — records an explainable plane=agent row through the
 	// established decide writer, so the portal /decisions feed + the SEBI/
 	// EU-AI-Act/OJK/RBI exporters see the agent-side block. Previously these
 	// denies were recorded only on the legacy agent_audit_logs plane, which has
@@ -2181,7 +2184,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Identity is fixed now (user resolved + tenant verified) so it is stable
 	// across every deny branch. plane=agent stores the verdict verbatim (the
 	// writer only canonicalizes the decision/openai_compat planes), so the
-	// canonical AuditVerdict* / needs_approval values are passed directly.
+	// canonical AuditVerdict* values are passed directly.
 	proxyTraceID := traceIDFromHeader(r.Header.Get("traceparent"))
 	if proxyTraceID == "" {
 		proxyTraceID = newW3CTraceID()
@@ -2235,244 +2238,71 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Apply static policy enforcement
-	// Uses UnifiedPolicyEngine (shared engine) as primary path, with fallbacks.
-	// Phase 2: Tenant-specific policies via tierAwarePolicyEngine (below).
 	//
-	// #3296: Phase 1 and Phase 2 remain TWO evaluation passes over
-	// static_policies here — the passes are not collapsed into one, because
-	// they implement genuinely different semantics, not a redundant re-scan.
-	// Both phases DO now read static_policies through the same converged
-	// substrate (sharedpolicy.PolicyLoader, platform/shared/policy/loader.go:
-	// Phase 1 via GetPolicies/EvaluateRequest, Phase 2 via
-	// sharedpolicy.ScanEffectivePolicyRows inside StaticPolicyRepository
-	// .GetEffective) — see that file's doc for how GetEffective's two-pass
-	// org+global scoping, segment filtering, and tier awareness now map onto
-	// the loader. What differs between the two evaluation passes, and why,
-	// file:line:
-	//
-	//   - platform/shared/policy/engine.go:100-181 (UnifiedPolicyEngine
-	//     .EvaluateRequest) evaluates every category-filtered/segment-filtered
-	//     policy and blocks on the FIRST ActionBlock match in
-	//     priority/created_at sort order. It applies NO tier-hierarchy
-	//     shadowing (system → org → tenant "most specific wins") and NO
-	//     Enterprise policy_overrides downgrade.
-	//   - platform/agent/tier_aware_policy_engine.go:217-231
-	//     (TierAwarePolicyEngine.EvaluatePolicy) walks the FULL tier-ordered
-	//     effective set (system → organization → tenant, first match wins —
-	//     sortPoliciesByTierAndPriority) with policy.EffectiveOverride
-	//     downgrade applied per-policy (static_policy_repository.go
-	//     GetEffective/applyEffectiveOverride), THEN combines the strictest
-	//     applicable segment-scoped match on top (ADR-060 Decision 1,
-	//     combineTierAndSegmentResults) — semantics engine.go does not
-	//     implement.
-	//   - Category coverage differs, not just combining semantics: Phase 1 is
-	//     restricted to proxyPolicyCategories (SQLi/dangerous/admin-access/
-	//     sensitive-data/compliance-RBI/compliance-SEBI/PII, see var
-	//     proxyPolicyCategories above) via EvalOptions.Categories, while
-	//     Phase 2's GetEffectivePolicies has NO category filter — it is the
-	//     tier+override authority for every category, including ones Phase 1
-	//     skips. Phase 2 is therefore not a redundant re-scan of Phase 1's
-	//     work; it is additionally authoritative for out-of-proxy-category
-	//     policies and for the override-downgrade/tier-shadow contract.
-	//
-	// Unifying this into a single pass means moving tier-hierarchy shadowing,
-	// override-downgrade, and the ADR-060 segment combiner into the shared
-	// engine (engine.go) itself, since that is the component every other
-	// verdict surface (gateway pre-check, MCP input/output scan, OpenAI-compat,
-	// the response processor) also calls — changing its combining semantics
-	// changes behavior for all of those surfaces at once, not just this one.
-	// That is a substrate-level change in its own right, not a tail-end of
-	// this read-convergence. Reimplementing the same tier/override/segment
-	// logic a second time directly in run.go was rejected as the opposite of
-	// consolidation: it would leave two independent copies of that logic to
-	// keep in sync instead of one.
-	//
-	// What DID collapse here: cross-phase duplicate identifiers in
-	// TriggeredPolicies (see appendTriggeredPolicyID below and its use at
-	// both append sites) — TestClientRequestHandler_NoDuplicateTriggeredPolicies
-	// and TestPolicyTestHandler_NoDuplicateTriggeredPolicies
-	// (run_dedup_triggered_policies_test.go) are the regression tests.
+	// ONE PASS (#4253, PRD v11 §1 item 1). The shared engine's evaluation below
+	// is the anchored engine's DETECTOR input: its verdict fields name the
+	// evaluated rows for the audit rows and are then replaced by the anchored
+	// engine's verdict (proxyEnforced) before anything decides on them. The second
+	// pass that used to follow an anchored approval, over the stored action column
+	// and the organization's legacy per-policy overrides, is retired with the
+	// proxy_tier plane; what it refused on a shipped row, the anchored engine
+	// refuses (legacycompile's proxy_request PlaneSpec). The segment gate that fed
+	// it went with it: the anchored engine reads no governance segments, so a
+	// segment resolution decides nothing on this route, as on decide.
 	policyEvalStart := time.Now()
 	log.Printf("📋 Evaluating static policies for request type: %s", req.RequestType)
-	var policyResult *StaticPolicyResult
+	// proxyEvaluation is the shared engine's evaluation, whose row facts are the
+	// anchored engine's detector inputs below; nil when nothing evaluated.
+	proxyEvaluation := proxyDetectorPass(r.Context(), req.Query, user)
+	if proxyEvaluation != nil {
+		// #3365: evaluation-time display names for the ids the deny audit rows
+		// below record. The pre-evaluation deny (the circuit breaker) carries only
+		// a builtin-resolvable guard id.
+		proxyAudit.policyNames = convertSharedResultToStatic(proxyEvaluation).PolicyNames
+		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
+			proxyEvaluation.PoliciesEvaluated, proxyEvaluation.ProcessingTimeMs)
+	}
 
-	// #3051 (ADR-060 P3) + #3266: resolve the caller's governance-segment set
-	// ONCE, up front, so Phase 1 (shared engine, below) and Phase 2
-	// (tier-aware engine) evaluate against the SAME membership set instead of
-	// Phase 1 running segment-blind. Previously this resolved only inside the
-	// Phase 2 block, so the shared engine had no segment context and would
-	// both ACT ON and REPORT segment-scoped static_policies rows for callers
-	// outside the segment (#3266).
-	segmentIDs, segOK := resolveUserSegmentsForEnforcement(r.Context(), user.OrgID, user.Email)
-
-	// #3293 locked invariant: a segment-resolution FAILURE is handled at the
-	// resolution SITE and must NEVER be propagated downstream as a nil/empty
-	// segment set — unlike the observability-only session-create resolution
-	// (mcp_server_handler.go's authenticateMCPSession), a genuine resolution
-	// ERROR here must DENY the request, never silently fall back to org-only
-	// (ADR-060 §Fail-closed, locked). Deny and return HERE, before Phase 1
-	// ever runs, so the shared engine is never called with a nil Segments set
-	// that actually means
-	// "failed to load" — below this point (Phase 1 and Phase 2 alike),
-	// nil/empty Segments means only "resolved to none / no identity"
-	// (community mode, no SCIM configured, or zero real memberships), never
-	// "failed." segOK=true with a nil/empty set is NOT a failure; it proceeds
-	// org-only exactly as pre-#3051.
-	if !segOK {
-		reason := "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
-		triggeredPolicies := []string{"segment_resolution_failed"}
-		log.Printf("🛡️ Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
-
-		// Canonical audit row for the fail-closed deny (#2684).
-		auditProxyDeny(AuditVerdictBlocked, triggeredPolicies, []string{reason})
-
-		// Record policy violation for auto-trip threshold tracking (#1176),
-		// same as the policy-block path below (ADR-052 §5, #2318).
-		if circuitBreakerInstance != nil {
-			for _, policyID := range triggeredPolicies {
-				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ClientID, policyID); err != nil {
-					log.Printf("⚠️ Circuit breaker RecordPolicyViolation error: %v", err)
-				}
-			}
-		}
-
-		// Track blocked request metrics
-		if agentMetrics != nil {
-			atomic.AddInt64(&agentMetrics.blockedRequests, 1)
-			latencyMs := int64(time.Since(startTime).Milliseconds())
-			agentMetrics.recordLatency(latencyMs, "static")
-		}
-
-		// Record Prometheus metrics
-		promRequestsTotal.WithLabelValues("blocked").Inc()
-		promBlockedRequests.Inc()
-		promPolicyEvaluations.Inc()
-		promRequestDuration.WithLabelValues("static").Observe(float64(time.Since(startTime).Milliseconds()))
-
-		response := ClientResponse{
+	// #3564 wave two: THE ANCHORED ENGINE AUTHORS THIS ROUTE'S POLICY VERDICT
+	// (PRD v11 §1.1). Its verdict REPLACES policyResult before anything below
+	// reads it - the budget check and every record. It is the only verdict: the
+	// agent's pass runs no second pass, holds nothing, spends no approval (#4253).
+	proxyEnforced := enforceRequestPass(r.Context(), proxyRequestSeamScope, requestPassInput{
+		orgID:        client.OrgID,
+		decisionID:   proxyDecisionID,
+		stage:        DecisionStageLLM,
+		query:        req.Query,
+		auth:         auth,
+		user:         user,
+		userIdentity: callerUserIdentity(auth.Kind, userAuthErr, req.UserToken),
+		observation:  observationOf(proxyEvaluation),
+	})
+	proxyAudit.decisionEngine = proxyEnforced.engine
+	proxyAudit.decisionSubjectType = proxyEnforced.subjectType
+	if proxyEnforced.unavailable != "" {
+		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
+		// the legacy engine's verdict because a dependency failed would turn
+		// enforcement off during exactly the incidents it exists for.
+		recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, "unavailable", proxyEnforced.unavailable)
+		auditProxyDeny(AuditVerdictError, []string{"decision_enforcement_unavailable"}, []string{proxyEnforced.unavailable})
+		promRequestsTotal.WithLabelValues("error").Inc()
+		writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
 			Success:     false,
 			Blocked:     true,
-			BlockReason: reason,
+			BlockReason: enforceCauseMessages[proxyEnforced.unavailable],
 			PolicyInfo: &PolicyEvaluationInfo{
-				MatchedPolicies:   triggeredPolicies,
-				PoliciesEvaluated: triggeredPolicies,
+				MatchedPolicies:   []string{"decision_enforcement_unavailable"},
+				PoliciesEvaluated: []string{"decision_enforcement_unavailable"},
 				ProcessingTime:    time.Since(startTime).String(),
 				TenantID:          user.TenantID,
 			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Error encoding service permission denied response: %v", err)
-		}
+		}, proxyEnforced)
 		return
 	}
-
-	// Check if gateway static policies are enabled (proxy uses gateway config)
-	// #2581: resolve per-org posture (org with no override → deployment-global).
-	gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), user.OrgID)
-	sharedEngine := sharedpolicy.GetGlobalEngine()
-	if !gatewayDetectionCfg.Enabled {
-		// Static policies disabled — create empty result
-		policyResult = &StaticPolicyResult{}
-	} else if sharedEngine != nil {
-		// Primary path: UnifiedPolicyEngine (same as Gateway handler)
-		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
-		// #3001: routed through the shared role predicate rather than a
-		// literal `== "admin"`. The literal excluded `owner`, so an owner —
-		// a strict SUPERSET of admin since #2993 — was enforced MORE
-		// strictly than an admin on admin-access queries. `user` here is the
-		// ResolveUser-validated identity, not a client-supplied field.
-		if sharedidentity.RoleIsAdministrative(user.Role) {
-			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
-		}
-		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
-			Plane:           legacycompile.PlaneProxyRequest,
-			TenantID:        user.TenantID,
-			OrgID:           user.OrgID,
-			OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
-			ConnectorName:   "proxy",
-			UserID:          fmt.Sprintf("%d", user.ID),
-			Categories:      proxyPolicyCategories,
-			SkipCategories:  skipCats,
-			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
-			// #3266: the caller's already-resolved governance-segment set
-			// (above), so a segment-scoped static_policies row can only
-			// act/report for a member — closes the Phase-1 cross-segment leak.
-			Segments: segmentIDs,
-		})
-		policyResult = convertSharedResultToStatic(requestResult)
-		// #3365: evaluation-time display names for the ids the deny/HITL audit
-		// rows below record. The pre-evaluation denies (circuit breaker,
-		// segment resolution) carry only builtin-resolvable guard ids.
-		proxyAudit.policyNames = policyResult.PolicyNames
-		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
-			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
-	} else {
-		log.Println("[Proxy] WARNING: No policy engine available (shared engine not initialized)")
-		policyResult = &StaticPolicyResult{}
-	}
-
-	// Phase 2: Tenant-specific policies (if not already blocked and tier engine available)
-	if !policyResult.Blocked && tierAwarePolicyEngine != nil {
-		ctx := r.Context()
-
-		// #3051 (ADR-060 P3) + #3293: segmentIDs was resolved once, up front
-		// (above, #3266) — a resolution FAILURE (segOK=false) already denied
-		// and returned before Phase 1 ran, so by construction this point is
-		// only reached with a successfully-resolved (possibly nil/empty) set.
-		//
-		// Decision 5 (#3490): the org argument was a literal `nil` here, which
-		// GetEffective turned into `orgIDStr = ""` and bound to the org leg of
-		// its pass-A predicate - so an org-tier policy could never match on
-		// this plane, and on an org whose org_id differs from its tenant id
-		// the RLS scope fell back to the tenant and matched nothing at all.
-		// user.OrgID is the licence-derived org the request already
-		// authenticated as (Phase 1 above passes exactly the same value).
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), segmentIDs, req.Query,
-			TierShadowContext{Plane: legacycompile.PlaneProxyTier, Principal: user.Email, OrgID: user.OrgID})
-		if err != nil {
-			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
-		} else if tierResult.Matched && tierResult.Action == "block" {
-			// Tenant/segment policy triggered a block
-			policyResult.Blocked = true
-			policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-			policyResult.TriggeredPolicies = appendTriggeredPolicyID(policyResult.TriggeredPolicies, tierResult.PolicyID)
-			// #3365: the tier engine carries the matched row's display name.
-			if tierResult.PolicyID != "" && tierResult.PolicyName != "" {
-				proxyAudit.policyNames = mergePolicyNames(proxyAudit.policyNames,
-					map[string]string{tierResult.PolicyID: tierResult.PolicyName})
-			}
-			policyResult.Severity = tierResult.Severity
-			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
-		} else if tierResult.Matched {
-			// Policy matched but action is not block (allow, warn, log, redact, require_approval)
-			policyResult.TriggeredPolicies = appendTriggeredPolicyID(policyResult.TriggeredPolicies, tierResult.PolicyID)
-			// #3365: name the matched row on the HITL/deny audit paths below.
-			if tierResult.PolicyID != "" && tierResult.PolicyName != "" {
-				proxyAudit.policyNames = mergePolicyNames(proxyAudit.policyNames,
-					map[string]string{tierResult.PolicyID: tierResult.PolicyName})
-			}
-			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
-
-			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
-			if tierResult.Action == "require_approval" {
-				policyResult.RequiresApproval = true
-				// #3509: attribute the hold so the queue entry raised below
-				// names the rule that caused it. Fill-if-empty, never
-				// overwrite: a Phase 1 static/system policy that already
-				// resolved to require_approval held this request FIRST, and
-				// the entry must name the rule a reviewer will look up, not
-				// whichever engine happened to run last.
-				if policyResult.ApprovalPolicyID == "" {
-					policyResult.ApprovalPolicyID = tierResult.PolicyID
-					policyResult.ApprovalPolicyName = tierResult.PolicyName
-				}
-				log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
-			}
-		}
-	}
+	policyResult, proxyReason := proxyEnforced.staticPolicyResult(proxyRequestSeamScope)
+	proxyAudit.decisionPolicyBundle = proxyEnforced.policyBundle
+	proxyAudit.decisionReasonCode = proxyReason
+	proxyAudit.carryAnchoredIdentity(proxyEnforced)
 
 	policyEvalTime := time.Since(policyEvalStart)
 	log.Printf("✅ Policy evaluation complete: Blocked=%v, TriggeredPolicies=%d", policyResult.Blocked, len(policyResult.TriggeredPolicies))
@@ -2487,7 +2317,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// Record policy violation for auto-trip threshold tracking (#1176)
 		// ADR-052 §5 (issue #2318): clientID is the credential identity, not
 		// legacy `client.ID`. See contract block at the Check call above.
-		if circuitBreakerInstance != nil {
+		if circuitBreakerInstance != nil && violationFeedsCircuitBreaker(proxyReason) {
 			for _, policyID := range policyResult.TriggeredPolicies {
 				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ClientID, policyID); err != nil {
 					log.Printf("⚠️ Circuit breaker RecordPolicyViolation error: %v", err)
@@ -2521,123 +2351,10 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Error encoding service permission denied response: %v", err)
-		}
-		return
-	}
-
-	// Issue #1081: HITL (Human-in-the-Loop) enforcement for compliance frameworks
-	// HITL is an ENTERPRISE-ONLY feature. It is ONLY triggered by policy evaluation
-	// returning require_approval action. We do NOT trust client-provided context metadata.
-	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
-	// #3509 defect 2: spend an outstanding single-use approval before the hold
-	// is applied. Placed here rather than inside the branch below so an
-	// admitted request rejoins the ordinary allow path in one piece - budget
-	// check, rate limiting, connector execution and the allow audit row all
-	// run exactly as they would for a request no policy ever held.
-	if requiresHITL {
-		// The FULL principal, not just the user: see the decide plane's note.
-		if grantID, admitted := consumeApprovalGrant(r.Context(), hitlPlaneAgentRequest, hitl.GrantSubject{
-			OrgID:    client.OrgID,
-			TenantID: client.TenantID,
-			ClientID: client.ClientID,
-			UserID:   fmt.Sprintf("%d", user.ID),
-		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
-			requiresHITL = false
-			// Recorded on the audit identity so that if a LATER, unrelated
-			// control refuses this request anyway - the budget check below is
-			// the realistic one - the deny row shows a human approval was
-			// spent on a request that never ran. The grant is single use and
-			// is gone either way; an operator seeing consumed_at set on the
-			// queue row deserves to find the reason on this plane too.
-			proxyAudit.approvalGrantID = grantID
-			log.Printf("✅ [Proxy Mode] HITL hold lifted by approved request %s (single use, now spent)", logutil.Sanitize(grantID))
-		}
-	}
-	if requiresHITL {
-		log.Printf("⏸️ [Proxy Mode] HITL required - blocking request for human approval")
-
-		// #3509: raise the reviewable queue entry. Before this, a
-		// require_approval policy on this plane returned 403 with an audit row
-		// and NOTHING for a reviewer to act on - the caller was refused and,
-		// unlike a block, had no override flow and no reviewer surface either.
-		hitlEnqueue := enqueuePolicyStepUp(r.Context(), policyStepUpInput{
-			Plane:      hitlPlaneAgentRequest,
-			OrgID:      client.OrgID,
-			TenantID:   client.TenantID,
-			ClientID:   client.ClientID,
-			UserID:     fmt.Sprintf("%d", user.ID),
-			UserEmail:  user.Email,
-			PolicyID:   policyResult.ApprovalPolicyID,
-			PolicyName: policyResult.ApprovalPolicyName,
-			Reason:     "human approval required by policy",
-			Severity:   policyResult.Severity,
-			DecisionID: proxyDecisionID,
-			// The same trace-id proxyAudit records, so the approval and the
-			// hold decision land in one chain (#3718).
-			CorrelationID: proxyTraceID,
-			Stage:         DecisionStageLLM,
-			Query:         req.Query,
-		})
-		proxyAudit.approvalEnqueue = hitlEnqueue.Outcome
-		proxyAudit.approvalRequestID = hitlEnqueue.RequestID
-
-		// Canonical audit row for the HITL gate decision (#2684): needs_approval.
-		// VerdictNeedsApproval == the canonical audit value "needs_approval", and
-		// plane=agent stores it verbatim, so it lands canonical without a remap.
-		//
-		// #3509: the reason now records whether a reviewable entry was actually
-		// raised. A hold whose entry was refused (pending cap, tier, write
-		// failure) is the SAME invisible dead end this change removes, and this
-		// row is the only durable place it is recorded.
-		hitlReasons := []string{"human approval required by policy"}
-		if hitlEnqueue.RequestID != "" {
-			hitlReasons = append(hitlReasons, policyStepUpReason(hitlEnqueue.RequestID))
-		} else if hitlEnqueue.Detail != "" {
-			hitlReasons = append(hitlReasons, hitlEnqueue.Detail)
-		}
-		auditProxyDeny(VerdictNeedsApproval,
-			append(policyResult.TriggeredPolicies, "hitl_compliance"),
-			hitlReasons)
-
-		// Track HITL blocked request metrics
-		if agentMetrics != nil {
-			atomic.AddInt64(&agentMetrics.blockedRequests, 1)
-			latencyMs := int64(time.Since(startTime).Milliseconds())
-			agentMetrics.recordLatency(latencyMs, "hitl")
-		}
-
-		// Record Prometheus metrics
-		promRequestsTotal.WithLabelValues("hitl_blocked").Inc()
-		promBlockedRequests.Inc()
-		promPolicyEvaluations.Inc()
-		promRequestDuration.WithLabelValues("hitl").Observe(float64(time.Since(startTime).Milliseconds()))
-
-		hitlMatched := append(policyResult.TriggeredPolicies, "hitl_compliance")
-		response := ClientResponse{
-			Success: false,
-			Blocked: true,
-			// Pinned literal: every shipped SDK matches this string to enter
-			// its HITL branch. #3509's queue-entry id rides ApprovalRequestID.
-			BlockReason:       "require_approval",
-			ApprovalRequestID: hitlEnqueue.RequestID,
-			PolicyInfo: &PolicyEvaluationInfo{
-				MatchedPolicies:   hitlMatched,
-				PoliciesEvaluated: hitlMatched,
-				StaticChecks:      policyResult.ChecksPerformed,
-				ProcessingTime:    time.Since(startTime).String(),
-				TenantID:          user.TenantID,
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden) // 403 for HITL block
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Error encoding HITL blocked response: %v", err)
-		}
+		writeProxyResponse(w, http.StatusForbidden, response, proxyEnforced)
+		// The FINAL verdict is what is counted, as on decide, under the engine
+		// that authored it: the anchored engine, this route's one pass (#4253).
+		recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, VerdictDeny, proxyReason)
 		return
 	}
 
@@ -2686,9 +2403,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 						TenantID:          user.TenantID,
 					},
 				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
-				_ = json.NewEncoder(w).Encode(response)
+				writeProxyResponse(w, http.StatusPaymentRequired, response, proxyEnforced) // 402 Payment Required
+				// Counted under its OWN reason, not the engine's. A budget
+				// refusal is not a policy verdict, and recording it as
+				// {verdict=deny, reason=permitted} is a contradiction on a
+				// dashboard and indistinguishable from a policy denial.
+				recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, VerdictDeny, enforceReasonBudgetExceeded)
 				return
 			}
 
@@ -2728,6 +2448,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	totalProcessingTime := time.Since(startTime)
 	log.Printf("[TIMING] Total processing time: %v (parse: %v, client: %v, user: %v, tenant: %v, policy: %v, ratelimit: %v)",
 		totalProcessingTime, parseTime, validateClientTime, validateUserTime, tenantCheckTime, policyEvalTime, rateLimitTime)
+
+	// The policy verdict is FINAL HERE: the one anchored pass and the budget
+	// have both had their say, and what follows
+	// is the forward and the orchestrator's own answer. An orchestrator failure
+	// is not a policy verdict, so the allow is counted before it (#3564).
+	recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, VerdictAllow, proxyReason)
 
 	// 6. Forward to AxonFlow Orchestrator (include skip_llm flag for hourly tests)
 	orchestratorStart := time.Now()
@@ -2791,6 +2517,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// THE RESPONSE PLANE'S DECISION ON WHAT CAME BACK (PRD v11 §1.1). The
+	// orchestrator decides the LLM response on the anchored engine, for the
+	// client credential this hop carried; this route repeats that decision to
+	// its caller and interprets exactly one outcome, a response the plane
+	// withheld. It is a DIFFERENT decision from proxyEnforced above, which is
+	// this route's own request pass.
+	responsePlane := responsePlaneOf(orchMap)
+	responsePlaneWithheld := responsePlane != nil && responsePlane.Verdict == responsePlaneVerdictBlocked
+
 	// Track request outcome based on orchestrator response
 	latencyMs := int64(time.Since(startTime).Milliseconds())
 	if orchSuccess {
@@ -2808,7 +2543,14 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[clientRequestHandler] Orchestrator returned error: %s", orchError)
 		// Record orchestrator-level error for circuit breaker auto-trip (#1176 Phase 2B)
 		// ADR-052 §5 (issue #2318): clientID = credential identity.
-		if circuitBreakerInstance != nil {
+		//
+		// A RESPONSE THE GOVERNANCE PLANE WITHHELD IS NOT AN ERROR THIS CLIENT
+		// CAUSED (#4280's rule, one plane further out). The request was allowed,
+		// the provider answered, and a policy refused what it answered: recording
+		// it would break the client's circuit for governance working as intended,
+		// and the identical request from a client whose organization records no
+		// such constraint is served. Every other orchestrator failure still counts.
+		if circuitBreakerInstance != nil && !responsePlaneWithheld {
 			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ClientID); cbErr != nil {
 				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
 			}
@@ -2913,6 +2655,14 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		BudgetInfo: budgetInfo, // Issue #1082: Include budget status in response
 	}
 
+	// A withheld response did not come back, so the wire says so with the flag
+	// every SDK already reads for a refusal. The reason travels in
+	// response_plane below, never rewritten into this route's own verdict
+	// members, which name the request pass.
+	if responsePlaneWithheld {
+		response.Blocked = true
+	}
+
 	// Extract media_analysis from orchestrator response (media governance results)
 	if orchMap != nil {
 		if mediaAnalysis, exists := orchMap["media_analysis"]; exists && mediaAnalysis != nil {
@@ -2969,8 +2719,13 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[DEBUG] Sending response: Success=%v, ResultType=%T, ResultLength=%d, PlanID=%s",
 		response.Success, response.Result, getStringLength(response.Result), response.PlanID)
 
-	// Marshal to bytes to log actual JSON being sent
-	responseBytes, err := json.Marshal(response)
+	// Marshal to bytes to log actual JSON being sent. The embedded form carries
+	// the engine that authored the verdict and the subject type (#3564), and
+	// response_plane carries the separate decision the orchestrator made on the
+	// response itself (#4291).
+	body := proxyResponseFor(response, proxyEnforced)
+	body.ResponsePlane = responsePlane
+	responseBytes, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("[ERROR] Failed to marshal response: %v", err)
 		sendErrorResponse(w, "Internal marshaling error", http.StatusInternalServerError, nil)
@@ -3276,15 +3031,13 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 	// The orchestrator now requires one on every non-exempt route
 	// (requireInternalProxyAuth), so without this the governed request path
 	// itself would 403. Mirrors the MCP forwarders in mcp_server_handler.go.
-	// #3602: propagate the observation-window canary tag onto the governed
-	// forward.
+	// #3602, kept for #4120: propagate the synthetic-probe tag onto the
+	// governed forward.
 	//
-	// Without this the orchestrator would see every canary comparison as
+	// Without this the orchestrator would see every canary request as
 	// ordinary tenant traffic, and the synthetic split would be readable on
-	// one plane and not the other - which is the "consulted in some planes and
-	// not others" shape the adapter's single-entry design exists to prevent,
-	// applied to the observability half. It is set from the AUTHENTICATED
-	// request's flag, never copied from the inbound headers: this request is
+	// one plane and not the other. It is set from the AUTHENTICATED request's
+	// flag, never copied from the inbound headers: this request is
 	// constructed fresh at http.NewRequest above.
 	if synthetic {
 		orchReq.Header.Set(sharedidentity.SyntheticProbeHeader, "1")
@@ -3381,186 +3134,153 @@ func createClientHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// appendTriggeredPolicyID appends policyID to triggered, unless it is
-// already present. #3296 Slice 2 Step D: Phase 1 (the shared engine) and
-// Phase 2 (the tier-aware engine) both read static_policies and can each
-// independently match the SAME policy ID when their category coverage
-// overlaps (see the Step D doc comment above clientRequestHandler's Phase
-// 1/2 evaluation block for why the two phases were not collapsed into one
-// pass) — a bare append let that policy ID appear twice in
-// triggered_policies / matched_policies. This is a reporting-only dedupe: it
-// never changes Blocked/Reason/Severity, which are already set independently
-// by whichever phase produced them.
-func appendTriggeredPolicyID(triggered []string, policyID string) []string {
-	for _, id := range triggered {
-		if id == policyID {
-			return triggered
-		}
+// proxyDetectorPass is /api/request's detector input: the shared engine's
+// evaluation of the query over the categories the route admits
+// (proxyPolicyCategories), whose row facts the anchored engine decides on
+// (observationOf). The route and its preview (policyTestHandler) share it, so
+// the preview evaluates exactly what the route evaluates. nil when detection is
+// disabled for the organization or no shared engine is initialized; every
+// detector is then ABSENT to the anchored engine.
+func proxyDetectorPass(ctx context.Context, query string, user *User) *sharedpolicy.RequestResult {
+	// #2581: resolve per-org posture (org with no override → the stored policy actions decide).
+	gatewayDetectionCfg := ResolveGatewayDetectionConfig(ctx, user.OrgID)
+	if !gatewayDetectionCfg.Enabled {
+		return nil
 	}
-	return append(triggered, policyID)
+	sharedEngine := sharedpolicy.GetGlobalEngine()
+	if sharedEngine == nil {
+		log.Println("[Proxy] WARNING: No policy engine available (shared engine not initialized)")
+		return nil
+	}
+	skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
+	// #3001: routed through the shared role predicate rather than a literal
+	// `== "admin"`. The literal excluded `owner`, so an owner - a strict SUPERSET
+	// of admin since #2993 - was enforced MORE strictly than an admin on
+	// admin-access queries. `user` is the ResolveUser-validated identity, not a
+	// client-supplied field.
+	//
+	// categorySecurityAdmin is deliberately NOT skipped: /api/request's retired
+	// second pass refused the sys_admin_* rows for administrators too, and #4253
+	// keeps that rather than loosening it inside a deletion (#3323 owns the call).
+	if sharedidentity.RoleIsAdministrative(user.Role) {
+		skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
+	}
+	return sharedEngine.EvaluateRequest(ctx, query, sharedpolicy.EvalOptions{
+		TenantID:        user.TenantID,
+		OrgID:           user.OrgID,
+		OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
+		ConnectorName:   "proxy",
+		UserID:          fmt.Sprintf("%d", user.ID),
+		Categories:      proxyPolicyCategories,
+		SkipCategories:  skipCats,
+		ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
+	})
 }
 
+// policyTestHandler previews what /api/request would decide for the calling
+// credential, through the same pass: the same detector evaluation
+// (proxyDetectorPass) and the same enforcing seam (proxyRequestSeamScope). A
+// policy is tested against the engine that enforces it (PRD v11 §1 item 10).
+//
+// IT RECORDS NO DECISION: no audit_logs row, no enforce-decision count, no
+// circuit-breaker violation and no signed decision. enforceRequestPass writes
+// none of them - the route's own handler does - and a pass that cannot decide
+// only logs (failClosed). The detector pass is the shared engine's own
+// evaluation, whose metrics collector counts it and, where the engine carries
+// an audit queue, logs it and any matched block (policy_violations), as the
+// preview's evaluation did before #4253.
+//
+// The body's user_email is accepted and ignored: a body field is not a
+// principal. The preview is decided for the authenticated credential
+// (subject_type=Client): on Community the deployment's user, as /api/request
+// decides a request that carries no user token; on Enterprise, where
+// /api/request requires a user token, the credential's service identity, as
+// decide decides a token-less caller - and refused 401 where the
+// organization's posture requires a user token, as decide refuses it. Before #4253 it
+// previewed two legacy passes and resolved the named user's governance
+// segments; the anchored engine reads no segments, so nothing is resolved and
+// segments_resolved is no longer in the response.
 func policyTestHandler(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var testReq struct {
 		Query       string `json:"query"`
 		UserEmail   string `json:"user_email"`
 		RequestType string `json:"request_type"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&testReq); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
 
-	// Derive tenant from auth context (set by apiAuthMiddleware or community default)
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = "community" // default for community mode
+	// apiAuthMiddleware authenticated this request and kept the whole result:
+	// authenticating again would admit the service principal a second time.
+	auth, ok := authResultFromContext(r.Context())
+	if !ok {
+		sendErrorResponse(w, "Authentication required", http.StatusUnauthorized, nil)
+		return
 	}
-	// #3255: the org this preview evaluates under comes from the
-	// AUTHENTICATED context, never from the tenant string. On the enterprise
-	// service-license path the two differ: TenantID is the Basic-Auth
-	// username the caller chooses (db_auth.go), while OrgID is validated from
-	// the license (auth.go). This value is passed to the segment resolver
-	// below, whose lookup is scoped by exactly this argument (SQL predicate
-	// and RLS GUC alike), so a tenant-sourced org let the caller choose whose
-	// directory the preview read - and the wrong org also silently matched
-	// nothing, making the preview under-report segment-scoped policies.
-	// The fallback preserves the previous behavior only where no authenticated
-	// org exists (the community shape, where tenant is not caller-influenced).
-	orgID := OrgIDFromContext(r.Context())
-	if orgID == "" {
-		orgID = tenantID
-	}
-	testUser := &User{
-		Email:       testReq.UserEmail,
-		Role:        "agent",
-		Permissions: []string{"query"},
-		TenantID:    tenantID,
-		OrgID:       orgID,
-	}
-
-	// #3051 (ADR-060 P3) + #3266 + #3293: resolve segments for the
-	// caller-supplied testReq.UserEmail ONCE, up front, so both Phase 1 (the
-	// shared engine) and Phase 2 (the tier-aware engine) simulate against
-	// the SAME membership set — matching what /api/request actually does for
-	// that user. The preview is now FULLY CONVERGED with the real request
-	// plane on both axes: Phase 1 is segment-aware (Segments: segmentIDs
-	// below, same as clientRequestHandler) and resolution failures are
-	// fail-closed (failClosed=true below, same contract as the enforcement
-	// path) rather than the old fail-open "simulate org-only" carve-out.
-	//
-	// #3293 invariant: a resolution FAILURE must never reach either engine
-	// as a nil/empty segment set. Unlike clientRequestHandler — which DENIES
-	// the real request outright on segOK=false — this preview is a DRY-RUN:
-	// nothing is actually being granted or enforced against
-	// testReq.UserEmail, so there's nothing to deny. Instead, on segOK=false
-	// this handler short-circuits BEFORE calling either engine and reports
-	// the SIMULATED VERDICT a real /api/request call would produce: a normal
-	// 200 response (matching this endpoint's existing shape) with
-	// blocked=true and a fail-closed reason. That keeps the #3293 invariant
-	// (no possibly-failed set ever reaches Phase 1 or Phase 2) while still
-	// answering the preview's actual question — "what would happen?" — with
-	// "the caller would be denied."
-	//
-	// Coordination with #3239: the preview's fail-closed convergence and
-	// Phase-1 segment-awareness both live HERE now, not split across #3239 —
-	// #3239 predates EvalOptions.Segments and can only do the Phase-2 half.
-	// #3239 will be slimmed to drop its now-redundant copy of this
-	// convergence and drops the failClosed param resolveUserSegments used to
-	// take here; that signature change is expected to land as a follow-up
-	// rebase, not a conflict in this file's logic.
-	//
-	// Signal B — segments_resolved (#3239 M4, ported here as part of the same
-	// consolidation): an INFORMATIONAL flag in the response, entirely
-	// distinct from the fail-closed deny above (Signal A). It answers "did a
-	// real, non-empty segment membership set actually factor into this
-	// verdict?" — true only when resolution succeeded AND returned at least
-	// one segment; false for every legitimate org-only case (no tier engine,
-	// no email supplied, no resolver configured, zero group memberships) AND
-	// for the fail-closed-deny path. It lets an admin reading the preview
-	// tell "allowed because no segment restricted this" apart from "allowed
-	// and a segment was genuinely considered" — it never itself changes the
-	// verdict.
-	segmentIDs, segOK := resolveUserSegmentsForPreview(r.Context(), testUser.OrgID, testReq.UserEmail)
-	segmentsResolved := false
-
-	var result *StaticPolicyResult
-	if !segOK {
-		log.Printf("🛡️ Policy test: segment resolution failed for %q — simulating the fail-closed deny a real /api/request call would produce (ADR-060 #2989)", logutil.Sanitize(testReq.UserEmail))
-		result = &StaticPolicyResult{
-			Blocked:           true,
-			Reason:            "segment resolution unavailable — a real request would be denied (fail-closed, ADR-060 #2989)",
-			TriggeredPolicies: []string{"segment_resolution_failed"},
+	user, userErr := ResolveUser(auth, "")
+	if userErr != nil {
+		// An Enterprise credential presents no user token here - the body has no
+		// member for one - so it is decided as the credential's service
+		// identity, the one decide synthesizes for a token-less caller
+		// (decision_handler.go). Where the organization's posture requires a
+		// user token (#3476), decide refuses that caller and so does this.
+		if auth.Kind != AuthKindEnterprise || ResolveRequireUserToken(r.Context(), auth.OrgID) {
+			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
+			return
 		}
+		user = &User{
+			ID:       0,
+			Email:    auth.ClientID + "@axonflow.local",
+			Name:     auth.ClientID,
+			TenantID: auth.TenantID,
+			OrgID:    auth.OrgID,
+			Role:     "service",
+		}
+	}
+
+	evaluation := proxyDetectorPass(r.Context(), testReq.Query, user)
+	enforced := enforceRequestPass(r.Context(), proxyRequestSeamScope, requestPassInput{
+		orgID:        auth.OrgID,
+		decisionID:   uuid.New().String(),
+		stage:        DecisionStageLLM,
+		query:        testReq.Query,
+		auth:         auth,
+		user:         user,
+		userIdentity: callerUserIdentity(auth.Kind, nil, ""),
+		observation:  observationOf(evaluation),
+	})
+
+	checks := []string{}
+	if evaluation != nil {
+		checks = append(checks, convertSharedResultToStatic(evaluation).ChecksPerformed...)
+	}
+	body := map[string]interface{}{
+		"checks_performed":   checks,
+		"processing_time_ms": time.Since(start).Milliseconds(),
+		"engine":             enforced.engine,
+		"subject_type":       enforced.subjectType,
+		"policy_bundle":      enforced.policyBundle,
+	}
+	status := http.StatusOK
+	if enforced.unavailable != "" {
+		// The route answers 503 without a verdict here, and so does its preview.
+		status = http.StatusServiceUnavailable
+		body["blocked"] = true
+		body["reason"] = enforceCauseMessages[enforced.unavailable]
+		body["triggered_policies"] = []string{"decision_enforcement_unavailable"}
 	} else {
-		segmentsResolved = len(segmentIDs) > 0
-		// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
-		// #2581: resolve per-org posture (org with no override → deployment-global).
-		gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), testUser.OrgID)
-		sharedEngine := sharedpolicy.GetGlobalEngine()
-		if !gatewayDetectionCfg.Enabled {
-			result = &StaticPolicyResult{}
-		} else if sharedEngine != nil {
-			skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
-			// #3001: same shared predicate as the real request plane above. This
-			// handler exists to SIMULATE enforcement, so a literal here would make
-			// the simulation disagree with what actually happens for an `owner`.
-			if sharedidentity.RoleIsAdministrative(testUser.Role) {
-				skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
-			}
-			requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
-				Plane:           legacycompile.PlanePolicyTest,
-				TenantID:        testUser.TenantID,
-				OrgID:           testUser.OrgID,
-				OrgScope:        sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
-				ConnectorName:   "proxy",
-				UserID:          fmt.Sprintf("%d", testUser.ID),
-				Categories:      proxyPolicyCategories,
-				SkipCategories:  skipCats,
-				ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
-				// #3266: the caller's resolved governance-segment set (above,
-				// guaranteed successfully-resolved by the segOK branch), same
-				// as clientRequestHandler — a segment-scoped static_policies
-				// row can only match/report for a member.
-				Segments: segmentIDs,
-			})
-			result = convertSharedResultToStatic(requestResult)
-		} else {
-			log.Println("[PolicyTest] WARNING: No policy engine available")
-			result = &StaticPolicyResult{}
-		}
-
-		// Phase 2: Tier-aware policies (if not blocked and engine available)
-		if !result.Blocked && tierAwarePolicyEngine != nil {
-			ctx := r.Context()
-			// Decision 5 (#3490): same org argument the live plane passes (see
-			// clientRequestHandler's Phase 2). A policy TEST that evaluated a
-			// different policy set from the live path would be worse than no test.
-			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, sharedpolicy.OrgScopePtr(testUser.OrgID), segmentIDs, testReq.Query,
-				TierShadowContext{Plane: legacycompile.PlanePolicyTest, Principal: testUser.Email, OrgID: testUser.OrgID})
-			if err != nil {
-				log.Printf("⚠️ Tier-aware policy test error: %v", err)
-			} else if tierResult.Matched && tierResult.Action == "block" {
-				result.Blocked = true
-				result.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-				result.TriggeredPolicies = appendTriggeredPolicyID(result.TriggeredPolicies, tierResult.PolicyID)
-				result.Severity = tierResult.Severity
-			} else if tierResult.Matched {
-				result.TriggeredPolicies = appendTriggeredPolicyID(result.TriggeredPolicies, tierResult.PolicyID)
-			}
-		}
+		result, _ := enforced.staticPolicyResult(proxyRequestSeamScope)
+		triggered := append([]string{}, result.TriggeredPolicies...)
+		body["blocked"] = result.Blocked
+		body["reason"] = result.Reason
+		body["triggered_policies"] = triggered
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"blocked":            result.Blocked,
-		"reason":             result.Reason,
-		"triggered_policies": result.TriggeredPolicies,
-		"checks_performed":   result.ChecksPerformed,
-		"processing_time_ms": result.ProcessingTimeMs,
-		"segments_resolved":  segmentsResolved,
-	}); err != nil {
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("Error encoding policy test response: %v", err)
 	}
 }

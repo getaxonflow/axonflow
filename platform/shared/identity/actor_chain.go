@@ -74,12 +74,37 @@ func (c ActorChain) Immediate() (PrincipalID, bool) {
 	return c[len(c)-1], true
 }
 
-// Contains reports whether p appears anywhere in the chain. Used by
+// ContainsSubject reports whether the SUBJECT p names appears anywhere in the
+// chain, whatever principal type each side declares. Used by
 // separation-of-duties self-exclusion: an approver that appears anywhere in
 // the requesting chain cannot approve its own request, not merely the root.
-func (c ActorChain) Contains(p PrincipalID) bool {
+//
+// # IT WAS Contains, AND IT COMPARED THE CLASSIFICATION TOO (#3878)
+//
+// PrincipalID is a comparable struct, so the `hop == p` this used to be
+// compared Realm, Type AND Subject. Type is a classification, and the two
+// sides get theirs from different places: the chain's comes from the
+// request's token, the pool member's from a directory, and
+// ValidateApproverPool's own comment describes a pool assembled from several
+// of those. So `Service::workspace:raj` in the chain did not match
+// `User::workspace:raj` in the pool, raj was not struck out, and raj remained
+// an eligible approver of a request raj is in the actor chain of.
+//
+// THE CORRECTION POINTS THE OPPOSITE WAY FROM THE REST OF ITS CLASS, which is
+// why it was deliberately left out of #3845. Everywhere else, recognising two
+// spellings as one person makes a control STRICTER and the failure mode is
+// somebody told no. Here it strikes MORE members out of the approver pool, so
+// EligibleApprovers shrinks and a quorum that is reachable can stop being
+// reachable - a request-time path with somebody waiting, whose failure mode is
+// an escalation nobody can answer. That consequence is real and is asserted
+// rather than argued: see TestWideningSelfExclusionCanMakeAQuorumUnreachable.
+//
+// The renaming is the durable half. `Contains` on a comparable struct reads as
+// correct code at every future call site; a name that says which axis it
+// compares does not.
+func (c ActorChain) ContainsSubject(p PrincipalID) bool {
 	for _, hop := range c {
-		if hop == p {
+		if hop.SameSubject(p) {
 			return true
 		}
 	}
@@ -119,7 +144,31 @@ func ActorChainFromRFC8693(actOrder []PrincipalID) ActorChain {
 //  5. every hop's realm is declared in this organization and enabled, and
 //     asserts that hop's subject type;
 //  6. every consecutive pair is a delegation the delegator's realm permits.
+//
+// Check 3's Client refusal is the rule for every chain a caller presents. The
+// one exception is the credential principal, admitted only through
+// SubjectAdmitter.AdmitCredentialSubject (see rootMayBeCredential).
 func AdmitChain(reg *RealmRegistry, orgID string, chain ActorChain, maxDepth int) Admission {
+	return admitChain(reg, orgID, chain, maxDepth, rootNeverClient)
+}
+
+// chainRoot says whether a Client may be the root of the chain being admitted.
+type chainRoot int
+
+const (
+	// rootNeverClient is ADR-065 invariant 2 for every chain a request
+	// presents: a client credential is attribution, never the authority a
+	// grant is scoped to.
+	rootNeverClient chainRoot = iota
+	// rootMayBeCredential admits a Client root as the CREDENTIAL PRINCIPAL: the
+	// subject a decision is evaluated for when the request carries no user
+	// identity at all (ADR-065 invariant 2 as amended 2026-09-11 (third), PRD
+	// v11 §1.6). Only AdmitCredentialSubject asks for it, and only for a
+	// credential path, so a user identity - verified or not - never reaches it.
+	rootMayBeCredential
+)
+
+func admitChain(reg *RealmRegistry, orgID string, chain ActorChain, maxDepth int, root chainRoot) Admission {
 	if reg == nil {
 		return IndeterminateAdmission(ReasonUnknownRealm,
 			"no realm registry is configured, so no hop's realm can be resolved")
@@ -141,7 +190,21 @@ func AdmitChain(reg *RealmRegistry, orgID string, chain ActorChain, maxDepth int
 	}
 
 	realms := make([]TrustRealm, len(chain))
-	seen := make(map[PrincipalID]int, len(chain))
+	// KEYED ON THE SUBJECT, NOT ON THE CLASSIFIED PRINCIPAL (#3878). Check 4
+	// is "no principal repeats", and a principal is a subject: a chain
+	// [User::workspace:raj, Agent::workspace:raj] revisits raj, and keying the
+	// map on the comparable struct - which includes Type - admitted it as two
+	// principals. contract.Request.Validate ran the same check on the same
+	// rule, keyed on ID.String(), and had the same hole; both are fixed
+	// together so the two cannot disagree about what a repeat is.
+	//
+	// Widening this makes admission STRICTER, so it is the same direction of
+	// risk as the approver-pool correction. Nothing in the tree reaches it
+	// today - AdmitChain's only caller is VerifyChain, which has no caller at
+	// all - so the change lands before the plane that will use it, which is
+	// the cheapest moment it could. TestNoProductionCallerReachesTheApproval
+	// AndChainAdmissionPath is what will say so when that stops being true.
+	seen := make(map[string]int, len(chain))
 
 	for i, hop := range chain {
 		if err := hop.Validate(); err != nil {
@@ -151,22 +214,35 @@ func AdmitChain(reg *RealmRegistry, orgID string, chain ActorChain, maxDepth int
 			return DenyAdmission(ReasonSubjectTypeRejected, fmt.Sprintf(
 				"hop %d is a Group; a group is a set of subjects, never an actor in a chain", i))
 		}
-		if i == 0 && hop.Type == SubjectClient {
+		if i == 0 && hop.Type == SubjectClient && root == rootNeverClient {
 			// ADR-065 invariant 2: client_id identifies the authenticated
 			// application. It is attribution, not a policy-selected identity.
 			// A Client at the root would make the calling application the
 			// authority a grant is scoped to, which is the shape #3333
 			// describes on the legacy path. A Client may still appear as an
 			// intermediary hop, where it is attributed and constrains the
-			// meet without ever being the subject.
+			// meet without ever being the subject. The credential principal
+			// (rootMayBeCredential) is the amended exception, and it is never
+			// reached from a chain a caller presents.
 			return DenyAdmission(ReasonSubjectTypeRejected,
 				"the chain root is a Client; a client credential is attribution and cannot be the authority a request is evaluated for (see #3279 for the verified machine principal that replaces it)")
 		}
-		if prior, dup := seen[hop]; dup {
-			return DenyAdmission(ReasonChainCycle, fmt.Sprintf(
-				"principal %s appears at hops %d and %d", hop, prior, i))
+		// hop.Validate() above has already refused a hop with no realm or no
+		// subject, so SubjectKey cannot report false here. It is read rather
+		// than assumed: a key of "" for two malformed hops would collapse them
+		// into a false cycle, and this is the one line where that could
+		// happen silently.
+		key, ok := hop.SubjectKey()
+		if !ok {
+			return DenyAdmission(ReasonMalformedPrincipal, fmt.Sprintf(
+				"hop %d has no realm-qualified subject to compare", i))
 		}
-		seen[hop] = i
+		if prior, dup := seen[key]; dup {
+			return DenyAdmission(ReasonChainCycle, fmt.Sprintf(
+				"subject %s appears at hops %d and %d; a subject that appears twice is a repeat whatever principal type each hop declares",
+				key, prior, i))
+		}
+		seen[key] = i
 
 		realm, ok := reg.Lookup(orgID, hop.Realm)
 		if !ok {
@@ -195,8 +271,7 @@ func AdmitChain(reg *RealmRegistry, orgID string, chain ActorChain, maxDepth int
 		}
 	}
 
-	root := chain[0]
-	return AcceptAdmission(root)
+	return AcceptAdmission(chain[0])
 }
 
 // Authority is a set of capability identifiers a principal holds.

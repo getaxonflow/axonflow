@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates code governance features in Go.
 //
 // This example shows automatic code detection in LLM responses:

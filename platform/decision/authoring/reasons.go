@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -107,7 +110,80 @@ const (
 	// configured separation of author and approver duties at activation, and
 	// self-approval is the way that requirement is usually lost.
 	CodeApproverIsAuthor = "APPROVER_IS_AUTHOR"
+	// CodeSelfApprovalReasonRequired rejects a SELF-APPROVED publication that
+	// states no reason where separation of duties applies and the deployment
+	// granted self-approval. PRD v11 §1.12: every self-approved publish records
+	// the reason and the fact on the audit row, and a self-approval with no
+	// reason is the unexplained exception that row exists to prevent.
+	CodeSelfApprovalReasonRequired = "SELF_APPROVAL_REASON_REQUIRED"
+	// CodeSelfApprovalReasonWithoutSelfApproval rejects a self-approval reason
+	// on a publication that names an approver other than the author. The reason
+	// is signed into provenance and written on the audit row as the explanation
+	// of a self-approval; on a two-person publication it would record one that
+	// did not happen.
+	CodeSelfApprovalReasonWithoutSelfApproval = "SELF_APPROVAL_REASON_WITHOUT_SELF_APPROVAL"
+	// CodeGroupScopeNotInEdition rejects a group-scoped policy on an edition
+	// that does not carry the nested group graph the scope resolves through.
+	// Distinct from CodeGroupScopeWithoutGraph, which warns that a REALM has no
+	// group concept: that is a fact about the directory and the remedy is to
+	// scope to the principal, while this is a fact about the licence and the
+	// remedy is an upgrade. One code for both would put the wrong sentence in
+	// front of half the authors who hit it.
+	CodeGroupScopeNotInEdition = "GROUP_SCOPE_NOT_IN_EDITION"
+	// CodeObligationFamilyNotInEdition rejects an obligation whose family the
+	// edition does not carry. The FAMILY is named rather than the type because
+	// the family is what the edition ladder rules and what the composition
+	// algebra is written over; naming the type alone would invite an author to
+	// try the next type in the same family.
+	CodeObligationFamilyNotInEdition = "OBLIGATION_FAMILY_NOT_IN_EDITION"
+	// CodeAttributeNamespaceNotInEdition rejects a condition reading an
+	// attribute namespace outside the edition's request-context predicate
+	// allowlist.
+	CodeAttributeNamespaceNotInEdition = "ATTRIBUTE_NAMESPACE_NOT_IN_EDITION"
+	// CodeConstructUnruled rejects a construct that no edition ruling covers,
+	// on every edition below Enterprise.
+	//
+	// It is a SEPARATE code from the two above, and the separation is the
+	// point. Those two say "your edition does not carry this", which is a
+	// statement about a decision somebody made. This one says "nobody has
+	// decided", which is a statement about a gap in the ladder - and the two
+	// have different audiences: the first is an upgrade conversation and the
+	// second is a question for whoever owns the PRD. Folding them would make
+	// an unruled construct indistinguishable from a ruled exclusion, which is
+	// how a boundary set by accident becomes product policy.
+	CodeConstructUnruled = "CONSTRUCT_HAS_NO_EDITION_RULING"
+	// CodeBlanketPermission rejects a permission that grants EVERY action to
+	// the whole organization with no condition and no resource scope: the
+	// shape the shadow harness compiles to stand in for the legacy substrate's
+	// absence of any gate (shadow.BaselinePermissionID), whose own description
+	// says it "must not survive plane cutover". In a production document it is
+	// a grant that permits every action registered AFTER it, silently, which
+	// is the opposite of a registry. A baseline is written per action
+	// (authoringcatalog.BaselinePermissionPack) so that it stops covering an
+	// action the day the action leaves the catalog.
+	CodeBlanketPermission = "BLANKET_PERMISSION"
+
+	// CodeSystemControlsOutsideOrganization refuses a system_controls section on
+	// a document that is not the organization's: only an organization controls
+	// the shipped set it runs under (PRD v11 §1.5).
+	CodeSystemControlsOutsideOrganization = "SYSTEM_CONTROLS_OUTSIDE_ORGANIZATION"
+	// CodeSystemControlUnknown refuses an entry naming no shipped system control.
+	CodeSystemControlUnknown = "SYSTEM_CONTROL_UNKNOWN"
+	// CodeSystemControlDuplicate refuses a control named twice.
+	CodeSystemControlDuplicate = "SYSTEM_CONTROL_DUPLICATE"
+	// CodeSystemControlMalformed refuses an entry that does not say exactly one
+	// thing: disabled, or a replacement action an organization may assign.
+	CodeSystemControlMalformed = "SYSTEM_CONTROL_MALFORMED"
+	// CodeSystemControlNotReactionable refuses a replacement action on a shipped
+	// dynamic control, which v11 lets an organization disable but not re-action.
+	CodeSystemControlNotReactionable = "SYSTEM_CONTROL_NOT_REACTIONABLE"
 )
+
+// CodeCatalogIsFixture is the ACTIVATION refusal for a fixture catalog. It is
+// not a save-time check - a fixture vocabulary may validate and publish, so the
+// conformance corpus and the editor's own tests keep working - and so it is not
+// in the declared check table; it is the code ErrCatalogIsFixture carries.
+const CodeCatalogIsFixture = "CATALOG_IS_FIXTURE"
 
 // CheckDeclaration is one declared save-time check. Keeping the set as data
 // rather than as a switch is what lets a test enumerate it, assert every code
@@ -143,6 +219,11 @@ var declaredChecks = []CheckDeclaration{
 	{pdp.RuleRootMismatch, SeverityReject, "A policy declares a different authority root from the document that carries it.", true},
 	{pdp.RulePoolNotInteractive, SeverityReject, "Every eligible group of this approval resolves in a realm where no person can answer, so the challenge could only expire.", true},
 	{pdp.RuleAbsenceNotHandled, SeverityReject, "A condition over an optional attribute must say what absence means, and absence of caller-supplied data is always unknown.", true},
+	{pdp.RuleMalformedIdentifier, SeverityReject, "A policy names an identifier that is not well formed - for a principal that includes a type outside the six canonical subject types.", true},
+	{pdp.RuleIdentifierWrongKind, SeverityReject, "A policy names an identifier of the wrong kind for the field: a scope names principals and groups, pierceable_by names groups, and an action selector names actions.", true},
+	{pdp.RuleAssuranceUnknown, SeverityReject, "The assurance class is not one of enforcement, gating_risk or advisory.", true},
+	{pdp.RuleAssuranceOnPermission, SeverityReject, "A permission declares an assurance class, and only a control that restricts or inspects has a failure behaviour to declare.", true},
+	{pdp.RuleAssuranceMismatch, SeverityReject, "The declared assurance class contradicts what the engine does when this control cannot be evaluated: an advisory control cannot deny, and a control that fails closed is enforcement or gating_risk.", true},
 
 	// Owned by this layer. Each needs the registry, the publication actors or
 	// a cross-policy view, none of which a single compiled document has.
@@ -160,6 +241,25 @@ var declaredChecks = []CheckDeclaration{
 	{CodeCatalogDisagreement, SeverityReject, "The registry facts carried in the document disagree with the registry it is being validated against.", false},
 	{CodeEnvelopeInvalid, SeverityReject, "The authoring envelope is malformed: check api_version, the document identifier and the version.", false},
 	{CodeApproverIsAuthor, SeverityReject, "Publication requires an approver who is not the author.", false},
+	{CodeSelfApprovalReasonRequired, SeverityReject, "A self-approved publication states its reason.", false},
+	{CodeSelfApprovalReasonWithoutSelfApproval, SeverityReject, "A self-approval reason is refused on a publication another person approved.", false},
+	{CodeSystemControlsOutsideOrganization, SeverityReject, "Only an organization's document controls the shipped system controls, and this document is not the organization's.", false},
+	{CodeSystemControlUnknown, SeverityReject, "A system control is named that the shipped corpus does not carry. Name it by its corpus identifier, as the shipped posture table lists it.", false},
+	{CodeSystemControlDuplicate, SeverityReject, "A system control is named twice, so which of the two entries applies would be ambiguous.", false},
+	{CodeSystemControlMalformed, SeverityReject, "A system control entry says exactly one thing: enabled false, which leaves the control out, or a replacement action of block, redact, warn or log.", false},
+	{CodeSystemControlNotReactionable, SeverityReject, "A shipped dynamic control can be disabled but not given a replacement action in v11.", false},
+
+	// The edition boundary (#3907, ruled by #3906). These are the only checks
+	// here whose outcome depends on the licence rather than on the document,
+	// which is why they run in Publish rather than in Validate: an author
+	// editing a document must see the same well-formedness answer on every
+	// edition, and only the attempt to turn it into a signed artifact is an
+	// entitlement question.
+	{CodeGroupScopeNotInEdition, SeverityReject, "This edition does not carry the nested group graph a group-scoped policy resolves through. Scope the policy to the principals directly, or to the organization.", false},
+	{CodeObligationFamilyNotInEdition, SeverityReject, "This edition does not carry the obligation family this policy attaches.", false},
+	{CodeAttributeNamespaceNotInEdition, SeverityReject, "This edition's request-context predicates do not include the attribute namespace this policy reads.", false},
+	{CodeConstructUnruled, SeverityReject, "This policy uses a construct that no edition ruling covers. It is reserved to Enterprise until one is made.", false},
+	{CodeBlanketPermission, SeverityReject, "This permission grants every action to the whole organization unconditionally, so it would also permit every action registered after it. Name the actions it grants.", false},
 }
 
 // retiredCheck records a source-specification check that ADR-065 does not

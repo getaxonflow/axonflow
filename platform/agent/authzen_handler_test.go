@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -13,17 +16,19 @@ import (
 	"axonflow/platform/decision/contract"
 )
 
-// authzenForTest posts an envelope at the handler, bypassing the auth
-// middleware exactly as decideForTest does for the Decision API.
+// authzenForTest posts an envelope through the auth middleware, as
+// decideForTest does for the Decision API, presenting the credential a caller
+// on this deployment sends.
 func authzenForTest(t *testing.T, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", authzenHandlerPath, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	presentTestClientCredential(t, req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	rr := httptest.NewRecorder()
-	handleAuthZENEvaluation(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleAuthZENEvaluation)).ServeHTTP(rr, req)
 	return rr
 }
 
@@ -840,13 +845,14 @@ func TestAuthZENRecordsItsOwnAuditPlane(t *testing.T) {
 	req := httptest.NewRequest("POST", authzenHandlerPath,
 		bytes.NewBufferString(singularEnvelope(t, okSubject, okAction, okResource, okContext)))
 	req.Header.Set("Content-Type", "application/json")
+	presentTestClientCredential(t, req)
 	var seen string
 	restore := decisionPlaneObserver
 	decisionPlaneObserver = func(plane string) { seen = plane }
 	t.Cleanup(func() { decisionPlaneObserver = restore })
 
 	rr := httptest.NewRecorder()
-	handleAuthZENEvaluation(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleAuthZENEvaluation)).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d; body=%s", rr.Code, rr.Body.String())
 	}

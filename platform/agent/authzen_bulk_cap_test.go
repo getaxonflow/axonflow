@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -144,12 +147,13 @@ func TestAuthZENStopsEvaluatingWhenTheCallerIsGone(t *testing.T) {
 		strings.NewReader(bulkEnvelopeOfEmptyEntries(4)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(authzenProfileHeader, string(contract.AuthZENProfileV1))
+	presentTestClientCredential(t, req)
 	ctx, cancel := context.WithCancel(req.Context())
 	cancel() // the caller is gone before evaluation begins
 	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
-	handleAuthZENEvaluation(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleAuthZENEvaluation)).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("status %d for a cancelled caller, want 502; body=%s", rr.Code, rr.Body.String())

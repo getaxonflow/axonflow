@@ -336,7 +336,7 @@ Usage is automatically recorded when LLM calls are made through the cost-trackin
 
 ## API Reference
 
-See the full [Cost Controls API Reference](/api/orchestrator-api#cost-controls) for detailed endpoint documentation.
+See the full [Cost Controls API Reference](https://docs.getaxonflow.com/api/orchestrator/) for detailed endpoint documentation.
 
 ## Examples
 

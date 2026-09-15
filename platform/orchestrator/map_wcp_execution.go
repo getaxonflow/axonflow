@@ -31,16 +31,21 @@ func intPtr(n int) *int {
 	return &n
 }
 
-// mapStepTypeToWCP converts workflow step types to WCP step types
-func mapStepTypeToWCP(stepType string) workflow_control.StepType {
-	switch stepType {
-	case "llm-call":
-		return workflow_control.StepTypeLLMCall
-	case "connector-call":
-		return workflow_control.StepTypeConnectorCall
-	default:
-		return workflow_control.StepTypeToolCall
+// mapStepTypeToWCP is the workflow-control step type a multi-agent step is
+// gated as, or the refusal naming a type the multi-agent map does not name.
+//
+// It used to default EVERY unnamed type to tool_call, so a step type nobody had
+// mapped reached the workflow control plane's gate wearing one, and was
+// governed as a tool call (#4254). The table it reads is the same contract that
+// decides which shipped action the step is presented as
+// (step_action_admission.go), so the two cannot disagree about which tokens the
+// plane knows.
+func mapStepTypeToWCP(stepType string) (workflow_control.StepType, error) {
+	gateType, named := mapStepGateTypes[stepType]
+	if !named {
+		return "", fmt.Errorf("the multi-agent plane gates no step of type %q on the workflow control plane", stepType)
 	}
+	return gateType, nil
 }
 
 // ExecuteWithConfirm executes a MAP plan in confirm mode.
@@ -52,13 +57,17 @@ func (e *MAPWCPExecutor) ExecuteWithConfirm(ctx context.Context, plan *planning.
 		return nil, fmt.Errorf("WCP service not available")
 	}
 
-	if len(workflow.Spec.Steps) == 0 {
+	// #4254 (R3 B-H1): a conditional carrying no branch steps is not presented,
+	// so it is left out of the steps this mode gates and runs.
+	steps := presentedSteps(workflow.Spec.Steps)
+
+	if len(steps) == 0 {
 		return nil, fmt.Errorf("workflow has no steps")
 	}
 
-	log.Printf("[MAP-WCP] Starting confirm mode execution for plan %s (%d steps)", plan.PlanID, len(workflow.Spec.Steps))
+	log.Printf("[MAP-WCP] Starting confirm mode execution for plan %s (%d steps)", plan.PlanID, len(steps))
 
-	totalSteps := len(workflow.Spec.Steps)
+	totalSteps := len(steps)
 
 	// Create a WCP workflow to track the MAP plan
 	wcpWorkflow, err := e.wcpService.CreateWorkflow(ctx, &workflow_control.CreateWorkflowRequest{
@@ -77,11 +86,15 @@ func (e *MAPWCPExecutor) ExecuteWithConfirm(ctx context.Context, plan *planning.
 	}
 
 	// Gate the first step with require_approval (confirm mode = every step needs approval)
-	firstStep := workflow.Spec.Steps[0]
+	firstStep := steps[0]
+	gateType, err := mapStepTypeToWCP(firstStep.Type)
+	if err != nil {
+		return nil, err
+	}
 	requireApproval := workflow_control.GateDecisionRequireApproval
 	gateResp, err := e.wcpService.StepGate(ctx, wcpWorkflow.WorkflowID, fmt.Sprintf("step_0_%s", firstStep.Name), &workflow_control.StepGateRequest{
 		StepName:     firstStep.Name,
-		StepType:     mapStepTypeToWCP(firstStep.Type),
+		StepType:     gateType,
 		GateOverride: &requireApproval,
 	}, tenantID, orgID, userID, clientID)
 	if err != nil {
@@ -106,13 +119,25 @@ func (e *MAPWCPExecutor) ExecuteWithStep(ctx context.Context, plan *planning.Pla
 		return nil, fmt.Errorf("WCP service not available")
 	}
 
-	if len(workflow.Spec.Steps) == 0 {
+	// #4254 (R3 B-H1): a conditional carrying no branch steps is not presented,
+	// so it is left out of the steps this mode gates and runs.
+	steps := presentedSteps(workflow.Spec.Steps)
+
+	if len(steps) == 0 {
 		return nil, fmt.Errorf("workflow has no steps")
 	}
 
-	log.Printf("[MAP-WCP] Starting step mode execution for plan %s (%d steps)", plan.PlanID, len(workflow.Spec.Steps))
+	// #4254 (R3): step mode runs its first step without a gate, so the first
+	// step's type is checked against the map here, as confirm mode's gate checks
+	// it. An unmapped type stops the plan, naming the token, before a workflow is
+	// created for it.
+	if _, err := mapStepTypeToWCP(steps[0].Type); err != nil {
+		return nil, err
+	}
 
-	totalSteps := len(workflow.Spec.Steps)
+	log.Printf("[MAP-WCP] Starting step mode execution for plan %s (%d steps)", plan.PlanID, len(steps))
+
+	totalSteps := len(steps)
 
 	// Create a WCP workflow
 	wcpWorkflow, err := e.wcpService.CreateWorkflow(ctx, &workflow_control.CreateWorkflowRequest{
@@ -137,14 +162,14 @@ func (e *MAPWCPExecutor) ExecuteWithStep(ctx context.Context, plan *planning.Pla
 		Status:      "executing_first_step",
 		CurrentStep: 0,
 		TotalSteps:  totalSteps,
-		StepName:    workflow.Spec.Steps[0].Name,
+		StepName:    steps[0].Name,
 	}
 
 	// If there's a second step, it will need approval
 	if totalSteps > 1 {
 		result.Status = "awaiting_approval"
 		result.CurrentStep = 1
-		result.StepName = workflow.Spec.Steps[1].Name
+		result.StepName = steps[1].Name
 	}
 
 	return result, nil

@@ -39,8 +39,8 @@ import (
 //     carry no version; the compile-path loader does not select the column),
 //     so they use the established best-effort write-time batch lookup
 //     (lookupPolicyVersionsByID, #1983/#3048) the MCP check-output plane
-//     already relies on, and only for ids that do not already carry one (the
-//     fincrime seam's model/pack versions must win, see MergeAuditDetails).
+//     already relies on, and only for ids that do not already carry one: a
+//     version the writer recorded is never overwritten.
 
 // builtinPolicyDisplayNames maps every code-backed guard id an agent writer
 // stamps into policy_ids (no static_policies row exists for these) to its
@@ -89,7 +89,6 @@ var builtinPolicyDisplayNames = map[string]string{
 
 	// Aggregate/fallback sentinels
 	"dynamic_policy":  "Dynamic policy (aggregate)",
-	"hitl_compliance": "HITL compliance gate",
 	"hitl_enterprise": "HITL compliance gate",
 }
 
@@ -108,27 +107,6 @@ func policyNamesFromMatches(matches []sharedpolicy.PolicyMatch) map[string]strin
 			// policy_matches precedence (extractVersion / liftPolicyVersions).
 			if _, exists := out[matches[i].PolicyID]; !exists {
 				out[matches[i].PolicyID] = matches[i].PolicyName
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// policyNamesFromDynamic is policyNamesFromMatches for the dynamic-policy
-// evaluator's match shape.
-func policyNamesFromDynamic(info *sharedpolicy.DynamicPolicyInfo) map[string]string {
-	if info == nil || len(info.MatchedPolicies) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(info.MatchedPolicies))
-	for i := range info.MatchedPolicies {
-		m := &info.MatchedPolicies[i]
-		if m.PolicyID != "" && m.PolicyName != "" {
-			if _, exists := out[m.PolicyID]; !exists {
-				out[m.PolicyID] = m.PolicyName
 			}
 		}
 	}
@@ -193,6 +171,115 @@ func stampPolicyIdentityNames(details map[string]interface{}, policyIDs []string
 	}
 }
 
+// PolicyIdentity is one matched policy as a typed decision names it on the wire
+// beside evaluated_policies, and on the audit row (PRD v11 §1.14, #4127): its
+// id, its own display name where it has one, whose it is (shipped,
+// organization or pack), and - for an organization's own policy or an
+// installed pack's - the version it was published at. A shipped control has no
+// version: the bundle digest the wire and the row carry identifies it.
+type PolicyIdentity struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Version int    `json:"version,omitempty"`
+}
+
+// alignPolicyIdentities orders identities as ids, the response's final
+// evaluated_policies, entry for entry: hoisting the blocking policy to the
+// front (hoistBlockingPolicy) can move or add an id. An id the seam did not
+// name - a checksum validator's (#4122) - is named by its identifier alone.
+func alignPolicyIdentities(ids []string, identities []PolicyIdentity) []PolicyIdentity {
+	if len(ids) == 0 {
+		return nil
+	}
+	byID := make(map[string]PolicyIdentity, len(identities))
+	for _, p := range identities {
+		byID[p.ID] = p
+	}
+	out := make([]PolicyIdentity, 0, len(ids))
+	for _, id := range ids {
+		p, ok := byID[id]
+		if !ok {
+			p = PolicyIdentity{ID: id}
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// carryAnchoredIdentity puts on this row what the anchored engine named: each
+// matched policy's display name, source and published version, the
+// organization document's version, and the action's name. It REPLACES any
+// display names threaded from the shared engine's evaluation: those map that
+// engine's ids, and the ids this row records are the anchored decision's, so
+// keeping them would caption one engine's verdict with another's names.
+func (a *decisionAuditInput) carryAnchoredIdentity(enforced requestPassEnforcement) {
+	a.policyNames = policyIdentityNames(enforced.policyIdentities)
+	a.policyIdentities, a.documentVersion, a.actionName = enforced.policyIdentities, enforced.documentVersion, enforced.actionName
+}
+
+// policyIdentityNames maps each identity that carries a display name to it, nil
+// when none does: the one source of the names an anchored decision's rows and
+// bodies give its policies.
+func policyIdentityNames(identities []PolicyIdentity) map[string]string {
+	var out map[string]string
+	for _, p := range identities {
+		if p.Name == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[p.ID] = p.Name
+	}
+	return out
+}
+
+// stampAnchoredIdentity writes what an anchored decision named onto its row,
+// for the row's own policy_ids (PRD v11 §1.14): whose each is at
+// policy_sources, and into the id-keyed policy_versions the version an
+// organization's own policy or a pack's was published at. A shipped control
+// gets no version; the row's policy_bundle identifies it. Beside them, the
+// active organization document's version at document_version and the requested
+// action's display name at action_name. An entry already on the row wins, and
+// the writers run it before stampMissingPolicyVersions, whose static_policies
+// lookup fills only an id that carries no version.
+func stampAnchoredIdentity(details map[string]interface{}, identities []PolicyIdentity, documentVersion int, actionName string) {
+	if details == nil {
+		return
+	}
+	onRow := map[string]bool{}
+	for _, id := range normalizeStampIDList(details["policy_ids"]) {
+		onRow[id] = true
+	}
+	sources := map[string]string{}
+	versions := normalizeStampVersionMap(details["policy_versions"])
+	for _, p := range identities {
+		if !onRow[p.ID] || p.Source == "" {
+			continue
+		}
+		sources[p.ID] = p.Source
+		if _, has := versions[p.ID]; p.Version > 0 && !has {
+			if versions == nil {
+				versions = map[string]interface{}{}
+			}
+			versions[p.ID] = p.Version
+		}
+	}
+	if _, set := details["policy_sources"]; len(sources) > 0 && !set {
+		details["policy_sources"] = sources
+	}
+	if len(versions) > 0 {
+		details["policy_versions"] = versions
+	}
+	if _, set := details["document_version"]; documentVersion > 0 && !set {
+		details["document_version"] = documentVersion
+	}
+	if _, set := details["action_name"]; actionName != "" && !set {
+		details["action_name"] = actionName
+	}
+}
+
 // actedAuditVerdict reports whether verdict (raw or canonical spelling)
 // normalizes to an ACTED outcome: blocked, redacted, or needs_approval. The
 // version lookup below is gated on it so terminal ALLOW rows on the hot paths
@@ -211,10 +298,9 @@ func actedAuditVerdict(verdict string) bool {
 
 // stampMissingPolicyVersions attaches the id-keyed policy_versions map for the
 // row's policy_ids, best-effort, adding entries ONLY for ids that do not
-// already carry one. It runs AFTER fincrime.MergeAuditDetails on purpose: the
-// seam stamps model/pack version STRINGS (e.g. the scorer model version) that
-// must not be displaced by the static_policies row version this lookup
-// returns. Builtin guard ids have no row and are excluded from the query.
+// already carry one, so a version an earlier writer stamped is never displaced
+// by the static_policies row version this lookup returns. Builtin guard ids
+// have no row and are excluded from the query.
 // Callers gate it on actedAuditVerdict: allow rows carry names but no
 // row-version lookup (the fincrime seam's ctx-stamped versions still land on
 // them through the merge).

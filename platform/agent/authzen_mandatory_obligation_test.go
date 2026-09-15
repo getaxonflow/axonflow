@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -22,18 +25,19 @@ import (
 // The fixtures below drive the REAL evaluator, not a stub, because the defect
 // this file pins lived between the evaluator and the wire.
 //
-// A checksum-valid Indonesian NIK under PII_ACTION=redact is the one
-// in-process input that produces an ALLOW carrying a mandatory obligation
-// (decision_handler.go attaches newRedactPIIObligation to a VerdictAllow, and
-// mapObligations renders it Mandatory). The same NIK under PII_ACTION=block
-// denies, and under PII_ACTION=warn allows with no obligation at all - so the
-// three postures give an allow-with-obligation, a denial, and an
+// An Indonesian NIK under an organization's recorded pii=redact override is the
+// in-process input that produces an ALLOW carrying a mandatory obligation: the
+// override displaces the shipped NIK control with a field_redact the anchored
+// engine hands to an enforcement point that declares it (authzenPIIForTest),
+// and mapObligations renders it Mandatory. The same NIK under a pii=block
+// override denies, and under pii=warn allows with no obligation - so the
+// overrides give an allow-with-obligation, a denial, and an
 // allow-without-obligation over ONE query, which keeps the control cases from
 // differing in anything but the property under test.
 const (
 	// authzenPIIQuery carries a checksum-valid NIK. Its detection is what
 	// produces the obligation; it is not itself asserted on.
-	authzenPIIQuery = `{"args":{"query":"Customer NIK is 3174042506780001"}}`
+	authzenPIIQuery = `{"args":{"query":"Customer NIK is ` + fixtureNIK + `"}}`
 )
 
 // authzenPIIEnvelope is the envelope every case in this file sends.
@@ -42,15 +46,34 @@ func authzenPIIEnvelope(t *testing.T) string {
 	return singularEnvelope(t, okSubject, okAction, okResource, authzenPIIQuery)
 }
 
-// installAuthZENPIIWorld sets the deployment posture the fixtures need.
+// authzenPIIForTest is authzenForTest for an enforcement point that declares it
+// discharges field_redact: the anchored engine hands a mandatory redaction only
+// to a PEP whose handshake declares it (contract.PEPHandshakeHeader, which this
+// route forwards to the evaluator by name), so one that declared none would be
+// refused before the AuthZEN rendering saw an obligation to withhold. headers
+// add to it.
+func authzenPIIForTest(t *testing.T, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := map[string]string{contract.PEPHandshakeHeader: redactionHandshake(t)}
+	for k, v := range headers {
+		h[k] = v
+	}
+	return authzenForTest(t, body, h)
+}
+
+// installAuthZENPIIWorld puts the fixtures under a recorded pii override of
+// piiAction ("" = none). A community caller authenticates to the deployment's
+// organization, which is the organization the anchored engine decides for and
+// so the one the override is recorded for (#3961: no environment variable sets
+// one).
 func installAuthZENPIIWorld(t *testing.T, piiAction string) {
 	t.Helper()
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("PII_ACTION", piiAction)
-	ResetDetectionConfigCache()
-	installSharedEngineWithMockDB(t)
-	installCircuitBreaker(t)
+	installNIKWorld(t, getDeploymentOrgID(), DetectionAction(piiAction))
+	// A denied posture records a policy violation, which the Enterprise
+	// breaker writes through its repository.
+	installCircuitBreakerWithMockDB(t)
 }
 
 func decodeAuthZENResponse(t *testing.T, rr *httptest.ResponseRecorder) contract.AuthZENResponse {
@@ -105,7 +128,7 @@ func TestAuthZENDeniesRatherThanDroppingAMandatoryObligation(t *testing.T) {
 	// an ALLOW that carries a mandatory obligation. If detection stops flagging
 	// this NIK, or the obligation stops being mandatory, every assertion below
 	// becomes vacuous and this is the line that says so.
-	ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	if ref.Context == nil {
 		t.Fatal("the fixture produced no profile context for a negotiated caller")
 	}
@@ -141,7 +164,7 @@ func TestAuthZENDeniesRatherThanDroppingAMandatoryObligation(t *testing.T) {
 		{"an empty profile header", map[string]string{authzenProfileHeader: ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := decodeAuthZENResponse(t, authzenForTest(t, body, tc.headers))
+			resp := decodeAuthZENResponse(t, authzenPIIForTest(t, body, tc.headers))
 			if resp.Decision {
 				t.Error("FAIL-OPEN: an allow carrying a mandatory obligation the caller cannot receive " +
 					"was rendered decision:true; the caller proceeds with unredacted content")
@@ -162,25 +185,27 @@ func TestAuthZENDeniesRatherThanDroppingAMandatoryObligation(t *testing.T) {
 // Without it, "deny whenever the header is absent" would pass every assertion
 // in the test above while breaking the route for every bare AuthZEN 1.0 caller.
 //
-// Both cases are an allow with no obligation, reached two different ways: a
-// query with no PII at all, and the SAME PII query under PII_ACTION=warn, which
-// detects the NIK and attaches nothing. The second matters because it is the
-// case where the evaluator did the work and still produced no obligation - a
-// fix keyed on "PII was seen" rather than on the obligation would pass the
-// first and fail the second.
+// Every case is an allow with no obligation, reached different ways: a query
+// with no PII at all, and the SAME PII query under a pii=warn override, which
+// detects the NIK and attaches nothing. That one matters because it is the case
+// where the evaluator did the work and still produced no obligation - a fix
+// keyed on "PII was seen" rather than on the obligation would pass the first
+// and fail it. With no override the shipped NIK control's stored block denies,
+// which is the denial TestAuthZENDeniedPathIsUnchangedByTheObligationRule
+// covers.
 func TestAuthZENStillAllowsAnUnconditionalAllowWithoutTheProfile(t *testing.T) {
 	for _, tc := range []struct {
 		name, piiAction, ctx string
 	}{
 		{"a query with nothing to redact", "redact", okContext},
-		{"PII detected under a posture that attaches no obligation", "warn", authzenPIIQuery},
+		{"PII detected under an override that attaches no obligation", "warn", authzenPIIQuery},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installAuthZENPIIWorld(t, tc.piiAction)
 			body := singularEnvelope(t, okSubject, okAction, okResource, tc.ctx)
 
 			// The premise: an ALLOW with no mandatory obligation.
-			ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+			ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 			if ref.Context == nil || ref.Context.State != contract.StateAllow {
 				t.Fatalf("the control fixture is not an allow: %s", authzenBody(t, ref))
 			}
@@ -189,7 +214,7 @@ func TestAuthZENStillAllowsAnUnconditionalAllowWithoutTheProfile(t *testing.T) {
 			}
 
 			// (c) and the unnegotiated caller still gets its allow.
-			resp := decodeAuthZENResponse(t, authzenForTest(t, body, nil))
+			resp := decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil))
 			if !resp.Decision {
 				t.Error("an unconditional allow was denied to a bare AuthZEN 1.0 caller; the fix is " +
 					"denying on the absence of the header rather than on the withheld obligation")
@@ -203,7 +228,7 @@ func TestAuthZENStillAllowsAnUnconditionalAllowWithoutTheProfile(t *testing.T) {
 
 // TestAuthZENDeniedPathIsUnchangedByTheObligationRule is control (d).
 //
-// The same NIK under PII_ACTION=block denies on policy. That denial must look
+// The same NIK under a pii=block override denies on policy. That denial must look
 // exactly as it did before - decision:false either way, the profile context for
 // a negotiated caller carrying StateDeny - and it must NOT be recounted as a
 // withheld-obligation deny, or the metric that distinguishes the two says
@@ -213,7 +238,7 @@ func TestAuthZENDeniedPathIsUnchangedByTheObligationRule(t *testing.T) {
 	body := authzenPIIEnvelope(t)
 
 	before := authzenOutcomeCounts(t, "singular", "unknown")
-	bare := decodeAuthZENResponse(t, authzenForTest(t, body, nil))
+	bare := decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil))
 	if bare.Decision {
 		t.Error("a denied evaluation was rendered decision:true")
 	}
@@ -230,7 +255,7 @@ func TestAuthZENDeniedPathIsUnchangedByTheObligationRule(t *testing.T) {
 			"different fixes and an operator must be able to tell them apart", got, authzenOutcomeObligationWithheld)
 	}
 
-	ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	if ref.Context == nil || ref.Context.State != contract.StateDeny {
 		t.Fatalf("the negotiated denial changed shape: %s", authzenBody(t, ref))
 	}
@@ -254,7 +279,7 @@ func TestAuthZENPluralShapeIsCoveredToo(t *testing.T) {
 		`{"context":` + authzenPIIQuery + `},` +
 		`{"context":` + authzenPIIQuery + `}]}}`
 
-	ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	if ref.Context == nil || ref.Context.State != contract.StateAllow {
 		t.Fatalf("the plural fixture is not an allow: %s", authzenBody(t, ref))
 	}
@@ -266,9 +291,8 @@ func TestAuthZENPluralShapeIsCoveredToo(t *testing.T) {
 		t.Error("a negotiated caller lost its plural allow")
 	}
 
-	installSharedEngineWithMockDB(t)
 	before := authzenOutcomeCounts(t, "plural", "unknown")
-	bare := decodeAuthZENResponse(t, authzenForTest(t, body, nil))
+	bare := decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil))
 	after := authzenOutcomeCounts(t, "plural", "unknown")
 	if bare.Decision {
 		t.Error("FAIL-OPEN: a plural allow carrying two mandatory obligations was rendered " +
@@ -374,7 +398,7 @@ func TestAuthZENWithheldObligationDenyIsObservable(t *testing.T) {
 	body := authzenPIIEnvelope(t)
 
 	before := authzenOutcomeCounts(t, "singular", "unknown")
-	_ = decodeAuthZENResponse(t, authzenForTest(t, body, nil))
+	_ = decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil))
 	after := authzenOutcomeCounts(t, "singular", "unknown")
 
 	if got := after[authzenOutcomeObligationWithheld] - before[authzenOutcomeObligationWithheld]; got != 1 {
@@ -392,7 +416,7 @@ func TestAuthZENWithheldObligationDenyIsObservable(t *testing.T) {
 
 	// The negotiated caller reports its real state, unchanged.
 	beforeN := authzenOutcomeCounts(t, "singular", "unknown")
-	_ = decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	_ = decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	afterN := authzenOutcomeCounts(t, "singular", "unknown")
 	if got := afterN[string(contract.StateAllow)] - beforeN[string(contract.StateAllow)]; got != 1 {
 		t.Errorf("a negotiated allow counted %v times as ALLOW, want 1", got)
@@ -432,7 +456,7 @@ func TestAuthZENWithheldObligationDenyIsLogged(t *testing.T) {
 	// The premise, asserted rather than assumed: this fixture is an ALLOW
 	// carrying a mandatory obligation. Without it a silent run below would be
 	// indistinguishable from a fixture that stopped producing the case.
-	ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	if ref.Context == nil || ref.Context.State != contract.StateAllow ||
 		mandatoryObligationCount(ref.Context.Obligations) != 1 {
 		t.Fatalf("the fixture is not an allow carrying one mandatory obligation: %s", authzenBody(t, ref))
@@ -442,9 +466,8 @@ func TestAuthZENWithheldObligationDenyIsLogged(t *testing.T) {
 			"the log assertion below would be asserting the wrong thing", ref.Context.DecisionID)
 	}
 
-	installSharedEngineWithMockDB(t)
 	logged := captureAuthZENLog(t, func() {
-		if resp := decodeAuthZENResponse(t, authzenForTest(t, body, nil)); resp.Decision {
+		if resp := decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil)); resp.Decision {
 			t.Fatal("the fixture was not denied, so there was nothing to log")
 		}
 	})
@@ -496,7 +519,7 @@ func TestAuthZENWithheldObligationDenyIsLogged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			installAuthZENPIIWorld(t, tc.piiAction)
 			quiet := captureAuthZENLog(t, func() {
-				_ = decodeAuthZENResponse(t, authzenForTest(t, authzenPIIEnvelope(t), tc.headers))
+				_ = decodeAuthZENResponse(t, authzenPIIForTest(t, authzenPIIEnvelope(t), tc.headers))
 			})
 			if strings.Contains(quiet, "mandatory obligation") {
 				t.Errorf("%s was logged as a withheld-obligation deny; the line no longer identifies the "+
@@ -536,13 +559,12 @@ func TestAuthZENWithheldObligationDenyIsAuditedAsBlocked(t *testing.T) {
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(authzenAuditInsertArgs(AuditVerdictAllowed)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	ref := decodeAuthZENResponse(t, authzenForTest(t, body, negotiated()))
+	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
 	if ref.Context == nil || ref.Context.State != contract.StateAllow ||
 		mandatoryObligationCount(ref.Context.Obligations) != 1 {
 		t.Fatalf("the fixture is not an allow carrying one mandatory obligation: %s", authzenBody(t, ref))
 	}
 
-	installSharedEngineWithMockDB(t)
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(authzenAuditInsertArgs(AuditVerdictAllowed)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -556,7 +578,7 @@ func TestAuthZENWithheldObligationDenyIsAuditedAsBlocked(t *testing.T) {
 		WithArgs(AuditVerdictBlocked, sqlmock.AnyArg(), PlaneAccessEvaluation).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	if resp := decodeAuthZENResponse(t, authzenForTest(t, body, nil)); resp.Decision {
+	if resp := decodeAuthZENResponse(t, authzenPIIForTest(t, body, nil)); resp.Decision {
 		t.Fatal("the fixture was not denied, so there was no wrong audit row to amend")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -597,7 +619,7 @@ func TestAuthZENAmendsNothingItDidNotWithhold(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
 			before := authzenAmendFailureCounts(t)
-			_ = decodeAuthZENResponse(t, authzenForTest(t, authzenPIIEnvelope(t), tc.headers))
+			_ = decodeAuthZENResponse(t, authzenPIIForTest(t, authzenPIIEnvelope(t), tc.headers))
 			after := authzenAmendFailureCounts(t)
 
 			if err := mock.ExpectationsWereMet(); err != nil {

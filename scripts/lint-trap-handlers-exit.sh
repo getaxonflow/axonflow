@@ -95,7 +95,7 @@ is_shell_file() {
   # locale with "Illegal byte sequence" - on every binary in the tree, on macOS
   # only. Same class as the perl-not-sed note below: a portability gap that
   # makes the guard noisy on one platform and quiet on the other.
-  first=$(head -c 200 "$1" 2>/dev/null | LC_ALL=C tr -d '\0' | head -1 || true)
+  first=$(head -c 200 "$1" 2>/dev/null | LC_ALL=C tr -d '\0' | sed -n '1p' || true)
   case "$first" in
     '#!'*bash*|'#!'*/sh|'#!'*/sh\ *|'#!'*zsh*|'#!'*dash*|'#!'*ksh*|'#!'*env\ sh*) return 0 ;;
   esac
@@ -416,7 +416,7 @@ scan() {
       # Does the signal list name INT or TERM? SIGINT/SIGTERM and the numeric
       # forms 2/15 are the same signals under different spellings; a guard that
       # only knew the bare names would be a census bounded by one spelling.
-      printf '%s' " $rest " | LC_ALL=C grep -qiE '[[:space:]](SIG)?(INT|TERM)[[:space:]]|[[:space:]](2|15)[[:space:]]' || continue
+      LC_ALL=C grep -qiE '[[:space:]](SIG)?(INT|TERM)[[:space:]]|[[:space:]](2|15)[[:space:]]' <<<" $rest " || continue
 
       local rc=0
       handler_exits "$f" "$handler" || rc=$?

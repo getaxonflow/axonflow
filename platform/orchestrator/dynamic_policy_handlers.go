@@ -1,18 +1,11 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -32,7 +25,7 @@ func isValidDynamicPolicyCategory(category string) bool {
 }
 
 // DynamicPolicyAPIHandler handles HTTP requests for dynamic policy management.
-// This provides the /api/v1/dynamic-policies endpoints for ADR-026 Single Entry Point.
+// This provides the /api/v1/dynamic-policies endpoints for ADR-024 Single Entry Point.
 // It delegates to the existing PolicyAPIHandler service but filters for dynamic policies.
 type DynamicPolicyAPIHandler struct {
 	service PolicyServicer
@@ -45,7 +38,7 @@ func NewDynamicPolicyAPIHandler(service PolicyServicer) *DynamicPolicyAPIHandler
 
 // RegisterRoutes registers the tenant policy API routes under BOTH the legacy
 // /api/v1/dynamic-policies prefix and the #1431 successor
-// /api/v1/tenant-policies (ADR-026: Single Entry Point).
+// /api/v1/tenant-policies (ADR-024: Single Entry Point).
 //
 // EDITION (HARD RULE 11): a rename, not a capability. Both prefixes are
 // registered by this one function at this one call site, so the successor
@@ -68,36 +61,31 @@ func NewDynamicPolicyAPIHandler(service PolicyServicer) *DynamicPolicyAPIHandler
 // re-derives both blocks and fails if a route exists on one prefix and not the
 // other.
 //
-// The deprecation stamp is applied ONLY to the legacy block, by wrapping the
-// shared handler value. It is not a router-level middleware because these
-// routes sit on the orchestrator's ROOT router, where a middleware would run
-// on every orchestrator route.
+// Both spellings are the v11 deprecated export surface (PRD §1.11). The
+// deprecation signal is written by the stamped subrouter
+// registerLegacyPolicyRoutes passes in, which is why r is a legacyRouter: there
+// is no way to register this family on a router that does not stamp it.
 //
-// The consequence, stated so it is not discovered later: because the stamp is
-// INSIDE the handler, a request refused before the handler runs carries no
-// signal. requireInternalProxyAuth wraps the whole mux (run.go), so an
-// unauthenticated caller gets 403 with no Deprecation header. That is the
-// opposite of the agent, where the stamp is subrouter middleware mounted ahead
-// of apiAuthMiddleware and therefore rides the 401. Neither is wrong - a
-// deprecation notice is not something to hand an unauthenticated caller on
-// this plane - but the two planes differ, and the public docs say to sample a
-// SUCCESSFUL response rather than an error one for exactly this reason.
-func (h *DynamicPolicyAPIHandler) RegisterRoutes(r *mux.Router) {
-	// ---- deprecated: /api/v1/dynamic-policies -----------------------------
-	// Same handler values as the successor block below, wrapped so the
-	// response carries Deprecation + Link. Order matters and is preserved:
+// The stamp is middleware on that subrouter, so it rides every response a
+// matched route produces. A request refused BEFORE routing carries none:
+// requireInternalProxyAuth wraps the whole mux (run.go), so a caller that
+// bypasses the agent without the proxy credential gets a bare 403. On the
+// agent the stamp is mounted ahead of apiAuthMiddleware and rides the 401.
+func (h *DynamicPolicyAPIHandler) RegisterRoutes(r legacyRouter) {
+	// ---- #1431's original spelling: /api/v1/dynamic-policies ---------------
+	// Same handler values as the block below. Order matters and is preserved:
 	// the literal suffixes must precede "/{id}" or gorilla/mux matches
 	// "import" as an id.
-	r.HandleFunc("/api/v1/dynamic-policies", policypath.DeprecateLegacyFunc(h.handleDynamicPolicies)).Methods("GET", "POST", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/import", policypath.DeprecateLegacyFunc(h.handleImport)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/export", policypath.DeprecateLegacyFunc(h.handleExport)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/effective", policypath.DeprecateLegacyFunc(h.handleEffective)).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/{id}", policypath.DeprecateLegacyFunc(h.handleDynamicPolicyByID)).Methods("GET", "PUT", "DELETE", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/{id}/test", policypath.DeprecateLegacyFunc(h.handleTest)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/{id}/versions", policypath.DeprecateLegacyFunc(h.handleVersions)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies", h.handleDynamicPolicies).Methods("GET", "POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/import", h.handleImport).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/export", h.handleExport).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/effective", h.handleEffective).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}", h.handleDynamicPolicyByID).Methods("GET", "PUT", "DELETE", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}/test", h.handleTest).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}/versions", h.handleVersions).Methods("GET", "OPTIONS")
 
-	// ---- current: /api/v1/tenant-policies (#1431) -------------------------
-	// Line-for-line the block above, same handler values, no stamp.
+	// ---- #1431's rename: /api/v1/tenant-policies ----------------------------
+	// Line-for-line the block above, same handler values.
 	r.HandleFunc("/api/v1/tenant-policies", h.handleDynamicPolicies).Methods("GET", "POST", "OPTIONS")
 	r.HandleFunc("/api/v1/tenant-policies/import", h.handleImport).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/tenant-policies/export", h.handleExport).Methods("GET", "OPTIONS")
@@ -193,6 +181,13 @@ func (h *DynamicPolicyAPIHandler) listDynamicPolicies(w http.ResponseWriter, r *
 // createDynamicPolicy handles POST /api/v1/dynamic-policies
 // Validates that the policy has a dynamic category
 func (h *DynamicPolicyAPIHandler) createDynamicPolicy(w http.ResponseWriter, r *http.Request, tenantID string) {
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237), as on the bulk import:
+	// where core/172 has revoked the write no body can succeed, and one that
+	// failed validation below was answered 400 rather than the freeze.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "CreateDynamicPolicy", h.getOrgID(r), tenantID) {
+		return
+	}
+
 	// Limit request body size
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
@@ -215,13 +210,23 @@ func (h *DynamicPolicyAPIHandler) createDynamicPolicy(w http.ResponseWriter, r *
 	userID := h.getUserID(r)
 	policy, err := h.service.CreatePolicy(r.Context(), tenantID, strings.TrimSpace(r.Header.Get("X-Org-ID")), &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] CreateDynamicPolicy tier error for tenant %s: %v", tenantID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		// core/172 froze the legacy policy tables (#4036). Without this the
+		// refusal fell through to the 500 below, which reads as "ours is broken,
+		// retry" for a write path that was retired on purpose.
+		if h.writeLegacyFreezeError(w, err, "CreateDynamicPolicy", tenantID) {
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] CreateDynamicPolicy error for tenant %s: %v", tenantID, err)
@@ -297,6 +302,14 @@ func (h *DynamicPolicyAPIHandler) getDynamicPolicy(w http.ResponseWriter, r *htt
 
 // updateDynamicPolicy handles PUT /api/v1/dynamic-policies/{id}
 func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237), as on the bulk import,
+	// where core/172 has revoked the write no body can succeed, and one that
+	// failed validation below was answered 400 rather than the freeze.
+	// It precedes the lookup below as well: no update can succeed here either way.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "UpdateDynamicPolicy", h.getOrgID(r), tenantID) {
+		return
+	}
+
 	// First check that the existing policy is a dynamic policy
 	existingPolicy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
@@ -331,13 +344,23 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 	userID := h.getUserID(r)
 	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] UpdateDynamicPolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		// #4036. Wired on the WRITE only: the identical 500 twenty lines above
+		// belongs to the GetPolicy lookup, which is a read and is unaffected by
+		// the freeze - hence the two-line anchor rather than the message alone.
+		if h.writeLegacyFreezeError(w, err, "UpdateDynamicPolicy", tenantID) {
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] UpdateDynamicPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -373,9 +396,16 @@ func (h *DynamicPolicyAPIHandler) deleteDynamicPolicy(w http.ResponseWriter, r *
 
 	userID := h.getUserID(r)
 	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		// #4036. core/172 revokes DELETE as well as INSERT/UPDATE, so this verb
+		// answered the same bare 500. Wired on the WRITE only, for the same
+		// reason as update: the lookup above it is a read.
+		if h.writeLegacyFreezeError(w, err, "DeleteDynamicPolicy", tenantID) {
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -510,6 +540,14 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237): where core/172 has
+	// revoked the write no body can succeed, and one that failed validation
+	// below was answered 500 rather than the freeze. After authentication, so a
+	// caller the route does not accept is told that first.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "ImportPolicies", orgID, tenantID) {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodySize)
 
 	var req ImportPoliciesRequest
@@ -540,8 +578,27 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 	userID := h.getUserID(r)
 	response, err := h.service.ImportPolicies(r.Context(), tenantID, orgID, &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
+			return
+		}
+		// A TIER REFUSAL IS NOT A SERVER ERROR. ImportPolicies wraps its
+		// refusal with %w, so a concrete type assertion misses it and the
+		// caller was told 500 INTERNAL_ERROR for hitting a documented ceiling
+		// (independent R3, MAJOR-3). errors.As sees through the wrap.
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
+			log.Printf("[DynamicPolicyAPI] ImportPolicies tier refusal for tenant %s: %v", tenantID, err)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		// #4036. ImportBulk surfaces the freeze rather than stringifying it
+		// (#4010/#4014), so errors.As can still see the *pq.Error here - the
+		// property that fix depended on, reused rather than re-derived.
+		if h.writeLegacyFreezeError(w, err, "ImportPolicies", tenantID) {
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] ImportPolicies error for tenant %s: %v", tenantID, err)
@@ -653,6 +710,17 @@ func (h *DynamicPolicyAPIHandler) writeJSON(w http.ResponseWriter, status int, d
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		log.Printf("[DynamicPolicyAPI] Error encoding JSON response: %v", err)
 	}
+}
+
+// writeTierError renders a tier refusal: its own status, its code, and
+// Retry-After when the refusal is the retryable (outage) one. Every tier
+// branch in this file goes through it so no site can render the status without
+// the header - the pair is the contract, not the status alone.
+func (h *DynamicPolicyAPIHandler) writeTierError(w http.ResponseWriter, e *TierValidationError) {
+	if e.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
+	}
+	h.writeError(w, e.HTTPStatus(), e.Code, e.Message)
 }
 
 func (h *DynamicPolicyAPIHandler) writeError(w http.ResponseWriter, status int, code, message string) {

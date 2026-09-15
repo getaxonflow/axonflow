@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -71,6 +74,41 @@ type Catalog struct {
 	Realms map[string]RealmEntry `json:"realms"`
 	// ResourceTypes is the resource type registry, keyed by type segment.
 	ResourceTypes map[string]ResourceType `json:"resource_types"`
+	// Provenance identifies the snapshot this catalog was resolved from. It is
+	// stamped by the resolver (platform/decision/authoringcatalog) and read by
+	// the activation path: a catalog that is a FIXTURE may validate and publish
+	// documents and may never activate one. It is excluded from the catalog's
+	// content digest, because a label is not part of "which policies does this
+	// catalog admit".
+	Provenance CatalogProvenance `json:"provenance"`
+	// ActionLabels is what an operator reads for each action (#3789), keyed
+	// like Actions. Like Provenance it is EXCLUDED from the catalog's content
+	// digest: a name is not part of "which policies does this catalog admit",
+	// so naming an action for people moves neither CatalogDigest nor
+	// DeploymentCatalogVersion. A catalog built without a registry may carry
+	// none, and a reader then falls back to the identifier.
+	ActionLabels map[string]ActionLabel `json:"action_labels,omitempty"`
+}
+
+// ActionLabel is one action's operator-facing name and description.
+type ActionLabel struct {
+	DisplayName string `json:"display_name"`
+	Description string `json:"description,omitempty"`
+}
+
+// CatalogProvenance is where a catalog came from and which snapshot it is.
+type CatalogProvenance struct {
+	// Source is the resolver's recognised value that produced the catalog,
+	// empty for a catalog assembled directly in a test.
+	Source string `json:"source,omitempty"`
+	// Fixture is true for a test world. Promote and Rollback refuse a fixture
+	// catalog with CodeCatalogIsFixture: a deployment may not enforce a
+	// vocabulary no request can arrive in.
+	Fixture bool `json:"fixture"`
+	// Digest is the content digest of the actions, realms and resource types.
+	Digest string `json:"digest,omitempty"`
+	// RegistryVersion is the integer the wire carries for this vocabulary.
+	RegistryVersion int64 `json:"registry_version"`
 }
 
 // Validate rejects a catalog that cannot serve as a validation authority.

@@ -310,7 +310,7 @@ endpoints:
     port: 8081
     path: /api/v1/dynamic-policies
     expected:
-      community:  {status: 200, reason: "dynamic_policy_handlers.go:48 ADR-026 single entry, ungated"}
+      community:  {status: 200, reason: "dynamic_policy_handlers.go:48 ADR-024 single entry, ungated"}
       evaluation: {status: 200, reason: "same"}
       enterprise: {status: 200, reason: "same"}
 
@@ -448,24 +448,11 @@ endpoints:
       enterprise: {status: 200, reason: "same"}
 
   # ---------------------------------------------------------------------------
-  # MCP policy evaluation (orchestrator side, called by agent) — ungated
-  # ---------------------------------------------------------------------------
-  - id: orchestrator-mcp-evaluate-policies
-    method: POST
-    port: 8081
-    path: /api/v1/mcp/evaluate-policies
-    body: '{"tenant_id":"tier-gate-test"}'
-    expected:
-      community:  {status: 400, reason: "always-registered if engine implements MCPPolicyEngine; minimal body 400"}
-      evaluation: {status: 400, reason: "same"}
-      enterprise: {status: 400, reason: "same"}
-
-  # ---------------------------------------------------------------------------
   # MCP input/output check on agent — auth-gated (Basic auth via Authenticate()).
   # Not particularly tier-revealing across all 3 modes; covered by other rows.
   # (Intentionally omitted from this manifest — covered by other rows.)
   #
-  # Static policy management on agent (port 8080) — registered at /api/v1/static-policies
+  # Static policy management on agent (port 8080) — registered under the static-policies prefix
   # via PathPrefix subrouter (static_policy_api_handlers.go:77).
   # ---------------------------------------------------------------------------
   - id: agent-static-policies-list

@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -108,20 +100,6 @@ func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_DatabasePlane
 	}
 }
 
-func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_MCPPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "mcp")
-
-	handler := NewMCPDynamicPolicyHandler(nil)
-	matched, _, _ := handler.evaluateConditions(DynamicPolicy{Type: "mcp"}, MCPPolicyEvaluationRequest{})
-
-	if !matched {
-		t.Fatalf("a zero-condition policy must match (applies to everything), got false")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "mcp"); after != before {
-		t.Fatalf("a legitimate zero-condition match must not record empty_conditions: before=%v after=%v", before, after)
-	}
-}
-
 func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_PolicyTestPlane(t *testing.T) {
 	before := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "policy_test")
 
@@ -141,21 +119,6 @@ func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_PolicyTestPla
 // short-circuit BEFORE calling Match (condition_evaluator.go: "Field
 // resolution is NOT part of this evaluator").
 // ---------------------------------------------------------------------------
-
-func TestConditionUnevaluableMetrics_FieldUnresolved_MCPPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonFieldUnresolved, "mcp")
-
-	handler := NewMCPDynamicPolicyHandler(nil)
-	cond := PolicyCondition{Field: "totally_unrecognized_field", Operator: "equals", Value: "x"}
-	got := handler.evaluateCondition(cond, MCPPolicyEvaluationRequest{})
-
-	if got {
-		t.Fatalf("an unresolvable field must not match, got true")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonFieldUnresolved, "mcp"); after != before+1 {
-		t.Fatalf("axonflow_policy_condition_unevaluable_total{reason=field_unresolved,plane=mcp} did not increment: before=%v after=%v", before, after)
-	}
-}
 
 func TestConditionUnevaluableMetrics_FieldUnresolved_PolicyTestPlane(t *testing.T) {
 	before := unevaluableCount(sharedpolicy.ReasonFieldUnresolved, "policy_test")

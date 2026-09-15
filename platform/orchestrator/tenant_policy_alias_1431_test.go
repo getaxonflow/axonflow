@@ -24,7 +24,7 @@ import (
 // The orchestrator half is where the alias is most likely to lose something,
 // for two reasons the agent half does not have:
 //
-//   - these routes are registered on the ROOT router as two literal blocks
+//   - these routes are registered as two literal blocks
 //     (the portal's AST census cannot see a path built from a constant, so a
 //     shared table is not available here). Two blocks can drift;
 //   - the orchestrator's authentication is a WRAPPER with a path-keyed
@@ -37,7 +37,7 @@ import (
 func tenantAliasRouter(t *testing.T, svc PolicyServicer) *mux.Router {
 	t.Helper()
 	r := mux.NewRouter()
-	NewDynamicPolicyAPIHandler(svc).RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, NewDynamicPolicyAPIHandler(svc), nil)
 	return r
 }
 
@@ -205,10 +205,6 @@ func TestTenantPolicyAliasResponsesAreIdentical(t *testing.T) {
 					legacyRR.Body.String(), successorRR.Body.String())
 			}
 
-			skip := map[string]bool{
-				http.CanonicalHeaderKey(policypath.HeaderDeprecation): true,
-				http.CanonicalHeaderKey(policypath.HeaderLink):        true,
-			}
 			keys := map[string]bool{}
 			for k := range legacyRR.Header() {
 				keys[k] = true
@@ -217,9 +213,6 @@ func TestTenantPolicyAliasResponsesAreIdentical(t *testing.T) {
 				keys[k] = true
 			}
 			for k := range keys {
-				if skip[k] {
-					continue
-				}
 				a, b := legacyRR.Header().Values(k), successorRR.Header().Values(k)
 				if fmt.Sprint(a) != fmt.Sprint(b) {
 					t.Errorf("header %q differs: legacy %v, successor %v", k, a, b)
@@ -233,38 +226,20 @@ func normalizeTenantVolatile(body string) string {
 	return volatileTenantRE.ReplaceAllString(body, `"$1":"<normalized>"`)
 }
 
-// TestTenantPolicyDeprecationSignalIsOnLegacyOnly asserts the signal in both
-// directions, on every route rather than one.
-func TestTenantPolicyDeprecationSignalIsOnLegacyOnly(t *testing.T) {
+// TestTenantPolicyDeprecationSignalIsOnBothSpellings asserts the signal on
+// every route of both prefixes. In v11 the tenant family is the deprecated
+// export surface (PRD §1.11) in both #1431 spellings, so both name the typed
+// authoring route as their successor.
+func TestTenantPolicyDeprecationSignalIsOnBothSpellings(t *testing.T) {
 	for _, p := range tenantAliasProbes() {
 		t.Run(p.name, func(t *testing.T) {
-			legacyRR := serveTenantAlias(t, p, policypath.LegacyTenantPolicies)
-			successorRR := serveTenantAlias(t, p, policypath.TenantPolicies)
-
-			if legacyRR.Code != p.wantCode {
-				t.Fatalf("legacy request did not reach the handler (%d); header assertions vacuous", legacyRR.Code)
-			}
-
-			if got := legacyRR.Header().Get(policypath.HeaderDeprecation); got != policypath.DeprecationValue {
-				t.Errorf("legacy %s%s: Deprecation = %q, want %q",
-					policypath.LegacyTenantPolicies, p.suffix, got, policypath.DeprecationValue)
-			}
-			wantLink := policypath.LinkSuccessor(policypath.TenantPolicies + p.suffix)
-			if got := legacyRR.Header().Get(policypath.HeaderLink); got != wantLink {
-				t.Errorf("legacy %s%s: Link = %q, want %q",
-					policypath.LegacyTenantPolicies, p.suffix, got, wantLink)
-			}
-
-			if got := successorRR.Header().Get(policypath.HeaderDeprecation); got != "" {
-				t.Errorf("successor %s%s carries Deprecation = %q", policypath.TenantPolicies, p.suffix, got)
-			}
-			if got := successorRR.Header().Get(policypath.HeaderLink); got != "" {
-				t.Errorf("successor %s%s carries Link = %q", policypath.TenantPolicies, p.suffix, got)
-			}
-			for _, rr := range []*httptest.ResponseRecorder{legacyRR, successorRR} {
-				if got := rr.Header().Get("Sunset"); got != "" {
-					t.Errorf("Sunset = %q - this change promises no removal date", got)
+			for _, prefix := range []string{policypath.LegacyTenantPolicies, policypath.TenantPolicies} {
+				rr := serveTenantAlias(t, p, prefix)
+				if rr.Code != p.wantCode {
+					t.Fatalf("%s%s: got %d - the request did not reach the handler; header assertions vacuous",
+						prefix, p.suffix, rr.Code)
 				}
+				assertDeprecationSignal(t, prefix+p.suffix, rr.Header())
 			}
 		})
 	}
@@ -340,7 +315,7 @@ func TestTenantPolicyDeprecationHeadersAreCORSExposed(t *testing.T) {
 		t.Fatal("resolveCORSOptions exposes NO response headers - the assertions below would be " +
 			"checking an empty set")
 	}
-	for _, want := range []string{policypath.HeaderDeprecation, policypath.HeaderLink} {
+	for _, want := range policypath.DeprecationHeaders() {
 		if !exposed[http.CanonicalHeaderKey(want)] {
 			t.Errorf("%q is not in ExposedHeaders %v", want, opts.ExposedHeaders)
 		}

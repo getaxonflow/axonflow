@@ -94,24 +94,10 @@ cd http
 | `AXONFLOW_ENDPOINT` | `http://localhost:8080` | AxonFlow Agent endpoint |
 | `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
 | `AXONFLOW_CLIENT_SECRET` | `demo` | Client secret for authentication |
-| `MCP_STATIC_POLICIES_ENABLED` | `true` | Enable/disable static MCP policies |
 
-### Static Policies Configuration
+### Detection Is Not a Process Flag
 
-The `MCP_STATIC_POLICIES_ENABLED` environment variable controls whether built-in static policies are enforced:
-
-| Value | Behavior |
-|-------|----------|
-| `true` | (Default) Static policies (SQLi blocking, PII redaction) are enforced on all MCP queries. |
-| `false` | Static policies are disabled. Only dynamic (user-created) policies apply. |
-
-**Example:**
-```bash
-# Disable static policies (rely on dynamic policies only)
-MCP_STATIC_POLICIES_ENABLED=false go run main.go
-```
-
-When static policies are disabled, the SQLi blocking and PII redaction tests in these examples may behave differently (queries that would normally be blocked may pass through). Each example logs the current configuration state.
+In v11 no process flag narrows what the decision plane evaluates. Setting `MCP_STATIC_POLICIES_ENABLED=false`, a `MCP_STATIC_POLICIES_SKIP_CATEGORIES` list naming a category an enforcing plane evaluates, or any `MCP_STATIC_POLICIES_CONNECTORS` value makes the agent refuse to boot (PRD v11 §1.7): a detector switched off would leave every control that reads it undecidable. To change what a detection category does for an organization, set its detection posture (`/api/v1/detection-posture/{category}`).
 
 ## Related Documentation
 

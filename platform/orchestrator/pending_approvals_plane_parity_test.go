@@ -186,6 +186,8 @@ func TestMAPPendingApprovals_PlanIDFilter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/v1/plans/approvals/pending?plan_id=plan-a-filter", nil)
 	req.Header.Set("X-Tenant-ID", env.tenantID)
+	// #3948: the MAP listing binds BOTH tenancy dimensions now.
+	req.Header.Set("X-Org-ID", "org-"+env.tenantID)
 	rr := httptest.NewRecorder()
 	mapPendingApprovalsHandler(rr, req)
 	if rr.Code != http.StatusOK {
@@ -290,6 +292,8 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 			req.Header.Set("X-Tenant-ID", "tenant-tier-test")
+			// #3948: the MAP listing binds BOTH tenancy dimensions now.
+			req.Header.Set("X-Org-ID", "org-tenant-tier-test")
 			rr := httptest.NewRecorder()
 			mapPendingApprovalsHandler(rr, req)
 
@@ -304,8 +308,15 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 }
 
 // TestMAPPendingApprovals_MissingTenant asserts the handler rejects requests
-// without X-Tenant-ID. Enterprise mode so the tier gate doesn't short-circuit
-// the check.
+// carrying no authenticated tenancy. Enterprise mode so the tier gate doesn't
+// short-circuit the check.
+//
+// #3948: this asserted 400 and the handler emitted 400, while the WCP endpoint
+// this one is documented as the counterpart of emitted 401 — and the published
+// document said 400 for BOTH. The pair now agrees on 401, which is the correct
+// status because the refusal does not depend on the resource. This test moved
+// with the contract rather than being deleted, because the case it drives is
+// still the case that matters.
 func TestMAPPendingApprovals_MissingTenant(t *testing.T) {
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	origWCP := workflowControlService
@@ -331,13 +342,19 @@ func TestMAPPendingApprovals_MissingTenant(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	rr := httptest.NewRecorder()
 	mapPendingApprovalsHandler(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("missing tenant: want 400, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("missing tenancy: want 401, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
 // TestMAPPendingApprovals_ServiceUnavailable asserts the handler returns 503
 // when workflowControlService is unset.
+//
+// #3948: the request now needs a COMPLETE tenancy, because the availability
+// check moved BELOW the tenancy bind. It used to sit above it, so a caller
+// carrying no authenticated tenancy at all learned whether this deployment's
+// workflow control plane was up — the same "a refusal must not depend on the
+// resource" rule the bind itself is written around, one level out.
 func TestMAPPendingApprovals_ServiceUnavailable(t *testing.T) {
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	origWCP := workflowControlService
@@ -355,6 +372,7 @@ func TestMAPPendingApprovals_ServiceUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-1")
+	req.Header.Set("X-Org-ID", "org-1")
 	rr := httptest.NewRecorder()
 	mapPendingApprovalsHandler(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -396,6 +414,8 @@ func TestMAPPendingApprovals_LimitQueryParam(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending"+tc.query, nil)
 			req.Header.Set("X-Tenant-ID", env.tenantID)
+			// #3948: the MAP listing binds BOTH tenancy dimensions now.
+			req.Header.Set("X-Org-ID", "org-"+env.tenantID)
 			rr := httptest.NewRecorder()
 			mapPendingApprovalsHandler(rr, req)
 			if rr.Code != tc.wantCode {
@@ -436,6 +456,8 @@ func TestMAPPendingApprovals_EmptyListSerialisedAsArray(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-empty")
+	// #3948: the MAP listing binds BOTH tenancy dimensions now.
+	req.Header.Set("X-Org-ID", "org-tenant-empty")
 	rr := httptest.NewRecorder()
 	mapPendingApprovalsHandler(rr, req)
 	if rr.Code != http.StatusOK {
@@ -474,6 +496,10 @@ func callMAPPendingHandler(t *testing.T, tenantID string) ([]map[string]interfac
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	req.Header.Set("X-Tenant-ID", tenantID)
+	// #3948: the MAP listing binds on BOTH tenancy dimensions now, exactly as
+	// its WCP twin above has since #3065. It was the sibling that comment
+	// meant by "every converted sibling" and it had never been converted.
+	req.Header.Set("X-Org-ID", "org-"+tenantID)
 	rr := httptest.NewRecorder()
 	mapPendingApprovalsHandler(rr, req)
 	if rr.Code != http.StatusOK {

@@ -53,10 +53,6 @@ func TestClientRequestHandler_BudgetDeny_WritesCanonicalAgentAudit(t *testing.T)
 	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(nil), circuitbreaker.Config{})
 	defer func() { circuitBreakerInstance = oldCB }()
 
-	oldTier := tierAwarePolicyEngine
-	tierAwarePolicyEngine = nil
-	defer func() { tierAwarePolicyEngine = oldTier }()
-
 	// client.OrgID resolves to "budget-test" (the V2 license org) — scope the
 	// over-limit org budget to it so CheckBudget fails closed (proven pattern from
 	// gateway_handlers_test.go).

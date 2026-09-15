@@ -14,6 +14,7 @@
 package policytest
 
 import (
+	"database/sql/driver"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -29,7 +30,7 @@ func LoaderCols() []string {
 		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
 		"description", "phase", "action_request", "action_response",
 		"enabled", "priority", "tenant_id", "segment_id", "metadata",
-		"created_at", "updated_at",
+		"created_at",
 	}
 }
 
@@ -41,12 +42,38 @@ func LoaderCols() []string {
 // segment-scoped (#3266); use SegmentScopedPolicyRow for a segment-scoped
 // tenant/org-tier fixture row.
 func SystemPolicyRow(rows *sqlmock.Rows, id, policyID, category, pattern, severity, phase, actionRequest string, priority int) *sqlmock.Rows {
-	return rows.AddRow(
-		id, policyID, "Test policy "+policyID, category, "system", pattern, severity,
-		nil, phase, actionRequest, nil,
-		true, priority, "global", nil, []byte(`{}`),
-		time.Now().UTC(), time.Now().UTC(),
-	)
+	return systemPolicyRow(rows, id, policyID, category, pattern, severity, phase, actionRequest, nil, priority)
+}
+
+// SystemPolicyPhaseRow is SystemPolicyRow with a stored response-phase action,
+// the shape migration core/128 gives the prompt-injection rows (phase 'both',
+// action_request 'block', action_response 'redact').
+func SystemPolicyPhaseRow(rows *sqlmock.Rows, id, policyID, category, pattern, severity, phase, actionRequest, actionResponse string, priority int) *sqlmock.Rows {
+	return systemPolicyRow(rows, id, policyID, category, pattern, severity, phase, actionRequest, actionResponse, priority)
+}
+
+func systemPolicyRow(rows *sqlmock.Rows, id, policyID, category, pattern, severity, phase, actionRequest string, actionResponse interface{}, priority int) *sqlmock.Rows {
+	return rows.AddRow(SystemPolicyValues(id, policyID, category, pattern, severity, phase, actionRequest, actionResponse, priority)...)
+}
+
+// SystemPolicyValues is one enabled system-tier row in LoaderCols order - the
+// single encoding of that row, for SystemPolicyRow and for a fixture that serves
+// the loader without sqlmock. actionResponse is nil for a row that stores no
+// response-phase action.
+func SystemPolicyValues(id, policyID, category, pattern, severity, phase, actionRequest string, actionResponse interface{}, priority int) []driver.Value {
+	return GlobalPolicyValues("system", id, policyID, category, pattern, severity, phase, actionRequest, actionResponse, priority)
+}
+
+// GlobalPolicyValues is one enabled row of the 'global' scope at the given
+// tier, in LoaderCols order: "system" for a shipped control, "tenant" for the
+// organization template's rows the core migrations seed there.
+func GlobalPolicyValues(tier, id, policyID, category, pattern, severity, phase, actionRequest string, actionResponse interface{}, priority int) []driver.Value {
+	return []driver.Value{
+		id, policyID, "Test policy " + policyID, category, tier, pattern, severity,
+		nil, phase, actionRequest, actionResponse,
+		true, int64(priority), "global", nil, []byte(`{}`),
+		time.Now().UTC(),
+	}
 }
 
 // SegmentScopedPolicyRow appends an enabled tenant-tier policy row scoped to
@@ -58,7 +85,7 @@ func SegmentScopedPolicyRow(rows *sqlmock.Rows, id, policyID, tenantID, segmentI
 		id, policyID, "Test policy "+policyID, category, "tenant", pattern, severity,
 		nil, phase, actionRequest, nil,
 		true, priority, tenantID, segmentID, []byte(`{}`),
-		time.Now().UTC(), time.Now().UTC(),
+		time.Now().UTC(),
 	)
 }
 

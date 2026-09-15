@@ -965,9 +965,10 @@ func staticPolicySortEqual(a, b StaticPolicy, sortBy string) bool {
 // Library-contract changes in #3048 (behavioral, deliberate):
 //   - An empty tenantID with no org (param or context) now returns an ERROR
 //     (WithOrgScope rejects an empty scope key) where the old single bare
-//     query silently returned the system baseline. Every production caller
-//     (HandleGetEffectivePolicies, TierAwarePolicyEngine) guards a non-empty
-//     tenant before calling.
+//     query silently returned the system baseline. The one production caller
+//     since #4253, HandleGetEffectivePolicies (the deprecated effective read,
+//     PRD v11 §1.11), guards a non-empty tenant before calling; this read
+//     decides nothing.
 //   - Multiple live overrides on one policy now collapse to the
 //     latest-created override (one row per policy), where the old LEFT JOIN
 //     emitted a duplicate EffectiveStaticPolicy per override row.
@@ -997,9 +998,9 @@ func staticPolicySortEqual(a, b StaticPolicy, sortBy string) bool {
 // the pass-A override map): segment-scoped policies do NOT participate in it
 // (ADR-060 Decision 1) — the map lookup below is gated on
 // policy.SegmentID == nil regardless of what the override map contains for
-// that policy ID — because the combiner (see tier_aware_policy_engine.go)
-// treats a segment policy's action as an unconditional, un-downgradable
-// restriction candidate.
+// that policy ID — because the combiner (in tier_aware_policy_engine.go,
+// deleted by #4253) treated a segment policy's action as an unconditional,
+// un-downgradable restriction candidate.
 func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID string, orgID *string, segmentIDs []string) ([]EffectiveStaticPolicy, error) {
 	orgIDStr := ""
 	if orgID != nil {
@@ -1165,7 +1166,7 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		//      UNCONDITIONALLY, a sibling tenant's block->warn downgrade did
 		//      not merely apply to this caller - it OUTRANKED the caller's own
 		//      org-scoped override. That is a loosening, on an enforcement
-		//      path (tier_aware_policy_engine -> clientRequestHandler Phase 2),
+		//      path (tier_aware_policy_engine -> clientRequestHandler Phase 2, deleted in #4253),
 		//      and it is the one direction this change is meant never to move.
 		//
 		// So the predicate admits the caller's OWN tenant-scoped rows plus the

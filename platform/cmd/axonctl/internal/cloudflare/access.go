@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package cloudflare provides a client for managing Cloudflare Access resources.
 package cloudflare
 

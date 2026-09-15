@@ -36,16 +36,28 @@ SITES=$'.github/workflows/sync-community-repo.yml
 scripts/ci/simulate-community-mirror.sh
 platform/shared/policy/legacy_call_site_census_test.go
 platform/decision/registry/legacy_planes_test.go
-platform/agent/hitl_twin_census_test.go
+platform/agent/migration_gate_wiring_census_test.go
 platform/shared/identity/conformance_registry_test.go
-platform/shared/capability/derive.go'
+platform/shared/capability/derive.go
+platform/shared/edition/twin_census_support_test.go'
 
 # Go files the sweep below finds that are NOT classifiers of arbitrary source
 # and so need not carry the sync's expression. `file :: reason`; each entry is
 # load-bearing (the sweep must actually find the file, or the entry is stale).
+#
+# NO APOSTROPHE IN A REASON. This is one $'...' string, so an apostrophe
+# terminates it and silently truncates the table at that entry. The failure
+# that produces is deceptive rather than obvious: the entries AFTER the
+# apostrophe stop being exemptions, so the run reports "carries a
+# build-constraint expression and is not on this test's list" against files
+# nobody touched, and the author reads it as three unrelated regressions. Write
+# "the tag of a file" rather than "a file's tag".
 EXEMPT_SITES=$'platform/shared/egress/conformance_test.go :: asserts that ONE named file has exactly the constraint line "//go:build enterprise", via buildConstraints() over that file; an equality on the canonical spelling of a known file, not a classifier deciding whether arbitrary source is enterprise-only
 platform/shared/capability/derive_test.go :: writes synthetic Go files carrying the directive as FIXTURE INPUT to SourceEdition, the classifier that lives in derive.go and is on the list above; the strings here are the source being classified, not an expression deciding the classification
-platform/shared/sdkcompat/no_second_copy_test.go :: writes synthetic Go sources carrying the directive as FIXTURE INPUT to a go/ast walk that searches for SDK-version map literals; the walk is deliberately NOT build-tag aware - a tagged file must be searched like any other, which is the property TestTheWalkIsNotBuildTagAware pins - so the strings here are the source being searched, never an expression deciding an edition'
+platform/shared/sdkcompat/no_second_copy_test.go :: writes synthetic Go sources carrying the directive as FIXTURE INPUT to a go/ast walk that searches for SDK-version map literals; the walk is deliberately NOT build-tag aware - a tagged file must be searched like any other, which is the property TestTheWalkIsNotBuildTagAware pins - so the strings here are the source being searched, never an expression deciding an edition
+platform/testutil/gocensus/gocensus.go :: PROSE inside reason values, the legacycompile/plane.go shape. The two matching lines are the string values of unscannableEnterprise and unscannableMirror, maps from a (module, tag set) pair to the reason that pair cannot be listed in a given checkout shape. A census logs the reason when go list refuses a declared pair and fails when a declared pair lists cleanly; nothing parses, matches or branches on the text, so it decides no edition for any file. The text moved here from platform/shared/identity/principal_comparison_census_test.go when the typed census loader was extracted into this package (#4084), which is why that entry is gone - and the matched text there was always this prose, not the tag argument handed to go list that its reason described.
+platform/decision/legacycompile/plane.go :: PROSE inside a reason value, and the first case of that kind here: both occurrences sit in the string value of PlanesGatedByEdition[PlaneCoworkIngest], a map read only for the presence of a REVISIT WHEN clause and a length floor. Nothing parses, matches or branches on the text, so it decides no edition for any file. The FACT the prose narrates - that the only cowork_ingest call site is enterprise-tagged - IS classified, by platform/shared/policy/legacy_call_site_census_test.go on the list above, which proves every census row edition column against the real build constraint of the file it names. NOTE the asymmetry that puts it here: the prose exclusion below is applied per LINE and only to // comments, so the identical sentence is ignored in a comment and flagged in a string. Widening that belongs to #3574, not to this entry
+platform/shared/capability/community_build_test.go :: PROSE inside a failure message, the same shape as the legacycompile/plane.go entry above. Exactly ONE line matches the sweep, and it is the error text this census prints when the classifier and the compiler disagree: it QUOTES \"SourceEdition matches `^//go:build enterprise` only\" to tell the reader which expression was applied. Nothing parses, matches or branches on that text. The census itself decides no edition for any file: it asks the COMPILER which files each configuration admits, through go list -e -json under no tags and under -tags enterprise, and the edition it compares that against comes from SourceEdition in derive.go, which is on the canonical list above. NOTE for whoever reads this next: the bare string \"enterprise\" that this file hands to go list as a TAG ARGUMENT is not what the sweep matches - the pattern requires the text go:build enterprise inside the quotes - so the go-list-tags reason given for principal_comparison_census_test.go does not describe what matches there either'
 
 # The mirror carries the five Go sites and nothing else on the list; this suite
 # runs in the enterprise repository only, so all eight must be present here.

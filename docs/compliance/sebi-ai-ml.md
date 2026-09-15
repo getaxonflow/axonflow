@@ -1,6 +1,8 @@
 # SEBI AI/ML Guidelines Compliance
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 
-*Last updated: July 2026 | **Platform:** 9.14.0 · **SDKs:** 9.0.0*
+
+*Last updated: July 2026* | **Platform Version:** 11.0.0 | **SDK Version:** 9.4.0
 
 AxonFlow provides compliance support for the Securities and Exchange Board of India's **Framework for AI/ML in Securities Markets** (June 2025 Consultation Paper) and the Digital Personal Data Protection Act (DPDP) 2023, for regulated entities in India's capital markets.
 

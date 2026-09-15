@@ -205,8 +205,8 @@ func resolveUserSegments(ctx context.Context, orgID, email string) (segmentIDs [
 // supplied segment-ID set so the verdict cache key (verdictCacheKey /
 // generateCacheKey) and the choke-point predicates both see one canonical
 // form regardless of the order or duplication the resolver happened to
-// return — mirrors platform/agent/tier_aware_policy_engine.go's function of
-// the same name exactly (#2989 P3). Thin wrapper over
+// return — mirrored platform/agent/tier_aware_policy_engine.go's function of
+// the same name (#2989 P3) until #4253 deleted that file. Thin wrapper over
 // platform/shared/identity.NormalizeSegmentIDs, the single implementation
 // shared by both packages (#3239 round 2 extraction).
 func normalizeSegmentIDs(segmentIDs []string) []string {

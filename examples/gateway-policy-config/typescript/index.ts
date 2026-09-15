@@ -2,14 +2,23 @@
  * AxonFlow Gateway Policy Configuration - TypeScript SDK
  *
  * This example demonstrates and VALIDATES per-mode Gateway policy configuration.
- * AxonFlow's static policies can be configured per-mode using environment variables.
- * This example validates the CURRENT configuration by sending test queries through
- * the Gateway mode API (getPolicyApprovedContext + proxyLLMCall) and checking that
- * the Agent responds according to the configured policy actions.
+ * This example sends test queries through the Gateway mode API
+ * (getPolicyApprovedContext + proxyLLMCall) and checks that the Agent responds
+ * according to the shipped policy actions.
  *
- * Environment variables (must match Agent-side config):
- *   GATEWAY_PII_ACTION   = block | redact | log  (default: redact)
- *   GATEWAY_SQLI_ACTION  = block | warn | log    (default: block)
+ * v11: the stored policy action decides. GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION,
+ * PII_ACTION and SQLI_ACTION no longer set an action (ignored, with a boot WARN).
+ * The shipped request-phase actions exercised here:
+ *   sys_pii_ssn = warn (approved, policy id in policies)
+ *   sys_sqli_*  = warn (approved, policy id in policies)
+ *
+ * To change an outcome, record an organization override (customer portal API,
+ * Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+ * or change the policy's action. This example validates the shipped actions with
+ * no override recorded.
+ *
+ * Still read from the environment (a non-action knob, must match Agent config):
+ *   GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  *
@@ -25,8 +34,8 @@ function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
 }
 
-function getEnvWithFallback(key: string, fallbackKey: string, defaultVal: string): string {
-  return process.env[key] || process.env[fallbackKey] || defaultVal;
+function hasPolicyPrefix(policies: string[] | undefined, prefix: string): boolean {
+  return (policies ?? []).some((p) => p.startsWith(prefix));
 }
 
 function assertCheck(condition: boolean, message: string): void {
@@ -43,13 +52,11 @@ async function main(): Promise<void> {
   console.log('='.repeat(54));
   console.log();
 
-  // Read expected policy actions (with fallback keys, matching Go version)
-  const piiAction = getEnvWithFallback('GATEWAY_PII_ACTION', 'PII_ACTION', 'redact').toLowerCase();
-  const sqliAction = getEnvWithFallback('GATEWAY_SQLI_ACTION', 'SQLI_ACTION', 'block').toLowerCase();
+  // Detection actions come from the stored policy rows (no org override
+  // recorded), not from the environment.
   const policiesEnabled = getEnv('GATEWAY_STATIC_POLICIES_ENABLED', 'true').toLowerCase();
 
-  console.log(`Expected PII_ACTION:  ${piiAction}`);
-  console.log(`Expected SQLI_ACTION: ${sqliAction}`);
+  console.log('Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)');
   console.log(`Static policies enabled: ${policiesEnabled}`);
   console.log();
 
@@ -82,11 +89,11 @@ async function main(): Promise<void> {
   console.log();
 
   // -----------------------------------------------------------
-  // Test 2: PII query (SSN) -- depends on GATEWAY_PII_ACTION
+  // Test 2: PII query (SSN) -- sys_pii_ssn stores warn for the request phase
   // -----------------------------------------------------------
   console.log("Test 2: PII Query (SSN '123-45-6789')");
   console.log('-'.repeat(38));
-  console.log(`  Expected action: ${piiAction}`);
+  console.log('  Expected action: warn (stored)');
 
   try {
     result = await axonflow.getPolicyApprovedContext({
@@ -105,50 +112,24 @@ async function main(): Promise<void> {
       'No policies matched (disabled)'
     );
   } else {
-    switch (piiAction) {
-      case 'block':
-        assertCheck(!result.approved, 'PII blocked (GATEWAY_PII_ACTION=block)');
-        assertCheck(
-          result.blockReason !== undefined && result.blockReason !== '',
-          'Block reason provided'
-        );
-        if (result.blockReason) {
-          console.log(`   Block reason: ${result.blockReason}`);
-        }
-        break;
-      case 'redact':
-        assertCheck(result.approved, 'PII approved for redaction (GATEWAY_PII_ACTION=redact)');
-        assertCheck(
-          result.policies !== undefined && result.policies.length > 0,
-          'PII policies detected'
-        );
-        if (result.policies) {
-          console.log(`   Policies: ${result.policies}`);
-        }
-        break;
-      case 'warn':
-        assertCheck(result.approved, 'PII approved with warning (GATEWAY_PII_ACTION=warn)');
-        assertCheck(
-          result.policies !== undefined && result.policies.length > 0,
-          'PII policies detected'
-        );
-        break;
-      case 'log':
-        assertCheck(result.approved, 'PII approved (GATEWAY_PII_ACTION=log)');
-        break;
-      default:
-        console.log(`   \u274C Unknown GATEWAY_PII_ACTION: ${piiAction}`);
-        failures.push(`Unknown GATEWAY_PII_ACTION: ${piiAction}`);
+    // warn approves the request and reports the matched policy
+    assertCheck(result.approved, 'PII approved with a warning (stored action: warn)');
+    assertCheck(hasPolicyPrefix(result.policies, 'sys_pii_'), 'PII policy detected (sys_pii_* in policies)');
+    if (result.policies) {
+      console.log(`   Policies: ${result.policies}`);
+    }
+    if (!result.approved) {
+      console.log(`   Block reason: ${result.blockReason} (an org pii=block override or an edited policy action is in force)`);
     }
   }
   console.log();
 
   // -----------------------------------------------------------
-  // Test 3: SQLi query -- depends on GATEWAY_SQLI_ACTION
+  // Test 3: SQLi query -- every sys_sqli_* policy stores warn
   // -----------------------------------------------------------
   console.log('Test 3: SQLi Query (UNION SELECT)');
   console.log('-'.repeat(34));
-  console.log(`  Expected action: ${sqliAction}`);
+  console.log('  Expected action: warn (stored)');
 
   try {
     result = await axonflow.getPolicyApprovedContext({
@@ -163,26 +144,14 @@ async function main(): Promise<void> {
   if (policiesEnabled === 'false') {
     assertCheck(result.approved, 'SQLi approved (static policies disabled)');
   } else {
-    switch (sqliAction) {
-      case 'block':
-        assertCheck(!result.approved, 'SQLi blocked (GATEWAY_SQLI_ACTION=block)');
-        assertCheck(
-          result.blockReason !== undefined && result.blockReason !== '',
-          'Block reason provided'
-        );
-        if (result.blockReason) {
-          console.log(`   Block reason: ${result.blockReason}`);
-        }
-        break;
-      case 'warn':
-        assertCheck(result.approved, 'SQLi approved with warning (GATEWAY_SQLI_ACTION=warn)');
-        break;
-      case 'log':
-        assertCheck(result.approved, 'SQLi approved (GATEWAY_SQLI_ACTION=log)');
-        break;
-      default:
-        console.log(`   \u274C Unknown GATEWAY_SQLI_ACTION: ${sqliAction}`);
-        failures.push(`Unknown GATEWAY_SQLI_ACTION: ${sqliAction}`);
+    // SQL injection warns by default; it is not blocked
+    assertCheck(result.approved, 'SQLi approved with a warning (stored action: warn)');
+    assertCheck(hasPolicyPrefix(result.policies, 'sys_sqli_'), 'SQLi policy detected (sys_sqli_* in policies)');
+    if (result.policies) {
+      console.log(`   Policies: ${result.policies}`);
+    }
+    if (!result.approved) {
+      console.log(`   Block reason: ${result.blockReason} (an org sqli=block override or an edited policy action is in force)`);
     }
   }
   console.log();
@@ -226,7 +195,7 @@ async function main(): Promise<void> {
     console.log('\u2713 ALL TESTS PASSED');
     console.log();
     console.log('Gateway policy config validated:');
-    console.log(`  PII_ACTION=${piiAction}, SQLI_ACTION=${sqliAction}, enabled=${policiesEnabled}`);
+    console.log(`  shipped stored actions (PII warn, SQLi warn), enabled=${policiesEnabled}`);
   } else {
     console.log(`\u274C ${failures.length} TEST(S) FAILED:`);
     failures.forEach((f) => {

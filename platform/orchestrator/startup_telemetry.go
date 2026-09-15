@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package orchestrator — the orchestrator's platform-level startup telemetry
 // ping (#2004 PR3, the orchestrator half of the agent+orchestrator pair).
 //

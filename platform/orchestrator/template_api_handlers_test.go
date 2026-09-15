@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -30,6 +22,16 @@ type mockTemplateService struct {
 	applyTemplateFunc func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
 	getCategoriesFunc func(ctx context.Context) ([]string, error)
 	getUsageStatsFunc func(ctx context.Context, tenantID string) ([]TemplateUsageStatsResponse, error)
+	mayWriteFunc      func(ctx context.Context) (bool, error)
+}
+
+// MayWriteLegacyPolicies defaults to an owner pool (may write), so the apply
+// tests below exercise the route past the pre-read freeze guard, as before it.
+func (m *mockTemplateService) MayWriteLegacyPolicies(ctx context.Context) (bool, error) {
+	if m.mayWriteFunc != nil {
+		return m.mayWriteFunc(ctx)
+	}
+	return true, nil
 }
 
 func (m *mockTemplateService) GetTemplate(ctx context.Context, templateID string) (*PolicyTemplate, error) {

@@ -965,7 +965,7 @@ if [ "$FIXTURE_MODE" -eq 0 ]; then
   while IFS='|' read -r wfile wsvc; do
     [ -n "$wfile" ] || continue
     [ -f "$wfile" ] || continue
-    if printf '%s' "$SURFACE_RECORDS" | grep -qE "^(SURFACE|CFNREF)"$'\t'"$(printf '%s' "$wfile" | sed 's/[.[\*^$]/\\&/g')"$'\t'"$(printf '%s' "$wsvc" | sed 's/[.[\*^$]/\\&/g')"$'\t'; then
+    if grep -qE "^(SURFACE|CFNREF)"$'\t'"$(printf '%s' "$wfile" | sed 's/[.[\*^$]/\\&/g')"$'\t'"$(printf '%s' "$wsvc" | sed 's/[.[\*^$]/\\&/g')"$'\t' <<<"$SURFACE_RECORDS"; then
       FLOOR_SATISFIED=$((FLOOR_SATISFIED + 1))
     else
       FLOOR_MISSING="${FLOOR_MISSING}  ${wfile} → ${wsvc} (the file is present but no surface was attributed to it)"$'\n'

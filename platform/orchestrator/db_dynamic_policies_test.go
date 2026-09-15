@@ -1,21 +1,16 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"log"
 	"runtime"
 	"strings"
 	"testing"
@@ -117,12 +112,40 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 
 // TestSeedDefaultData tests default data seeding (system media policies + sample policies).
 //
-// v9 Phase 8 PR-C2 (#2384): seedSystemMediaPolicies + insertSamplePolicies now
-// wrap their INSERTs in rls.WithOrgScope. seedSystemMediaPolicies fires a
-// single wrap for all 5 system-media rows ('global' scope); insertSamplePolicies
-// fires one wrap per sample (per-tenant scope). Each wrap adds BEGIN +
-// set_config + COMMIT around the existing INSERT mock.
+// #4026: THE MEDIA HALF IS NOW A READ, AND THE SAMPLE HALF ASKS PERMISSION.
+//
+// verifySystemMediaPolicies replaced seedSystemMediaPolicies: one wrap
+// ('global' scope) around a single SELECT, not five INSERTs. core/172 revoked
+// INSERT on dynamic_policies from the application roles and core/173 seeds
+// those rows as the owner, so a boot-time INSERT could only ever be refused —
+// which is what took the production-posture clean-boot guard red on main.
+//
+// The sample seed then asks has_table_privilege before attempting anything, so
+// a connection that may not write skips it instead of being refused. That probe
+// is scripted in every case below: it runs before the COUNT and decides whether
+// the COUNT happens at all.
+//
+// v9 Phase 8 PR-C2 (#2384) still applies to insertSamplePolicies: one wrap per
+// sample (per-tenant scope), each adding BEGIN + set_config + COMMIT.
 func TestSeedDefaultData(t *testing.T) {
+	// mediaVerify scripts the read that replaced the five INSERTs, returning all
+	// five rows present — the state every correctly-migrated deployment is in.
+	mediaVerify := func(mock sqlmock.Sqlmock) {
+		mock.ExpectBegin()
+		mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
+		rows := sqlmock.NewRows([]string{"policy_id"})
+		for _, p := range systemMediaPolicies {
+			rows.AddRow(p.policyID)
+		}
+		mock.ExpectQuery("SELECT policy_id FROM dynamic_policies WHERE policy_id IN").
+			WillReturnRows(rows)
+		mock.ExpectCommit()
+	}
+	mayInsert := func(mock sqlmock.Sqlmock, allowed bool) {
+		mock.ExpectQuery("has_table_privilege").
+			WillReturnRows(sqlmock.NewRows([]string{"has_table_privilege"}).AddRow(allowed))
+	}
+
 	tests := []struct {
 		name        string
 		mockSetup   func(sqlmock.Sqlmock)
@@ -131,14 +154,8 @@ func TestSeedDefaultData(t *testing.T) {
 		{
 			name: "Success - empty database, seeds sample policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// seedSystemMediaPolicies: single wrap, 5 inner INSERTs
-				mock.ExpectBegin()
-				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
-				for i := 0; i < 5; i++ {
-					mock.ExpectExec("INSERT INTO dynamic_policies").
-						WillReturnResult(sqlmock.NewResult(0, 1))
-				}
-				mock.ExpectCommit()
+				mediaVerify(mock)
+				mayInsert(mock, true)
 
 				// Count query returns 0 (empty table)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -158,14 +175,8 @@ func TestSeedDefaultData(t *testing.T) {
 		{
 			name: "Success - table already has data, no sample inserts",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// seedSystemMediaPolicies: single wrap, 5 inner INSERTs
-				mock.ExpectBegin()
-				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
-				for i := 0; i < 5; i++ {
-					mock.ExpectExec("INSERT INTO dynamic_policies").
-						WillReturnResult(sqlmock.NewResult(0, 1))
-				}
-				mock.ExpectCommit()
+				mediaVerify(mock)
+				mayInsert(mock, true)
 
 				// Count query returns 5 (table has data)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -176,22 +187,52 @@ func TestSeedDefaultData(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "The frozen posture - no INSERT privilege, so the sample seed is never attempted",
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				// THE #4026 CASE. On a production-posture stack the connection
+				// holds SELECT and not INSERT. The boot path must stop here: no
+				// COUNT, no INSERT, and therefore no `permission denied` line for
+				// the clean-boot guard to fail on. Scripting nothing after the
+				// probe is the assertion — ExpectationsWereMet plus sqlmock's
+				// refusal of unexpected statements catches either one.
+				mediaVerify(mock)
+				mayInsert(mock, false)
+			},
+			expectError: false,
+		},
+		{
 			name: "Error - count query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// seedSystemMediaPolicies wrap (succeeds, just like canonical path)
-				mock.ExpectBegin()
-				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
-				for i := 0; i < 5; i++ {
-					mock.ExpectExec("INSERT INTO dynamic_policies").
-						WillReturnResult(sqlmock.NewResult(0, 1))
-				}
-				mock.ExpectCommit()
+				mediaVerify(mock)
+				mayInsert(mock, true)
 
 				// Count query fails
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WillReturnError(errors.New("query failed"))
 			},
 			expectError: true,
+		},
+		{
+			name: "A missing media control is reported but does not fail the boot",
+			mockSetup: func(mock sqlmock.Sqlmock) {
+				// The verify returns FOUR of five. seedDefaultData logs at ERROR
+				// and carries on: a deployment missing media governance must be
+				// loud, and must still boot, because refusing to start would take
+				// out every other control too.
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
+				rows := sqlmock.NewRows([]string{"policy_id"})
+				for _, p := range systemMediaPolicies[1:] {
+					rows.AddRow(p.policyID)
+				}
+				mock.ExpectQuery("SELECT policy_id FROM dynamic_policies WHERE policy_id IN").
+					WillReturnRows(rows)
+				mock.ExpectCommit()
+				mayInsert(mock, true)
+				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
+					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+			},
+			expectError: false,
 		},
 	}
 
@@ -240,6 +281,149 @@ func TestSeedDefaultData(t *testing.T) {
 // null/absent conditions is exactly how that is expressed (see
 // condition_evaluator.go's "Withdrawn" doc section for why a synthetic
 // always-true condition briefly stood in for this and was removed).
+// TestVerifySystemMediaPoliciesReportsWhatIsMissing asserts the REPORT, which is
+// the whole point of keeping the check after #4026 turned it from a write into a
+// read.
+//
+// WHY IT IS NOT A SUBTEST OF TestSeedDefaultData. It was, briefly, and that
+// version was worthless: seedDefaultData logs the error and returns nil, so a
+// subtest driving it can only assert "the boot continued" - which is also what
+// happens if the check stops reporting entirely. Mutating the reporting away
+// left that subtest green. The observable that moves is the error
+// verifySystemMediaPolicies RETURNS, so the assertion goes there.
+func TestVerifySystemMediaPoliciesReportsWhatIsMissing(t *testing.T) {
+	if len(systemMediaPolicies) == 0 {
+		t.Fatal("the expectation set is empty; every assertion below would be vacuous")
+	}
+
+	// EVERY ID, not index 0. Driving only the first row leaves a loop that
+	// skips the LAST element green - `systemMediaPolicies[:len-1]` still
+	// reports index 0 absent, so the test passes while four of five controls
+	// are unchecked. The absent id is the parameter.
+	for _, absent := range systemMediaPolicies {
+		t.Run(absent.policyID, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			args := make([]driver.Value, 0, len(systemMediaPolicies))
+			rows := sqlmock.NewRows([]string{"policy_id"})
+			for _, p := range systemMediaPolicies {
+				args = append(args, p.policyID)
+				if p.policyID != absent.policyID {
+					rows.AddRow(p.policyID)
+				}
+			}
+
+			mock.ExpectBegin()
+			mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
+			// WithArgs PINS THE ID SET. Without it a query asking about ONE id
+			// matches this expectation and the verify reports the other four
+			// absent - which a real database would refuse loudly and sqlmock
+			// will not.
+			mock.ExpectQuery("SELECT policy_id FROM dynamic_policies WHERE policy_id IN").
+				WithArgs(args...).WillReturnRows(rows)
+			mock.ExpectCommit()
+
+			engine := &DatabaseDynamicPolicyEngine{db: db}
+			verifyErr := engine.verifySystemMediaPolicies()
+			if verifyErr == nil {
+				t.Fatal("a deployment missing a media governance control was reported as healthy; " +
+					"that deployment has no NSFW blocking, violence warning, biometric logging, media PII " +
+					"blocking or sensitive-document warning for the absent row, and nothing else says so")
+			}
+			// NAMED, not merely counted. An operator reading this line has to
+			// know which control to restore, and re-running core/173 is the remedy.
+			if !strings.Contains(verifyErr.Error(), absent.policyID) {
+				t.Fatalf("the report does not name the absent control %q: %v", absent.policyID, verifyErr)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("the verify issued a statement sequence other than the scripted read: %v", err)
+			}
+		})
+	}
+}
+
+// TestSeedDefaultDataLogsTheAbsenceAtErrorLevel asserts the LOG LINE, which is
+// the only thing an operator or the clean-boot guard ever sees.
+//
+// WHY THE RETURNED ERROR IS NOT ENOUGH. seedDefaultData logs and returns nil, so
+// every other test here can assert at most "the boot continued". Downgrading
+// `log.Printf("ERROR: ...")` back to `"Warning: ..."` leaves all of them green -
+// and a warning is exactly what this whole PR exists to stop: the old refused
+// INSERT was a warning too, which is why it sat unnoticed until it took a test
+// tier down. The severity IS the behaviour here.
+func TestSeedDefaultDataLogsTheAbsenceAtErrorLevel(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Four of five present: the deployment that is missing a control.
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"policy_id"})
+	for _, p := range systemMediaPolicies[1:] {
+		rows.AddRow(p.policyID)
+	}
+	mock.ExpectQuery("SELECT policy_id FROM dynamic_policies WHERE policy_id IN").WillReturnRows(rows)
+	mock.ExpectCommit()
+	mock.ExpectQuery("has_table_privilege").
+		WillReturnRows(sqlmock.NewRows([]string{"has_table_privilege"}).AddRow(true))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	engine := &DatabaseDynamicPolicyEngine{db: db}
+	if err := engine.seedDefaultData(); err != nil {
+		t.Fatalf("a missing media control must not fail the boot: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "ERROR:") {
+		t.Fatalf("the absence was not reported at ERROR level; an operator and the production-posture "+
+			"clean-boot guard read this line, and a warning is what let the original defect sit unnoticed.\nlog was: %s", got)
+	}
+	if !strings.Contains(got, systemMediaPolicies[0].policyID) {
+		t.Fatalf("the ERROR line does not name the absent control %q.\nlog was: %s", systemMediaPolicies[0].policyID, got)
+	}
+}
+
+// TestVerifySystemMediaPoliciesIsSilentWhenAllPresent is the anti-vacuity twin:
+// without it, a check that reported an error unconditionally would pass the test
+// above while making every healthy boot log an ERROR.
+func TestVerifySystemMediaPoliciesIsSilentWhenAllPresent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"policy_id"})
+	for _, p := range systemMediaPolicies {
+		rows.AddRow(p.policyID)
+	}
+	mock.ExpectQuery("SELECT policy_id FROM dynamic_policies WHERE policy_id IN").WillReturnRows(rows)
+	mock.ExpectCommit()
+
+	engine := &DatabaseDynamicPolicyEngine{db: db}
+	if verifyErr := engine.verifySystemMediaPolicies(); verifyErr != nil {
+		t.Fatalf("a fully seeded deployment was reported as missing controls: %v", verifyErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unfulfilled expectations: %v", err)
+	}
+}
+
 func TestInsertSamplePolicies_ConditionsAreAbsent(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -2108,7 +2292,7 @@ func TestEvaluateCondition_Equals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2150,7 +2334,7 @@ func TestEvaluateCondition_NotEquals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2212,7 +2396,7 @@ func TestEvaluateCondition_Contains(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2264,7 +2448,7 @@ func TestEvaluateCondition_ContainsAny(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2316,7 +2500,7 @@ func TestEvaluateCondition_Regex(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2374,7 +2558,7 @@ func TestEvaluateCondition_GreaterThan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2416,7 +2600,7 @@ func TestEvaluateCondition_In(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2447,7 +2631,7 @@ func TestEvaluateCondition_GreaterThan_NumericStringParses(t *testing.T) {
 		"field":    "context.custom_metric",
 		"operator": "greater_than",
 		"value":    float64(5),
-	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "10"}}, nil, nil)
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "10"}}, nil)
 	if !got {
 		t.Fatal("expected greater_than to parse a numeric-string field value on the database engine")
 	}
@@ -2469,7 +2653,7 @@ func TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero(t 
 		"field":    "context.custom_metric",
 		"operator": "less_than",
 		"value":    float64(100),
-	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "not-a-number"}}, nil, nil)
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "not-a-number"}}, nil)
 	if got {
 		t.Fatal("regression: an unparseable string field value must NOT satisfy less_than 100 on the database engine (was the legacy silent-0.0-coercion false positive) — expected false, got true")
 	}
@@ -2492,7 +2676,7 @@ func TestEvaluateCondition_ContainsAny_NonStringItemStringified(t *testing.T) {
 		"field":    "query",
 		"operator": "contains_any",
 		"value":    []interface{}{0.9, "unrelated-term"},
-	}, OrchestratorRequest{Query: "risk score is 0.9 today"}, nil, nil)
+	}, OrchestratorRequest{Query: "risk score is 0.9 today"}, nil)
 	if !got {
 		t.Fatal("expected contains_any to stringify and match a non-string list item on the database engine, got no match")
 	}
@@ -2529,7 +2713,7 @@ func TestEvaluateCondition_DatabaseEngine_AllTenOperatorsSupported(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.operator, func(t *testing.T) {
-			got := engine.evaluateCondition(tt.cond, req, nil, nil)
+			got := engine.evaluateCondition(tt.cond, req, nil)
 			if got != tt.want {
 				t.Errorf("operator %q: evaluateCondition = %v, want %v", tt.operator, got, tt.want)
 			}
@@ -2619,7 +2803,7 @@ func TestEvaluateCondition_UnknownOperator(t *testing.T) {
 	}
 	request := OrchestratorRequest{User: UserContext{Role: "admin"}}
 
-	result := engine.evaluateCondition(condition, request, nil, nil)
+	result := engine.evaluateCondition(condition, request, nil)
 	if result != false {
 		t.Error("Unknown operator should return false")
 	}
@@ -2827,7 +3011,7 @@ func TestEvaluateCondition_LessThan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2869,7 +3053,7 @@ func TestEvaluateCondition_NotContains(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2921,7 +3105,7 @@ func TestEvaluateCondition_NotIn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2975,7 +3159,7 @@ func TestEvaluateCondition_RegexEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -3017,7 +3201,7 @@ func TestEvaluateCondition_ContainsAnyStringSlice(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -3059,7 +3243,7 @@ func TestEvaluateCondition_InOperator_StringSlice(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}

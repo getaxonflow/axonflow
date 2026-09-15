@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -120,4 +123,13 @@ func TestSchemaEnumerationsMatchTheGoDeclarations(t *testing.T) {
 		kinds = append(kinds, string(k))
 	}
 	same(t, "identifier kinds", enumAt(t, "identifier", "properties", "kind"), kinds)
+
+	// The principal vocabulary is closed (#3711) and the schema carries it as
+	// an enum conditioned on kind, so a request naming a seventh type is
+	// refused at the schema boundary for the same reason Validate refuses it.
+	var principalTypes []string
+	for _, p := range PrincipalTypes() {
+		principalTypes = append(principalTypes, string(p))
+	}
+	same(t, "principal types", enumAt(t, "identifier", "then", "properties", "type"), principalTypes)
 }

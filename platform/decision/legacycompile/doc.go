@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package legacycompile compiles the LEGACY policy substrate - the
 // static_policies and dynamic_policies tables - into ADR-065 typed policy
 // documents, and records what happened to every single row.
@@ -16,8 +19,8 @@
 // offers have no resolver case and silently resolve to nothing (#3515). A
 // scan failure drops a policy and still reports a successful load (#3397). An
 // an override's ACTION is accepted and persisted against a dynamic policy and
-// then never resolved (#3401 - the ADR-044 break-glass allow-flip is a
-// different mechanism and IS enforced there). A compiler that "corrected" any of these would make the
+// then never resolved (#3401 - the ADR-044 break-glass allow-flip was a
+// different mechanism, and v11 deleted its last read, #4252). A compiler that "corrected" any of these would make the
 // shadow diff report a difference that the running system does not have, and
 // the entire point of the exercise is to find the differences it DOES have.
 //
@@ -49,8 +52,9 @@
 //     LoadSystemPolicies and GetPolicyByID) selects phase, action_request and
 //     action_response, and never selects action;
 //   - the EFFECTIVE path (the same file's effectivePolicyColumns, used by the
-//     agent's StaticPolicyRepository.GetEffective for the proxy tier engine)
-//     selects action and none of the phase columns.
+//     agent's StaticPolicyRepository.GetEffective, for the proxy tier engine
+//     until #4253 and for the effective-policies read since) selects action
+//     and none of the phase columns.
 //
 // A compiler that read one path would mistranslate every row whose columns
 // disagree, and rows whose columns disagree are precisely the population this

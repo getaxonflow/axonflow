@@ -5,16 +5,16 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
-	"time"
 
+	"axonflow/platform/decision/contract"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 )
 
@@ -23,24 +23,17 @@ type HITLApprovalCreator interface {
 	CreateApproval(ctx context.Context, req *HITLApprovalRequest) (*HITLApprovalResponse, error)
 }
 
-// WCPPolicyAdapter adapts the dynamic policy engine to the workflow_control.PolicyEvaluator interface
-// This bridges the gap between the main orchestrator's policy engine and the WCP service (Issue #1021)
+// WCPPolicyAdapter is the workflow_control.PolicyEvaluator the step gate decides
+// through (Issue #1021): it presents each step to the anchored engine
+// (wcp_enforcing_seam.go) and queues a held step's approval. It holds no policy
+// engine of its own since #4254.
 type WCPPolicyAdapter struct {
-	engine interface {
-		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-		ListActivePolicies() []DynamicPolicy
-		IsHealthy() bool
-	}
 	hitlApproval HITLApprovalCreator // HITL approval service for require_approval action (Issue #1082)
 }
 
-// NewWCPPolicyAdapter creates a new adapter wrapping the dynamic policy engine
-func NewWCPPolicyAdapter(engine interface {
-	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-	ListActivePolicies() []DynamicPolicy
-	IsHealthy() bool
-}) *WCPPolicyAdapter {
-	return &WCPPolicyAdapter{engine: engine}
+// NewWCPPolicyAdapter creates the step gate's adapter.
+func NewWCPPolicyAdapter() *WCPPolicyAdapter {
+	return &WCPPolicyAdapter{}
 }
 
 // SetHITLApproval sets the HITL approval service for require_approval action (Issue #1082)
@@ -51,50 +44,14 @@ func (a *WCPPolicyAdapter) SetHITLApproval(approval HITLApprovalCreator) {
 // EvaluateStepGate implements workflow_control.PolicyEvaluator
 // Converts WCP step gate context to orchestrator request, evaluates policies, and converts result back
 func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_control.StepGateContext) *workflow_control.StepGateEvaluation {
-	if a.engine == nil {
-		// No policy engine configured - allow all steps
-		return &workflow_control.StepGateEvaluation{
-			Decision: workflow_control.GateDecisionAllow,
-			Reason:   "No policy engine configured",
-		}
-	}
-
-	// Convert StepGateContext to OrchestratorRequest
+	// #4254: the anchored engine authors this plane's verdict. There is no
+	// "no engine configured" arm any more: a step gate that cannot reach a
+	// verdict FAILS CLOSED (stepGateEvaluationFor), because admitting a step
+	// because nothing was wired is an outage answering as a governance
+	// decision. The request is still built the same way, because the fact
+	// producer reads exactly the fields the dynamic matcher read.
 	req := a.convertToOrchestratorRequest(step)
-
-	// Evaluate policies
-	startTime := time.Now()
-	req.ShadowPlane = legacycompile.PlaneWCP // ADR-065 decision shadow (#3564)
-	result := a.engine.EvaluateDynamicPolicies(ctx, req)
-	durationMs := time.Since(startTime).Milliseconds()
-
-	// ADR-044: if the result is a deny, check for an active session override
-	// BEFORE converting to a step gate evaluation. Overrides only apply to
-	// denies on non-critical policies with allow_override=true.
-	if !result.Allowed {
-		toolSig := ""
-		if step.ToolContext != nil {
-			toolSig = step.ToolContext.ToolName
-		}
-		// #3281: prefer the trust-gated verified email over step.UserID for the
-		// ADR-044 override lookup's userEmail parameter. UserID is attribution
-		// only and its fallback chain can hold a non-email X-User-ID, so an
-		// override keyed on a real address never matched on this plane unless
-		// the caller's UserID happened to BE that address. step.Email is a
-		// verified address by construction. Falling back to step.UserID when no
-		// email is present preserves the existing ADR-043/044 plugin-flow
-		// behaviour for callers whose UserID already holds one, so this is
-		// strictly a widening and cannot regress an override that matches today.
-		overrideEmail := step.Email
-		if overrideEmail == "" {
-			overrideEmail = step.UserID
-		}
-		_, _ = ApplyOverrideToResult(ctx, usageDB, auditLogger, result,
-			step.TenantID, step.OrgID, overrideEmail, toolSig)
-	}
-
-	// Convert PolicyEvaluationResult to StepGateEvaluation
-	evaluation := a.convertToStepGateEvaluation(result, durationMs)
+	evaluation, result := stepGateEvaluationFor(ctx, step, req)
 
 	// Issue #1082: If require_approval, create HITL approval request.
 	//
@@ -111,6 +68,14 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 	if evaluation.Decision == workflow_control.GateDecisionRequireApproval && a.hitlApproval != nil {
 		approvalID, outcome, err := a.createHITLApproval(ctx, step, result)
 		evaluation.ApprovalEnqueue = outcome
+		if errors.Is(err, errApprovalExpiredBeforeQueue) && result.hold != nil && result.hold.approval != nil {
+			// #4254: the approval timed out between the decision and the
+			// enqueue. A timed-out approval is a deny: the step is withheld as
+			// approval_expired, as the seam withholds one that had already
+			// expired when it was decided, and there is no queue row to approve.
+			// The engine counted this decision once, when it held the step.
+			return withholdLapsedApproval(evaluation, result.hold)
+		}
 		if err != nil {
 			var reason string
 			evaluation.ApprovalEnqueue, reason = classifyEnqueueFailure(err)
@@ -121,8 +86,8 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 			// are independent and both belong.
 			//
 			// The empty guard is not dead code by accident: on THIS branch
-			// convertToStepGateEvaluation has always set Reason to "Step
-			// requires human approval", so the else arm is unreachable today.
+			// the seam has always set Reason to "Step requires human
+			// approval", so the else arm is unreachable today.
 			// It is kept because the invariant it protects ("never produce a
 			// leading separator") should not depend on a value set 300 lines
 			// away, and asserted by
@@ -143,6 +108,17 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 	}
 
 	return evaluation
+}
+
+// withholdLapsedApproval is the approval_expired refusal for a hold whose
+// approval timed out before it could be queued: the answer
+// stepGateApprovalExpired gives, keeping the anchored decision the evaluation
+// was stamped with (PRD v11 §5.7).
+func withholdLapsedApproval(held *workflow_control.StepGateEvaluation, hold *stepGateHold) *workflow_control.StepGateEvaluation {
+	withheld := stepGateBlocked(approvalExpiredReason(hold.decisionID, hold.approval.ExpiresAt), []string{string(contract.ReasonApprovalExpired)})
+	withheld.Plane, withheld.Engine, withheld.SubjectType, withheld.PolicyBundle, withheld.EngineDecisionID =
+		held.Plane, held.Engine, held.SubjectType, held.PolicyBundle, held.EngineDecisionID
+	return withheld
 }
 
 // createHITLApproval creates an HITL approval request for require_approval
@@ -194,6 +170,16 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 			"tool_type":     toolTypeForContext(step),
 		},
 	}
+	// #4254: a typed challenge holds the step with an approval requirement.
+	// The queue row carries it, and lives no longer than it: timeout is deny.
+	if result.hold != nil {
+		for k, v := range result.hold.requestContext(wcpSeamScope.String()) {
+			req.RequestContext[k] = v
+		}
+		if result.hold.approval != nil {
+			req.ExpiresAt = result.hold.approval.ExpiresAt
+		}
+	}
 
 	resp, err := a.hitlApproval.CreateApproval(ctx, req)
 	if err != nil {
@@ -227,11 +213,11 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 // /api/v1/process takes with no identity: non-segment-
 // scoped policies still enforce, segment-scoped ones do not apply, and
 // resolveUserSegments's ok=true / nil-set contract means this is never
-// treated as a resolution FAILURE. A genuine resolver error is handled
-// inside EvaluateDynamicPolicies itself (db_dynamic_policies.go), which
-// returns EvaluationError=true / Allowed=false - surfaced as a fail-closed
-// GateDecisionBlock by convertToStepGateEvaluation below, never a
-// no-match-allow. See ADR-060's enforcement-surface coverage matrix.
+// treated as a resolution FAILURE. A genuine resolver error now fails the
+// request CLOSED at the seam rather than inside a legacy evaluation: the fact
+// producer answers errDynamicFactsUnavailable, and stepGateEvaluationFor
+// withholds the step naming the cause, never a no-match-allow (#4254). See
+// ADR-060's enforcement-surface coverage matrix.
 func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.StepGateContext) OrchestratorRequest {
 	// Build context map with step information for policy matching
 	contextData := make(map[string]interface{})
@@ -358,124 +344,6 @@ func deriveSeverityFromResult(result *PolicyEvaluationResult) string {
 	}
 }
 
-// convertToStepGateEvaluation converts policy evaluation result to WCP step gate evaluation
-func (a *WCPPolicyAdapter) convertToStepGateEvaluation(result *PolicyEvaluationResult, durationMs int64) *workflow_control.StepGateEvaluation {
-	evaluation := &workflow_control.StepGateEvaluation{
-		Decision:          workflow_control.GateDecisionAllow,
-		Reason:            "No matching policies",
-		PolicyIDs:         result.AppliedPolicies,
-		PoliciesEvaluated: []workflow_control.PolicyMatch{},
-		PoliciesMatched:   []workflow_control.PolicyMatch{},
-	}
-
-	// #3281 (ADR-060 #2989 P3b): a genuine segment-resolution FAILURE inside
-	// EvaluateDynamicPolicies is signaled via EvaluationError=true (S1,
-	// #3239 round 2), always paired with Allowed=false - see
-	// PolicyEvaluationResult.EvaluationError's doc (run.go). Without this
-	// branch the generic "!result.Allowed" handling below still produces
-	// GateDecisionBlock (safe - fail-closed is preserved either way, since
-	// AppliedPolicies is empty and RequiredActions never contains
-	// "require_approval"/"human_review" on this path), but the Reason/
-	// PolicyIDs would read as an indistinguishable, unnamed "Step blocked by
-	// policy" instead of naming the availability failure - the same
-	// disclosure convention run.go's proxy handler and policy_api_service.go
-	// use for this exact condition (triggeredPolicies :=
-	// []string{"segment_resolution_failed"}). Named explicitly here so the
-	// audit row, the API response, and the runtime-e2e fail-closed assertion
-	// can all key off it instead of string-matching a human-readable reason.
-	//
-	// DELIBERATE DIVERGENCE from #3312: the gateway pre-check also calls
-	// circuitBreakerInstance.RecordPolicyViolation on this deny, feeding the
-	// #1176 auto-trip threshold. This plane cannot: circuitBreakerInstance is
-	// a package-level singleton owned by platform/agent and wired in the AGENT
-	// process. The orchestrator binary neither imports agent/circuitbreaker nor
-	// holds an instance (grep: zero references under platform/orchestrator), so
-	// there is nothing here to record into. Matching #3312 would mean giving
-	// the orchestrator its own circuit-breaker wiring -- a real change with its
-	// own tripping semantics and blast radius, not a parity tidy-up. Left
-	// diverged on purpose; the deny itself is fail-closed either way, and the
-	// named PolicyIDs above keep it attributable.
-	if result.EvaluationError {
-		evaluation.Decision = workflow_control.GateDecisionBlock
-		// Wording aligned with the #3312 gateway pre-check's literal at
-		// gateway_handlers.go:698, which reads "segment resolution
-		// unavailable", then a dash, then "request denied (fail-closed,
-		// ADR-060 #2989)" -- so the two human-readable halves of one
-		// condition do not read as two different conditions. NOT quoted
-		// verbatim here: that literal separates its two clauses with an em
-		// dash and this plane's string below uses a hyphen, so a verbatim
-		// quote would be a misquote AND would put an em dash in this file.
-		// Nothing byte-compares the two strings across planes, and nothing
-		// should: the machine-readable half is what consumers key off.
-		// The machine-readable half is PolicyIDs below, which is what the
-		// audit row and the runtime-e2e assertion key off -- deliberately NOT
-		// this string, which no consumer should be matching on.
-		evaluation.Reason = "segment resolution unavailable - request denied (fail-closed, ADR-060 #2989 P3b)"
-		evaluation.PolicyIDs = []string{"segment_resolution_failed"}
-		return evaluation
-	}
-
-	// If not allowed, determine the appropriate decision
-	if !result.Allowed {
-		// Check if any policy requires approval (has "require_approval" action)
-		requiresApproval := false
-		for _, action := range result.RequiredActions {
-			if action == "require_approval" || action == "human_review" {
-				requiresApproval = true
-				break
-			}
-		}
-
-		if requiresApproval {
-			evaluation.Decision = workflow_control.GateDecisionRequireApproval
-			evaluation.Reason = "Step requires human approval"
-		} else {
-			evaluation.Decision = workflow_control.GateDecisionBlock
-			evaluation.Reason = "Step blocked by policy"
-		}
-	}
-
-	// Build policy match details. Prefer the structured AppliedPoliciesDetail
-	// (ADR-044/ADR-043) when populated — falls back to the name-only path for
-	// engines that haven't been upgraded.
-	if len(result.AppliedPoliciesDetail) > 0 {
-		for _, p := range result.AppliedPoliciesDetail {
-			match := workflow_control.PolicyMatch{
-				PolicyID:          p.PolicyID,
-				PolicyName:        p.PolicyName,
-				Action:            string(evaluation.Decision),
-				RiskLevel:         p.RiskLevel,
-				AllowOverride:     p.AllowOverride,
-				MatchedRule:       p.MatchedRule,
-				PolicyDescription: p.Description,
-			}
-			evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
-			if !result.Allowed {
-				evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
-			}
-		}
-	} else {
-		for _, policyName := range result.AppliedPolicies {
-			match := workflow_control.PolicyMatch{
-				PolicyID:   policyName, // Use name as ID if no separate ID
-				PolicyName: policyName,
-				Action:     string(evaluation.Decision),
-			}
-			evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
-			if !result.Allowed {
-				evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
-			}
-		}
-	}
-
-	// ADR-044: if a session override was applied, surface it in the reason.
-	if result.OverrideApplied && result.OverrideID != "" {
-		evaluation.Reason = "Allowed by session override " + result.OverrideID
-	}
-
-	return evaluation
-}
-
 // WCPAuditAdapter adapts the orchestrator's AuditLogger to the workflow_control.WorkflowAuditLogger interface
 // This bridges the gap between the main orchestrator's audit logger and the WCP service (Issue #1019)
 type WCPAuditAdapter struct {
@@ -510,6 +378,12 @@ func (a *WCPAuditAdapter) LogWorkflowOperation(ctx context.Context, entry *workf
 		UserEmail:    entry.UserEmail,
 		UserRole:     entry.UserRole,
 		Metadata:     entry.Metadata,
+		// The step gate's anchored decision (PRD v11 §5.7).
+		Plane:            entry.Plane,
+		Engine:           entry.Engine,
+		SubjectType:      entry.SubjectType,
+		PolicyBundle:     entry.PolicyBundle,
+		EngineDecisionID: entry.EngineDecisionID,
 	}
 
 	a.auditLogger.LogWorkflowOperation(ctx, orchestratorEntry)

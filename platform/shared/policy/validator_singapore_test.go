@@ -7,8 +7,8 @@ import "testing"
 // sys_pii_singapore_postal / sys_pii_singapore_uen are CategoryPIISingapore, whose
 // category default validator is nil (accept-all). Before this fix they fired on
 // every regex match: a bare 6-digit number ("369318") matched the postal pattern
-// and an 8-9-digit+letter id ("12345678X") matched the UEN pattern, so under
-// PII_ACTION=redact the engine masked benign financial/order figures. Worse, when
+// and an 8-9-digit+letter id ("12345678X") matched the UEN pattern, so under a
+// redact action the engine masked benign financial/order figures. Worse, when
 // the masked value was a bare JSON number the redacted document became invalid
 // JSON and a re-validating PEP (the Claude Desktop proxy) fail-closed an otherwise
 // benign response. These tests pin the proximity gates that close that class.

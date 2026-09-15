@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -15,6 +18,9 @@ import (
 type callHit struct {
 	key  string
 	line int
+	// funcStart is the line of the enclosing function's declaration, which
+	// bounds where an options identifier the call passes may be assigned.
+	funcStart int
 }
 
 // callSiteCensusPath is the artifact this test and the ADR-065 plane model both
@@ -68,14 +74,20 @@ func treeIsCommunityMirror(root string) bool {
 	return err != nil
 }
 
-// evaluatorMethods are the four entry points through which the LEGACY policy
-// substrate is evaluated. Every enforcement plane ADR-065 Phase 4 cuts over
+// evaluatorMethods are the three entry points through which the LEGACY policy
+// substrate is evaluated. The fourth, the retired tier engine's EvaluatePolicy,
+// was deleted with the proxy_tier plane by #4253. Every enforcement plane ADR-065 Phase 4 cuts over
 // independently reaches one of them.
+//
+// Produce is the fourth entry point censused here (#4254): the dynamic
+// condition matcher running as a fact producer on a plane cut over to the
+// anchored engine (PRD v11 §1.2 ruling R2). It evaluates the same dynamic rows,
+// so every call site of it stays in the census.
 var evaluatorMethods = []string{
 	"EvaluateRequest",         // shared static engine, request phase
 	"EvaluateResponse",        // shared static engine, response phase
 	"EvaluateDynamicPolicies", // the orchestrator's database-backed dynamic engine
-	"EvaluatePolicy",          // TierAwarePolicyEngine, the proxy tier
+	"Produce",                 // the dynamic condition matcher as a fact producer
 }
 
 // TestLegacyCallSiteCensusIsComplete pins the ADR-065 plane model to the tree.
@@ -92,8 +104,8 @@ var evaluatorMethods = []string{
 // carried a `connector_execution` plane with no evaluation call site anywhere
 // in the tree, gave MAP a static substrate on the strength of a stale doc
 // comment (the response processor's only caller is the orchestrator's
-// /api/v1/process handler), gave /decide a dynamic substrate although it passes
-// runDynamicPolicy=false, and omitted the proxy request pass and the tier
+// /api/v1/process handler), gave /decide a dynamic substrate although its call
+// site never reached the dynamic substrate, and omitted the proxy request pass and the tier
 // engine's second call site entirely.
 //
 // A claim about which code paths exist cannot be pinned by a comment. It can be
@@ -114,7 +126,7 @@ func TestLegacyCallSiteCensusIsComplete(t *testing.T) {
 		t.Fatalf("%s is empty; an empty census would let this test pass while asserting nothing", callSiteCensusPath)
 	}
 	// Anti-vacuity derived from the tree, not calibrated: the scan must find
-	// call sites at all, and it must find all four evaluators. A scanner that
+	// call sites at all, and it must find every evaluator it lists. A scanner that
 	// silently stopped matching would otherwise report an empty tree and only
 	// the "missing from the census" arm would fire, which reads as a deletion
 	// rather than as a broken scanner.
@@ -198,8 +210,8 @@ func TestLegacyCallSiteCensusIsComplete(t *testing.T) {
 
 	if len(extra) > 0 {
 		t.Fatalf("the tree has %d legacy policy evaluation call site(s) the census does not record:\n  %s\n\n"+
-			"Each one is an enforcement surface the ADR-065 shadow gate does not measure. Add it to %s AND give it a\n"+
-			"plane in platform/decision/legacycompile/plane.go, or the migration will cut over a path nobody diffed.",
+			"Each one is a legacy verdict path the ADR-065 cutover does not account for. Add it to %s AND give it a\n"+
+			"plane in platform/decision/legacycompile/plane.go, or it stays outside the anchored engine unrecorded.",
 			len(extra), strings.Join(extra, "\n  "), callSiteCensusPath)
 	}
 	if len(missing) > 0 {
@@ -269,7 +281,7 @@ func TestSourceEditionFollowsTheSyncsRules(t *testing.T) {
 }
 
 // scanCallSites walks platform/ and ee/ and returns every call to one of the
-// four evaluators, keyed "file\tevaluator\tfunction".
+// evaluators in evaluatorMethods, keyed "file\tevaluator\tfunction".
 //
 // Deliberately excluded: _test.go files, interface method declarations and the
 // method definitions themselves. Included: everything else, so a call added
@@ -319,7 +331,7 @@ func scanCallSites(t *testing.T) map[string]bool {
 			}
 			sc := bufio.NewScanner(f)
 			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-			cur := "(package level)"
+			cur, curStart := "(package level)", 0
 			var fileLines []string
 			var hits []callHit
 			lineNo := 0
@@ -328,7 +340,7 @@ func scanCallSites(t *testing.T) map[string]bool {
 				fileLines = append(fileLines, line)
 				lineNo++
 				if m := funcRe.FindStringSubmatch(line); m != nil {
-					cur = m[2]
+					cur, curStart = m[2], lineNo
 				}
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(line, "func ") {
@@ -336,7 +348,7 @@ func scanCallSites(t *testing.T) map[string]bool {
 				}
 				for name, re := range callRes {
 					if re.MatchString(line) {
-						hits = append(hits, callHit{key: rel + "\t" + name + "\t" + cur, line: lineNo})
+						hits = append(hits, callHit{key: rel + "\t" + name + "\t" + cur, line: lineNo, funcStart: curStart})
 					}
 				}
 			}
@@ -346,13 +358,19 @@ func scanCallSites(t *testing.T) map[string]bool {
 			// Whether the call passes EvalOptions.ActionOverrides is read from
 			// the CALL, by looking at the option literal it is written with. A
 			// window rather than a parse, and bounded so a distant unrelated
-			// mention cannot be mistaken for this call's.
+			// mention cannot be mistaken for this call's. A call that passes
+			// the options as an IDENTIFIER is read from the literal assigned to
+			// that identifier earlier in the same function, and from nothing
+			// else, because a site that hands the same options to a second
+			// consumer (#3564's response seam) holds them in a variable.
 			for _, h := range hits {
 				end := h.line + 40
 				if end > len(fileLines) {
 					end = len(fileLines)
 				}
-				out[h.key] = out[h.key] || strings.Contains(strings.Join(fileLines[h.line-1:end], "\n"), "ActionOverrides")
+				passes := strings.Contains(strings.Join(fileLines[h.line-1:end], "\n"), "ActionOverrides") ||
+					optionsIdentifierPassesOverrides(fileLines, h, strings.Split(h.key, "\t")[1])
+				out[h.key] = out[h.key] || passes
 				if _, seen := out[h.key]; !seen {
 					out[h.key] = false
 				}
@@ -366,6 +384,78 @@ func scanCallSites(t *testing.T) map[string]bool {
 	return out
 }
 
+// optionsIdentifierPassesOverrides reports whether a call whose last argument
+// is an identifier passes ActionOverrides through the EvalOptions literal
+// assigned to that identifier between the enclosing function's declaration and
+// the call. Only that literal's own lines are read - from the assignment to the
+// closing brace at the assignment's indentation - so a mention elsewhere in the
+// function cannot be mistaken for it, a mention inside a comment is not code,
+// and an identifier assigned from anything but a literal, or reassigned or
+// stripped of its overrides between the literal and the call, reads as not
+// passing.
+func optionsIdentifierPassesOverrides(fileLines []string, h callHit, evaluator string) bool {
+	call := regexp.MustCompile(`\.` + evaluator + `\((.*)\)\s*$`).FindStringSubmatch(fileLines[h.line-1])
+	if call == nil {
+		return false
+	}
+	args := strings.Split(call[1], ",")
+	ident := strings.TrimSpace(args[len(args)-1])
+	if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(ident) {
+		return false
+	}
+	assign := regexp.MustCompile(`^(\s*)` + ident + `\s*:?=\s*[A-Za-z0-9_.]*EvalOptions\{\s*$`)
+	for i := h.line - 2; i >= h.funcStart; i-- {
+		m := assign.FindStringSubmatch(fileLines[i])
+		if m == nil {
+			continue
+		}
+		for j := i + 1; j < h.line-1; j++ {
+			if fileLines[j] != m[1]+"}" {
+				continue
+			}
+			rewrite := regexp.MustCompile(`^\s*` + ident + `(\s*:?=[^=]|\.ActionOverrides\s*=[^=])`)
+			for k := j + 1; k < h.line-1; k++ {
+				if rewrite.MatchString(fileLines[k]) {
+					return false
+				}
+			}
+			for _, line := range fileLines[i:j] {
+				if code, _, _ := strings.Cut(line, "//"); strings.Contains(code, "ActionOverrides") {
+					return true
+				}
+			}
+			return false
+		}
+		return false
+	}
+	return false
+}
+
+// TestOptionsIdentifierResolutionReadsOnlyTheLiteralThatReachesTheCall plants
+// both answers for the identifier resolution, because the tree alone holds only
+// the positive: a resolution that returned true for everything would pass the
+// census above.
+func TestOptionsIdentifierResolutionReadsOnlyTheLiteralThatReachesTheCall(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		body []string
+		want bool
+	}{
+		{"a literal that sets it", []string{"\topts := EvalOptions{", "\t\tActionOverrides: overrides,", "\t}"}, true},
+		{"a literal that does not", []string{"\topts := EvalOptions{", "\t\tOrgID: org,", "\t}"}, false},
+		{"a mention inside a comment", []string{"\topts := EvalOptions{", "\t\tOrgID: org, // no ActionOverrides here", "\t}"}, false},
+		{"reassigned before the call", []string{"\topts := EvalOptions{", "\t\tActionOverrides: overrides,", "\t}", "\topts = other"}, false},
+		{"its overrides cleared before the call", []string{"\topts := EvalOptions{", "\t\tActionOverrides: overrides,", "\t}", "\topts.ActionOverrides = nil"}, false},
+		{"assigned from a function", []string{"\topts := buildOptions()"}, false},
+	} {
+		lines := append(append([]string{"func site() {"}, c.body...), "\tengine.EvaluateResponse(ctx, content, opts)", "}")
+		h := callHit{line: len(lines) - 1, funcStart: 1}
+		if got := optionsIdentifierPassesOverrides(lines, h, "EvaluateResponse"); got != c.want {
+			t.Errorf("%s: resolved passes_action_overrides=%t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
 func readCensus(t *testing.T, path string) map[string]censusRow {
 	t.Helper()
 	f, err := os.Open(filepath.Clean(path))
@@ -377,8 +467,8 @@ func readCensus(t *testing.T, path string) map[string]censusRow {
 	if !sc.Scan() {
 		t.Fatalf("%s is empty", path)
 	}
-	if h := sc.Text(); h != "plane\tevaluator\tfile\tfunction\tpasses_action_overrides\tedition" {
-		t.Fatalf("%s header is %q, want \"plane\\tevaluator\\tfile\\tfunction\\tpasses_action_overrides\\tedition\"", path, h)
+	if h := sc.Text(); h != "plane\tevaluator\tfile\tfunction\tpasses_action_overrides\tedition\tdefault_posture\tgate" {
+		t.Fatalf("%s header is %q, want \"plane\\tevaluator\\tfile\\tfunction\\tpasses_action_overrides\\tedition\\tdefault_posture\\tgate\"", path, h)
 	}
 	out := map[string]censusRow{}
 	for sc.Scan() {
@@ -387,8 +477,8 @@ func readCensus(t *testing.T, path string) map[string]censusRow {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
-			t.Fatalf("%s: row %q has %d fields, want 6", path, line, len(fields))
+		if len(fields) != 8 {
+			t.Fatalf("%s: row %q has %d fields, want 8", path, line, len(fields))
 		}
 		switch fields[4] {
 		case "yes", "no":

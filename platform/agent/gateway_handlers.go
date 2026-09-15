@@ -1,18 +1,9 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
 import (
-	"axonflow/platform/agent/hitl"
 	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"crypto/sha256"
@@ -37,7 +28,6 @@ import (
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
@@ -199,7 +189,57 @@ type PreCheckRequest struct {
 
 // PreCheckResponse is returned to SDK with context and approval status
 type PreCheckResponse struct {
-	ContextID         string                 `json:"context_id"`
+	// DecisionID is the CANONICAL name for this identifier, and ContextID
+	// below is a deprecated alias carrying the same value (#3897 §1).
+	//
+	// WHY THERE ARE TWO NAMES FOR ONE VALUE, AND WHY NEITHER IS REMOVED.
+	//
+	// Every other plane that mints a decision calls this `decision_id`:
+	// POST /api/v1/decide, both MCP check endpoints, and the AuthZEN adapter's
+	// response context. This plane alone called it `context_id`, and it is
+	// PROVABLY the same identifier - the value is minted once and handed to
+	// recordSignedDecision and to the OTel DecisionEvent's DecisionID, both
+	// under the same name.
+	//
+	// The cost of the divergence was not cosmetic. GET /api/v1/decisions/{id}/
+	// explain and POST /api/v1/overrides are both keyed on the decision id, so
+	// a client integrating against /api/v1/decide can explain and override,
+	// and the SAME client against this endpoint found no `decision_id` and
+	// SILENTLY LOST BOTH CAPABILITIES - with the published spec describing
+	// context_id only as something "to link with the subsequent audit call".
+	//
+	// context_id is NOT removed and NOT deprecated to the point of omission:
+	// every shipped SDK reads it, and a rename would 404 them all. It stays for
+	// at least one release, which is the deprecation path #3897's DoD requires
+	// over a silent rename.
+	DecisionID string `json:"decision_id"`
+	// ContextID is the DEPRECATED alias of DecisionID. Prefer decision_id.
+	ContextID string `json:"context_id"`
+	// Verdict is the CANONICAL answer to "may I do this?" - "allow" | "deny" -
+	// in the vocabulary POST /api/v1/decide returns (#3897 §2). This plane never
+	// answers "needs_approval": its verdict is the anchored engine's, which
+	// answers a CHALLENGE with a deny.
+	//
+	// WHY IT IS ADDITIVE AND `approved` STAYS. Across the governed surface the
+	// same question was answered by five different keys in two different types:
+	// `verdict` (string) on /api/v1/decide, `approved` (bool) here, `allowed`
+	// (bool) on both MCP check endpoints, `decision` (bool) on the AuthZEN
+	// adapter and `decision` (string) on the decisions feed - so a client typed
+	// from one plane could not deserialise another. `approved` is what every
+	// shipped SDK reads; removing or retyping it would break them all. Adding
+	// the canonical key is the only change that gives an integrator one member
+	// to read on every plane without breaking the ones already integrated.
+	//
+	// IT IS NOT A SECOND SOURCE OF TRUTH. It is derived, in one place, by
+	// preCheckVerdict, which also feeds the decision record and the OTel span,
+	// so the wire verdict and the recorded verdict cannot disagree.
+	//
+	// The AuthZEN adapter's boolean is NOT folded in and is not a defect: it is
+	// mandated by AuthZEN 1.0, whose response is a bare boolean, and the richer
+	// state rides in its response context behind profile negotiation. That
+	// rationale is documented at its own site and is the model this member
+	// follows rather than overrides.
+	Verdict           string                 `json:"verdict"`
 	Approved          bool                   `json:"approved"`
 	RequiresRedaction bool                   `json:"requires_redaction,omitempty"`
 	ApprovedData      map[string]interface{} `json:"approved_data,omitempty"`
@@ -208,23 +248,22 @@ type PreCheckResponse struct {
 	BudgetInfo        *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget status
 	ExpiresAt         time.Time              `json:"expires_at"`
 	BlockReason       string                 `json:"block_reason,omitempty"`
-	// ApprovalRequestID is the hitl_approval_queue entry raised for a request
-	// this response is holding for human review (#3509). Present only on a
-	// require_approval hold, and only when the entry was actually created: an
-	// empty value on a held response means no reviewer will see the request
-	// (pending cap reached, tier without the queue, or a failed write), and a
-	// caller must treat it as a refusal rather than as something pending.
-	//
-	// It is a SEPARATE field rather than an addition to block_reason precisely
-	// because every shipped SDK matches the "require_approval" sentinel
-	// literally to enter its HITL branch.
-	ApprovalRequestID string `json:"approval_request_id,omitempty"`
 	// TraceID is the W3C OpenTelemetry trace_id emitted by the decision
 	// tracer (#2426 WS4). Empty when AXONFLOW_OTEL_ENDPOINT is unset
 	// (Community-tier default — OTel is opt-in). Decision-Mode PEPs
 	// propagate this id downstream so multi-gateway decisions stitch
 	// into one end-to-end trace per ADR-056 §"Trace correlation".
 	TraceID string `json:"trace_id,omitempty"`
+	// Engine, SubjectType and PolicyBundle say which policy engine authored
+	// this verdict, the type of the principal it was evaluated for and the
+	// digest of the policy set that decided it (#3564, PRD v11 §1.4, §1.6). The
+	// members and their meaning are decide's (DecideResponse).
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
+	// LegacyValidators names a checksum validator that acted before the
+	// anchored engine decided (#4122); omitted when none did.
+	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
 }
 
 // RateLimitInfo provides rate limiting status to SDK
@@ -364,13 +403,12 @@ func getRBIPIIDetector() *rbi.IndiaPIIDetector {
 // checkRBIPII checks request query for India-specific PII.
 // Returns the check result with detected PII types and blocking recommendation.
 // In Community builds, this returns a no-PII result (detection is disabled).
-// The blockOnCritical parameter respects PII_ACTION env var (Issue #891):
-// - block: blockOnCritical=true (default legacy behavior)
-// - redact: blockOnCritical=false (flag for redaction instead of blocking)
+// blockOnCritical is true only under an organization's recorded pii=block
+// override (Issue #891, #3961); otherwise critical PII is flagged, not blocked.
 func checkRBIPII(query string, blockOnCritical bool) *rbi.RBIPIICheckResult {
 	detector := getRBIPIIDetector()
-	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI guidelines
-	// unless PII_ACTION=redact is configured
+	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI
+	// guidelines when the caller passes blockOnCritical
 	return rbi.CheckRequestForPII(detector, query, blockOnCritical)
 }
 
@@ -425,7 +463,7 @@ func indonesiaDetectedTypeNames(r *indonesia.IndonesiaPIICheckResult) []string {
 // redactIndonesiaPIIInString masks every Indonesia PII occurrence in s using the
 // detector's per-detection MaskedValue (NIK/NPWP/+62/bank). Returns the masked
 // string and whether anything changed. Used for the response/check-output redact
-// path (PII_ACTION=redact) alongside the block path.
+// path (an org pii=redact override) alongside the block path.
 func redactIndonesiaPIIInString(s string) (string, bool) {
 	detector := getIndonesiaPIIDetector()
 	if detector == nil || s == "" {
@@ -446,22 +484,6 @@ func getGatewayAuditQueue() *AuditQueue {
 		return auditManager.GetQueue()
 	}
 	return nil
-}
-
-// preCheckRequiresHITL decides whether this plane holds the caller for a human,
-// and is a pure function so the PRECEDENCE is unit-testable without standing up
-// the handler. See the call site for why a block outranks a hold here (#3509).
-func preCheckRequiresHITL(result *StaticPolicyResult, communityMode bool) bool {
-	if result == nil || communityMode {
-		return false
-	}
-	// Blocked FIRST. Not defence in depth: six downstream readers key off the
-	// single boolean this returns, and getting the order wrong tells the caller
-	// to wait for an approval that cannot release a block.
-	if result.Blocked {
-		return false
-	}
-	return result.RequiresApproval
 }
 
 // handlePolicyPreCheck handles POST /api/policy/pre-check
@@ -631,16 +653,15 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, killSwitchResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{killSwitchResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		writePreCheckResponse(w, http.StatusOK, response)
 		return
 	}
 
-	// Issue #891: Respect PII_ACTION setting - block only if PII_ACTION=block
-	// #2581: resolve per-org posture (org with no override → deployment-global).
+	// Issue #891: block critical PII only under an org pii=block override.
+	// #2581: resolve per-org posture (org with no override → the stored policy actions decide).
 	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
-	rbiPIIRequiresRedaction := false
 	indonesiaPIIRequiresRedaction := false
+	rbiPIIRequiresRedaction := false
 	// #3242: a non-blocking Indonesia PII detection is held here and recorded at
 	// the terminal exit, where the pre-check's context id exists to join on.
 	var indonesiaPIIPendingRecord *indonesia.IndonesiaPIICheckResult
@@ -656,12 +677,14 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		for _, piiType := range indonesiaPIIResult.DetectedTypes {
 			gatewayIndonesiaPIIDetected.WithLabelValues(string(piiType), "true").Inc()
 		}
+		preCheckAudit.decisionLegacyValidators = []LegacyValidatorAction{{Validator: legacyValidatorIndonesia, Action: legacyActionBlocked}}
 		response := PreCheckResponse{
-			ContextID:   uuid.New().String(),
-			Approved:    false,
-			Policies:    []string{"indonesia_pii_protection"},
-			BlockReason: indonesiaPIIResult.Reason,
-			ExpiresAt:   time.Now(),
+			ContextID:        uuid.New().String(),
+			Approved:         false,
+			Policies:         []string{"indonesia_pii_protection"},
+			BlockReason:      indonesiaPIIResult.Reason,
+			ExpiresAt:        time.Now(),
+			LegacyValidators: preCheckAudit.decisionLegacyValidators,
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{indonesiaPIIResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
@@ -670,8 +693,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		// the block above is already held. No-op in a community build.
 		recordIndonesiaPIIEvents(ctx, client.OrgID, client.TenantID, response.ContextID, response.TraceID,
 			PlaneGateway, indonesiaPIIActionBlocked, indonesiaPIIResult)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		writePreCheckResponse(w, http.StatusOK, response)
 		return
 	}
 	if indonesiaPIIResult.HasPII {
@@ -705,17 +727,18 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		for _, piiType := range piiResult.DetectedTypes {
 			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "true").Inc()
 		}
+		preCheckAudit.decisionLegacyValidators = []LegacyValidatorAction{{Validator: legacyValidatorIndia, Action: legacyActionBlocked}}
 		response := PreCheckResponse{
-			ContextID:   uuid.New().String(),
-			Approved:    false,
-			Policies:    []string{"rbi_pii_protection"},
-			BlockReason: piiResult.Reason,
-			ExpiresAt:   time.Now(),
+			ContextID:        uuid.New().String(),
+			Approved:         false,
+			Policies:         []string{"rbi_pii_protection"},
+			BlockReason:      piiResult.Reason,
+			ExpiresAt:        time.Now(),
+			LegacyValidators: preCheckAudit.decisionLegacyValidators,
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, piiResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{piiResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		writePreCheckResponse(w, http.StatusOK, response)
 		return
 	}
 	if piiResult.HasPII {
@@ -723,61 +746,19 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "false").Inc()
 		}
 		if gwDetectionCfg.Enabled && piiResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
-			log.Printf("🇮🇳 [Pre-check] Critical India PII detected - flagged for redaction (action=redact): %v", piiResult.DetectedTypes)
 			rbiPIIRequiresRedaction = true
+			log.Printf("🇮🇳 [Pre-check] Critical India PII detected under a pii=redact override; the anchored decision carries the redaction: %v", piiResult.DetectedTypes)
 		} else {
 			log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
 		}
 	}
 
-	// #3312 (ADR-060 Slice 3): resolve the caller's governance-segment set
-	// ONCE, up front, before static policies are evaluated below, so
-	// segment-scoped static_policies rows actually enforce for a member on
-	// THIS plane too — closing the bypass where a caller blocked on
-	// /api/request (run.go clientRequestHandler) could re-route the
-	// identical query through the gateway pre-check and have the
-	// segment-scoped policy silently excluded. Mirrors run.go:2176.
-	//
-	// #3293 locked invariant: a resolution FAILURE (segOK == false) is
-	// handled HERE, at the resolution site, and must NEVER be propagated
-	// downstream as a nil/empty segment set. segOK == true with a
-	// nil/empty segmentIDs is the legitimate "no segments" outcome (no
-	// resolver configured / no identity / zero memberships) and proceeds
-	// org-only exactly as before this change; only segOK == false denies.
-	segmentIDs, segOK := resolveUserSegmentsForEnforcement(ctx, user.OrgID, user.Email)
-	if !segOK {
-		reason := "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
-		log.Printf("🛡️ [Pre-check] Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
-		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
-		response := PreCheckResponse{
-			ContextID:   uuid.New().String(),
-			Approved:    false,
-			Policies:    []string{"segment_resolution_failed"},
-			BlockReason: reason,
-			ExpiresAt:   time.Now(),
-		}
-		// Canonical audit row for the fail-closed deny (#2642) — the SAME
-		// writer (recordPreCheckDecision + recordGatewayPreCheckAudit)
-		// every other pre-check terminal verdict/early-return deny in this
-		// handler uses.
-		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, reason, response.Policies, time.Since(startTime).Milliseconds())
-		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
-
-		// Record policy violation for auto-trip threshold tracking (#1176),
-		// mirroring run.go's clientRequestHandler segment-resolution-failure
-		// deny (the canonical pattern this block is modeled on).
-		if circuitBreakerInstance != nil {
-			for _, policyID := range response.Policies {
-				if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyID); err != nil {
-					log.Printf("⚠️ [Pre-check] Circuit breaker RecordPolicyViolation error: %v", err)
-				}
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-		return
-	}
+	// No segment gate stands here any more. It resolved the caller's
+	// governance segments and refused the request when that failed, on behalf
+	// of an organization's segment-scoped static rows, and those rows no longer
+	// decide: the anchored engine authors this verdict and reads no segments
+	// (PRD v11 §1.1, §1.2). So the shared engine's detector pass runs with no
+	// segment set, and a segment resolution that would fail changes nothing.
 
 	// IMPORTANT: Gateway Mode Design Decision - Static Policies Only
 	//
@@ -797,6 +778,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// The shared engine provides comprehensive PII detection with validators
 	// (Luhn, MOD97, Verhoeff, SSN, Aadhaar, PAN) and SQL injection detection.
 	var policyResult *StaticPolicyResult
+	// preCheckEvaluation is the shared engine's evaluation, whose row facts are
+	// the anchored engine's detector inputs below; nil when nothing evaluated.
+	var preCheckEvaluation *sharedpolicy.RequestResult
 
 	// Try shared policy engine first for comprehensive PII/SQLi detection
 	sharedEngine := sharedpolicy.GetGlobalEngine()
@@ -809,7 +793,6 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
-			Plane:    legacycompile.PlaneGatewayRequest,
 			TenantID: user.TenantID,
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
@@ -820,15 +803,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			Categories:      gatewayPreCheckPolicyCategories,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
-			// #3312 (ADR-060 Slice 3): the caller's governance-segment set,
-			// resolved fail-closed above (segOK denied before this point on
-			// a resolver error). segmentIDs is nil/empty for the legitimate
-			// "no segments" case (no resolver / no identity / zero
-			// memberships) and proceeds org-only; non-nil restricts
-			// segment-scoped static_policies rows to actual members,
-			// closing the #3266 leak AND enforcing for members (#3312).
-			Segments: segmentIDs,
 		})
+		preCheckEvaluation = requestResult
 		// Convert to StaticPolicyResult for backward compatibility
 		policyResult = convertSharedResultToStatic(requestResult)
 		// #3365: thread the evaluation-time display names onto the audit input
@@ -850,6 +826,68 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			log.Printf("AxonFlow: governance bypassed - no policy engine configured. If intentional, share context privately: founders@getaxonflow.com (no marketing, no follow-ups)")
 		}
 	}
+
+	// #3564 wave two: THE ANCHORED ENGINE AUTHORS THIS PRE-CHECK'S POLICY
+	// VERDICT (PRD v11 §1.1). Its verdict REPLACES policyResult before anything
+	// below reads it - the budget check, the redaction instruction and every
+	// record. It never holds for approval: a CHALLENGE is a deny (#3895). A
+	// pre-check refused before this point - the kill switch, a validator's
+	// block - carries no `engine`, because no engine decided it.
+	//
+	// The decision id is minted HERE rather than at the response: it names the
+	// resource the anchored request is evaluated for, and the record the verdict
+	// is keyed on. The early refusals above mint their own.
+	contextID := uuid.New().String()
+	enforced := enforceRequestPass(ctx, gatewayRequestSeamScope, requestPassInput{
+		orgID:               client.OrgID,
+		decisionID:          contextID,
+		stage:               precheckStage,
+		query:               req.Query,
+		auth:                authResult,
+		user:                user,
+		userIdentity:        callerUserIdentity(authKind, userErr, req.UserToken),
+		observation:         observationOf(preCheckEvaluation),
+		pep:                 pepHandshake.pep.Profile(),
+		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
+	})
+	preCheckAudit.decisionEngine = enforced.engine
+	preCheckAudit.decisionSubjectType = enforced.subjectType
+	if len(enforced.legacyValidators) > 0 {
+		preCheckAudit.decisionLegacyValidators = enforced.legacyValidators
+	}
+	if enforced.unavailable != "" {
+		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
+		// the legacy engine's verdict because a dependency failed would turn
+		// enforcement off during exactly the incidents it exists for.
+		recordAnchoredEnforcement(gatewayRequestSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		gatewayPreCheckRequests.WithLabelValues("error", "false").Inc()
+		response := PreCheckResponse{
+			ContextID:   contextID,
+			Approved:    false,
+			Policies:    []string{"decision_enforcement_unavailable"},
+			BlockReason: enforceCauseMessages[enforced.unavailable],
+			ExpiresAt:   time.Now(),
+		}
+		response.Engine, response.SubjectType, response.PolicyBundle = enforced.engine, enforced.subjectType, enforced.policyBundle
+		// RECORDED LIKE EVERY OTHER TERMINAL VERDICT. This is the refusal an
+		// operator most needs to find, so it gets the same trace span and the
+		// same signed decision-chain entry as an ordinary deny; recording only
+		// the audit row would leave an enforcing organization's fail-closed
+		// refusal with no trace id and outside the non-repudiation chain.
+		response.TraceID = recordPreCheckDecision(ctx, contextID, client.OrgID, client.TenantID, precheckStage, response.BlockReason, response.Policies, time.Since(startTime).Milliseconds())
+		recordGatewayPreCheckAudit(ctx, contextID, client.OrgID, client.TenantID, precheckStage, AuditVerdictError, response.Policies, []string{enforced.unavailable}, time.Since(startTime).Milliseconds(), preCheckAudit)
+		recordSignedDecision(ctx, contextID, client.OrgID, client.TenantID, precheckStage, AuditVerdictError, response.Policies, []string{enforced.unavailable}, time.Since(startTime).Milliseconds())
+		writePreCheckResponse(w, http.StatusServiceUnavailable, response)
+		return
+	}
+	// An anchored invariant-8 refusal names the admitted enforcement point's
+	// capability gap and counts it (applyAnchoredCapabilityRefusal); the
+	// refusal's own reason stays first.
+	enforced.reasons = applyAnchoredCapabilityRefusal(PlaneGateway, pepHandshake, enforced.undischarged, enforced.reasons)
+	policyResult, preCheckReason := enforced.staticPolicyResult(gatewayRequestSeamScope)
+	preCheckAudit.decisionPolicyBundle = enforced.policyBundle
+	preCheckAudit.decisionReasonCode = preCheckReason
+	preCheckAudit.carryAnchoredIdentity(enforced)
 
 	// Issue #1082: Check budget limits before allowing request
 	// This enforces pre-request budget checks in Gateway Mode
@@ -875,18 +913,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 				log.Printf("💰 [Pre-check] Request blocked by budget: %s", budgetDecision.Message)
 				gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
 				response := PreCheckResponse{
-					ContextID:   uuid.New().String(),
+					ContextID:   contextID,
 					Approved:    false,
 					Policies:    []string{"budget_exceeded"},
 					BlockReason: budgetDecision.Message,
 					BudgetInfo:  budgetInfo,
 					ExpiresAt:   time.Now(),
 				}
+				response.Engine, response.SubjectType, response.PolicyBundle = enforced.engine, enforced.subjectType, enforced.policyBundle
 				response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, budgetDecision.Message, response.Policies, time.Since(startTime).Milliseconds())
 				recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{budgetDecision.Message}, time.Since(startTime).Milliseconds(), preCheckAudit)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
-				_ = json.NewEncoder(w).Encode(response)
+				writePreCheckResponse(w, http.StatusPaymentRequired, response) // 402 Payment Required
+				// Counted under its OWN reason: a budget refusal is not a policy
+				// verdict, and {verdict=deny, reason=permitted} is a contradiction
+				// an operator cannot filter.
+				recordAnchoredEnforcement(gatewayRequestSeamScope, enforced.engine, VerdictDeny, enforceReasonBudgetExceeded)
 				return
 			}
 
@@ -898,8 +939,6 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate context ID
-	contextID := uuid.New().String()
 	// UTC pinned (#2876): gateway_contexts.expires_at was TIMESTAMP (no time
 	// zone) until migration 142, and such a column discards the offset — a
 	// local-zone time.Now() silently stored a shifted wall clock on non-UTC
@@ -907,90 +946,17 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// independent of the column type.
 	expiresAt := time.Now().UTC().Add(defaultContextExpiry)
 
-	// Issue #1081: Check if HITL (Human-in-the-Loop) is required
-	// HITL is ONLY triggered by policy evaluation returning require_approval action.
-	// This is an ENTERPRISE-ONLY feature - in Community mode, require_approval policies auto-approve.
-	// Security: We do NOT trust client-provided context (requires_hitl, eu_ai_act_article_14, etc.)
-	// as that would allow any client to bypass policy or trigger DoS.
-	// #3509: a BLOCK outranks a hold here, matching the two sibling planes.
-	//
-	// It did not, and the divergence was not survivable once this plane started
-	// raising queue entries. `convertSharedResultToStatic` sets Blocked and
-	// RequiresApproval from INDEPENDENT matches, so a request can be blocked by
-	// one policy (SQLi, say) and held by another. The reporting precedence
-	// below put HITL first, so such a request answered `block_reason:
-	// require_approval` - the exact sentinel every shipped SDK matches to enter
-	// its HITL wait - while `isBlocked` (an OR) kept `approved:false`. The
-	// caller was told to wait for an approval that could never release it,
-	// because the block does not go away when a reviewer approves. Before this
-	// change that was merely a misleading response; with an entry raised on
-	// every retry it also mints an unbounded row per attempt and buries the
-	// reviewer's queue.
-	//
-	// `/decide` has always denied this case (mapPolicyResultToVerdict
-	// short-circuits on Blocked) and `/api/request` returns 403 before its HITL
-	// branch is reached. This plane now agrees with both. Folding it into
-	// requiresHITL rather than guarding each site separately is deliberate:
-	// six downstream readers key off this one boolean (the consume, the
-	// enqueue, response.BlockReason, isBlocked, gatewayPreCheckAuditVerdict and
-	// verdictFromPreCheck), and a per-site guard is how the halves come apart.
-	requiresHITL := preCheckRequiresHITL(policyResult, isCommunityMode())
-
-	// #3509 defect 2: spend an outstanding single-use approval before the hold
-	// is applied, so an admitted request takes the ordinary approved path -
-	// including the #2867 connector prefetch, which is gated on a CLEAN
-	// approval and must not be skipped for a request a human authorised.
-	//
-	// No separate `!policyResult.Blocked` guard here: requiresHITL already
-	// carries it (above), which is what keeps the consume, the enqueue and the
-	// response from being able to disagree about this case.
-	if requiresHITL {
-		// The FULL principal, not just the user: see the decide plane's note.
-		if grantID, admitted := consumeApprovalGrant(ctx, hitlPlaneGatewayPreCheck, hitl.GrantSubject{
-			OrgID:    client.OrgID,
-			TenantID: client.TenantID,
-			ClientID: client.ClientID,
-			UserID:   fmt.Sprintf("%d", user.ID),
-		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
-			requiresHITL = false
-			preCheckAudit.approvalGrantID = grantID
-			log.Printf("✅ [Pre-check] HITL hold lifted by approved request %s (single use, now spent)", logutil.Sanitize(grantID))
-		}
-	}
-
-	// #3509 defect 1: raise the reviewable queue entry. Before this, a
-	// require_approval policy on this plane returned approved:false with the
-	// require_approval sentinel and NOTHING for a reviewer to act on. Placed
-	// before the response is assembled so the created entry's id can ride the
-	// response and the audit row.
-	hitlEnqueue := policyStepUpResult{}
-	if requiresHITL {
-		hitlEnqueue = enqueuePolicyStepUp(ctx, policyStepUpInput{
-			Plane:    hitlPlaneGatewayPreCheck,
-			OrgID:    client.OrgID,
-			TenantID: client.TenantID,
-			// client.ClientID, not client.ID: see the decide plane's note.
-			ClientID:   client.ClientID,
-			UserID:     fmt.Sprintf("%d", user.ID),
-			UserEmail:  user.Email,
-			PolicyID:   policyResult.ApprovalPolicyID,
-			PolicyName: policyResult.ApprovalPolicyName,
-			Reason:     "human approval required by policy",
-			Severity:   policyResult.Severity,
-			DecisionID: contextID,
-			// The same trace-id preCheckAudit records, so the approval and the
-			// gate decision land in one chain (#3718).
-			CorrelationID: preCheckAudit.correlationID,
-			Stage:         precheckStage,
-			Query:         req.Query,
-		})
-		preCheckAudit.approvalEnqueue = hitlEnqueue.Outcome
-		preCheckAudit.approvalRequestID = hitlEnqueue.RequestID
-	}
-
 	// Build response
-	// Issue #891: Combine redaction flags from static policies and RBI PII detection
-	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction || indonesiaPIIRequiresRedaction
+	//
+	// requires_redaction is the anchored decision's alone (#3564 wave two). The
+	// India and Indonesia validators' redaction flags are raised by the
+	// organization's pii=redact detection override, which reaches the anchored
+	// engine through activation (#4045); OR-ing the flags in as well would tell
+	// the caller to discharge an obligation the decision did not attach, and
+	// through applyPreCheckRedactionRefusal below could turn into a DENY
+	// recorded under the decision's own reason code. Their pii=block refusals
+	// return long before the seam.
+	requiresRedaction := policyResult.RequiresRedaction
 
 	// #3778 / ADR-065 invariant 8: an enforcement point that DECLARED it cannot
 	// discharge field_redact must not be told `requires_redaction: true` and
@@ -1008,9 +974,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// nearly all of it. The obligation exists only where the redaction does.
 	pepRefusalReason, pepRefused := applyPreCheckRedactionRefusal(pepHandshake, requiresRedaction)
 
-	// Determine if request should be blocked
-	// Block if: policy blocked OR HITL required (Enterprise only - pending human approval)
-	isBlocked := policyResult.Blocked || requiresHITL || pepRefused
+	// Blocked when the policy verdict blocked it, or when the enforcement point
+	// cannot discharge the redaction it owes.
+	isBlocked := policyResult.Blocked || pepRefused
 
 	response := PreCheckResponse{
 		ContextID:         contextID,
@@ -1019,6 +985,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		Policies:          policyResult.TriggeredPolicies,
 		BudgetInfo:        budgetInfo, // Issue #1082: Include budget status
 		ExpiresAt:         expiresAt,
+		LegacyValidators:  preCheckAudit.decisionLegacyValidators,
 	}
 
 	// #3778: on a capability refusal the answer is a DENY that also withholds
@@ -1036,50 +1003,14 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			PlaneGateway, contextID)
 	}
 
-	// Add RBI PII policy to triggered policies if redaction required
-	if rbiPIIRequiresRedaction {
-		response.Policies = append(response.Policies, "rbi_pii_protection")
-	}
-
-	// Add Indonesia PII policy to triggered policies if redaction required.
-	// Mirrors the RBI flag above: under PII_ACTION=redact, critical Indonesia
-	// PII (NIK / NPWP) must signal redaction the same way India PII does —
-	// previously it was detected and logged but never flagged, so NIK slipped
-	// through unredacted while SSN/Aadhaar were redacted.
-	if indonesiaPIIRequiresRedaction {
-		response.Policies = append(response.Policies, "indonesia_pii_protection")
-	}
-
-	// Issue #1081: Add HITL policy to triggered policies if HITL required (Enterprise only)
-	if requiresHITL {
-		response.Policies = append(response.Policies, "hitl_enterprise")
-	}
-
-	if requiresHITL {
-		// HITL takes precedence over block — the request needs human approval,
-		// not an outright deny. SDKs check for the exact "require_approval"
-		// sentinel to trigger the HITL polling flow, so BlockReason is pinned
-		// to that literal and #3509's queue-entry id rides ApprovalRequestID
-		// instead of being appended to it. Changing this string would break
-		// every shipped SDK's HITL branch.
-		response.BlockReason = "require_approval"
-		response.ApprovalRequestID = hitlEnqueue.RequestID
-		if hitlEnqueue.RequestID != "" {
-			log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - approval %s pending human review (contextID=%s)", hitlEnqueue.RequestID, contextID)
-		} else {
-			// The hold stands and the caller is refused, but no reviewer will
-			// see the request. That is the invisible dead end #3509 removes,
-			// arriving by a different cause, and it must not be silent.
-			log.Printf("⚠️ [Pre-check] HITL required (Enterprise) but NO reviewable entry was created (%s) - contextID=%s",
-				hitlEnqueue.Outcome, contextID)
-		}
-	} else if policyResult.Blocked {
+	if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
 	}
 
-	// Record policy violation for auto-trip threshold tracking
-	if policyResult.Blocked || requiresHITL {
+	// Record policy violation for auto-trip threshold tracking. A capability
+	// refusal is not one (violationFeedsCircuitBreaker).
+	if policyResult.Blocked && violationFeedsCircuitBreaker(preCheckReason) {
 		if circuitBreakerInstance != nil {
 			for _, policyID := range policyResult.TriggeredPolicies {
 				if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyID); err != nil {
@@ -1089,17 +1020,16 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !policyResult.Blocked && !requiresHITL && requiresRedaction {
+	if !policyResult.Blocked && requiresRedaction {
 		log.Printf("⚠️ [Pre-check] Request approved with redaction required: %s", policyResult.Reason)
 	}
 	// #2867: prefetch connector data ONLY for a clean-approved request (not
-	// blocked, not HITL-pending, no redaction owed). A blocked pre-check must
-	// NOT execute the caller's query against the connector — returning
-	// approved_data on a deny leaks the data the block was meant to withhold
-	// (incl. the #2862 policy-load fail-closed block); a HITL-pending pre-check
-	// must not surface connector data before a human approves. The previous
-	// else-branch fetched on every outcome except approved-with-redaction.
-	if shouldPrefetchApprovedData(policyResult.Blocked, requiresHITL, requiresRedaction) {
+	// blocked, no redaction owed). A blocked pre-check must NOT execute the
+	// caller's query against the connector: returning approved_data on a deny
+	// leaks the data the block was meant to withhold (incl. the #2862
+	// policy-load fail-closed block). The previous else-branch fetched on every
+	// outcome except approved-with-redaction.
+	if shouldPrefetchApprovedData(policyResult.Blocked, requiresRedaction) {
 		if len(req.DataSources) > 0 && mcpRegistry != nil {
 			approvedData, err := fetchApprovedData(ctx, req.DataSources, req.Query, user, client, startTime)
 			if err != nil {
@@ -1123,11 +1053,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// gateway_contexts satellite above. This is the row the portal decisions feed
 	// (orchestrator GET /api/v1/decisions) reads: a redaction lands as 'redacted'
 	// (DISTINCT from a clean 'allowed' — the split-brain this session closes), a
-	// policy-engine block as 'blocked', a HITL hold as 'needs_approval'. Keyed by
+	// policy-engine block as 'blocked'. Keyed by
 	// the same contextID as the satellite so the two records join.
 	recordGatewayPreCheckAudit(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
-		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
-		response.Policies, reasonsFromPreCheck(response, policyResult, hitlEnqueue), time.Since(startTime).Milliseconds(), preCheckAudit)
+		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresRedaction),
+		response.Policies, reasonsFromPreCheck(response, policyResult), time.Since(startTime).Milliseconds(), preCheckAudit)
 
 	// #3242: the deferred non-blocking Indonesia PII detection, recorded HERE
 	// because this is where contextID exists — the same key the canonical audit
@@ -1166,22 +1096,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			OrgID:      client.OrgID,
 			TenantID:   client.TenantID,
 			Stage:      precheckStage,
-			Verdict:    verdictFromPreCheck(response, requiresHITL),
+			Verdict:    preCheckVerdict(response),
 			PolicyIDs:  response.Policies,
 			LatencyMs:  latencyMs,
-			Reasons:    reasonsFromPreCheck(response, policyResult, hitlEnqueue),
+			Reasons:    reasonsFromPreCheck(response, policyResult),
 		})
 	}
 
 	// Non-repudiation (#2732): sign + chain this terminal pre-check verdict into
 	// decision_chain. Uses the canonical redaction-aware verdict (allowed /
-	// blocked / redacted / needs_approval), NOT the three-valued telemetry
-	// verdict above, so a redaction is recorded as a distinct, signed outcome
+	// blocked / redacted), NOT the telemetry verdict above, so a redaction is recorded as a distinct, signed outcome
 	// rather than collapsed to an allow. Outside the OTel guard so it runs even
 	// when no OTel endpoint is configured; best-effort + off the hot path.
 	recordSignedDecision(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
-		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
-		response.Policies, reasonsFromPreCheck(response, policyResult, hitlEnqueue), latencyMs)
+		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresRedaction),
+		response.Policies, reasonsFromPreCheck(response, policyResult), latencyMs)
 
 	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v, trace_id=%q",
 		latencyMs, contextID, response.Approved, response.TraceID)
@@ -1193,17 +1122,18 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send response
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("❌ [Pre-check] Failed to encode response: %v", err)
-	}
+	response.Engine, response.SubjectType, response.PolicyBundle = enforced.engine, enforced.subjectType, enforced.policyBundle
+	writePreCheckResponse(w, http.StatusOK, response)
+	// The FINAL verdict, after the capability refusal and the hold, is what is
+	// counted, as on decide.
+	recordAnchoredEnforcement(gatewayRequestSeamScope, enforced.engine, preCheckVerdict(response), preCheckReason)
 }
 
 // Canonical audit_logs.policy_decision vocabulary for the Gateway pre-check
 // plane (#2642 / ADR-058 bucket D). These are now ALIASES onto the single shared
 // vocabulary in platform/shared/audit (#2638 S-WRITERS const-swap) — the same
 // past-tense set every plane converges on and which the migration-123 CHECK
-// enforces. The Gateway plane needs all four values for a reason specific to
+// enforces. The Gateway plane needs these values for a reason specific to
 // THIS hole:
 //
 //  1. A redaction must be DISTINGUISHABLE from a clean allow — the legacy
@@ -1215,25 +1145,19 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 //     are the ones that render correctly in the feed.
 //
 // The Gateway-plane names are retained (provenance + call-site readability); the
-// VALUES come from the shared package so they can never drift. needs_approval is
-// the HITL outcome; its portal-reader alignment is the frontend slice #2636.
+// VALUES come from the shared package so they can never drift. The pre-check
+// never holds for approval: its verdict is the anchored engine's, which answers
+// a CHALLENGE with a deny (#3895).
 const (
-	gatewayAuditAllowed       = sharedaudit.DecisionAllowed
-	gatewayAuditBlocked       = sharedaudit.DecisionBlocked
-	gatewayAuditRedacted      = sharedaudit.DecisionRedacted
-	gatewayAuditNeedsApproval = sharedaudit.DecisionNeedsApproval
+	gatewayAuditAllowed  = sharedaudit.DecisionAllowed
+	gatewayAuditBlocked  = sharedaudit.DecisionBlocked
+	gatewayAuditRedacted = sharedaudit.DecisionRedacted
 )
 
 // gatewayPreCheckAuditVerdict maps a terminal pre-check outcome to the canonical
-// audit verdict. HITL takes precedence over a hard block (the request is pending
-// human approval, not refused), and a block takes precedence over redaction.
-// requiresHITL is passed separately from blocked so HITL maps to needs_approval
-// rather than the blocked label even though isBlocked = blocked || requiresHITL
-// at the call site.
-func gatewayPreCheckAuditVerdict(blocked, requiresHITL, requiresRedaction bool) string {
+// audit verdict: a block takes precedence over a redaction.
+func gatewayPreCheckAuditVerdict(blocked, requiresRedaction bool) string {
 	switch {
-	case requiresHITL:
-		return gatewayAuditNeedsApproval
 	case blocked:
 		return gatewayAuditBlocked
 	case requiresRedaction:
@@ -1259,9 +1183,8 @@ func gatewayPreCheckAuditVerdict(blocked, requiresHITL, requiresRedaction bool) 
 // than recordDecideDecision itself BECAUSE the Gateway handler already emits its
 // OTel decision span via the existing tracer path (recordPreCheckDecision and the
 // inline tracer call at the main exit); routing through recordDecideDecision would
-// double-emit that span. The OTel span's three-valued telemetry verdict
-// (allow|deny|needs_approval, verdictFromPreCheck) is a SEPARATE, deliberately
-// unchanged contract from this past-tense audit vocabulary.
+// double-emit that span. The OTel span's telemetry verdict (preCheckVerdict)
+// is a SEPARATE contract from this past-tense audit vocabulary.
 //
 // Fail posture — BEST-EFFORT / fail-open on the WRITE only. The deny verdict is
 // ALREADY enforced before this is called (the PEP holds the block; the caller is
@@ -1328,41 +1251,28 @@ func decisionStageForPreCheck(req PreCheckRequest) string {
 	return "llm"
 }
 
-// verdictFromPreCheck maps the PreCheckResponse + HITL flag to the
-// three-valued verdict enum the DecisionEvent expects.
-func verdictFromPreCheck(resp PreCheckResponse, requiresHITL bool) string {
-	if requiresHITL {
-		return "needs_approval"
-	}
+// preCheckVerdict derives the canonical verdict from the response ALONE, and the
+// OTel span and the decision record read it too, so the wire member and the
+// recorded verdict are one computation.
+func preCheckVerdict(resp PreCheckResponse) string {
 	if !resp.Approved {
-		return "deny"
+		return VerdictDeny
 	}
-	return "allow"
+	return VerdictAllow
 }
 
 // reasonsFromPreCheck collects the human-readable reasons attached to
 // a decision so they land in the OTel span's `decision.reasons`
-// attribute. Block reason is authoritative for deny/needs_approval;
+// attribute. Block reason is authoritative for a deny;
 // triggered policies double as a reason hint for allowed-with-policy
 // outcomes (e.g. redaction).
-func reasonsFromPreCheck(resp PreCheckResponse, policyResult *StaticPolicyResult, hitlEnqueue policyStepUpResult) []string {
+func reasonsFromPreCheck(resp PreCheckResponse, policyResult *StaticPolicyResult) []string {
 	var reasons []string
 	if resp.BlockReason != "" {
 		reasons = append(reasons, resp.BlockReason)
 	}
 	if policyResult != nil && policyResult.Reason != "" && policyResult.Reason != resp.BlockReason {
 		reasons = append(reasons, policyResult.Reason)
-	}
-	// #3509: on a require_approval hold, record whether a reviewable entry was
-	// actually raised. resp.BlockReason above is the pinned "require_approval"
-	// sentinel and says nothing about it, so without this the audit row for a
-	// hold nobody can review is indistinguishable from one a reviewer is
-	// already looking at.
-	switch {
-	case hitlEnqueue.RequestID != "":
-		reasons = append(reasons, policyStepUpReason(hitlEnqueue.RequestID))
-	case hitlEnqueue.Detail != "":
-		reasons = append(reasons, hitlEnqueue.Detail)
 	}
 	return reasons
 }
@@ -1474,14 +1384,13 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 
 // shouldPrefetchApprovedData reports whether the pre-check may execute the
 // caller's query against connectors and return the rows as approved_data.
-// #2867: this is allowed ONLY for a clean-approved request — not blocked, not
-// HITL-pending, and with no redaction owed. A blocked request must not run the
-// query at all (returning data on a deny leaks what the block withheld); a
-// HITL-pending request must not surface connector data before human approval;
-// an approved-with-redaction request skips the prefetch so raw PII is never
+// #2867: this is allowed ONLY for a clean-approved request: not blocked, and
+// with no redaction owed. A blocked request must not run the query at all
+// (returning data on a deny leaks what the block withheld); an
+// approved-with-redaction request skips the prefetch so raw PII is never
 // returned unredacted.
-func shouldPrefetchApprovedData(blocked, requiresHITL, requiresRedaction bool) bool {
-	return !blocked && !requiresHITL && !requiresRedaction
+func shouldPrefetchApprovedData(blocked, requiresRedaction bool) bool {
+	return !blocked && !requiresRedaction
 }
 
 // fetchApprovedData fetches data from MCP connectors based on policy-approved sources
@@ -1610,7 +1519,7 @@ func storeGatewayContext(db *sql.DB, contextID, clientID string, req PreCheckReq
 // written by recordGatewayPreCheckAudit at pre-check time; gateway_contexts.approved
 // remains as satellite detail for forensic joins. Re-deriving block from
 // `approved` here would also be wrong: a pre-check that returned approved=false
-// (blocked/HITL) never proceeds to the audit step anyway, so there is no second
+// (blocked) never proceeds to the audit step anyway, so there is no second
 // request to gate. Wiring the column would change behavior with no decision it
 // could correctly make — hence documented-as-superseded rather than read.
 func validateGatewayContext(db *sql.DB, contextID, clientID string) (bool, error) {
@@ -1826,8 +1735,8 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 // converges on the shared sharedpolicy.IsPIIPolicyCategory prefix predicate.
 
 // NOTE: checkHITLRequiredFromContext was REMOVED in Issue #1081 code review.
-// HITL enforcement is an ENTERPRISE-ONLY feature.
-// HITL is ONLY triggered by policy evaluation returning require_approval action.
+// The pre-check never holds for approval: its verdict is the anchored
+// engine's, which answers a CHALLENGE with a deny (#3895).
 // We do NOT trust client-provided context metadata (requires_hitl, eu_ai_act_article_14, etc.)
 // as that would allow:
 // 1. Any client to bypass licensing (HITL is Enterprise-only)

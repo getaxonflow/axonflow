@@ -168,7 +168,6 @@ func TestAuthorizeOrgOnlyCallSitesArePinned(t *testing.T) {
 	pinned := map[string]string{
 		"platform/orchestrator/planning/service.go":                 "plans: the by-id call sites thread a bare orgID string; GetPlanForExecution's signature is fixed by a call site outside this workstream's region of run.go, and plans.org_id has always been the plan tenancy key",
 		"platform/orchestrator/workflow_control/mock_repository.go": "mock list filter: mirrors the Postgres List predicate, which applies each tenancy dimension independently",
-		"platform/agent/policy_override_repository.go":              "policy_overrides: rows are keyed on org_id (mig 110 RLS key); the table's tenant_id is a legacy nullable scope-narrowing column, not an ownership key",
 		"platform/agent/hitl/service.go":                            "hitl_approval_queue: rejectCrossOrg keys on the request's org_id, the same key mig 110-era RLS and the #3048 R3 forgery guard use",
 		"ee/platform/agent/hitl/service.go":                         "enterprise copy of the above — kept in lockstep because ee/ overrides platform/ at Docker build",
 		"platform/orchestrator/unified_execution_handler.go":        "execution_history: the row HAS a reliable tenant_id, and the credential-scoped caller is still authorized on BOTH dimensions. The org-only form is reached only for a caller carrying the trusted X-Axonflow-Tenancy-Scope: org assertion (#3367), whose authority IS the org and which holds no credential id to compare: the row's tenant_id is the EXECUTING caller's Basic-auth username (mig 049 dropped the organizations FK for that reason; mig 092 calls it a deprecated alias of client_id), so comparing it to a portal session's display-default tenant 404'd every execution the session was entitled to open. Read paths only: the write path (CancelExecution) uses checkTenantOwnershipStrict and keeps the two-dimension compare",
@@ -210,16 +209,6 @@ func failOpenAllowlist() map[string]string {
 	return map[string]string{
 		"platform/orchestrator/cost/postgres_repository.go::GetBudgetsForScope": "enforcement plane, not an authorization boundary: admitting an unstamped budget row applies a DEPLOYMENT-GLOBAL spend cap to every tenant, which only ever tightens spend. Constraining it would silently disable those caps on upgrade. #3065's budget exposure is the by-id path (GetBudgetScoped / DeleteBudgetScoped / UpdateBudget), which is strict-equality and refuses an unbound caller.",
 		"platform/orchestrator/cost/postgres_repository.go::GetUsageForPeriod":  "the org/tenant arguments are DB-sourced, not request-sourced: Service.statusForBudget / checkBudgetsForScope pass budget.OrgID / budget.TenantID straight from a row GetBudgetsForScope selected, so the empty value is not caller-selectable here. The result is a scalar SUM used to evaluate a budget the caller was already authorized for; it discloses no rows and identifies no tenant.",
-
-		// #3065 R3 round 1: `(tenant_id = $n OR tenant_id IS NULL)` on
-		// policy_overrides is the ORG-LEVEL override selector, not a fail-open
-		// tenancy filter — an org-scoped override is stored with tenant_id
-		// NULL by design (PolicyOverrideRepository.Create), and every one of
-		// these reads runs inside WithOrgScope(scopeOrg), so RLS bounds the
-		// result to the caller's org before the tenant disjunct is evaluated.
-		// The disjunct widens WITHIN an org, never across one.
-		"platform/agent/mcp_richer_context.go::lookupActiveOverride":        "org-level override selector (tenant_id IS NULL is the org-scope form), inside WithOrgScope — widens within the caller's org, never across orgs. R3 round 2: the OTHER branch of this function ran the same predicate as a BARE read when the caller org was unknown, which on an owner-pool deployment resolved any org's override; that branch now returns no-override rather than querying, so this entry vouches only for the wrapped query.",
-		"platform/orchestrator/override_enforcement.go::FindActiveOverride": "same shape and same WithOrgScope wrap as lookupActiveOverride above",
 	}
 }
 

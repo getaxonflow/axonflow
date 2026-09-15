@@ -1,64 +1,48 @@
 # Per-Mode MCP Policy Configuration Examples
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 
-Demonstrates how to configure AxonFlow's static policy behavior per-mode using environment variables, with a focus on MCP connector policies.
 
-## What Are Configurable Static Policies?
+Demonstrates how AxonFlow's static policy actions are decided and changed, with a focus on MCP connector policies.
 
-AxonFlow ships with built-in static policies for common security threats: PII detection, SQL injection prevention, and dangerous query blocking. By default, these policies use sensible actions (e.g., PII is redacted, SQLi is blocked). However, you can override these defaults per-mode using environment variables on the AxonFlow Agent.
+## How Static Policy Actions Are Decided (v11)
 
-**Key concept:** Policy configuration is set on the **Agent side** via environment variables. Changing behavior requires restarting the AxonFlow Agent with different env vars. Each run of this example validates behavior for the **current** configuration.
+AxonFlow ships with built-in static policies for common security threats: PII detection, SQL injection detection, and dangerous command blocking. **The stored policy action decides** what happens when one matches. The shipped actions exercised by this example:
 
-## Environment Variable Precedence
+| Policy | Request phase | Response phase |
+|--------|---------------|----------------|
+| `sys_pii_ssn`, `sys_pii_credit_card` | `warn` | `redact` |
+| every `sys_sqli_*` | `warn` | `warn` |
 
-AxonFlow resolves policy actions using this precedence (highest to lowest):
+So out of the box a PII or SQL injection match is **approved with a warning** (the matched policy id is returned in `policies`); it is not blocked.
 
-1. **Mode-specific env var** (e.g., `MCP_PII_ACTION=block`) -- applies only to MCP mode
-2. **Global env var** (e.g., `PII_ACTION=block`) -- applies to all modes
-3. **Built-in defaults** -- `pii=redact`, `sqli=block`, `dangerous_query=block`
+**The only replacement for a stored action is an organization's recorded override.** Record one through the customer portal API (Enterprise, session auth, `sso:configure` permission):
 
-## MCP-Specific Environment Variables
+```bash
+# Block SQL injection for your organization
+curl -X PUT http://localhost:8082/api/v1/detection-posture/sqli \
+  -H "Content-Type: application/json" \
+  -b "axonflow_session=$SESSION" \
+  -d '{"action":"block"}'
+
+# List overrides, or delete one to return to the stored action
+curl -b "axonflow_session=$SESSION" http://localhost:8082/api/v1/detection-posture
+curl -X DELETE -b "axonflow_session=$SESSION" http://localhost:8082/api/v1/detection-posture/sqli
+```
+
+Categories: `pii` (every `pii-*` policy category), `sqli` (`security-sqli`), `dangerous_command` (`security-dangerous`), `dangerous_query`, `obligation_fallback`. Actions: `block`, `redact`, `warn`, `log`. Every write is audited, and agents pick up a change within `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` (default 60).
+
+The other supported way to change an outcome is to **change the policy's action**: edit a tenant policy, or create a system-policy override where your edition allows it (`POST /api/v1/static-policies/{id}/override`).
+
+> **Removed in v11:** `MCP_PII_ACTION`, `MCP_SQLI_ACTION`, `MCP_DANGEROUS_QUERY_ACTION`, `MCP_DANGEROUS_COMMAND_ACTION`, `PII_ACTION`, `SQLI_ACTION` and the other detection-action variables no longer set an action. A deployment that still sets one keeps running; the agent logs a boot `WARN` per variable and increments `axonflow_ignored_posture_env_total{name="..."}`.
+
+## MCP Environment Variables That Still Apply
+
+These are not action variables and are unchanged:
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `MCP_STATIC_POLICIES_ENABLED` | `true` / `false` | `true` | Enable/disable all static policies for MCP mode |
-| `MCP_PII_ACTION` | `block` / `redact` / `log` | `redact` | Action when PII is detected in MCP queries |
-| `MCP_SQLI_ACTION` | `block` / `warn` / `log` | `block` | Action when SQL injection patterns are detected |
-| `MCP_DANGEROUS_QUERY_ACTION` | `block` / `warn` / `log` | `block` | Action for dangerous queries (DROP, TRUNCATE, etc.) |
 | `MCP_STATIC_POLICIES_SKIP_CATEGORIES` | comma-separated | (none) | Categories to skip (e.g., `pii-email,pii-phone`) |
-
-## Docker Compose Configuration Examples
-
-### Default behavior (PII redacted, SQLi blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      # Defaults apply -- no overrides needed
-      AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY}
-```
-
-### Strict mode (all threats blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      MCP_PII_ACTION: block
-      MCP_SQLI_ACTION: block
-      MCP_DANGEROUS_QUERY_ACTION: block
-```
-
-### Permissive mode (log only, nothing blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      MCP_PII_ACTION: log
-      MCP_SQLI_ACTION: log
-      MCP_DANGEROUS_QUERY_ACTION: log
-```
 
 ### Skip specific categories:
 ```yaml
@@ -73,17 +57,17 @@ services:
 
 | Config | PII Query (SSN) | SQLi Query (UNION) | Safe Query |
 |--------|------------------|--------------------|------------|
-| **Default** | APPROVED (redacted) | BLOCKED | APPROVED |
-| `MCP_PII_ACTION=block` | BLOCKED | BLOCKED | APPROVED |
-| `MCP_PII_ACTION=log` | APPROVED (logged only) | BLOCKED | APPROVED |
-| `MCP_SQLI_ACTION=warn` | APPROVED (redacted) | APPROVED (warned) | APPROVED |
-| `MCP_SQLI_ACTION=log` | APPROVED (redacted) | APPROVED (logged) | APPROVED |
+| **Shipped actions, no override** | APPROVED (warned) | APPROVED (warned) | APPROVED |
+| Org override `pii=block` | BLOCKED | APPROVED (warned) | APPROVED |
+| Org override `sqli=block` | APPROVED (warned) | BLOCKED | APPROVED |
 | Policies disabled | APPROVED | APPROVED | APPROVED |
+
+This example validates the first row (and the last, when `MCP_STATIC_POLICIES_ENABLED=false`). With an override recorded it fails by design.
 
 ## Prerequisites
 
 ```bash
-# Start AxonFlow (with desired env vars)
+# Start AxonFlow
 cd /path/to/axonflow
 docker compose up -d
 
@@ -123,10 +107,10 @@ mvn compile exec:java
 
 1. The example sends test queries through the MCP connector endpoint
 2. Each query targets a specific policy category (PII, SQLi, safe)
-3. The response is validated against the **expected** behavior for the current Agent config
+3. The response is validated against the shipped stored actions: approved, with the matched `sys_pii_*` / `sys_sqli_*` policy id in `policies`
 4. Pass/fail results are reported with exit code 1 on any failure
 
-**Important:** This example reads `MCP_PII_ACTION` and `MCP_SQLI_ACTION` from the **client-side** environment to determine expected behavior. These must match what the Agent is configured with. If they differ, tests will report false failures.
+**Important:** The only action-related client-side input is the static-policies enable flag (`MCP_STATIC_POLICIES_ENABLED` for Java, `GATEWAY_STATIC_POLICIES_ENABLED` for Go, Python and TypeScript), which must match the Agent's config.
 
 ## Environment Variables (Client-Side)
 
@@ -135,8 +119,6 @@ mvn compile exec:java
 | `AXONFLOW_ENDPOINT` | `http://localhost:8080` | AxonFlow Agent endpoint |
 | `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
 | `AXONFLOW_CLIENT_SECRET` | (empty) | Client secret for authentication |
-| `MCP_PII_ACTION` | `redact` | Expected PII action (must match Agent config) |
-| `MCP_SQLI_ACTION` | `block` | Expected SQLi action (must match Agent config) |
 
 ## Related
 

@@ -129,11 +129,11 @@ scan() {
           # A YAML `name:` value is prose too - the lint job that RUNS this
           # guard names it "Lint - docker rm must remove anonymous volumes",
           # and a guard that flags its own job title can never pass.
-          if printf '%s' "$text" | LC_ALL=C grep -qE '^[[:space:]-]*name:'; then
+          if LC_ALL=C grep -qE '^[[:space:]-]*name:' <<<"$text"; then
             continue
           fi
           stripped=$(printf '%s' "$text" | sed -E 's@^[[:space:]]*(//|#)[[:space:]]*@@')
-          if printf '%s' "$stripped" | LC_ALL=C grep -qE '`docker rm -f`|docker rm -f. removes'; then
+          if LC_ALL=C grep -qE '`docker rm -f`|docker rm -f. removes' <<<"$stripped"; then
             continue
           fi
           # ANY `docker rm` - force or not - in either the shell form or the
@@ -142,7 +142,7 @@ scan() {
           # orphaning anything"; measured false: stop-then-rm succeeds and
           # orphans the volume identically (+1), and that exact sequence was
           # live in scripts/debugging/validate-all-migrations.sh.
-          if printf '%s' "$text" | LC_ALL=C grep -qE 'docker[[:space:]]+rm([[:space:]]|$)|"rm",'; then
+          if LC_ALL=C grep -qE 'docker[[:space:]]+rm([[:space:]]|$)|"rm",' <<<"$text"; then
             # ...one that already removes volumes is fine, in any flag order
             # or the long form. The -v must belong to the `docker rm` COMMAND:
             # the check is scoped to the segment after `docker rm` and before
@@ -153,7 +153,7 @@ scan() {
             rmseg=${text#*docker rm}
             rmseg=${rmseg%%|*}
             case "$text" in *'"rm",'*) rmseg=${text#*\"rm\",}; rmseg=${rmseg%%)*} ;; esac
-            if printf '%s' "$rmseg" | LC_ALL=C grep -qE '\-[a-zA-Z]*v|--volumes'; then
+            if LC_ALL=C grep -qE '\-[a-zA-Z]*v|--volumes' <<<"$rmseg"; then
               continue
             fi
             printf '%s:%s\n' "$f" "$hit"
@@ -187,7 +187,7 @@ scan_tmpfs() {
           # connectors integration doc carries `docker run` instructions in
           # `//` comments, and flagging an instruction that was already
           # corrected by hand would be a false positive.
-          printf '%s' "$text" | LC_ALL=C grep -qE '^[[:space:]]*(//|#)' && continue
+          LC_ALL=C grep -qE '^[[:space:]]*(//|#)' <<<"$text" && continue
           # A postgres SERVER only, and postgres ONLY on purpose: the rule
           # pairs an image with ITS declared data path, and this repo's
           # ephemeral servers are all postgres. Widening to mysql/mongo/redis
@@ -201,20 +201,20 @@ scan_tmpfs() {
           # a slash, so `postgres://` fails both branches - the bare form
           # because the next char is `:`, the tagged form because `/` is not a
           # tag character.
-          printf '%s' "$text" | LC_ALL=C grep -qE '(^|[[:space:]"\x27])postgres(:[A-Za-z0-9._-]+)?([[:space:]"\x27]|$)' || continue
-          printf '%s' "$text" | LC_ALL=C grep -qE '(^|[[:space:]])(psql|pg_dump|pg_restore|pg_isready)([[:space:]]|$)' && continue
+          LC_ALL=C grep -qE '(^|[[:space:]"\x27])postgres(:[A-Za-z0-9._-]+)?([[:space:]"\x27]|$)' <<<"$text" || continue
+          LC_ALL=C grep -qE '(^|[[:space:]])(psql|pg_dump|pg_restore|pg_isready)([[:space:]]|$)' <<<"$text" && continue
           # Detached servers only, either spelling - and `docker create` is
           # ALWAYS a server start (it exists to be started later), so it
           # needs no -d. R3 measured create+start leaking identically.
-          if printf '%s' "$text" | LC_ALL=C grep -qE 'docker[[:space:]]+run|"run",'; then
-            printf '%s' "$text" | LC_ALL=C grep -qE '(^|[[:space:]])(-d|--detach)([[:space:]]|$)|"-d"|"--detach"' || continue
+          if LC_ALL=C grep -qE 'docker[[:space:]]+run|"run",' <<<"$text"; then
+            LC_ALL=C grep -qE '(^|[[:space:]])(-d|--detach)([[:space:]]|$)|"-d"|"--detach"' <<<"$text" || continue
           fi
           # Already mounted at the data dir - fine, whatever the mount type.
-          printf '%s' "$text" | LC_ALL=C grep -q '/var/lib/postgresql/data' && continue
+          LC_ALL=C grep -q '/var/lib/postgresql/data' <<<"$text" && continue
           # ...and the ephemeral label must be present too, or orphaned
           # containers are unreapable by exact match. Enforcing it here is
           # what stops the NEXT site being tmpfs'd but unlabelled.
-          if printf '%s' "$text" | LC_ALL=C grep -q 'axonflow.test.ephemeral=1'; then
+          if LC_ALL=C grep -q 'axonflow.test.ephemeral=1' <<<"$text"; then
             printf '%s:%s [has the label but no data-dir mount]\n' "$f" "$hit"
           else
             printf '%s:%s\n' "$f" "$hit"

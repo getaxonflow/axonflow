@@ -1,0 +1,3316 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "derived_by": "platform/decision/activation TestTheShippedPostureArtifactIsDerivedFromTheCorpus",
+    "system_corpus_digest": "sha256:b1da767c46cf210612f5e8aafacf54be344e7def9fed9f34f814c5f8adcbc303",
+    "inputs": [
+      {
+        "path": "platform/decision/legacycompile/legacy_call_sites.tsv",
+        "sha256": "47a00921b31fb25405315ef7a647c8a170739d5919cc795fbe82999bf4f60a34"
+      },
+      {
+        "path": "platform/decision/pdp/system_corpus.json",
+        "sha256": "0ff800e6696d9166a90786f15b9010c94a7efae04abc9d998fed7136bc61651c"
+      },
+      {
+        "path": "platform/decision/registry/detectors_census.tsv",
+        "sha256": "d480155872ccb37eb0bdfa4070d70cd0c285462efd043be486a5800d40de6b85"
+      },
+      {
+        "path": "platform/decision/activation/dormant_template_variants.tsv",
+        "sha256": "6937f4520841a2bba58d5603fa7b34582e5852c6f0963375dc9bf772c4d941ff"
+      }
+    ],
+    "organization_scopes": "restricted: activation.Activate composes the organization template restricted to the scope (OrganizationTemplateForScope) while no document is active, and a published document's copy of a template policy binds only where the template's does, so a template policy is listed on the scopes where it binds"
+  },
+  "scopes": [
+    {
+      "scope": "cowork_ingest",
+      "kind": "gated",
+      "gated_by": "edition"
+    },
+    {
+      "scope": "decide",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "gateway_request",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "map",
+      "kind": "gated",
+      "gated_by": "configuration"
+    },
+    {
+      "scope": "mcp:request",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "mcp:response",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "openai_compatible",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "orchestrator_response",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "policy_simulation",
+      "kind": "operator-tool"
+    },
+    {
+      "scope": "policy_test",
+      "kind": "operator-tool"
+    },
+    {
+      "scope": "proxy_request",
+      "kind": "enforcement"
+    },
+    {
+      "scope": "wcp",
+      "kind": "enforcement"
+    }
+  ],
+  "system": [
+    {
+      "legacy_id": "sys_dyn_anomalous_access",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__anomalous__access",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "legacy_dead_condition_field"
+          ]
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (legacy_dead_condition_field)."
+    },
+    {
+      "legacy_id": "sys_dyn_debug_restrict",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__debug__restrict",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_dyn_expensive_query",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__expensive__query#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__expensive__query#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_dyn_financial",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__financial#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__financial#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "dynamic_redaction_ships_as_warn"
+        }
+      ],
+      "reason": "Its legacy redaction ships as a warn under the same id, because no scope it binds on can carry a redaction out and there a mandatory redaction would refuse every request it matches."
+    },
+    {
+      "legacy_id": "sys_dyn_gdpr",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__gdpr#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__gdpr#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "dynamic_redaction_ships_as_warn"
+        }
+      ],
+      "reason": "Its legacy redaction ships as a warn under the same id, because no scope it binds on can carry a redaction out and there a mandatory redaction would refuse every request it matches."
+    },
+    {
+      "legacy_id": "sys_dyn_high_risk_block",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__high__risk__block",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_dyn_hipaa",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__hipaa#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__hipaa#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "dynamic_redaction_ships_as_warn"
+        }
+      ],
+      "reason": "Its legacy redaction ships as a warn under the same id, because no scope it binds on can carry a redaction out and there a mandatory redaction would refuse every request it matches."
+    },
+    {
+      "legacy_id": "sys_dyn_llm_cost",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__llm__cost",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "legacy_dead_condition_field"
+          ]
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (legacy_dead_condition_field)."
+    },
+    {
+      "legacy_id": "sys_dyn_sensitive_data",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__sensitive__data",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "dynamic_redaction_ships_as_warn"
+        }
+      ],
+      "reason": "Its legacy redaction ships as a warn under the same id, because no scope it binds on can carry a redaction out and there a mandatory redaction would refuse every request it matches."
+    },
+    {
+      "legacy_id": "sys_dyn_tenant_isolation",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__dyn__tenant__isolation",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_media_biometric_log",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__biometric__log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_media_nsfw_block",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__nsfw__block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_media_pii_block",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__pii__block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_media_sensitive_doc_warn",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__sensitive__doc__warn#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__sensitive__doc__warn#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_media_violence_warn",
+      "source_table": "dynamic_policies",
+      "name": null,
+      "category": null,
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__violence__warn#1",
+          "part": 1,
+          "action": "warn",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        },
+        {
+          "policy_id": "corpus:dynamic_policies:sys__media__violence__warn#2",
+          "part": 2,
+          "action": "log",
+          "scopes": [
+            "map",
+            "policy_simulation",
+            "policy_test",
+            "wcp"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_admin_audit_log",
+      "source_table": "static_policies",
+      "name": "Audit Log Access",
+      "category": "security-admin",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__admin__audit__log:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__admin__audit__log:log",
+          "part": null,
+          "action": "log",
+          "scopes": []
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, log), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its log policy corpus:static_policies:sys__admin__audit__log:log is dormant: admitted on no scope; #3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup."
+    },
+    {
+      "legacy_id": "sys_admin_config_table",
+      "source_table": "static_policies",
+      "name": "Configuration Table Access",
+      "category": "security-admin",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__admin__config__table:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__admin__config__table:log",
+          "part": null,
+          "action": "log",
+          "scopes": []
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, log), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its log policy corpus:static_policies:sys__admin__config__table:log is dormant: admitted on no scope; #3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup."
+    },
+    {
+      "legacy_id": "sys_admin_info_schema",
+      "source_table": "static_policies",
+      "name": "Information Schema Access",
+      "category": "security-admin",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__admin__info__schema:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__admin__info__schema:log",
+          "part": null,
+          "action": "log",
+          "scopes": []
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, log), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its log policy corpus:static_policies:sys__admin__info__schema:log is dormant: admitted on no scope; #3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup."
+    },
+    {
+      "legacy_id": "sys_admin_users_table",
+      "source_table": "static_policies",
+      "name": "Users Table Access",
+      "category": "security-admin",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__admin__users__table:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__admin__users__table:log",
+          "part": null,
+          "action": "log",
+          "scopes": []
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, log), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its log policy corpus:static_policies:sys__admin__users__table:log is dormant: admitted on no scope; #3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup."
+    },
+    {
+      "legacy_id": "sys_dangerous_injection_bracket_marker",
+      "source_table": "static_policies",
+      "name": "Prompt Injection — Template/Bracket Marker",
+      "category": "security-dangerous",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__bracket__marker:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__bracket__marker:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "mcp:response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_dangerous_injection_override",
+      "source_table": "static_policies",
+      "name": "Prompt Injection — Instruction Override",
+      "category": "security-dangerous",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__override:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__override:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "mcp:response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_dangerous_injection_role_override",
+      "source_table": "static_policies",
+      "name": "Prompt Injection — Role Reassignment",
+      "category": "security-dangerous",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__role__override:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__role__override:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "mcp:response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_dangerous_injection_system_exfil",
+      "source_table": "static_policies",
+      "name": "Prompt Injection — System Prompt Exfiltration",
+      "category": "security-dangerous",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__system__exfil:block",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__injection__system__exfil:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "mcp:response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (block, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_aadhaar",
+      "source_table": "static_policies",
+      "name": "Indian Aadhaar Detection",
+      "category": "pii-india",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__aadhaar:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__aadhaar:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_bank_account",
+      "source_table": "static_policies",
+      "name": "Bank Account Detection",
+      "category": "pii-us",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__bank__account:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__bank__account:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_booking_ref",
+      "source_table": "static_policies",
+      "name": "Booking Reference Logging",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__booking__ref:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__booking__ref:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "plane_coerces_stored_action"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (plane_coerces_stored_action)."
+    },
+    {
+      "legacy_id": "sys_pii_credit_card",
+      "source_table": "static_policies",
+      "name": "Credit Card Number Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__credit__card:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__credit__card:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_dob",
+      "source_table": "static_policies",
+      "name": "Date of Birth Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__dob:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__dob:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_email",
+      "source_table": "static_policies",
+      "name": "Email Address Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__email:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__email:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_iban",
+      "source_table": "static_policies",
+      "name": "IBAN Detection",
+      "category": "pii-eu",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__iban:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__iban:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_indonesia_ktp",
+      "source_table": "static_policies",
+      "name": "Indonesian KTP Detection",
+      "category": "pii-indonesia",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__indonesia__ktp",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_pii_ip_address",
+      "source_table": "static_policies",
+      "name": "IP Address Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__ip__address:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__ip__address:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_pan",
+      "source_table": "static_policies",
+      "name": "Indian PAN Detection",
+      "category": "pii-india",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__pan:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__pan:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_passport",
+      "source_table": "static_policies",
+      "name": "Passport Number Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__passport:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__passport:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_phone",
+      "source_table": "static_policies",
+      "name": "Phone Number Detection",
+      "category": "pii-global",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__phone:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__phone:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_singapore_fin",
+      "source_table": "static_policies",
+      "name": "Singapore FIN Detection",
+      "category": "pii-singapore",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__fin:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__fin:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_singapore_nric",
+      "source_table": "static_policies",
+      "name": "Singapore NRIC Detection",
+      "category": "pii-singapore",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__nric:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__nric:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_singapore_phone",
+      "source_table": "static_policies",
+      "name": "Singapore Phone Detection",
+      "category": "pii-singapore",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__phone:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__phone:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_singapore_postal",
+      "source_table": "static_policies",
+      "name": "Singapore Postal Code Detection",
+      "category": "pii-singapore",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__postal:log",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__postal:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "plane_coerces_stored_action"
+          ]
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (log, redact), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (plane_coerces_stored_action)."
+    },
+    {
+      "legacy_id": "sys_pii_singapore_uen",
+      "source_table": "static_policies",
+      "name": "Singapore UEN Detection",
+      "category": "pii-singapore",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__uen:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__singapore__uen:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_pii_ssn",
+      "source_table": "static_policies",
+      "name": "SSN Detection",
+      "category": "pii-us",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__pii__ssn:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "cowork_ingest",
+            "mcp:response",
+            "orchestrator_response"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:sys__pii__ssn:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed."
+    },
+    {
+      "legacy_id": "sys_sensitive_api_key",
+      "source_table": "static_policies",
+      "name": "API Key Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__api__key",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sensitive_connection",
+      "source_table": "static_policies",
+      "name": "Connection String Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__connection",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sensitive_credentials",
+      "source_table": "static_policies",
+      "name": "Credentials Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__credentials",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sensitive_password",
+      "source_table": "static_policies",
+      "name": "Password Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__password",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sensitive_secret",
+      "source_table": "static_policies",
+      "name": "Secret Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__secret",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sensitive_token",
+      "source_table": "static_policies",
+      "name": "Token Detection",
+      "category": "sensitive-data",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sensitive__token",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "mcp:response",
+            "openai_compatible",
+            "orchestrator_response",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_admin_bypass",
+      "source_table": "static_policies",
+      "name": "Authentication Bypass",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__admin__bypass",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_alter_table",
+      "source_table": "static_policies",
+      "name": "ALTER TABLE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__alter__table",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_and_false",
+      "source_table": "static_policies",
+      "name": "AND False Condition",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__and__false",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_benchmark",
+      "source_table": "static_policies",
+      "name": "MySQL BENCHMARK Function",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__benchmark",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_char_function",
+      "source_table": "static_policies",
+      "name": "CHAR Function Obfuscation",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__char__function",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_concat_select",
+      "source_table": "static_policies",
+      "name": "CONCAT with Embedded SELECT",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__concat__select",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_convert_int",
+      "source_table": "static_policies",
+      "name": "CONVERT INT Injection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__convert__int",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_create_user",
+      "source_table": "static_policies",
+      "name": "CREATE USER Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__create__user",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_delete_no_where",
+      "source_table": "static_policies",
+      "name": "DELETE Without WHERE",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__delete__no__where",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_drop_database",
+      "source_table": "static_policies",
+      "name": "DROP DATABASE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__drop__database",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_drop_table",
+      "source_table": "static_policies",
+      "name": "DROP TABLE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__drop__table",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_extractvalue",
+      "source_table": "static_policies",
+      "name": "EXTRACTVALUE Function",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__extractvalue",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_grant",
+      "source_table": "static_policies",
+      "name": "GRANT Privileges Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__grant",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_hex_encoding",
+      "source_table": "static_policies",
+      "name": "Hex-Encoded Payload",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__hex__encoding",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_information_schema",
+      "source_table": "static_policies",
+      "name": "INFORMATION_SCHEMA Access",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__information__schema",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_inline_comment",
+      "source_table": "static_policies",
+      "name": "Inline Comment Injection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__inline__comment",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_into_outfile",
+      "source_table": "static_policies",
+      "name": "INTO OUTFILE/DUMPFILE",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__into__outfile",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_line_comment_dash",
+      "source_table": "static_policies",
+      "name": "Double-Dash Comment Injection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__line__comment__dash",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_line_comment_mysql",
+      "source_table": "static_policies",
+      "name": "MySQL Line Comment Injection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__line__comment__mysql",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_load_file",
+      "source_table": "static_policies",
+      "name": "LOAD_FILE Function",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__load__file",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_or_string",
+      "source_table": "static_policies",
+      "name": "OR String Condition",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__or__string",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_or_true",
+      "source_table": "static_policies",
+      "name": "OR True Condition",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__or__true",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_pg_sleep",
+      "source_table": "static_policies",
+      "name": "PostgreSQL pg_sleep",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__pg__sleep",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_revoke",
+      "source_table": "static_policies",
+      "name": "REVOKE Privileges Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__revoke",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_select_from",
+      "source_table": "static_policies",
+      "name": "SELECT FROM After Termination",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__select__from",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_sleep",
+      "source_table": "static_policies",
+      "name": "MySQL SLEEP Function",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__sleep",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_stacked_delete",
+      "source_table": "static_policies",
+      "name": "Stacked DELETE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__stacked__delete",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_stacked_drop",
+      "source_table": "static_policies",
+      "name": "Stacked DROP Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__stacked__drop",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_stacked_exec",
+      "source_table": "static_policies",
+      "name": "Stacked EXEC Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__stacked__exec",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_stacked_insert",
+      "source_table": "static_policies",
+      "name": "Stacked INSERT Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__stacked__insert",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_stacked_update",
+      "source_table": "static_policies",
+      "name": "Stacked UPDATE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__stacked__update",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_string_term_comment",
+      "source_table": "static_policies",
+      "name": "String-Terminator Comment Injection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__string__term__comment",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_sys_tables",
+      "source_table": "static_policies",
+      "name": "System Tables Access",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__sys__tables",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_truncate",
+      "source_table": "static_policies",
+      "name": "TRUNCATE TABLE Statement",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__truncate",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_union_injection",
+      "source_table": "static_policies",
+      "name": "UNION Injection After Termination",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__union__injection",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_union_select",
+      "source_table": "static_policies",
+      "name": "UNION SELECT Detection",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__union__select",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_updatexml",
+      "source_table": "static_policies",
+      "name": "UPDATEXML Function",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__updatexml",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    },
+    {
+      "legacy_id": "sys_sqli_waitfor",
+      "source_table": "static_policies",
+      "name": "SQL Server WAITFOR DELAY",
+      "category": "security-sqli",
+      "root": "system",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__sqli__waitfor",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [],
+      "reason": "Compiled with no recorded divergence."
+    }
+  ],
+  "organization": [
+    {
+      "legacy_id": "drop_table_prevention",
+      "source_table": "static_policies",
+      "name": "DROP TABLE Prevention",
+      "category": "dangerous_queries",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:drop__table__prevention",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "block",
+            "log"
+          ],
+          "chosen": "block"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to block and log on different planes and the corpus keeps block; it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "eu_ai_act_high_value_transaction",
+      "source_table": "static_policies",
+      "name": "High-Value Transaction Oversight",
+      "category": "compliance-euaiact",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__ai__act__high__value__transaction",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "eu_ai_act_pricing_fairness",
+      "source_table": "static_policies",
+      "name": "Pricing Fairness Validation",
+      "category": "compliance-euaiact",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__ai__act__pricing__fairness",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "eu_ai_act_sustainability_claims",
+      "source_table": "static_policies",
+      "name": "Sustainability Claims Verification",
+      "category": "compliance-euaiact",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__ai__act__sustainability__claims",
+          "part": null,
+          "action": "log",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "eu_gdpr_credit_card_detection",
+      "source_table": "static_policies",
+      "name": "Credit Card Number PII Detection",
+      "category": "pii_detection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__credit__card__detection:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": []
+        },
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__credit__card__detection:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "log",
+            "redact"
+          ],
+          "chosen": "redact"
+        },
+        {
+          "kind": "redaction_bound_by_discharge"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to log and redact on different planes and the corpus keeps redact; it redacts on the scopes that can carry a redaction out and warns on the scopes that cannot, where a mandatory redaction would refuse every request it matches; it compiles on the system root and its tier places it on the organization root; its redact policy corpus:static_policies:eu__gdpr__credit__card__detection:redact is dormant: admitted on no scope; becomes live if #4230 canonicalises the category."
+    },
+    {
+      "legacy_id": "eu_gdpr_cross_border_pii",
+      "source_table": "static_policies",
+      "name": "Cross-Border PII Minimization",
+      "category": "compliance-euaiact",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__cross__border__pii:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request"
+          ]
+        },
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__cross__border__pii:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "log",
+            "redact"
+          ],
+          "chosen": "redact"
+        },
+        {
+          "kind": "redaction_bound_by_discharge"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to log and redact on different planes and the corpus keeps redact; it redacts on the scopes that can carry a redaction out and warns on the scopes that cannot, where a mandatory redaction would refuse every request it matches; it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "eu_gdpr_loyalty_number_detection",
+      "source_table": "static_policies",
+      "name": "Loyalty Number PII Detection",
+      "category": "pii_detection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__loyalty__number__detection:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": []
+        },
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__loyalty__number__detection:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "log",
+            "redact"
+          ],
+          "chosen": "redact"
+        },
+        {
+          "kind": "redaction_bound_by_discharge"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to log and redact on different planes and the corpus keeps redact; it redacts on the scopes that can carry a redaction out and warns on the scopes that cannot, where a mandatory redaction would refuse every request it matches; it compiles on the system root and its tier places it on the organization root; its redact policy corpus:static_policies:eu__gdpr__loyalty__number__detection:redact is dormant: admitted on no scope; becomes live if #4230 canonicalises the category."
+    },
+    {
+      "legacy_id": "eu_gdpr_passport_detection",
+      "source_table": "static_policies",
+      "name": "Passport Number PII Detection",
+      "category": "pii_detection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__passport__detection:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": []
+        },
+        {
+          "policy_id": "corpus:static_policies:eu__gdpr__passport__detection:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "log",
+            "redact"
+          ],
+          "chosen": "redact"
+        },
+        {
+          "kind": "redaction_bound_by_discharge"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to log and redact on different planes and the corpus keeps redact; it redacts on the scopes that can carry a redaction out and warns on the scopes that cannot, where a mandatory redaction would refuse every request it matches; it compiles on the system root and its tier places it on the organization root; its redact policy corpus:static_policies:eu__gdpr__passport__detection:redact is dormant: admitted on no scope; becomes live if #4230 canonicalises the category."
+    },
+    {
+      "legacy_id": "pii_ssn_detection",
+      "source_table": "static_policies",
+      "name": "SSN Detection",
+      "category": "pii_detection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:pii__ssn__detection:redact",
+          "part": null,
+          "action": "redact",
+          "scopes": []
+        },
+        {
+          "policy_id": "corpus:static_policies:pii__ssn__detection:warn",
+          "part": null,
+          "action": "warn",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "log",
+            "redact"
+          ],
+          "chosen": "redact"
+        },
+        {
+          "kind": "redaction_bound_by_discharge"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its action differs by scope, so it ships as one policy per action (redact, warn), each kept only on the scopes listed; its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to log and redact on different planes and the corpus keeps redact; it redacts on the scopes that can carry a redaction out and warns on the scopes that cannot, where a mandatory redaction would refuse every request it matches; it compiles on the system root and its tier places it on the organization root; its redact policy corpus:static_policies:pii__ssn__detection:redact is dormant: admitted on no scope; becomes live if #4230 canonicalises the category."
+    },
+    {
+      "legacy_id": "sql_injection_or",
+      "source_table": "static_policies",
+      "name": "SQL Injection - OR Condition",
+      "category": "sql_injection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sql__injection__or",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "block",
+            "log"
+          ],
+          "chosen": "block"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to block and log on different planes and the corpus keeps block; it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sql_injection_union",
+      "source_table": "static_policies",
+      "name": "SQL Injection - UNION Attack",
+      "category": "sql_injection",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sql__injection__union",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "block",
+            "log"
+          ],
+          "chosen": "block"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to block and log on different planes and the corpus keeps block; it compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_agent_config",
+      "source_table": "static_policies",
+      "name": "Agent Config File Protection",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__agent__config",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_cloud_metadata",
+      "source_table": "static_policies",
+      "name": "Cloud Metadata Endpoint Access",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__cloud__metadata",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_credential_access",
+      "source_table": "static_policies",
+      "name": "Credential File Access",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__credential__access",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_destructive_fs",
+      "source_table": "static_policies",
+      "name": "Destructive Filesystem Operations",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__destructive__fs",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_eval_exec",
+      "source_table": "static_policies",
+      "name": "Dynamic Code Execution",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__eval__exec",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_internal_network",
+      "source_table": "static_policies",
+      "name": "Internal Network Access",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__internal__network",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_package_install",
+      "source_table": "static_policies",
+      "name": "Unauthorized Package Installation",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__package__install",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_path_traversal",
+      "source_table": "static_policies",
+      "name": "Path Traversal Detection",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__path__traversal",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_reverse_shell",
+      "source_table": "static_policies",
+      "name": "Reverse Shell Blocking",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__reverse__shell",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "sys_dangerous_shell_download",
+      "source_table": "static_policies",
+      "name": "Download and Execute",
+      "category": "security-dangerous",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:sys__dangerous__shell__download",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "decide",
+            "gateway_request",
+            "mcp:request",
+            "openai_compatible",
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "It compiles on the system root and its tier places it on the organization root."
+    },
+    {
+      "legacy_id": "truncate_prevention",
+      "source_table": "static_policies",
+      "name": "TRUNCATE Prevention",
+      "category": "dangerous_queries",
+      "root": "organization",
+      "policies": [
+        {
+          "policy_id": "corpus:static_policies:truncate__prevention",
+          "part": null,
+          "action": "block",
+          "scopes": [
+            "proxy_request"
+          ]
+        }
+      ],
+      "divergences": [
+        {
+          "kind": "legacy_defect_reproduced",
+          "reason_codes": [
+            "no_stored_action_for_phase"
+          ]
+        },
+        {
+          "kind": "plane_action_collapsed",
+          "legacy_actions": [
+            "block",
+            "log"
+          ],
+          "chosen": "block"
+        },
+        {
+          "kind": "root_disagrees_with_tier",
+          "from_root": "system",
+          "to_root": "organization"
+        }
+      ],
+      "reason": "Its compilation reproduces a recorded legacy defect (no_stored_action_for_phase); its legacy row compiles to block and log on different planes and the corpus keeps block; it compiles on the system root and its tier places it on the organization root."
+    }
+  ],
+  "not_represented": [
+    {
+      "legacy_id": "int_claude_hooks",
+      "source_table": "static_policies",
+      "name": "Claude Code Hooks Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_claude_settings",
+      "source_table": "static_policies",
+      "name": "Claude Code Settings Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_codex_settings",
+      "source_table": "static_policies",
+      "name": "Codex Plugin Settings Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_cursor_hooks",
+      "source_table": "static_policies",
+      "name": "Cursor Hooks Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_cursor_rules",
+      "source_table": "static_policies",
+      "name": "Cursor Rules Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_cursor_settings",
+      "source_table": "static_policies",
+      "name": "Cursor Settings Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_openclaw_agent_identity",
+      "source_table": "static_policies",
+      "name": "OpenClaw Agent Identity Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_openclaw_agent_memory",
+      "source_table": "static_policies",
+      "name": "OpenClaw Agent Memory Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    },
+    {
+      "legacy_id": "int_openclaw_config",
+      "source_table": "static_policies",
+      "name": "OpenClaw Config Protection",
+      "category": "security-dangerous",
+      "divergences": [
+        {
+          "kind": "row_not_represented",
+          "reason_codes": [
+            "row_excluded_by_legacy_predicate"
+          ]
+        }
+      ],
+      "reason": "No corpus policy is compiled from it (row_excluded_by_legacy_predicate)."
+    }
+  ],
+  "packs": []
+}

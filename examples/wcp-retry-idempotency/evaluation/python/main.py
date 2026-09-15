@@ -1,3 +1,5 @@
+# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 """Evaluation-tier retry-aware policy demo (Python SDK).
 
 Creates a dynamic policy via the policy REST API (the Python SDK doesn't

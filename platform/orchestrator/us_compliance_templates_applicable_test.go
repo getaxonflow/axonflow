@@ -7,7 +7,7 @@ package orchestrator
 // migrations/enterprise/139_us_compliance_templates.sql must be APPLICABLE.
 //
 // WHY THIS EXISTS. A policy template is not a document. It is the input to
-// POST /api/v1/templates/{id}/apply, which reads the template's `type`,
+// the template apply route, which reads the template's `type`,
 // `conditions` and `actions` and builds a policy from them. A template naming
 // a condition field, a condition operator, an action type or a policy type the
 // validators do not accept is a row that lists perfectly in the portal catalog

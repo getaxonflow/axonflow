@@ -38,9 +38,10 @@ import (
 const rutMCPRestOrg = "rut-mcprest-org"
 
 // setupRUTMCPRestTest layers the require_user_token resolver on top of the
-// #3472 whitelist fixture. The minted license carries no org_id claim, so
-// auth.OrgID resolves to "" and ResolveRequireUserToken substitutes
-// getDeploymentOrgID() -- pin ORG_ID so the fake reader has a known key.
+// #3472 whitelist fixture. The minted licence names the deployment's
+// organization, as a licence must (boot refuses one whose org_id differs from
+// ORG_ID), so ORG_ID is pinned FIRST: it is the organization the credential
+// authenticates to and the key the fake reader holds.
 func setupRUTMCPRestTest(t *testing.T) {
 	t.Helper()
 	t.Setenv("ORG_ID", rutMCPRestOrg)

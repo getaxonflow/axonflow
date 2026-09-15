@@ -5,7 +5,6 @@ package orchestrator
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,37 +51,9 @@ const (
 // Seeing another tenant's marker in a response IS the C3-5 disclosure.
 func gs3066PolicyName(tenant string) string { return "policy-of-" + tenant }
 
-// gs3066Engine is a policy engine whose answer DEPENDS ON THE TENANT it is
-// asked about, which is what makes the disclosure assertions real rather than
-// simulated: a response can only contain the victim's marker if the evaluation
-// actually ran under the victim's tenancy.
-type gs3066Engine struct {
-	captured []OrchestratorRequest
-}
-
-func (m *gs3066Engine) EvaluateDynamicPolicies(_ context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
-	m.captured = append(m.captured, req)
-	// Prefer the client tenancy — the surface C3-5's oracle ran on — and fall
-	// back to the user's, mirroring how the real engine reads both.
-	tenant := req.Client.TenantID
-	if tenant == "" {
-		tenant = req.User.TenantID
-	}
-	name := gs3066PolicyName(tenant)
-	return &PolicyEvaluationResult{
-		Allowed:         false, // block, so the handler returns without an LLM
-		AppliedPolicies: []string{name},
-		AppliedPoliciesDetail: []AppliedPolicyDetail{
-			{PolicyID: name, PolicyName: name, Action: "block", RiskLevel: "high"},
-		},
-	}
-}
-
-func (m *gs3066Engine) ListActivePolicies() []DynamicPolicy { return []DynamicPolicy{} }
-func (m *gs3066Engine) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
-	return []DynamicPolicy{}
-}
-func (m *gs3066Engine) IsHealthy() bool { return true }
+// The process tests read the request the plane decided through a recording
+// route fact source (withRecordingRouteFacts), since the anchored engine
+// decides the route (#4254).
 
 // gs3066ServedHandler builds the handler Run() serves — the #3068 gate inside
 // the CORS handler, wrapping a mux carrying the route under test.
@@ -297,8 +268,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	// The exact request the C3-5 finding describes: a valid credential, no
 	// gateway tenancy, and a body naming the victim.
 	t.Run("no stamped tenancy: refused, victim never evaluated", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process", nil, map[string]any{
 			"query":        "select 1",
@@ -321,8 +291,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	})
 
 	t.Run("half-stamped tenancy: refused", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process",
 			map[string]string{"X-Tenant-ID": gs3066AttackerTenat}, // no X-Org-ID
@@ -337,8 +306,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	})
 
 	t.Run("body names a foreign tenant: 403, victim never evaluated", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process", stamped, map[string]any{
 			"query":        "select 1",
@@ -358,8 +326,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	})
 
 	t.Run("body names a foreign org: 403", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process", stamped, map[string]any{
 			"query":        "select 1",
@@ -378,8 +345,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	// The positive direction. Without this the whole file would be satisfied by
 	// a handler that refuses everything.
 	t.Run("stamped, body silent: evaluated under the STAMPED tenancy", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process", stamped, map[string]any{
 			"query":        "select 1",
@@ -388,9 +354,9 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 		})
 
 		if rr.Code != http.StatusForbidden {
-			// 403 here is the POLICY block from the stub engine, not an
-			// authorization refusal — distinguished by the body below.
-			t.Fatalf("status = %d, want 403 from the blocking stub policy (body=%s)", rr.Code, rr.Body.String())
+			// 403 here is the engine double's deny, not an authorization
+			// refusal — distinguished by the request the plane decided, below.
+			t.Fatalf("status = %d, want 403 from the denying engine (body=%s)", rr.Code, rr.Body.String())
 		}
 		if len(engine.captured) != 1 {
 			t.Fatalf("policy engine called %d time(s), want 1", len(engine.captured))
@@ -404,9 +370,10 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 			t.Errorf("evaluated org = client %q / user %q, want %q on both",
 				got.Client.OrgID, got.User.OrgID, gs3066AttackerOrg)
 		}
-		if !strings.Contains(rr.Body.String(), gs3066PolicyName(gs3066AttackerTenat)) {
-			t.Errorf("caller's OWN policy set was not evaluated — response=%s", rr.Body.String())
-		}
+		// #4254: the policy set the plane decides from is selected by the
+		// organization asserted above, which the recorded request carries; the
+		// engine double's answer does not depend on the tenant, so the body
+		// check that read the stub engine's per-tenant marker has no subject left.
 	})
 
 	// user.org_id is deliberately NOT authorized (it is JWT-derived on the
@@ -414,8 +381,7 @@ func TestGoverned3066_ProcessBindsTenancyFromTheGatewayNotTheBody(t *testing.T) 
 	// but it must still be OVERWRITTEN, so a divergent value cannot reach the
 	// evaluator or a metrics row.
 	t.Run("body user.org_id is bound, not authorized", func(t *testing.T) {
-		engine := &gs3066Engine{}
-		dynamicPolicyEngine = engine
+		engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 		rr := gs3066Post(t, handler, "/api/v1/process", stamped, map[string]any{
 			"query":        "select 1",
@@ -570,5 +536,34 @@ func TestGoverned3066_GovernedRoutesAreCoveredByTheInternalProxyAuthGate(t *test
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("token-less POST /api/v1/process: status = %d, want 403 from requireInternalProxyAuth (body=%s)",
 			rr.Code, rr.Body.String())
+	}
+}
+
+// TestCarriesStampedTenancyReadsPresenceNotValue pins the distinction
+// resolveGovernedScope's log turns on. It moved here from the MCP
+// dynamic-policy endpoint's tests when v11 removed that endpoint.
+// r.Header.Get would collapse "stamped empty" into "absent".
+func TestCarriesStampedTenancyReadsPresenceNotValue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(*http.Request)
+		want  bool
+	}{
+		{"no headers", func(*http.Request) {}, false},
+		{"only unrelated headers", func(r *http.Request) { r.Header.Set("X-Request-Source", "mcp-agent") }, false},
+		{"tenant stamped empty", func(r *http.Request) { r.Header.Set("X-Tenant-ID", "") }, true},
+		{"org stamped empty", func(r *http.Request) { r.Header.Set("X-Org-ID", "") }, true},
+		{"both stamped", func(r *http.Request) {
+			r.Header.Set("X-Tenant-ID", "rte3066-tenant-a")
+			r.Header.Set("X-Org-ID", "rte3066-org-a")
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/process", nil)
+			tc.build(r)
+			if got := carriesStampedTenancy(r); got != tc.want {
+				t.Errorf("carriesStampedTenancy = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

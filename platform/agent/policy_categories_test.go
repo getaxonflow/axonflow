@@ -179,30 +179,6 @@ func TestAllOverrideActions(t *testing.T) {
 	}
 }
 
-func TestIsValidOverrideAction(t *testing.T) {
-	tests := []struct {
-		name   string
-		action OverrideAction
-		want   bool
-	}{
-		{"block is valid", ActionBlock, true},
-		{"require_approval is valid", ActionRequireApproval, true},
-		{"redact is valid", ActionRedact, true},
-		{"warn is valid", ActionWarn, true},
-		{"log is valid", ActionLog, true},
-		{"empty is invalid", OverrideAction(""), false},
-		{"unknown is invalid", OverrideAction("unknown"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsValidOverrideAction(tt.action); got != tt.want {
-				t.Errorf("IsValidOverrideAction(%s) = %v, want %v", tt.action, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestActionRestrictiveness(t *testing.T) {
 	tests := []struct {
 		name   string

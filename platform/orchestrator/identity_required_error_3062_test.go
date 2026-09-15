@@ -33,6 +33,7 @@ import (
 	"github.com/gorilla/mux"
 
 	sharedidentity "axonflow/platform/shared/identity"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // assertActionableIdentityError checks the properties that make the body
@@ -68,12 +69,7 @@ func errorBody(t *testing.T, rr *httptest.ResponseRecorder) string {
 }
 
 func createOverrideBody() string {
-	b, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "debugging a false positive",
-	})
-	return string(b)
+	return `{"policy_id":"pol-1","policy_type":"static","override_reason":"debugging a false positive"}`
 }
 
 // Gate OFF, marker present: this is the exact request the agent forwards when
@@ -244,24 +240,18 @@ func TestIdentityRequiredMessage_MarkedBranchMayAssertTheGateIsOff(t *testing.T)
 	assertActionableIdentityError(t, msg)
 }
 
-// The control that proves the diagnosis: with a per-user identity present —
-// which is exactly what the agent forwards once AXONFLOW_TRUST_IDENTITY_HEADERS=true
-// (platform/agent TestGateProxyIdentityHeaders_*) — the same request that 401'd
-// above creates the override and returns 201.
-//
-// Community mode + no proxy validator mirrors a default self-hosted stack,
-// which verifyAgentProxyAuth exempts; that is the deployment the issue was
-// reported on.
-func TestCreateOverride_WithIdentity_Creates201(t *testing.T) {
+// TestCreateOverride_WithIdentity_ReachesTheFreeze is the control for the 401
+// tests above: the SAME request with a per-user identity that survives the gate
+// passes every guard and is answered by the v11 freeze (#4252), 409
+// LEGACY_POLICY_WRITE_FROZEN, without reading the database. It is the remedy the
+// 401 names, working: the identity arrives, and what the caller learns next is
+// where the write went.
+func TestCreateOverride_WithIdentity_ReachesTheFreeze(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 
 	origValidator := proxyTokenValidator
 	proxyTokenValidator = nil
 	t.Cleanup(func() { proxyTokenValidator = origValidator })
-
-	origAudit := auditLogger
-	auditLogger = nil
-	t.Cleanup(func() { auditLogger = origAudit })
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -272,46 +262,23 @@ func TestCreateOverride_WithIdentity_Creates201(t *testing.T) {
 	usageDB = db
 	t.Cleanup(func() { usageDB = origDB })
 
-	// policyRiskAndOverride: tenant-scoped pass resolves the policy.
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
-		WithArgs("tenant-x").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT risk_level, allow_override, id::text").
-		WithArgs("pol-1", "tenant-x").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "id"}).
-			AddRow("medium", true, "11111111-1111-1111-1111-111111111111"))
-	mock.ExpectCommit()
-
-	// The override INSERT, org-scoped (mig 110 RLS key).
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
-		WithArgs("org-x").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("INSERT INTO policy_overrides").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
 	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(createOverrideBody()))
 	req.Header.Set("X-Tenant-ID", "tenant-x")
 	req.Header.Set("X-Org-ID", "org-x")
 	req.Header.Set("X-User-Email", "dev@corp.example") // survives a gate that is ON
-	// No marker: nothing was dropped.
 
 	rr := httptest.NewRecorder()
 	createOverrideHandler(rr, req)
 
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rr.Code, rr.Body.String())
 	}
-	var resp CreateOverrideResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode 201 body: %v (raw %s)", err, rr.Body.String())
+	if !strings.Contains(rr.Body.String(), legacyfreeze.ErrCode) {
+		t.Errorf("the 409 does not carry %s: %s", legacyfreeze.ErrCode, rr.Body.String())
 	}
-	if resp.ID == "" || resp.ExpiresAt.IsZero() {
-		t.Errorf("201 body must carry the created override, got %+v", resp)
-	}
-	// Both scoped statements must have run — a 201 with no INSERT would be a
-	// vacuous control.
+	// No expectation is queued: a handler that still looked the policy up or
+	// wrote a row would have reached sqlmock and answered 404 or 500 instead.
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet SQL expectations — the override was not actually written: %v", err)
+		t.Errorf("unexpected SQL expectations state: %v", err)
 	}
 }

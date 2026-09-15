@@ -9,7 +9,7 @@
   },
   "contract_schema_version": "2026-08-29",
   "source_schema_id": "https://schemas.getaxonflow.com/decision/contract-2026-08-29.schema.json",
-  "source_schema_sha256": "sha256:04f63f4d97215faa9fbf2b6a5152630f7310edbe47440b975d0f66ad63df811f",
+  "source_schema_sha256": "sha256:88ea4d2e9f0d2dcb54d1b3ccc67aea410b5dbe6d930219f7d1f90ac283697ef0",
   "enums": [
     {
       "name": "authzen_error_code",

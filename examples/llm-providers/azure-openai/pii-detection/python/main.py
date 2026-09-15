@@ -4,12 +4,21 @@ Azure OpenAI PII Detection Example
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 
-Demonstrates AxonFlow's PII detection and blocking with Azure OpenAI.
-Critical PII (SSN, credit cards, Aadhaar) is blocked; non-critical PII
-(email, phone) is detected but allowed through.
+Demonstrates AxonFlow's PII detection with Azure OpenAI.
+
+v11: the stored policy action decides. With the shipped actions and no
+organization override, PII is detected but NOT blocked: sys_pii_ssn and
+sys_pii_credit_card store warn for the request phase (and redact for the
+response phase), and the code-backed India PII detector only records unless an
+org override says otherwise. This example validates that outcome and checks
+the matched policy ids in policy_info.policies_evaluated.
+
+To block PII, record an organization override of category "pii" with action
+"block" (PUT /api/v1/detection-posture/pii on the customer portal API,
+Enterprise) or change the policy's action. PII_ACTION no longer sets an action.
 
 Prerequisites:
-  PII_ACTION=block docker compose up -d
+  docker compose up -d
 
 Run with: python main.py
 """
@@ -35,11 +44,6 @@ def main() -> int:
     print("AxonFlow PII Detection with Azure OpenAI - Python")
     print("=" * 60)
 
-    pii_action = os.getenv("PII_ACTION", "redact")
-    if pii_action != "block":
-        print(f"\n  WARNING: PII_ACTION={pii_action} (expected 'block')")
-        print("  Start AxonFlow with: PII_ACTION=block docker compose up -d\n")
-
     async_client = AxonFlow(
         endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "azure-pii-demo"),
@@ -47,8 +51,9 @@ def main() -> int:
     )
     client = SyncAxonFlow(async_client)
 
-    # Critical PII (SSN, CC, Aadhaar) should be blocked.
-    # Non-critical PII (PAN, email, phone) is detected but not blocked.
+    # With the shipped actions and no org override, nothing here is blocked.
+    # expect_policy names the policy that must be reported as detected, where the
+    # shipped row is known to match the query.
     test_cases = [
         {
             "name": "Safe Query (No PII)",
@@ -58,12 +63,14 @@ def main() -> int:
         {
             "name": "US Social Security Number",
             "query": "Process refund for customer with SSN 123-45-6789",
-            "should_block": True,
+            "should_block": False,
+            "expect_policy": "sys_pii_ssn",
         },
         {
             "name": "Credit Card Number",
             "query": "Charge card 4111-1111-1111-1111 for $99.99",
-            "should_block": True,
+            "should_block": False,
+            "expect_policy": "sys_pii_credit_card",
         },
         {
             "name": "India PAN Number",
@@ -73,7 +80,7 @@ def main() -> int:
         {
             "name": "India Aadhaar Number",
             "query": "Link Aadhaar 2345 6789 0123 to account",
-            "should_block": True,
+            "should_block": False,
         },
         {
             "name": "Email Address",
@@ -120,27 +127,25 @@ def main() -> int:
 
             if response.blocked and response.block_reason:
                 print(f"  Reason: {response.block_reason}")
+                print("  (not the shipped outcome: an org pii=block override or an edited policy action is in force)")
 
+            evaluated = []
             if response.policy_info and response.policy_info.policies_evaluated:
-                pii = [p for p in response.policy_info.policies_evaluated if p.startswith("sys_pii_")]
+                evaluated = response.policy_info.policies_evaluated
+                pii = [p for p in evaluated if p.startswith("sys_pii_")]
                 if pii:
-                    print(f"  Policies: {pii}")
+                    print(f"  Detected (warned): {pii}")
+
+            if tc.get("expect_policy"):
+                assert_check(
+                    tc["expect_policy"] in evaluated,
+                    f"{tc['name']}: {tc['expect_policy']} detected",
+                )
 
         except Exception as e:
-            error_msg = str(e)
-            blocked = True
-
-            if blocked == tc["should_block"]:
-                result = "PASS"
-                passed += 1
-                assert_check(True, f"{tc['name']}: correctly blocked via exception")
-            else:
-                result = "FAIL"
-                failed += 1
-                assert_check(False, f"{tc['name']}: blocked={blocked}, expected={tc['should_block']}")
-
-            print(f"  Blocked: {blocked} (expected: {tc['should_block']}) - {result}")
-            print(f"  Reason: {error_msg}")
+            # An exception is not a verdict: record it as a failure, never as a block.
+            failed += 1
+            assert_check(False, f"{tc['name']}: request failed: {e}")
 
     print()
     print("=" * 60)
@@ -150,14 +155,13 @@ def main() -> int:
     if not failures:
         print("ALL TESTS PASSED")
         print()
-        print("PII Detection validated:")
+        print("PII Detection validated (shipped actions, no org override):")
         print("  - Safe queries pass through")
-        print("  - SSN blocked (critical)")
-        print("  - Credit card blocked (critical)")
-        print("  - Aadhaar blocked (critical)")
-        print("  - PAN detected but not blocked")
-        print("  - Email detected but not blocked")
-        print("  - Phone detected but not blocked")
+        print("  - SSN detected and warned, not blocked")
+        print("  - Credit card detected and warned, not blocked")
+        print("  - Aadhaar, PAN, email, phone not blocked")
+        print()
+        print("To block PII, record an org override pii=block or change the policy action.")
         return 0
     else:
         print(f"{len(failures)} TEST(S) FAILED:")

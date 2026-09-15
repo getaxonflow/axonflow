@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"axonflow/platform/shared/corspolicy"
+	"axonflow/platform/shared/policypath"
 
 	"github.com/rs/cors"
 )
@@ -48,7 +49,7 @@ func resolveCORSOptions() cors.Options {
 		// the legacy policy paths, and the Link naming the successor that the
 		// public docs tell clients to follow, would be invisible to the
 		// largest class of caller there is.
-		ExposedHeaders: []string{"Deprecation", "Link"},
+		ExposedHeaders: policypath.DeprecationHeaders(),
 	})
 }
 

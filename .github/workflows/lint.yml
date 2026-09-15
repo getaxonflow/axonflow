@@ -223,158 +223,158 @@ jobs:
         run: bash scripts/lint-policy-table-choke-point.sh
 
   # =============================================================================
-  # Second org-column guard (#3334)
+  # Repository guards: ONE job, each guard its own step (W3-J, 2026-09-12)
   # =============================================================================
   #
-  # DELIBERATELY A SEPARATE JOB, not another step in golangci-lint above.
+  # These five guards ran as five jobs. Each is a sub-second bash / awk / python
+  # scan over the tree, but GitHub bills every hosted JOB rounded UP to a whole
+  # minute, so together they billed ~5.5 hosted minutes on every pull-request
+  # push (541 runs over 2026-09-08..11) for a few seconds of work. One job bills
+  # one or two.
   #
-  # golangci-lint runs on a pull_request only when detect-changes reports
-  # `go-code == 'true'`. This guard watches migrations/**/*.sql, and a PR that
-  # reintroduces the column adds ONE .sql file and touches no Go at all - so as
-  # a step up there it would be SKIPPED on precisely the pull request it exists
-  # to catch, and every board would still be green. A guard that does not run is
-  # a guard in name only.
+  # NOT A STEP IN golangci-lint, for the reason the first of them became its own
+  # job (#3334): golangci-lint runs on a pull request only when detect-changes
+  # reports go-code, and every guard here also scans .sql / .sh / workflow files.
+  # A PR that reintroduces an org column adds ONE .sql file and touches no Go, so
+  # inside a Go-gated job the guard would be SKIPPED on exactly the pull request
+  # it exists to catch. This job carries no `if:` and no path filter: the checks
+  # are sub-second, so gating them buys nothing and adds a way not to run.
   #
-  # It carries no `if:` and no path filter for the same reason: the check is a
-  # sub-second bash+awk scan, so gating it on paths buys nothing and can only
-  # introduce a way for it not to run.
+  # HOSTED, NOT THE FLEET. It feeds `Lint Summary`, a REQUIRED context, and on a
+  # pull request that touches no Go it is the only thing Lint Summary waits for,
+  # so the fleet's queue (p90 6.2 min on 2026-09-10) would land on the required
+  # path - #3795's incident.
   #
-  # Coverage: the workflow's pull_request trigger has no path filter, so this
-  # runs on every PR to main/develop, and merge_group re-runs it against the
-  # merged code. The repository ruleset ("Main Branch Protection") enforces
-  # pull_request + merge_queue, so no change reaches main by any other route;
-  # that is why lint.yml's push-event path filter is left alone rather than
-  # widened to migrations/**, which would drag a full four-module golangci run
-  # onto every migration-only push for no added coverage.
-  org-column-guard:
-    name: Lint - no second org column on the policy tables
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
+  # EVERY STEP RUNS `if: always()`, so one guard's red cannot hide another's; the
+  # default (a failed step skips the rest) would let the first finding mask every
+  # later one, which five separate jobs never did. `always()` rather than
+  # `!cancelled()` because the sync pre-flight REPLAYS this job on the staged
+  # mirror copy (scripts/ci/run-community-job-in-mirror.sh), and the replay
+  # evaluates no expression but success() and always(). Each self-test runs
+  # before its lint and is the reason a green lint means anything: it asserts
+  # BOTH directions over fixtures the script builds itself, so a green lint
+  # cannot also mean "the scanner silently matched nothing".
+  #
+  # Lint Summary holds this job to 'success' with no 'skipped' tolerance. A red
+  # step fails the job, and the step's name - each guard's old check name - says
+  # which one.
+  repository-guards:
+    name: Lint - repository guards
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 10: the five together measured under a minute; their old caps were 5 and 10.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # Runs first, and is the reason this job is trustworthy. It asserts BOTH
-      # directions over fixtures the script builds itself: that every
-      # reintroduction vector is rejected, and that every legitimate survivor
-      # (customers.organization_id, policy_evaluations.organization_id, a
-      # retype, a DROP, a comment, a *_down.sql) is accepted. Without it a
-      # green tick below is equally consistent with "nothing was reintroduced"
-      # and "the scanner silently matches nothing".
-      - name: Self-test the guard (both directions)
+      # #3334 - every reintroduction vector rejected; every legitimate survivor
+      # (customers.organization_id, policy_evaluations.organization_id, a retype,
+      # a DROP, a comment, a *_down.sql) accepted.
+      - name: Lint - no second org column on the policy tables (self-test)
+        if: always()
         run: bash scripts/lint-no-second-org-column.sh --self-test
-
-      - name: Lint no second org column (#3334)
+      - name: Lint - no second org column on the policy tables
+        if: always()
         run: bash scripts/lint-no-second-org-column.sh
 
-  # #3408 sibling: the HITL approval-queue single-writer invariant.
-  #
-  # Its own job with NO `if:`, deliberately. The obvious place - a step inside
-  # golangci-lint - is gated on `needs.detect-changes.outputs.go-code == 'true'`,
-  # and this guard's scan deliberately covers .sql / .sh / .ts / .py as well as
-  # Go. A PR that adds a direct INSERT in a migration seed carries no Go change
-  # and would have skipped the one job that could catch it.
-  hitl-queue-choke-point:
-    name: Lint - one writer for the HITL approval queue
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      # Runs first, and is the reason a green tick below means anything. It
-      # asserts BOTH directions over fixtures it builds itself, INCLUDING that
-      # the real repository scan actually finds the choke point rather than
-      # matching nothing at all.
-      - name: Self-test the guard (both directions)
+      # #3408 - the HITL approval-queue single-writer invariant. The scan covers
+      # .sql / .sh / .ts / .py as well as Go: a PR that adds a direct INSERT in a
+      # migration seed carries no Go change.
+      - name: Lint - one writer for the HITL approval queue (self-test)
+        if: always()
         run: bash scripts/lint-hitl-queue-choke-point.sh --self-test
-
-      - name: Lint one writer for hitl_approval_queue (#3408)
+      - name: Lint - one writer for the HITL approval queue
+        if: always()
         run: bash scripts/lint-hitl-queue-choke-point.sh
 
-  # Anonymous-volume leak ratchet.
-  #
-  # Same job shape and same reasoning as the guard above: no `if:`, because the
-  # offending line is as likely to be in a `.sh` runtime-e2e suite or a
-  # workflow file as in Go, and a Go-gated job would skip the PR class it
-  # exists to catch.
-  #
-  # The bug it ratchets: `postgres` and friends declare a VOLUME, so
-  # `docker rm -f` orphans an anonymous volume that nothing ever collects. It
-  # was fixed once, at ONE call site, and 39 siblings kept leaking - which is
-  # why this is a guard and not just a patch.
-  docker-rm-volumes:
-    name: Lint - docker rm must remove anonymous volumes
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      # Both directions, over fixtures it builds itself, plus an anti-vacuity
-      # assertion that the walk actually sees the tree rather than passing
-      # because it found no files.
-      - name: Self-test the guard (both directions)
+      # Anonymous-volume leak ratchet: `postgres` and friends declare a VOLUME,
+      # so `docker rm -f` orphans an anonymous volume nothing ever collects. It
+      # was fixed once, at ONE call site, and 39 siblings kept leaking.
+      - name: Lint - docker rm must remove anonymous volumes (self-test)
+        if: always()
         run: bash scripts/lint-docker-rm-removes-volumes.sh --self-test
-
-      - name: Lint docker rm removes anonymous volumes
+      - name: Lint - docker rm must remove anonymous volumes
+        if: always()
         run: bash scripts/lint-docker-rm-removes-volumes.sh
 
-  # #3715: a trap on INT/TERM whose handler does not exit returns to the script
-  # body, which then runs against the state it just tore down.
+      # #3715 - a trap on INT/TERM whose handler does not exit returns to the
+      # script body, which then runs against the state it just tore down.
+      - name: Lint - a trap on INT/TERM must exit (self-test)
+        if: always()
+        run: bash scripts/lint-trap-handlers-exit.sh --self-test
+      - name: Lint - a trap on INT/TERM must exit
+        if: always()
+        run: bash scripts/lint-trap-handlers-exit.sh
+
+      # #4072 - a pipe into a reader that exits early, under pipefail, reports a
+      # found match as missing: `printf ... | grep -q` SIGPIPEs the writer when
+      # grep leaves first, and pipefail makes that 141 the pipeline's status. The
+      # choke-point lint's own test runs here too: it carries #4072's planted
+      # positive, and nothing ran it before.
+      - name: Lint - no pipe into an early-exiting reader under pipefail (self-test)
+        if: always()
+        run: bash scripts/lint-pipefail-early-exit-reader_test.sh
+      - name: Lint - no pipe into an early-exiting reader under pipefail
+        if: always()
+        run: python3 scripts/lint-pipefail-early-exit-reader.py
+      - name: Self-test the policy-table choke point, including #4072's large-scan case
+        if: always()
+        run: bash scripts/lint-policy-table-choke-point_test.sh
+
+  # PRD v11 §5.8 (#3746) - NO REFERENCE TO THE OLD SYSTEM. A source census over
+  # the whole tree (Go, TypeScript, YAML, SQL, shell, docs) of the legacy
+  # verdict engines, the decision mode, the identity-compat mode, the legacy
+  # policy routes and the portal's legacy pages, derived from their declared
+  # sources at a pinned tree, the merge-base and the head. RATCHET: a reference
+  # present at the head and absent at the merge-base reds, and the count per
+  # taxon goes to the job summary so the release train watches it fall. The
+  # whole package runs (never a -run filter, which passes by matching nothing).
   #
-  # Same job shape and same reasoning as the two guards above: no `if:`. The
-  # class lives entirely in shell - an operator provisioning script, an e2e
-  # suite, a capture harness - and none of those PRs carry a Go change, so a
-  # Go-gated job would skip exactly the PRs it exists to catch.
-  trap-handlers-exit:
-    name: Lint - a trap on INT/TERM must exit
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  # ITS OWN JOB, NOT A repository-guards STEP. It sets up a Go toolchain, which
+  # makes it an expensive job and so draft-gated (draft_pr_cheap_tier_test.sh);
+  # Lint Summary holds repository-guards to 'success' with no skip, so a
+  # toolchain there would red every draft. On the fleet like golangci-lint, so
+  # it adds no hosted job (pr_board_hosted_cost_test.sh pins this workflow's
+  # hosted count). The repository conjunct skips it on the community mirror:
+  # the sync excludes the package, whose subject includes ee/ and runtime-e2e/.
+  #
+  # TAG DAY (v11.0.0 release runbook, step 0): AXONFLOW_REFCENSUS_REQUIRE_EMPTY
+  # is set below - zero references outside the exemptions, whatever the base
+  # held.
+  census:
+    name: Census - no new reference to the old system (PRD v11 §5.8)
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    if: github.event.pull_request.draft != true && github.repository == 'getaxonflow/axonflow-enterprise'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          # The census reads its pin and the merge-base from history.
+          fetch-depth: 0
 
-      # Both directions over fixtures it builds itself, including the three
-      # already-correct sites as the positive control and an anti-vacuity
-      # assertion that the walk really reaches the tree.
-      - name: Self-test the guard (both directions)
-        run: bash scripts/lint-trap-handlers-exit.sh --self-test
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
 
-      - name: Lint trap handlers exit (#3715)
-        run: bash scripts/lint-trap-handlers-exit.sh
+      - name: Census - no new reference to the old system (PRD v11 §5.8)
+        working-directory: platform
+        env:
+          AXONFLOW_REFCENSUS: "1"
+          # v11.0.0 tag day (RUNBOOK_PLATFORM_RELEASE step 0): the bar is empty.
+          AXONFLOW_REFCENSUS_REQUIRE_EMPTY: "1"
+          # The base is the main this change lands on. On a pull request the
+          # checkout is the merge commit, whose FIRST PARENT is that main;
+          # pull_request.base.sha is the PR's recorded base and goes stale
+          # (measured on #4145: cc1d16ed1 while its merge ref sat on 804b6ce56),
+          # which would charge a PR with every reference main gained since.
+          # Merge queue: the entry's base. Push: the commit itself.
+          AXONFLOW_REFCENSUS_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.merge_group.base_sha || github.sha }}
+        run: go test -count=1 -v ./testutil/refcensus/
 
   # #3649 - A PATH-FILTERED WORKFLOW CAN REPORT SUCCESS HAVING EXECUTED NOTHING.
   # At the v10.3.0 release head the community twin reported `success` with every
@@ -382,19 +382,26 @@ jobs:
   # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
   # The summary job above cannot carry this - it is a REQUIRED context and must
   # stay satisfiable on a docs-only change, so it accepts a skip. This job is
-  # NOT required: it counts the jobs that executed, writes the count to the step
-  # summary and goes RED when the count is zero, so "nothing ran" is a
-  # first-class outcome a citer sees on the checks list rather than a detail
-  # inside a green run. Red, not neutral: a skipped or neutral conclusion
-  # satisfies a required check exactly as success does (#3755), and a census
-  # that could be satisfied by not running would be the defect it counts.
-  # `needs` mirrors the summary's so the two report on one set. Pinned by
-  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  # NOT required: it counts the jobs that executed and writes the count to the
+  # step summary. Zero executed is reported either way, but the CONCLUSION now
+  # depends on why (#3649): RED when jobs were SELECTED and did not run, or when
+  # the detector broke or declared no output carrying a value; a NOTICE when it
+  # selected nothing or was itself skipped. It used to go red on ALL FIVE, which
+  # made every PR that touched no gated path carry a permanent red - and the red
+  # was then explained away with a sentence about drafts that the tool had never
+  # observed. Red where it means something, so it is not the noise a citer
+  # learns to skip past. Red rather than neutral in those cases: a skipped or
+  # neutral conclusion satisfies a required check exactly as success does
+  # (#3755), and a census that could be satisfied by not running would be the
+  # defect it counts. `needs` mirrors the summary's so the two report on one
+  # set. Pinned by tests/regression-test-required/
+  # census_red_only_when_jobs_were_expected_test.sh (which branch fires for
+  # which state) and zero_executed_jobs_are_visible_test.sh (the block's shape).
   tests-executed-census:
     name: Tests executed census
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes, trap-handlers-exit]
+    needs: [detect-changes, golangci-lint, repository-guards, census]
     if: always()
     steps:
       - name: Count the jobs that executed
@@ -413,29 +420,64 @@ jobs:
               print("::error::the census needs no job besides the change detector; it is counting nothing")
               sys.exit(1)
           executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
-          skipped = [j for j, r in substantive if r == "skipped"]
           verdict = f"{len(executed)} of {len(substantive)} jobs executed"
           lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
           lines += [f"| `{j}` | {r} |" for j, r in rows]
-          if not executed:
-              detector_result = dict(rows).get(detector, "absent")
-              if detector_result == "success":
-                  why = "the change detector ran and matched no relevant path"
-              elif detector_result == "skipped":
-                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
-              else:
-                  why = f"the change detector reported {detector_result}"
-              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
-                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
-                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not executed:
-              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+          def emit():
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as fh:
+                      fh.write("\n".join(lines) + "\n")
+              print("\n".join(lines))
+          if executed:
+              emit()
+              sys.exit(0)
+          # Nothing executed. Whether that is a finding depends on whether anything
+          # was EXPECTED to run, which only the change detector can say (#3649):
+          #   detector success + an output flag true  -> jobs were selected and did
+          #       not run: RED, the rollup beside this is green on a skip.
+          #   detector success + no flag true        -> nothing was SELECTED. What is
+          #       observed is that no output was the string `true` - NOT that the
+          #       globs matched nothing, and NOT that any skip was by design. Say
+          #       only that. Not evidence, not a failure: NOTICE.
+          #   detector success + no output with a VALUE -> a detector that declares no
+          #       output carrying a value cannot have selected anything: wiring broken,
+          #       not a path miss, and indistinguishable from the line above unless it is
+          #       separated here. RED.
+          #   detector skipped                       -> draft tier or an event this
+          #       workflow does not act on: nothing was asked to run: NOTICE.
+          #   detector failure/cancelled             -> the selector itself broke: RED.
+          detector_info = needs.get(detector) or {}
+          detector_result = detector_info.get("result", "absent")
+          outputs = detector_info.get("outputs") or {}
+          selected = sorted(k for k, v in outputs.items() if str(v).strip().lower() == "true")
+          sentence = ("**Nothing failed and nothing was tested.** Every job this workflow could run was skipped, "
+                      "so this run is NOT evidence about the code; a green summary beside it is a statement about "
+                      "mergeability only (#3649).")
+          if detector_result == "success" and not any(str(v).strip() for v in outputs.values()):
+              lines += ["", sentence, f"The change detector reported success but declared no output carrying a VALUE (outputs: {json.dumps(outputs)}). Every detector here declares at least one, and `dorny/paths-filter` always writes the literal `true` or `false` - so an absent map, or one whose values are all empty, is the detector's own wiring rather than a path that failed to match. The two causes its comment names, a renamed step id and a misspelled output key, yield the EMPTY STRING rather than a missing key, so testing for an absent map alone would have missed exactly the defects this branch is for. A run in this state would acquit itself on every PR forever."]
+              emit()
+              print(f"::error::{verdict}: the change detector succeeded but declared no output carrying a value; it cannot have selected anything, so this is a detector wiring defect rather than a path miss (#3649).")
               sys.exit(1)
+          if detector_result == "success" and not selected:
+              lines += ["", sentence, f"The change detector reported no selection flag true (outputs: {json.dumps(outputs)}). That is what was OBSERVED; whether its globs matched nothing, or matched something this workflow does not gate on, is not visible from here."]
+              emit()
+              print(f"::notice::{verdict}: the change detector reported no selection flag true; nothing was expected to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "skipped":
+              lines += ["", sentence, "The change detector itself was skipped (a draft-tier run, or an event this workflow does not act on), so nothing was asked to run."]
+              emit()
+              print(f"::notice::{verdict}: the change detector was skipped; nothing was asked to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "success":
+              lines += ["", sentence, f"The change detector SELECTED {', '.join('`'+s+'`' for s in selected)} and the jobs that carry them did not run - a skip-accepting rollup would call that green."]
+              emit()
+              print(f"::error::{verdict}: nothing failed and nothing was tested, but the change detector selected {', '.join(selected)} and no job ran. Jobs were expected and did not execute; this run proves nothing about the code (#3649).")
+              sys.exit(1)
+          lines += ["", sentence, f"The change detector reported `{detector_result}`, so nothing downstream could be selected."]
+          emit()
+          print(f"::error::{verdict}: nothing failed and nothing was tested, and the change detector reported {detector_result}; the selector itself did not run to a verdict (#3649).")
+          sys.exit(1)
           PY
 
   lint-summary:
@@ -451,7 +493,7 @@ jobs:
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes, trap-handlers-exit]
+    needs: [detect-changes, golangci-lint, repository-guards, census]
     if: always()
 
     steps:
@@ -462,17 +504,15 @@ jobs:
           echo "Results:"
           echo "  Detect Changes: ${{ needs.detect-changes.result }}"
           echo "  golangci-lint: ${{ needs.golangci-lint.result }}"
-          echo "  org-column-guard: ${{ needs.org-column-guard.result }}"
-          echo "  hitl-queue-choke-point: ${{ needs.hitl-queue-choke-point.result }}"
-          echo "  docker-rm-volumes: ${{ needs.docker-rm-volumes.result }}"
-          echo "  trap-handlers-exit: ${{ needs.trap-handlers-exit.result }}"
+          echo "  repository-guards: ${{ needs.repository-guards.result }}"
+          echo "  census: ${{ needs.census.result }}"
 
       - name: Fail if lint failed
         # Accept 'success' or 'skipped' (skipped = no Go code changes)
         # detect-changes is 'skipped' for push/workflow_dispatch events
         #
-        # org-column-guard, hitl-queue-choke-point, docker-rm-volumes and
-        # trap-handlers-exit are held to 'success'
+        # repository-guards (the five org-column, HITL-queue, docker-rm,
+        # trap-handler and pipefail guards, one step each) is held to 'success'
         # ONLY - no 'skipped' tolerance.
         # 'Lint Summary' is the REQUIRED status check (repository ruleset
         # "Main Branch Protection"); the individual jobs are not. So a job
@@ -481,13 +521,16 @@ jobs:
         # filed about, and documented at the top of migrations-gate.yml. The
         # guard carries no `if:`, so anything other than 'success' means it did
         # not run, which is itself the thing worth failing on.
+        #
+        # census (PRD v11 §5.8) is 'skipped' only where its own if: says so - a
+        # draft pull request (the cheap tier; it runs when the PR is marked
+        # ready) or the community mirror, which does not carry its package.
+        # Anything else must be 'success'.
         if: |
           needs.detect-changes.result == 'failure' ||
           (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped') ||
-          needs.org-column-guard.result != 'success' ||
-          needs.hitl-queue-choke-point.result != 'success' ||
-          needs.docker-rm-volumes.result != 'success' ||
-          needs.trap-handlers-exit.result != 'success'
+          needs.repository-guards.result != 'success' ||
+          (needs.census.result != 'success' && needs.census.result != 'skipped')
         run: |
           echo "❌ Linting failed - please fix issues before merging"
           exit 1

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -694,8 +697,14 @@ var precedence = map[Authorization]int{
 // supported. A meet that skipped either would be the place a requirement got
 // lost.
 type MeetOptions struct {
+	// PayloadLeaves is the action registry's declaration; it crosses into the
+	// tri-state through DeclaredPayloadLeaves, so an undeclared schema is
+	// unknown here exactly as it is at every other composition site.
 	PayloadLeaves []string
 	PEP           *PEPProfile
+	// Now is the evaluation instant, needed when a recomposed approval
+	// obligation carries expiry_seconds. See ComposeInput.Now.
+	Now time.Time
 }
 
 // MeetDecisions combines the per-entry decisions of a plural envelope into the
@@ -795,9 +804,10 @@ func MeetDecisions(in []*Decision, opts MeetOptions) (*Decision, error) {
 	// is the one thing a meet may never be.
 	recomposed := ComposeObligations(ComposeInput{
 		Obligations:    obligations,
-		Leaves:         opts.PayloadLeaves,
+		Payload:        DeclaredPayloadLeaves(opts.PayloadLeaves),
 		PEP:            opts.PEP,
 		ApprovalExpiry: expiry,
+		Now:            opts.Now,
 	})
 	if recomposed.Denied {
 		denied := *worst

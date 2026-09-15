@@ -147,8 +147,7 @@ func driveDecideRaw(t *testing.T, clientHeader string, body []byte, extra map[st
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}
-	rr := httptest.NewRecorder()
-	handleDecide(rr, req)
+	serveDecide(t, req)
 }
 
 // hostilePEPHandshakeHeaders are caller-supplied X-Axonflow-PEP-Handshake
@@ -280,11 +279,12 @@ func driveAuthZENForLabels(t *testing.T, clientHeader string, body []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, authzenHandlerPath, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	presentTestClientCredential(t, req)
 	if clientHeader != "" {
 		req.Header["X-Axonflow-Client"] = []string{clientHeader}
 	}
 	rr := httptest.NewRecorder()
-	handleAuthZENEvaluation(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleAuthZENEvaluation)).ServeHTTP(rr, req)
 }
 
 // hostileAuthZENEnvelopes are caller-supplied AuthZEN request bodies.

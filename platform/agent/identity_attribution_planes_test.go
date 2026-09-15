@@ -21,7 +21,6 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -105,9 +104,7 @@ func decideAttributionRequest(t *testing.T, withHeaders bool) *httptest.Response
 		req.Header.Set(identityHeaderUserEmail, "leader@corp.example")
 		req.Header.Set(identityHeaderSessionID, "sess-desktop-42")
 	}
-	rr := httptest.NewRecorder()
-	handleDecide(rr, req)
-	return rr
+	return serveDecide(t, req)
 }
 
 func TestDecide_Attribution_GateOn_HeadersLandInAuditRow(t *testing.T) {
@@ -233,22 +230,11 @@ func checkInputCleanAllow(t *testing.T, withHeaders bool) *httptest.ResponseReco
 	return w
 }
 
-func disablePolicyEngines(t *testing.T) {
-	t.Helper()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(origEngine) })
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval) })
-}
-
 func TestCheckInput_Attribution_GateOn_HeadersLandInAuditRow(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "true")
 	resetIdentityWarnLatches(t)
-	disablePolicyEngines(t)
 	mock := installUsageDBMock(t)
 
 	expectDecideWriterRow(mock, "leader@corp.example", "sess-desktop-42")
@@ -267,7 +253,6 @@ func TestCheckInput_Attribution_GateOff_ForgedHeadersDropped(t *testing.T) {
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "false")
 	resetIdentityWarnLatches(t)
-	disablePolicyEngines(t)
 	mock := installUsageDBMock(t)
 
 	// Pre-#2896 this plane trusted the header unconditionally — the forged
@@ -296,7 +281,6 @@ func TestCheckInput_VerdictInvariance_CleanAllow(t *testing.T) {
 		defer cleanup()
 		t.Setenv(sharedidentity.EnvVar, gate)
 		resetIdentityWarnLatches(t)
-		disablePolicyEngines(t)
 		installUsageDBMock(t)
 
 		w := checkInputCleanAllow(t, withHeaders)
@@ -354,6 +338,10 @@ func installBlockingStaticEngine(t *testing.T) sqlmock.Sqlmock {
 	// args. The argless expectations after them absorb the tenant passes
 	// (empty — the fixture has no tenant policies). ScopedTxPlumbing absorbs
 	// the BEGIN/set_config/COMMIT traffic.
+	//
+	// The system row stores action=block for the request phase, and that stored
+	// action decides (#3961: no override, no environment variable), so
+	// FORBIDDEN_MARKER blocks with nothing else configured.
 	for i := 0; i < 4; i++ {
 		mock.ExpectQuery(`SELECT\s+id, policy_id`).WithArgs("global").WillReturnRows(
 			policytest.SystemPolicyRow(sqlmock.NewRows(policyCols),
@@ -371,35 +359,7 @@ func installBlockingStaticEngine(t *testing.T) sqlmock.Sqlmock {
 	sharedpolicy.SetGlobalEngine(engine)
 	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(old) })
 
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval) })
-
 	return mock
-}
-
-// expectOverridableRicherContext adds the usageDB-side richer-context lookups
-// for the blocked request: policy meta (non-critical + overridable) and two
-// active-override lookups (buildRicherCheckInputBlock + the apply loop), both
-// keyed on the override-owner email the test expects the handler to use.
-func expectOverridableRicherContext(mock sqlmock.Sqlmock, ownerEmail, overrideID string) {
-	// #3048: the lookups now run inside WithOrgScope transactions; the
-	// override lookup resolves the policy UUID first, then reads the
-	// override row keyed by that UUID. Plumbing spares absorb the
-	// BEGIN/set_config/COMMIT/ROLLBACK traffic (unordered mocks).
-	policytest.ScopedTxPlumbing(mock, 12)
-	mock.ExpectQuery(`SELECT risk_level, allow_override, version`).
-		WithArgs("sys_test_block_marker").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
-			AddRow("low", true, 3))
-	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`SELECT sp\.id`).
-			WithArgs("sys_test_block_marker").
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("11111111-1111-1111-1111-111111111111"))
-		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs("11111111-1111-1111-1111-111111111111", ownerEmail, sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(overrideID))
-	}
 }
 
 func checkInputBlockedStatement(t *testing.T, forgedEmail string) *httptest.ResponseRecorder {
@@ -417,84 +377,6 @@ func checkInputBlockedStatement(t *testing.T, forgedEmail string) *httptest.Resp
 	w := httptest.NewRecorder()
 	mcpCheckInputHandler(w, req)
 	return w
-}
-
-// TestCheckInput_ForgedOverride_GateOff_BlockStands is the platform-side B4:
-// the attacker forges X-User-Email = a victim who HAS an active override on
-// the blocking policy. Pre-#2896 the unconditional header read handed the
-// attacker the victim's override — deny flipped to allow. With the gate OFF
-// the override lookup must key on the VALIDATED identity (which has no
-// override), so the block stands. If anyone re-wires the raw header into the
-// override scope, the seeded victim override applies and this test goes RED
-// on the 403 assertion.
-func TestCheckInput_ForgedOverride_GateOff_BlockStands(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	t.Setenv(sharedidentity.EnvVar, "false")
-	t.Setenv("MCP_SQLI_ACTION", "block")
-	resetIdentityWarnLatches(t)
-	installBlockingStaticEngine(t)
-
-	mock := installUsageDBMock(t)
-	mock.MatchExpectationsInOrder(false)
-	// Seed the VICTIM's active override. Correct code never queries with the
-	// forged email (it uses the validated identity → args don't match → no
-	// override found → block stands). The mutation this defends against —
-	// wiring the raw header back into the override scope — matches these
-	// expectations, flips the deny, and fails the 403 assert below.
-	expectOverridableRicherContext(mock, "victim@corp.example", "ovr-hijacked")
-	// The static-block audit write (writeExplainableAuditLog) — permissive.
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	w := checkInputBlockedStatement(t, "victim@corp.example")
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("SECURITY: forged X-User-Email flipped a deny with the trust gate OFF — got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	var resp MCPCheckInputResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Allowed {
-		t.Fatal("SECURITY: allowed=true on a forged-override attempt with the gate off")
-	}
-	if resp.OverrideExistingID != "" {
-		t.Errorf("SECURITY: victim's override id leaked to the forger: %q", resp.OverrideExistingID)
-	}
-}
-
-// TestCheckInput_Override_GateOn_TrustedIdentityScopesOverride documents the
-// deliberate ADR-044 behavior under the gate: a TRUSTED deployment's asserted
-// identity scopes the per-user session override, so the pre-#2896 plugin flow
-// (blocked → create override → retry → allowed) keeps working once the
-// operator sets the flag.
-func TestCheckInput_Override_GateOn_TrustedIdentityScopesOverride(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	t.Setenv(sharedidentity.EnvVar, "true")
-	t.Setenv("MCP_SQLI_ACTION", "block")
-	resetIdentityWarnLatches(t)
-	installBlockingStaticEngine(t)
-
-	mock := installUsageDBMock(t)
-	mock.MatchExpectationsInOrder(false)
-	expectOverridableRicherContext(mock, "dev@corp.example", "ovr-own")
-	// override_used audit event (writeOverrideUsedEvent) + satellite writes.
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	w := checkInputBlockedStatement(t, "dev@corp.example")
-	if w.Code != http.StatusOK {
-		t.Fatalf("trusted identity's own override must flip the block: got %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	var resp MCPCheckInputResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !resp.Allowed {
-		t.Error("expected allowed=true via the user's own ADR-044 override")
-	}
-	if resp.OverrideExistingID != "ovr-own" {
-		t.Errorf("override_existing_id: got %q, want ovr-own", resp.OverrideExistingID)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +413,6 @@ func TestCheckOutput_Attribution_GateOn_HeadersLandInAuditRow(t *testing.T) {
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "true")
 	resetIdentityWarnLatches(t)
-	disablePolicyEngines(t)
 	disableOutputCheckers(t)
 	mock := installUsageDBMock(t)
 
@@ -553,7 +434,6 @@ func TestCheckOutput_Attribution_GateOff_ForgedHeadersDropped(t *testing.T) {
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "false")
 	resetIdentityWarnLatches(t)
-	disablePolicyEngines(t)
 	disableOutputCheckers(t)
 	mock := installUsageDBMock(t)
 
@@ -574,7 +454,6 @@ func TestCheckOutput_VerdictInvariance(t *testing.T) {
 		defer cleanup()
 		t.Setenv(sharedidentity.EnvVar, gate)
 		resetIdentityWarnLatches(t)
-		disablePolicyEngines(t)
 		disableOutputCheckers(t)
 		installUsageDBMock(t)
 
@@ -682,51 +561,6 @@ func TestMCPServerIdentity_GateOn_TrustedHeadersHonored(t *testing.T) {
 // Shared pseudo-identity override guard (#2896 R3 HIGH findings 1+2)
 // ---------------------------------------------------------------------------
 
-// TestSharedPseudoIdentity_NeverAppliesOverride: an override row keyed to the
-// client-shared "mcp-client:<id>" pseudo-identity must never flip a deny —
-// it would be one caller's override applied to EVERY caller on the client.
-// The sqlmock seeds an override FOR the pseudo-identity; correct code
-// short-circuits before any lookup, so a mutation that removes the guard
-// matches the seeded row, flips the deny, and turns this red.
-func TestSharedPseudoIdentity_NeverAppliesOverride(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mockDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer mockDB.Close()
-	mock.MatchExpectationsInOrder(false)
-	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs(sqlmock.AnyArg(), "mcp-client:acme-corp", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ovr-shared"))
-	}
-
-	matches := []RicherPolicyMatch{{PolicyID: "sys_test_block_marker", RiskLevel: "low", AllowOverride: true}}
-	id, m, applied := applyOverrideToCheckInputBlock(context.Background(), mockDB, "t1", "mcp-client:acme-corp", matches)
-	if applied || id != "" || m != nil {
-		t.Fatalf("SECURITY: client-shared pseudo-identity applied an override (id=%q) — one caller's override would flip denies for the whole client", id)
-	}
-
-	// buildRicherCheckInputBlock must not offer the override CTA either —
-	// the plugin would create an override that can never legitimately apply.
-	mock2DB, mock2, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer mock2DB.Close()
-	mock2.MatchExpectationsInOrder(false)
-	mock2.ExpectQuery(`SELECT risk_level, allow_override, version`).
-		WithArgs("sys_test_block_marker").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).AddRow("low", true, 1))
-	_, _, overrideAvailable, overrideID := buildRicherCheckInputBlock(context.Background(), mock2DB, "t1", "mcp-client:acme-corp",
-		[]sharedpolicy.PolicyMatch{{PolicyID: "sys_test_block_marker"}})
-	if overrideAvailable != nil || overrideID != "" {
-		t.Errorf("client-shared pseudo-identity must get no override affordance, got available=%v id=%q", overrideAvailable, overrideID)
-	}
-}
-
 // TestMcpToolCreateOverride_SharedPseudoIdentityRefusedLoudly: creating an
 // override under the pseudo-identity must fail with an actionable error (not
 // silently create a row that never applies / applies client-wide).
@@ -755,7 +589,6 @@ func TestCheckInput_VerdictInvariance_BlockedPath(t *testing.T) {
 		cleanup := setupCommunityModeForTest(t)
 		defer cleanup()
 		t.Setenv(sharedidentity.EnvVar, "false")
-		t.Setenv("MCP_SQLI_ACTION", "block")
 		resetIdentityWarnLatches(t)
 		installBlockingStaticEngine(t)
 		mock := installUsageDBMock(t)
@@ -788,218 +621,6 @@ func TestCheckInput_VerdictInvariance_BlockedPath(t *testing.T) {
 // #2896 WS1b — shared-identity census: NO synthesized shared identity may
 // create, be offered, or apply a session override, on any plane.
 // ---------------------------------------------------------------------------
-
-// TestSharedIdentityCensus_NeverAppliesOverride runs the WS1 adversarial
-// shape over EVERY shared identity form in the census (identity_trust.go):
-// an override row seeded FOR the identity must not flip a deny and must not
-// surface an override affordance. Removing any census arm from
-// isClientSharedPseudoIdentity turns the corresponding case red.
-func TestSharedIdentityCensus_NeverAppliesOverride(t *testing.T) {
-	shared := []struct {
-		name  string
-		email string
-		mode  string // DEPLOYMENT_MODE for the case
-	}{
-		{"mcp-client pseudo", "mcp-client:acme-corp", "enterprise"},
-		{"enterprise no-token service fallback", "acme-corp@axonflow.local", "enterprise"},
-		{"audit-writer fallback", "unknown@axonflow.local", "enterprise"},
-		{"internal-service identity", "orchestrator@axonflow.internal", "enterprise"},
-		{"community-saas evaluator", "evaluator@try.getaxonflow.com", "community-saas"},
-		{"community synthetic asserted OUTSIDE community mode", "local-dev@axonflow.local", "enterprise"},
-	}
-	for _, tc := range shared {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("DEPLOYMENT_MODE", tc.mode)
-
-			mockDB, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatalf("sqlmock.New: %v", err)
-			}
-			defer mockDB.Close()
-			mock.MatchExpectationsInOrder(false)
-			for i := 0; i < 2; i++ {
-				mock.ExpectQuery(`SELECT po\.id`).
-					WithArgs(sqlmock.AnyArg(), tc.email, sqlmock.AnyArg()).
-					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ovr-shared"))
-			}
-			matches := []RicherPolicyMatch{{PolicyID: "sys_test_block_marker", RiskLevel: "low", AllowOverride: true}}
-			if id, _, applied := applyOverrideToCheckInputBlock(context.Background(), mockDB, "t1", tc.email, matches); applied {
-				t.Fatalf("SECURITY: shared identity %q applied an override (id=%q)", tc.email, id)
-			}
-
-			mock2DB, mock2, err := sqlmock.New()
-			if err != nil {
-				t.Fatalf("sqlmock.New: %v", err)
-			}
-			defer mock2DB.Close()
-			mock2.MatchExpectationsInOrder(false)
-			mock2.ExpectQuery(`SELECT risk_level, allow_override, version`).
-				WithArgs("sys_test_block_marker").
-				WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).AddRow("low", true, 1))
-			_, _, avail, existing := buildRicherCheckInputBlock(context.Background(), mock2DB, "t1", tc.email,
-				[]sharedpolicy.PolicyMatch{{PolicyID: "sys_test_block_marker"}})
-			if avail != nil || existing != "" {
-				t.Errorf("shared identity %q must get no override affordance (available=%v id=%q)", tc.email, avail, existing)
-			}
-		})
-	}
-
-	// The one documented exception: community mode's local-dev identity IS
-	// the (single) local developer — override behavior is preserved there.
-	t.Run("community local-dev keeps overrides IN community mode", func(t *testing.T) {
-		t.Setenv("DEPLOYMENT_MODE", "community")
-		mockDB, mock, err := sqlmock.New()
-		if err != nil {
-			t.Fatalf("sqlmock.New: %v", err)
-		}
-		defer mockDB.Close()
-		// #3048 scoped shape: resolve UUID, then read the override.
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app\.current_org_id'`).
-			WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectQuery(`SELECT sp\.id`).
-			WithArgs("sys_test_block_marker").
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-marker"))
-		mock.ExpectCommit()
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app\.current_org_id'`).
-			WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs("uuid-marker", "local-dev@axonflow.local", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ovr-local"))
-		mock.ExpectCommit()
-		matches := []RicherPolicyMatch{{PolicyID: "sys_test_block_marker", RiskLevel: "low", AllowOverride: true}}
-		id, _, applied := applyOverrideToCheckInputBlock(context.Background(), mockDB, "t1", "local-dev@axonflow.local", matches)
-		if !applied || id != "ovr-local" {
-			t.Errorf("community local-dev must keep ADR-044 overrides in community mode (applied=%v id=%q)", applied, id)
-		}
-	})
-}
-
-// installBlockingOutputEngine wires an engine whose single policy blocks on
-// the RESPONSE plane (category sensitive-data, phase both) so the MCP-server
-// check_output tool's static-block + override-apply branch runs.
-func installBlockingOutputEngine(t *testing.T) {
-	t.Helper()
-	t.Setenv("SENSITIVE_DATA_ACTION", "block")
-	mockDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	t.Cleanup(func() { _ = mockDB.Close() })
-	mock.MatchExpectationsInOrder(false)
-	policyCols := []string{
-		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata",
-	}
-	for i := 0; i < 6; i++ {
-		mock.ExpectQuery(`SELECT\s+id, policy_id`).WillReturnRows(
-			sqlmock.NewRows(policyCols).AddRow(
-				"22222222-2222-2222-2222-222222222222",
-				"sys_test_output_block",
-				"Test output blocking policy",
-				"sensitive-data",
-				"system",
-				"FORBIDDEN_MARKER",
-				"high",
-				nil,
-				"both",
-				"block",
-				"block",
-				true,
-				100,
-				"global",
-				nil,
-				[]byte(`{}`),
-			),
-		)
-	}
-	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
-	old := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(old) })
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval) })
-	origChecker := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalExfiltrationChecker(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalExfiltrationChecker(origChecker) })
-}
-
-// TestMcpToolCheckPolicy_SharedServiceIdentity_BlockStands drives the REAL
-// MCP-server check_policy tool (the check-input plane of the tools surface)
-// with a session attributed to the enterprise service fallback
-// "<client>@axonflow.local" and an override row seeded for that identity:
-// the deny must stand. Mirrors the WS1 pseudo-identity proof for the second
-// shared-identity family the R3 census added.
-func TestMcpToolCheckPolicy_SharedServiceIdentity_BlockStands(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	t.Setenv("DEPLOYMENT_MODE", "enterprise") // guard must treat @axonflow.local as shared
-	t.Setenv("MCP_SQLI_ACTION", "block")
-	installBlockingStaticEngine(t)
-	mock := installUsageDBMock(t)
-	mock.MatchExpectationsInOrder(false)
-	expectOverridableRicherContext(mock, "acme-corp@axonflow.local", "ovr-shared-svc")
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	resp, err := mcpToolCheckPolicy(context.Background(), &mcpSession{
-		tenantID: "t1", orgID: "o1", userID: "u1", userRole: "unknown", clientID: "acme-corp",
-		userEmail: "acme-corp@axonflow.local",
-	}, map[string]interface{}{
-		"connector_type": "postgres",
-		"statement":      "SELECT * FROM t WHERE FORBIDDEN_MARKER",
-	}, pepHandshakeResolution{})
-	if err != nil {
-		t.Fatalf("check_policy: %v", err)
-	}
-	m := resp.(map[string]interface{})
-	if allowed, _ := m["allowed"].(bool); allowed {
-		t.Fatalf("SECURITY: shared service identity flipped a check_policy deny: %v", m)
-	}
-	if id, ok := m["override_existing_id"].(string); ok && id != "" {
-		t.Errorf("shared service identity leaked an override id: %q", id)
-	}
-}
-
-// TestMcpToolCheckOutput_SharedServiceIdentity_BlockStands is the response
-// plane (check_output tool) proof for the same family.
-func TestMcpToolCheckOutput_SharedServiceIdentity_BlockStands(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	t.Setenv("DEPLOYMENT_MODE", "enterprise")
-	installBlockingOutputEngine(t)
-	mock := installUsageDBMock(t)
-	mock.MatchExpectationsInOrder(false)
-	mock.ExpectQuery(`SELECT risk_level, allow_override, version`).
-		WithArgs("sys_test_output_block").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).AddRow("low", true, 1))
-	for i := 0; i < 2; i++ {
-		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs(sqlmock.AnyArg(), "acme-corp@axonflow.local", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ovr-shared-svc"))
-	}
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
-		tenantID: "t1", orgID: "o1", userID: "u1", userRole: "unknown", clientID: "acme-corp",
-		userEmail: "acme-corp@axonflow.local",
-	}, map[string]interface{}{
-		"connector_type": "postgres",
-		"message":        "credentials: FORBIDDEN_MARKER leaked",
-	}, pepHandshakeResolution{})
-	if err != nil {
-		t.Fatalf("check_output: %v", err)
-	}
-	m := resp.(map[string]interface{})
-	if allowed, _ := m["allowed"].(bool); allowed {
-		t.Fatalf("SECURITY: shared service identity flipped a check_output deny: %v", m)
-	}
-	if id, ok := m["override_existing_id"].(string); ok && id != "" {
-		t.Errorf("shared service identity leaked an override id: %q", id)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // #2896 WS1c — agent proxy boundary: the per-user identity headers are trust-

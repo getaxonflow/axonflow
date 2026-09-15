@@ -43,9 +43,9 @@ func installMCPDetection(t *testing.T, enabled, wantEngine bool) {
 		// benign never-matching non-PII system row instead of an empty set.
 		for i := 0; i < 8; i++ {
 			mockSQL.ExpectQuery("SELECT").WillReturnRows(
-				policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
-				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
-				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
+				policytest.SystemPolicyRow(appendShippedGlobalRows(t, sqlmock.NewRows(policytest.LoaderCols()), nil, nil),
+					"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+					"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
 			)
 		}
 		policytest.ScopedTxPlumbing(mockSQL, 8)
@@ -72,7 +72,7 @@ func installMCPDetection(t *testing.T, enabled, wantEngine bool) {
 func TestEvaluateOutputPolicies_RedactionEvaluated_TrueWhenScanned(t *testing.T) {
 	installMCPDetection(t, true /* enabled */, true /* engine */)
 	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-		nil, "nothing sensitive here", nil, 0, false, true /* isGateway */, nil)
+		nil, "nothing sensitive here", nil, 0, false, true /* isGateway */)
 	if !out.RedactionEvaluated {
 		t.Error("detection on + live engine → RedactionEvaluated must be true, even on a clean response")
 	}
@@ -86,7 +86,7 @@ func TestEvaluateOutputPolicies_RedactionEvaluated_TrueWhenScanned(t *testing.T)
 func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenDetectionOff(t *testing.T) {
 	installMCPDetection(t, false /* disabled */, false)
 	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */, nil)
+		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */)
 	if out.RedactionEvaluated {
 		t.Error("detection disabled → RedactionEvaluated must be false so a PEP fails closed")
 	}
@@ -98,7 +98,7 @@ func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenDetectionOff(t *test
 func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenEngineNil(t *testing.T) {
 	installMCPDetection(t, true /* enabled */, false /* nil engine */)
 	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */, nil)
+		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */)
 	if out.RedactionEvaluated {
 		t.Error("detection on but engine nil → generic PII not scanned → RedactionEvaluated must be false (no fail-open)")
 	}

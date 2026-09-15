@@ -1,6 +1,10 @@
 # AxonFlow Agent
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 The authentication and static policy enforcement gateway of the AxonFlow platform that provides the first line of defense for enterprise AI governance.
+
+> **v11:** the static (system) policies this service evaluates are still what enforces by default, but they can no longer be written: `migrations/core/172` makes the legacy policy tables read-only to the application roles, and policy is authored through `/api/v1/typed-policies` (ADR-065), which the agent proxies to the orchestrator. Reads, the pattern test and per-policy overrides are unaffected. See the System Policies tag in [`agent-api.yaml`](../../docs/api/agent-api.yaml).
 
 ## Overview
 
@@ -56,7 +60,7 @@ The AxonFlow Agent is the security gateway that:
 ```
 GET  /health           - Health check endpoint
 GET  /policies/test    - Policy enforcement testing
-POST /api/policies/test - Test specific policy rules
+POST /api/policies/test - Preview /api/request's verdict (a dry run of its one pass)
 ```
 
 ### Request Processing  
@@ -157,7 +161,7 @@ open coverage.html
 # Test policy enforcement via API
 curl -X POST http://localhost:8080/api/policies/test \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM users; DROP TABLE users;", "user_email": "test@example.com"}'
+  -d '{"query": "SELECT * FROM users; DROP TABLE users;"}'
 ```
 
 **Test Quality Standards:**
@@ -235,11 +239,13 @@ curl -X POST localhost:8080/api/policies/test \
   -H "Content-Type: application/json" \
   -d '{
     "query": "SELECT * FROM users WHERE id = 1; DROP TABLE users;",
-    "user_email": "test@example.com",
     "request_type": "sql"
   }'
 
-# Expected response: Policy violation detected
+# Expected response: blocked, decided by the anchored engine ("engine": "anchored"),
+# with the deciding policy first in triggered_policies. The preview decides for
+# the calling credential and records nothing; since v11.0.0 a body user_email is
+# accepted and ignored (#4253).
 ```
 
 ## Monitoring & Operations

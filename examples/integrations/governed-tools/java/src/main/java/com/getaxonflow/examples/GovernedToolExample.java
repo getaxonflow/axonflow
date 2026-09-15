@@ -176,7 +176,7 @@ public class GovernedToolExample {
                 System.out.println("   Direct check: Input blocked (" + direct.getBlockReason() + ")");
             } else {
                 piiDetected = direct.getPoliciesEvaluated() > 0;
-                System.out.println("   Direct check: " + direct.getPoliciesEvaluated() + " policies evaluated (PII_ACTION may be warn/log)");
+                System.out.println("   Direct check: " + direct.getPoliciesEvaluated() + " policies evaluated (allowed: stored request action for SSN is warn)");
             }
             assertCheck(piiDetected, "PII in tool input was detected by policy engine");
         } catch (Exception e) {
@@ -241,7 +241,7 @@ public class GovernedToolExample {
             } else if (resultStr.contains("***") || resultStr.contains("REDACTED")) {
                 System.out.println("   GovernedTool: Output redacted");
             } else {
-                System.out.println("   GovernedTool: Output returned (PII_ACTION may be warn/log)");
+                System.out.println("   GovernedTool: Output returned without redaction");
             }
             String display = resultStr.length() > 200 ? resultStr.substring(0, 200) : resultStr;
             System.out.println("   Result: " + display);

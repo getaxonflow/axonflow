@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates how to list and filter static policies
 // using the AxonFlow Go SDK.
 //

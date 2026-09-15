@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 
 	sharedidentity "axonflow/platform/shared/identity"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // #2922 census-sibling scope tests: every cross-user read surface enumerated in
@@ -24,14 +26,13 @@ import (
 func TestListOverrides_NonAdmin_ScopedToCreatedBy(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		rows := sqlmock.NewRows([]string{
-			"id", "policy_id", "policy_type", "tenant_id",
-			"override_reason", "expires_at", "revoked_at", "created_at",
-		})
+		rows := overrideViewMockEmptyRows()
 		// tenant ($1), created_by scope ($2). No policy filter.
+		expectListOverridesScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE tenant_id = .+ AND LOWER\\(created_by\\) = .+").
 			WithArgs("tenant-x", "dev@acme.com").
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides", nil)
 		req.Header.Set("X-Tenant-ID", "tenant-x")
@@ -49,14 +50,13 @@ func TestListOverrides_NonAdmin_ScopedToCreatedBy(t *testing.T) {
 func TestListOverrides_Admin_FullTenant(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		rows := sqlmock.NewRows([]string{
-			"id", "policy_id", "policy_type", "tenant_id",
-			"override_reason", "expires_at", "revoked_at", "created_at",
-		})
+		rows := overrideViewMockEmptyRows()
 		// Only the tenant arg — no created_by scope predicate.
+		expectListOverridesScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE tenant_id = \\$1 AND revoked_at IS NULL").
 			WithArgs("tenant-x").
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides", nil)
 		req.Header.Set("X-Tenant-ID", "tenant-x")
@@ -93,12 +93,7 @@ func TestListOverrides_NoIdentity_EmptyNoQuery(t *testing.T) {
 func TestGetOverride_NonAdmin_OtherUsersOverrideIs404(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		rows := sqlmock.NewRows([]string{
-			"id", "policy_id", "policy_type", "tenant_id", "organization_id",
-			"tool_signature", "override_reason", "expires_at",
-			"created_by", "created_at", "revoked_at", "revoked_by",
-		}).AddRow("ov-1", "pol-1", "static", "tenant-x", nil, nil,
-			"reason", time.Now().Add(time.Hour), "someone-else@acme.com", time.Now(), nil, nil)
+		rows := overrideViewMockRowAs(t, "ov-1", "pol-1", "tenant-x", "someone-else@acme.com")
 		mock.ExpectBegin()
 		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
 			WithArgs("tenant-x").
@@ -125,12 +120,7 @@ func TestGetOverride_NonAdmin_OtherUsersOverrideIs404(t *testing.T) {
 func TestGetOverride_NonAdmin_OwnOverrideIs200(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		rows := sqlmock.NewRows([]string{
-			"id", "policy_id", "policy_type", "tenant_id", "organization_id",
-			"tool_signature", "override_reason", "expires_at",
-			"created_by", "created_at", "revoked_at", "revoked_by",
-		}).AddRow("ov-1", "pol-1", "static", "tenant-x", nil, nil,
-			"reason", time.Now().Add(time.Hour), "Dev@Acme.com", time.Now(), nil, nil)
+		rows := overrideViewMockRowAs(t, "ov-1", "pol-1", "tenant-x", "Dev@Acme.com")
 		mock.ExpectBegin()
 		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
 			WithArgs("tenant-x").
@@ -154,32 +144,37 @@ func TestGetOverride_NonAdmin_OwnOverrideIs200(t *testing.T) {
 	})
 }
 
-// --- revokeOverrideHandler: non-admin cannot revoke a colleague's override ---
+// --- revokeOverrideHandler: the freeze answers every caller alike ---
 
-func TestRevokeOverride_NonAdmin_OtherUsersOverrideIs404(t *testing.T) {
+// TestRevokeOverride_NonAdmin_OtherUsersOverride_SameFreezeNoOracle: before v11 a
+// non-admin revoking a colleague's override got 404 from the ownership scope.
+// From v11 (#4252) the route revokes nothing and reads nothing, so the caller
+// gets the freeze's 409 whatever the row is: another user's, the caller's own or
+// none at all. The two bodies are compared byte for byte, so the answer is not an
+// oracle for whether a row exists or whose it is.
+func TestRevokeOverride_NonAdmin_OtherUsersOverride_SameFreezeNoOracle(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectBegin()
-		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
-			WithArgs("tenant-x").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery("SELECT policy_id, created_by FROM policy_overrides").
-			WithArgs("ov-1", "tenant-x").
-			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "created_by"}).
-				AddRow("pol-1", "someone-else@acme.com"))
-		mock.ExpectCommit()
-		// No UPDATE expected — the scope guard rejects before any write.
-
-		req := httptest.NewRequest("DELETE", "/api/v1/overrides/ov-1", nil)
-		req = mux.SetURLVars(req, map[string]string{"id": "ov-1"})
-		req.Header.Set("X-Tenant-ID", "tenant-x")
-		req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
-		req.Header.Set(sharedidentity.HeaderUserRole, "developer")
-		req.Header.Set("X-User-Email", "dev@acme.com")
-		rr := httptest.NewRecorder()
-		revokeOverrideHandler(rr, req)
-		if rr.Code != 404 {
-			t.Fatalf("expected 404 when revoking another user's override, got %d: %s", rr.Code, rr.Body.String())
+		var bodies []string
+		for _, id := range []string{"ov-1", "ov-does-not-exist"} {
+			req := httptest.NewRequest("DELETE", "/", nil)
+			req = mux.SetURLVars(req, map[string]string{"id": id})
+			req.Header.Set("X-Tenant-ID", "tenant-x")
+			req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+			req.Header.Set(sharedidentity.HeaderUserRole, "developer")
+			req.Header.Set("X-User-Email", "dev@acme.com")
+			rr := httptest.NewRecorder()
+			revokeOverrideHandler(rr, req)
+			if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), legacyfreeze.ErrCode) {
+				t.Fatalf("%s: expected 409 %s, got %d: %s", id, legacyfreeze.ErrCode, rr.Code, rr.Body.String())
+			}
+			bodies = append(bodies, rr.Body.String())
+		}
+		if bodies[0] != bodies[1] {
+			t.Errorf("the freeze answered two ids differently, an existence oracle:\n  %s\n  %s", bodies[0], bodies[1])
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unexpected SQL state: %v", err)
 		}
 	})
 }

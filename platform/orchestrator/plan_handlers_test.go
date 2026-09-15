@@ -852,6 +852,14 @@ func TestResumePlanHandler(t *testing.T) {
 // for the given plan. Returns cleanup function.
 func setupResumeTestWCP(t *testing.T, planID string, executionMode string) func() {
 	t.Helper()
+	return setupResumeTestWCPWithWorkflow(t, planID, executionMode,
+		`{"apiVersion":"v1","kind":"Workflow","metadata":{"name":"test"},"spec":{"steps":[{"name":"step1","type":"llm-call"},{"name":"step2","type":"tool-call"}]}}`)
+}
+
+// setupResumeTestWCPWithWorkflow is setupResumeTestWCP over a given workflow
+// definition, so a test can resume a plan of any shape (#4254).
+func setupResumeTestWCPWithWorkflow(t *testing.T, planID, executionMode, workflowDef string) func() {
+	t.Helper()
 
 	oldPlanService := planService
 	oldWCPExecutor := mapWCPExecutor
@@ -866,7 +874,6 @@ func setupResumeTestWCP(t *testing.T, planID string, executionMode string) func(
 	planSvc := planning.NewService(planRepo)
 	planService = planSvc
 
-	workflowDef := `{"apiVersion":"v1","kind":"Workflow","metadata":{"name":"test"},"spec":{"steps":[{"name":"step1","type":"llm-call"},{"name":"step2","type":"tool-call"}]}}`
 	plan := &planning.Plan{
 		OrgID:              "org_1",
 		TenantID:           "tenant_1",
@@ -1870,6 +1877,11 @@ func (r *recordingMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, 
 		OrgID: orgID, TenantID: tenantID, WorkflowID: workflowID, StepID: stepID,
 		Status: status, ReviewerID: reviewerID, Comment: comment,
 	})
+}
+
+// StepMirrorExpiry reports no queue row, the state these tests stand for.
+func (r *recordingMirrorResolver) StepMirrorExpiry(context.Context, string, string, string, string) (time.Time, bool, bool, error) {
+	return time.Time{}, false, false, nil
 }
 
 func (r *recordingMirrorResolver) snapshot() []mirrorResolution {

@@ -186,9 +186,9 @@ async def test_pii_in_input_detected(
         pii_detected = True
         print(f"   Input blocked: {direct.block_reason}")
     elif direct.policy_info and direct.policy_info.policies_evaluated:
-        # PII_ACTION=redact/warn/log: not blocked but policies were evaluated
+        # Not blocked: the stored request action for SSN is warn
         policies = direct.policy_info.policies_evaluated
-        print(f"   Input allowed with {policies} policies evaluated (PII_ACTION may be redact/warn/log)")
+        print(f"   Input allowed with {policies} policies evaluated (stored request action for SSN is warn)")
         pii_detected = policies > 0
     else:
         print(f"   Input allowed, policies_evaluated={direct.policies_evaluated}")

@@ -87,10 +87,15 @@ ERROR_CHECK=$(echo "$BODY" | python3 -c "import sys,json; print('no_error' if js
 assert_eq "$ERROR_CHECK" "no_error" "no JSON-RPC error on clean call"
 
 # -------------------------------------------------------------------
-# Test 2: SQLi in arguments -> deny, blocked before reaching mock
+# Test 2: SQLi in arguments -> allow (stored action warn), forwarded
+#
+# v11: the stored policy action decides; environment variables no longer set
+# detection actions. Every shipped sys_sqli_* row stores action_request=warn,
+# so the call is allowed and recorded. An organization sqli=block override or
+# a policy action change turns it into a deny.
 # -------------------------------------------------------------------
 echo ""
-echo "Test 2: SQL injection in tool arguments"
+echo "Test 2: SQL injection in tool arguments (expect allow: stored action is warn)"
 COUNT_BEFORE=$(curl -sf "$MOCK_MCP_URL/request-count" | python3 -c "import sys,json; print(json.load(sys.stdin)['count'])")
 
 RESP=$(curl -sf -w "\n%{http_code}" -H "Content-Type: application/json" "$ADAPTER_URL" -d '{
@@ -105,37 +110,23 @@ RESP=$(curl -sf -w "\n%{http_code}" -H "Content-Type: application/json" "$ADAPTE
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 
-assert_eq "$HTTP_CODE" "200" "HTTP 200 (JSON-RPC error, not HTTP error)"
+assert_eq "$HTTP_CODE" "200" "HTTP 200 on SQLi tool call"
 
 HAS_ERROR=$(echo "$BODY" | python3 -c "import sys,json; r=json.load(sys.stdin); print('yes' if r.get('error') else 'no')")
-assert_eq "$HAS_ERROR" "yes" "JSON-RPC error present on SQLi"
-
-ERROR_CODE=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['error']['code'])")
-assert_eq "$ERROR_CODE" "-32001" "JSON-RPC error code -32001 (policy deny)"
-
-TRACE_IN_BODY=$(echo "$BODY" | python3 -c "
-import sys,json
-r = json.load(sys.stdin)
-data = r.get('error',{}).get('data')
-if data:
-    if isinstance(data, str):
-        d = json.loads(data)
-    else:
-        d = data
-    print(d.get('trace_id',''))
-else:
-    print('')
-")
-assert_not_empty "$TRACE_IN_BODY" "trace_id in JSON-RPC error data"
+assert_eq "$HAS_ERROR" "no" "no JSON-RPC error on SQLi (warn does not deny)"
 
 COUNT_AFTER=$(curl -sf "$MOCK_MCP_URL/request-count" | python3 -c "import sys,json; print(json.load(sys.stdin)['count'])")
-assert_eq "$COUNT_AFTER" "$COUNT_BEFORE" "mock MCP request count unchanged (blocked before reaching server)"
+if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then
+  pass "SQLi tool call forwarded to mock MCP server (count $COUNT_BEFORE->$COUNT_AFTER)"
+else
+  fail "SQLi tool call should reach mock MCP server (count $COUNT_BEFORE->$COUNT_AFTER)"
+fi
 
 # -------------------------------------------------------------------
-# Test 3: PII (SSN) in arguments -> deny
+# Test 3: PII (SSN) in arguments -> allow (sys_pii_ssn stores action_request=warn)
 # -------------------------------------------------------------------
 echo ""
-echo "Test 3: PII (SSN) in tool arguments"
+echo "Test 3: PII (SSN) in tool arguments (expect allow: stored action is warn)"
 RESP=$(curl -sf -w "\n%{http_code}" -H "Content-Type: application/json" "$ADAPTER_URL" -d '{
   "jsonrpc": "2.0",
   "id": 3,
@@ -150,7 +141,7 @@ BODY=$(echo "$RESP" | sed '$d')
 
 assert_eq "$HTTP_CODE" "200" "HTTP 200 on PII test"
 HAS_ERROR=$(echo "$BODY" | python3 -c "import sys,json; r=json.load(sys.stdin); print('yes' if r.get('error') else 'no')")
-assert_eq "$HAS_ERROR" "yes" "JSON-RPC error present on PII"
+assert_eq "$HAS_ERROR" "no" "no JSON-RPC error on PII (warn does not deny)"
 
 # -------------------------------------------------------------------
 # Test 4: trace_id in all responses (check X-Trace-Id header)
@@ -170,23 +161,48 @@ TRACE_HEADER=$(echo "$HEADERS" | grep -i "x-trace-id" | tr -d '\r' | head -1)
 assert_not_empty "$TRACE_HEADER" "X-Trace-Id header present on allow response"
 
 # -------------------------------------------------------------------
-# Test 5: JSON-RPC error shape on deny (not bare HTTP 403)
+# Test 5: Destructive command -> deny; JSON-RPC error shape (not bare HTTP 403)
+#
+# sys_dangerous_destructive_fs stores action_request=block, so the Decision
+# API denies and the call never reaches the mock MCP server.
 # -------------------------------------------------------------------
 echo ""
-echo "Test 5: JSON-RPC error shape validation"
+echo "Test 5: Destructive command in tool arguments (expect deny)"
+COUNT_BEFORE=$(curl -sf "$MOCK_MCP_URL/request-count" | python3 -c "import sys,json; print(json.load(sys.stdin)['count'])")
 RESP=$(curl -sf -w "\n%{http_code}" -H "Content-Type: application/json" "$ADAPTER_URL" -d '{
   "jsonrpc": "2.0",
   "id": 5,
   "method": "tools/call",
   "params": {
     "name": "payments.process_refund",
-    "arguments": {"transaction_id": "TXN-001", "amount": 999, "reason": "DROP TABLE transactions; --"}
+    "arguments": {"transaction_id": "TXN-001", "amount": 999, "reason": "cleanup: rm -rf / --no-preserve-root"}
   }
 }')
 HTTP_CODE=$(echo "$RESP" | tail -1)
 BODY=$(echo "$RESP" | sed '$d')
 
 assert_eq "$HTTP_CODE" "200" "deny returns HTTP 200 (not 403)"
+
+HAS_ERROR=$(echo "$BODY" | python3 -c "import sys,json; r=json.load(sys.stdin); print('yes' if r.get('error') else 'no')")
+assert_eq "$HAS_ERROR" "yes" "JSON-RPC error present on destructive command"
+
+ERROR_CODE=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('code',''))")
+assert_eq "$ERROR_CODE" "-32001" "JSON-RPC error code -32001 (policy deny)"
+
+TRACE_IN_BODY=$(echo "$BODY" | python3 -c "
+import sys,json
+r = json.load(sys.stdin)
+data = r.get('error',{}).get('data')
+if data:
+    if isinstance(data, str):
+        d = json.loads(data)
+    else:
+        d = data
+    print(d.get('trace_id',''))
+else:
+    print('')
+")
+assert_not_empty "$TRACE_IN_BODY" "trace_id in JSON-RPC error data"
 
 JSONRPC_VER=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('jsonrpc',''))")
 assert_eq "$JSONRPC_VER" "2.0" "response has jsonrpc: 2.0"
@@ -196,6 +212,9 @@ assert_eq "$HAS_ID" "yes" "response echoes request id"
 
 ERROR_MSG=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('message',''))")
 assert_not_empty "$ERROR_MSG" "error.message is non-empty"
+
+COUNT_AFTER=$(curl -sf "$MOCK_MCP_URL/request-count" | python3 -c "import sys,json; print(json.load(sys.stdin)['count'])")
+assert_eq "$COUNT_AFTER" "$COUNT_BEFORE" "mock MCP request count unchanged (blocked before reaching server)"
 
 # -------------------------------------------------------------------
 # Test 6: Non-intercepted method (tools/list) passes through

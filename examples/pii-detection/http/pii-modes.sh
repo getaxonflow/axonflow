@@ -1,11 +1,10 @@
 #!/bin/bash
 # AxonFlow PII Detection Modes — Request + Response Side
 #
-# Tests PII detection across all PII_ACTION modes:
-#   - redact (default): PII detected, flagged for redaction
-#   - block: PII detected, request rejected
-#   - warn: PII detected, logged but not blocked or redacted
-#   - log: PII detected, silently logged
+# Tests PII detection with the shipped stored policy actions (v11): the stored
+# action of each matched PII policy decides. Critical PII rows (SSN, credit
+# card) store warn on the request side and redact on the response side.
+# Environment variables no longer set detection actions.
 #
 # Tests BOTH request-side (pre-check) and response-side (LLM output) detection.
 #
@@ -71,12 +70,12 @@ echo "   Total policies evaluated: $POLICY_COUNT"
 if [ -n "$POLICIES" ]; then
     pass "SSN detected by request-side policy engine"
 else
-    # In redact mode, PII is detected but request is approved
+    # Stored request action warn: PII is detected but the request is approved
     if [ "$APPROVED" = "true" ]; then
         # Check policy_info for PII evaluation
         PII_EVALUATED=$(echo "$RESPONSE" | jq -r '.policy_info.policies_evaluated // [] | map(select(contains("pii"))) | length' 2>/dev/null || echo "0")
         if [ "$PII_EVALUATED" -gt 0 ]; then
-            pass "SSN detected by request-side policy engine (redact mode)"
+            pass "SSN detected by request-side policy engine (approved, stored action warn)"
         else
             fail "SSN not detected in request-side policy evaluation"
         fi
@@ -147,7 +146,7 @@ echo ""
 # ========================================
 echo -e "${YELLOW}2. Response-Side PII Detection (LLM output)${NC}"
 echo "   Tests: PII redaction in orchestrator response processing"
-echo "   Current PII_ACTION: ${PII_ACTION:-redact} (default)"
+echo "   Response-side action: each PII policy's stored action_response (redact for SSN)"
 echo ""
 
 # This tests the full proxy path: agent → orchestrator → LLM → response processor
@@ -228,12 +227,13 @@ fi
 echo ""
 
 # ========================================
-# 3. PII_ACTION mode documentation
+# 3. Stored action reference
 # ========================================
-echo -e "${YELLOW}3. PII_ACTION Mode Reference${NC}"
+echo -e "${YELLOW}3. Stored Action Reference (v11)${NC}"
 echo ""
+echo "   The stored action of each matched PII policy decides:"
 echo "   ┌──────────┬─────────────┬──────────────┬──────────────┐"
-echo "   │ Mode     │ Request-side│ Response-side│ Audit logged │"
+echo "   │ Action   │ Request-side│ Response-side│ Audit logged │"
 echo "   ├──────────┼─────────────┼──────────────┼──────────────┤"
 echo "   │ block    │ Blocked     │ Blocked      │ Yes          │"
 echo "   │ redact   │ Approved*   │ Redacted     │ Yes          │"
@@ -241,9 +241,11 @@ echo "   │ warn     │ Approved    │ Pass-through │ Yes          │"
 echo "   │ log      │ Approved    │ Pass-through │ Yes          │"
 echo "   └──────────┴─────────────┴──────────────┴──────────────┘"
 echo "   * Approved with requires_redaction=true flag"
+echo "   Shipped SSN and credit card rows: warn (request), redact (response)"
 echo ""
-echo "   To change mode: set PII_ACTION in docker-compose.yml and restart"
-echo "   Example: PII_ACTION=block docker compose up -d"
+echo "   To change it: record an organization override (Enterprise customer portal:"
+echo "   PUT /api/v1/detection-posture/pii {\"action\":\"block\"}) or change the policy's action."
+echo "   Environment variables no longer set detection actions."
 echo ""
 
 # ========================================

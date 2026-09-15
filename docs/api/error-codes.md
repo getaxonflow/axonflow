@@ -562,36 +562,9 @@ X-RateLimit-Reset: 1705312200
 
 ---
 
-### Custom Policy Connector Limit Exceeded
+### Custom Policy Connector Limit (retired)
 
-```json
-{
-  "error": {
-    "code": "CONNECTOR_LIMIT_EXCEEDED",
-    "message": "Custom policy connector limit reached (2). Upgrade to Evaluation tier for 5 connectors with custom policies.",
-    "current_count": 2,
-    "limit": 2,
-    "tier": "community",
-    "upgrade_path": "evaluation"
-  }
-}
-```
-
-**Cause:** You've reached the maximum number of connectors with custom policies for your tier. All connectors can be registered in all tiers, but tenant-level policies (rate limiting, budgets, time/role access) are limited by tier.
-
-**Tier Limits:**
-| Tier | Connectors with Custom Policies |
-|------|-------------------------------|
-| Community | 2 |
-| Evaluation | 5 |
-| Enterprise | Unlimited |
-
-**Enforcement:** When more connectors are configured than the tier allows, only the first N connectors (in the order listed in `MCP_DYNAMIC_POLICIES_CONNECTORS`) have custom policies enabled. Connectors beyond the limit are registered but without custom policies. Reorder the env var to change priority.
-
-**Solution:**
-- Reorder `MCP_DYNAMIC_POLICIES_CONNECTORS` to prioritize connectors that need custom policies
-- Upgrade to Evaluation tier (free) for 5 connectors with custom policies
-- Upgrade to Enterprise for unlimited connectors with custom policies
+v11 retired the custom-policy connector ceiling with the MCP dynamic-policy plane (PRD v11 §1.2). No edition caps the connectors a policy applies to, and no request returns `CONNECTOR_LIMIT_EXCEEDED`. The variable that chose the connectors under the old ceiling is retired with the plane's other variables: setting any of them refuses boot.
 
 ---
 
@@ -669,9 +642,9 @@ been reached. Unreachable today, for the reason above.
 
 ## Policy-Specific Errors
 
-### PII Detection (Default: Redact)
+### PII Detection (Resolved Action: Redact)
 
-By default (`PII_ACTION=redact`), PII is flagged for redaction rather than blocked:
+When the resolved action for a matched PII policy is `redact` (its stored action, or an organization's `pii=redact` detection-posture override), PII is flagged for redaction rather than blocked. Shipped `pii-*` rows store `warn` or `log` for the request phase and `redact` for the response phase (`sys_pii_indonesia_ktp` stores `block`); since v11 no environment variable changes that. A redact response looks like:
 
 ```json
 {
@@ -687,9 +660,9 @@ By default (`PII_ACTION=redact`), PII is flagged for redaction rather than block
 }
 ```
 
-### PII Detection Block (When PII_ACTION=block)
+### PII Detection Block (Resolved Action: Block)
 
-When configured with `PII_ACTION=block`, PII triggers a blocking response:
+When the resolved action is `block` (an organization's `pii=block` detection-posture override, or a policy whose stored action is `block`), PII triggers a blocking response:
 
 ```json
 {
@@ -719,28 +692,26 @@ When configured with `PII_ACTION=block`, PII triggers a blocking response:
 | Driver License | State-specific | "License D123456789" |
 | Bank Account | ABA routing | "Account 123456789" |
 
-### Dynamic Policy Block
+### Policy Block
 
 ```json
 {
   "success": false,
-  "error": "Request blocked by dynamic policy",
+  "error": "Request blocked by policy",
   "policy_info": {
     "allowed": false,
-    "applied_policies": ["high-risk-content"],
-    "risk_score": 0.85,
-    "required_actions": ["approval_required"]
-  }
+    "applied_policies": ["corpus:dynamic_policies:sys__dyn__debug__restrict"],
+    "risk_score": 0,
+    "required_actions": ["blocked: explicit_constraint"]
+  },
+  "engine": "anchored",
+  "subject_type": "Client",
+  "policy_bundle": "sha256:<the digest of the bundle that decided the request>",
+  "verdict": "blocked"
 }
 ```
 
-**Risk Score Thresholds:**
-| Score | Risk Level | Action |
-|-------|------------|--------|
-| 0.0 - 0.3 | Low | Allow |
-| 0.3 - 0.6 | Medium | Allow with audit |
-| 0.6 - 0.8 | High | May require approval |
-| 0.8 - 1.0 | Critical | Block |
+**How the request was decided:** the anchored policy engine decides the request from the typed policies in force (ADR-065). `engine` names that engine, `subject_type` the type of principal it decided for, `policy_bundle` the digest of the policy set it decided under, and `verdict` is `blocked`. `applied_policies` names the policies that decided, and each entry of `required_actions` is `blocked: ` followed by the engine's reason code, here `explicit_constraint`. This route cannot hold a request, so a request a policy would hold for approval is withheld too, with an entry beginning `blocked: approval_required`. `risk_score` decides nothing: no score threshold blocks, holds or allows a request.
 
 ## Troubleshooting Guide
 

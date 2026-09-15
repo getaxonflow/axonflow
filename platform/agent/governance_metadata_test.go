@@ -284,7 +284,6 @@ func TestMCPToolCheckPolicy_OverrideJustification_RealPostgres(t *testing.T) {
 		Enabled:                true,
 		PIIAction:              DetectionActionWarn,
 		SQLIAction:             DetectionActionWarn,
-		SensitiveDataAction:    DetectionActionWarn,
 		DangerousQueryAction:   DetectionActionWarn,
 		DangerousCommandAction: DetectionActionBlock,
 	}

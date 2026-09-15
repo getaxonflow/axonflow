@@ -21,7 +21,7 @@ package agent
 //
 // Gated on Docker (testutil.SkipIfNoDocker), independent of the
 // TEST_PG_INTEGRATION env gate the migration-chain realpg tests use — this
-// file builds its own minimal schema (like override_handler_shape_2792_test.go)
+// file builds its own minimal schema (like policy_override_repository_realpg_test.go)
 // rather than applying the full migration chain, so it runs fast and only
 // exercises the columns GetEffective actually reads.
 

@@ -14,9 +14,11 @@ package policy
 //   1. EnabledSecurityDangerousCategories gates by phase (request-only policy =>
 //      nil for PhaseResponse), the unit-level red-on-revert mirror of the
 //      migration (pre-128 phase='request' => no response coverage).
-//   2. Once response-phase, an injection-shaped response is BLOCKED under the
-//      DANGEROUS_COMMAND_ACTION=block override (default/strict/compliance) and
-//      not blocked under warn, mirroring the request plane and the profile lever.
+//   2. Once response-phase, an injection-shaped response is REDACTED by the
+//      row's stored response action with no override at all (core/128 stores
+//      action_response='redact'; since #3961 nothing but an organization's
+//      recorded dangerous_command override displaces it), BLOCKED under a
+//      block override, and passed through under a warn override.
 
 import (
 	"context"
@@ -70,13 +72,14 @@ func TestEngine_SecurityDangerousResponse_RedactWarnBlock(t *testing.T) {
 
 	t.Run("redact_default_strips_span_keeps_surrounding", func(t *testing.T) {
 		// The #2727 default: redact (sanitize) the injection span, do NOT block the
-		// whole response, and let the legitimate surrounding data survive.
-		r := eval(malicious(), map[PolicyCategory]Action{CategorySecurityDangerous: ActionRedact})
+		// whole response, and let the legitimate surrounding data survive. NO
+		// override is passed: the row's stored action_response decides.
+		r := eval(malicious(), nil)
 		if r.Blocked {
 			t.Fatal("redact must NOT block the whole response (#2727 default is sanitize, not block)")
 		}
 		if !r.Redacted {
-			t.Fatal("redact override MUST redact the injection span in the response")
+			t.Fatal("the stored response action (redact) MUST redact the injection span in the response")
 		}
 		out := scannableOf(t, r.Content)
 		if strings.Contains(out, "ignore all previous instructions") {
@@ -87,9 +90,9 @@ func TestEngine_SecurityDangerousResponse_RedactWarnBlock(t *testing.T) {
 		}
 	})
 	t.Run("block_override_blocks_whole_response", func(t *testing.T) {
-		// Block is reachable via the per-org detection-posture override.
+		// Block is reachable via an organization's dangerous_command override.
 		if !eval(malicious(), map[PolicyCategory]Action{CategorySecurityDangerous: ActionBlock}).Blocked {
-			t.Fatal("a block override (per-org posture) MUST block an injection-shaped response")
+			t.Fatal("a block override (per-org) MUST block an injection-shaped response")
 		}
 	})
 	t.Run("warn_override_neither_blocks_nor_redacts", func(t *testing.T) {
@@ -100,7 +103,7 @@ func TestEngine_SecurityDangerousResponse_RedactWarnBlock(t *testing.T) {
 		}
 	})
 	t.Run("benign_output_passes_clean", func(t *testing.T) {
-		r := eval(benign, map[PolicyCategory]Action{CategorySecurityDangerous: ActionRedact})
+		r := eval(benign, nil)
 		if r.Blocked || r.Redacted {
 			t.Errorf("benign output must pass clean (no block, no redact); blocked=%v redacted=%v", r.Blocked, r.Redacted)
 		}

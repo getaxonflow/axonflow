@@ -3,88 +3,34 @@
 
 package orchestrator
 
-// #3281 (ADR-060 #2989 P3b) - segment enforcement on WCP workflow
-// step-gates. Before this fix, WCPPolicyAdapter.convertToOrchestratorRequest
-// built User: UserContext{TenantID: step.TenantID} with no OrgID and no
-// Email, so resolveUserSegments always took the "no verified identity"
-// org-only path on a step-gate and every segment-scoped dynamic policy was
-// silently unenforced there, even though the identical policy IS enforced on
-// /api/v1/process (run.go) and MAP. These tests exercise the FULL
-// adapter -> real DatabaseDynamicPolicyEngine -> resolveUserSegments
-// path (not the mockPolicyEngineForWCP double used elsewhere in
-// wcp_policy_adapter_test.go), the same way
-// db_dynamic_policies_segment_3052_test.go does for /api/v1/process, so a
-// regression here is caught even if a future change makes the wiring
-// correct-looking at the OrchestratorRequest level but broken end-to-end.
+// #3281 (ADR-060 #2989 P3b) - segment resolution on WCP workflow step gates.
+//
+// WHAT CHANGED IN v11 (#4254). The step gate decides on the anchored engine, and
+// an organization's activation is built from the shipped corpus, its typed
+// document, its recorded overrides and its packs. A TENANT dynamic_policies row
+// is not among those: under PRD v11 §1.2 ruling R2 the dynamic condition matcher
+// produces facts and decides nothing, so a segment-scoped tenant row no longer
+// blocks or admits a step on its own. That is the documented v11 behaviour for
+// every v10-authored rule, which stops deciding until it is imported. The tests
+// that pinned such a row blocking a member and sparing a non-member were
+// retired with it.
+//
+// WHAT STILL HOLDS, AND IS PINNED HERE:
+//   - the #3281 wiring fix: the step gate threads the caller's organization and
+//     verified email into segment resolution;
+//   - the segment set that resolution returns is the one the dynamic rows are
+//     selected with, and an empty email never calls the resolver;
+//   - a genuine resolution failure withholds the step, named
+//     segment_resolution_failed, the id every route answers that outage by.
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
+	"axonflow/platform/decision/contract"
 	"axonflow/platform/orchestrator/workflow_control"
 )
-
-// dbCachedSegmentPolicyForStep mirrors db_dynamic_policies_segment_3052_test.go's
-// dbCachedSegmentPolicy, but matches on step_name (populated by
-// convertToOrchestratorRequest's contextData["step_name"] = step.StepName)
-// instead of "query" - convertToOrchestratorRequest never populates
-// OrchestratorRequest.Query, so a "query contains ..." condition (the
-// sibling file's shape) would never match a step-gate request and would
-// silently pass every test in this file regardless of whether segment
-// enforcement actually worked.
-func dbCachedSegmentPolicyForStep(policyID, segmentID, matchStepName string) map[string]interface{} {
-	conditions, _ := json.Marshal([]PolicyCondition{{Field: "step_name", Operator: "equals", Value: matchStepName}})
-	actions, _ := json.Marshal([]PolicyAction{{Type: "block", Config: map[string]interface{}{"reason": "segment-restricted step"}}})
-	return map[string]interface{}{
-		"policy_id":  policyID,
-		"name":       "segment step-gate block",
-		"type":       "content",
-		"conditions": json.RawMessage(conditions),
-		"actions":    json.RawMessage(actions),
-		"tenant_id":  "global",
-		"priority":   100,
-		"_metadata": map[string]interface{}{
-			"id":             policyID,
-			"name":           "segment step-gate block",
-			"tenant_id":      "global",
-			"org_id":         "global",
-			"segment_id":     segmentID,
-			"priority":       100,
-			"risk_level":     "medium",
-			"allow_override": false,
-		},
-	}
-}
-
-// dbCachedNonSegmentPolicyForStep is a plain tenant-scoped (segment_id="")
-// policy, used to prove the org-only path (nil resolver / unverified
-// identity) still enforces non-segment-scoped policies rather than denying
-// or allowing everything.
-func dbCachedNonSegmentPolicyForStep(policyID, matchStepName string) map[string]interface{} {
-	conditions, _ := json.Marshal([]PolicyCondition{{Field: "step_name", Operator: "equals", Value: matchStepName}})
-	actions, _ := json.Marshal([]PolicyAction{{Type: "block", Config: map[string]interface{}{"reason": "org-wide restricted step"}}})
-	return map[string]interface{}{
-		"policy_id":  policyID,
-		"name":       "org-wide step-gate block",
-		"type":       "content",
-		"conditions": json.RawMessage(conditions),
-		"actions":    json.RawMessage(actions),
-		"tenant_id":  "global",
-		"priority":   100,
-		"_metadata": map[string]interface{}{
-			"id":             policyID,
-			"name":           "org-wide step-gate block",
-			"tenant_id":      "global",
-			"org_id":         "global",
-			"segment_id":     "",
-			"priority":       100,
-			"risk_level":     "medium",
-			"allow_override": false,
-		},
-	}
-}
 
 func stepGateCtxFor(orgID, email string) *workflow_control.StepGateContext {
 	return &workflow_control.StepGateContext{
@@ -94,179 +40,135 @@ func stepGateCtxFor(orgID, email string) *workflow_control.StepGateContext {
 		StepType:   workflow_control.StepTypeToolCall,
 		TenantID:   "global",
 		OrgID:      orgID,
+		ClientID:   "client-3281",
 		Email:      email,
 	}
 }
 
-// (i) member -> segment-scoped policy enforces on a step-gate, asserting
-// WHICH policy fired (not just a boolean verdict).
-func TestWCPPolicyAdapter_EvaluateStepGate_SegmentMember_Enforced(t *testing.T) {
-	engine := &DatabaseDynamicPolicyEngine{
-		policies: map[string]interface{}{
-			"seg-p1": dbCachedSegmentPolicyForStep("seg-p1", "seg-finance", "export_finance_report"),
-		},
-	}
-	withOrchestratorSegmentResolver(t, resolverReturning("seg-finance"))
-
-	adapter := NewWCPPolicyAdapter(engine)
-	result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "alice@example.com"))
-
-	if result.Decision != workflow_control.GateDecisionBlock {
-		t.Fatalf("expected a seg-finance member to be blocked by the segment-scoped policy, got decision=%s reason=%q", result.Decision, result.Reason)
-	}
-	// PoliciesMatched carries the structured AppliedPoliciesDetail (PolicyID,
-	// not the display name PolicyIDs/AppliedPolicies uses) - the field a
-	// caller checks to know WHICH policy fired, not just that something did.
-	found := false
-	for _, m := range result.PoliciesMatched {
-		if m.PolicyID == "seg-p1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected the deny to name the specific policy that fired (seg-p1), got PoliciesMatched=%+v", result.PoliciesMatched)
-	}
+// segmentRowsProbe records the organization and segment set the dynamic rows
+// were selected with, which is what resolution feeds.
+type segmentRowsProbe struct {
+	calls    int
+	orgID    string
+	segments []string
 }
 
-// (ii) non-member IN A DIFFERENT SEGMENT (not merely zero segments) -> does
-// NOT enforce. Using a different segment rather than an empty set proves the
-// choke point is doing a real membership comparison, not just "caller has
-// any segments at all".
-func TestWCPPolicyAdapter_EvaluateStepGate_SegmentNonMember_DifferentSegment_NotEnforced(t *testing.T) {
-	engine := &DatabaseDynamicPolicyEngine{
-		policies: map[string]interface{}{
-			"seg-p1": dbCachedSegmentPolicyForStep("seg-p1", "seg-finance", "export_finance_report"),
-		},
-	}
-	withOrchestratorSegmentResolver(t, resolverReturning("seg-engineering"))
-
-	adapter := NewWCPPolicyAdapter(engine)
-	result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "bob@example.com"))
-
-	if result.Decision != workflow_control.GateDecisionAllow {
-		t.Fatalf("expected a seg-engineering caller (not a seg-finance member) to NOT be blocked by the seg-finance policy, got decision=%s reason=%q policyIDs=%v",
-			result.Decision, result.Reason, result.PolicyIDs)
-	}
-	for _, id := range result.PolicyIDs {
-		if id == "seg-p1" {
-			t.Fatalf("#3266 disclosure: the segment-scoped policy must not even be reported to a non-member, got PolicyIDs=%v", result.PolicyIDs)
-		}
-	}
+func (p *segmentRowsProbe) rows(orgID string, segmentIDs []string) []DynamicPolicy {
+	p.calls++
+	p.orgID = orgID
+	p.segments = append([]string(nil), segmentIDs...)
+	return nil
 }
 
-// (iii) resolver error -> step-gate DENIES fail-closed, and the deny is
-// explicitly named (not indistinguishable from a generic policy block) so
-// the audit row and API response can key off it.
-func TestWCPPolicyAdapter_EvaluateStepGate_ResolverError_FailsClosed(t *testing.T) {
-	engine := &DatabaseDynamicPolicyEngine{
-		policies: map[string]interface{}{
-			"seg-p1": dbCachedSegmentPolicyForStep("seg-p1", "seg-finance", "export_finance_report"),
-		},
+// withStepGateResolvingProducer installs a step-gate fact producer that
+// resolves the caller's segments through the process resolver, as a serving
+// process does, and selects its rows through probe.
+func withStepGateResolvingProducer(t *testing.T, probe *segmentRowsProbe) {
+	t.Helper()
+	previous := newWCPFactProducer
+	newWCPFactProducer = func() (*dynamicFactProducer, error) {
+		p, err := newDynamicFactProducer(probe.rows)
+		if err != nil {
+			return nil, err
+		}
+		p.presentsNoContent = true
+		return p, nil
 	}
-	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("scim query failed")})
-
-	adapter := NewWCPPolicyAdapter(engine)
-	result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "alice@example.com"))
-
-	if result.Decision != workflow_control.GateDecisionBlock {
-		t.Fatalf("a segment resolution error must DENY the step-gate (fail-closed, ADR-060 §Fail-closed), got decision=%s", result.Decision)
-	}
-	if result.Decision == workflow_control.GateDecisionRequireApproval {
-		t.Fatal("a resolution failure must never be treated as require_approval (that is not fail-closed for an external caller who can just not respond)")
-	}
-	wantPolicyID := "segment_resolution_failed"
-	found := false
-	for _, id := range result.PolicyIDs {
-		if id == wantPolicyID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected the fail-closed deny to name %q in PolicyIDs (matching run.go's convention), got %v", wantPolicyID, result.PolicyIDs)
-	}
-}
-
-// (iv) nil resolver / empty email -> org-only: non-segment-scoped policies
-// still enforce (the fail-closed change must not become an accidental
-// fail-open for ordinary tenant-wide policies), and a segment-scoped policy
-// does not apply (no verified identity to check membership against).
-func TestWCPPolicyAdapter_EvaluateStepGate_NilResolver_OrgOnly(t *testing.T) {
-	ResetOrchestratorSegmentResolverForTest()
-
-	t.Run("non-segment-scoped policy still enforces", func(t *testing.T) {
-		engine := &DatabaseDynamicPolicyEngine{
-			policies: map[string]interface{}{
-				"org-p1": dbCachedNonSegmentPolicyForStep("org-p1", "export_finance_report"),
-			},
-		}
-		adapter := NewWCPPolicyAdapter(engine)
-		result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "alice@example.com"))
-		if result.Decision != workflow_control.GateDecisionBlock {
-			t.Fatalf("a non-segment-scoped policy must still enforce with no resolver wired, got decision=%s reason=%q", result.Decision, result.Reason)
-		}
-	})
-
-	t.Run("segment-scoped policy does not apply", func(t *testing.T) {
-		engine := &DatabaseDynamicPolicyEngine{
-			policies: map[string]interface{}{
-				"seg-p1": dbCachedSegmentPolicyForStep("seg-p1", "seg-finance", "export_finance_report"),
-			},
-		}
-		adapter := NewWCPPolicyAdapter(engine)
-		result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "alice@example.com"))
-		if result.Decision != workflow_control.GateDecisionAllow {
-			t.Fatalf("no resolver wired must never deny on a segment-scoped-only policy set - expected org-only allow, got decision=%s reason=%q", result.Decision, result.Reason)
-		}
-	})
-
-	t.Run("empty email with a resolver wired also stays org-only, not a failure", func(t *testing.T) {
-		fake := resolverReturning("seg-finance")
-		withOrchestratorSegmentResolver(t, fake)
-		engine := &DatabaseDynamicPolicyEngine{
-			policies: map[string]interface{}{
-				"org-p1": dbCachedNonSegmentPolicyForStep("org-p1", "export_finance_report"),
-			},
-		}
-		adapter := NewWCPPolicyAdapter(engine)
-		result := adapter.EvaluateStepGate(context.Background(), stepGateCtxFor("org-shared", "")) // no Email
-		if result.Decision != workflow_control.GateDecisionBlock {
-			t.Fatalf("empty email must still allow non-segment-scoped enforcement (org-only), got decision=%s reason=%q", result.Decision, result.Reason)
-		}
-		if fake.callCount() != 0 {
-			t.Fatalf("resolver must not even be called when email is empty (no verified identity), got %d calls", fake.callCount())
-		}
+	resetWCPFacts()
+	t.Cleanup(func() {
+		newWCPFactProducer = previous
+		resetWCPFacts()
 	})
 }
 
-// Regression test for the exact bug this issue closes: previously
-// convertToOrchestratorRequest built User: UserContext{TenantID: step.TenantID}
-// only, silently dropping OrgID and Email so every step-gate resolved
-// segments on the "no verified identity" path. This test pins the wiring
-// directly against the OrchestratorRequest the adapter builds, independent
-// of the engine's own segment-resolution behavior (covered above).
+// The bug #3281 closed: the step gate built its request with the tenant alone,
+// so every step resolved segments on the "no verified identity" path.
 func TestWCPPolicyAdapter_ConvertToOrchestratorRequest_ThreadsOrgAndEmail(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{Allowed: true, AppliedPolicies: []string{}},
-	}
-	adapter := NewWCPPolicyAdapter(mockEngine)
-
-	stepCtx := &workflow_control.StepGateContext{
+	req := NewWCPPolicyAdapter().convertToOrchestratorRequest(&workflow_control.StepGateContext{
 		WorkflowID: "wf-wiring",
 		StepID:     "step-1",
 		StepType:   workflow_control.StepTypeToolCall,
 		TenantID:   "tenant-9",
 		OrgID:      "org-9",
 		Email:      "carol@example.com",
-	}
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
+	})
 
-	if mockEngine.lastReq.User.TenantID != "tenant-9" {
-		t.Errorf("User.TenantID = %q, want tenant-9", mockEngine.lastReq.User.TenantID)
+	if req.User.TenantID != "tenant-9" {
+		t.Errorf("User.TenantID = %q, want tenant-9", req.User.TenantID)
 	}
-	if mockEngine.lastReq.User.OrgID != "org-9" {
-		t.Errorf("User.OrgID = %q, want org-9 (was previously left zero - the #3281 bug)", mockEngine.lastReq.User.OrgID)
+	if req.User.OrgID != "org-9" {
+		t.Errorf("User.OrgID = %q, want org-9 (was previously left zero - the #3281 bug)", req.User.OrgID)
 	}
-	if mockEngine.lastReq.User.Email != "carol@example.com" {
-		t.Errorf("User.Email = %q, want carol@example.com (was previously left empty - the #3281 bug)", mockEngine.lastReq.User.Email)
+	if req.User.Email != "carol@example.com" {
+		t.Errorf("User.Email = %q, want carol@example.com (was previously left empty - the #3281 bug)", req.User.Email)
 	}
+}
+
+// The caller's organization and verified email reach segment resolution, and the
+// segment set it returns is the one the dynamic rows are selected with.
+func TestTheStepGateSelectsDynamicRowsWithTheCallersResolvedSegments(t *testing.T) {
+	withStepGateEngine(t, allowedStepVerdict())
+	probe := &segmentRowsProbe{}
+	withStepGateResolvingProducer(t, probe)
+	withOrchestratorSegmentResolver(t, resolverReturning("seg-finance"))
+
+	NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", "alice@example.com"))
+
+	if probe.calls == 0 {
+		t.Fatal("PREMISE: the dynamic rows were never selected, so the segment set they were selected with proves nothing")
+	}
+	if probe.orgID != "org-shared" {
+		t.Errorf("rows selected for organization %q; want org-shared", probe.orgID)
+	}
+	if !reflect.DeepEqual(probe.segments, []string{"seg-finance"}) {
+		t.Errorf("rows selected with segments %v; want [seg-finance], the set the resolver returned", probe.segments)
+	}
+}
+
+// With no verified email there is no identity to resolve, so the resolver is
+// never called and the rows are selected org-only. That is not a failure: the
+// step is decided, not withheld.
+func TestAnEmptyEmailNeverCallsTheSegmentResolver(t *testing.T) {
+	withStepGateEngine(t, allowedStepVerdict())
+	probe := &segmentRowsProbe{}
+	withStepGateResolvingProducer(t, probe)
+	fake := resolverReturning("seg-finance")
+	withOrchestratorSegmentResolver(t, fake)
+
+	ev := NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", ""))
+
+	if fake.callCount() != 0 {
+		t.Errorf("the resolver was called %d times with no verified email", fake.callCount())
+	}
+	if probe.calls == 0 {
+		t.Fatal("PREMISE: the dynamic rows were never selected, so the org-only selection is not shown")
+	}
+	if len(probe.segments) != 0 {
+		t.Errorf("rows selected with segments %v for an unverified caller; want none (org-only)", probe.segments)
+	}
+	if ev.Decision != workflow_control.GateDecisionAllow {
+		t.Errorf("decision = %q for an unverified caller; want the engine's allow, not a resolution failure (%s)", ev.Decision, ev.Reason)
+	}
+}
+
+// A genuine resolution failure withholds the step, named by the id every route
+// answers that outage by, and never becomes a hold an external caller could
+// simply leave unanswered.
+func TestWCPPolicyAdapter_EvaluateStepGate_ResolverError_FailsClosed(t *testing.T) {
+	d := withStepGateEngine(t, allowedStepVerdict())
+	withStepGateResolvingProducer(t, &segmentRowsProbe{})
+	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("scim query failed")})
+
+	result := NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", "alice@example.com"))
+
+	if result.Decision != workflow_control.GateDecisionBlock {
+		t.Fatalf("a segment resolution error must DENY the step gate (fail-closed, ADR-060 §Fail-closed), got decision=%s", result.Decision)
+	}
+	if !reflect.DeepEqual(result.PolicyIDs, []string{"segment_resolution_failed"}) {
+		t.Errorf("policy ids = %v; want [segment_resolution_failed]", result.PolicyIDs)
+	}
+	if n := d.callCount(); n != 0 {
+		t.Errorf("the enforcer was called %d times although which rows govern the caller is unknown", n)
+	}
+	_ = contract.StateAllow // the engine double's verdict is irrelevant here: it must not be consulted
 }

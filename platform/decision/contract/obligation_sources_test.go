@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -13,8 +16,7 @@ import (
 // merged instruction; composeAuditNotify used to keep a single source, chosen
 // by delivery strength and otherwise by input order - so which policy a merged
 // audit was attributed to was arbitrary, and a consumer comparing obligations
-// per source policy (the ADR-065 shadow harness does exactly that) read every
-// other demanding policy's control as missing.
+// per source policy read every other demanding policy's control as missing.
 func TestMergedAuditKeepsEverySource(t *testing.T) {
 	obl := func(src string) Obligation {
 		return Obligation{
@@ -26,7 +28,7 @@ func TestMergedAuditKeepsEverySource(t *testing.T) {
 	}
 	out := ComposeObligations(ComposeInput{
 		Obligations:    []Obligation{obl("policy:a"), obl("policy:b")},
-		Leaves:         []string{"response.content"},
+		Payload:        KnownPayloadLeaves("response.content"),
 		ApprovalExpiry: time.Now().Add(time.Hour),
 	})
 	if out.Denied {
@@ -49,7 +51,7 @@ func TestMergedAuditKeepsEverySource(t *testing.T) {
 	weak.Params = map[string]string{"category": "admin-access", "severity": "high", "delivery": string(DeliveryBestEffort)}
 	out2 := ComposeObligations(ComposeInput{
 		Obligations:    []Obligation{weak, strong},
-		Leaves:         []string{"response.content"},
+		Payload:        KnownPayloadLeaves("response.content"),
 		ApprovalExpiry: time.Now().Add(time.Hour),
 	})
 	if out2.Denied || len(out2.Obligations) != 1 {
@@ -73,7 +75,7 @@ func TestMergedAuditKeepsEverySource(t *testing.T) {
 	absent := obl("policy:absent")
 	out3 := ComposeObligations(ComposeInput{
 		Obligations:    []Obligation{absent, strong},
-		Leaves:         []string{"response.content"},
+		Payload:        KnownPayloadLeaves("response.content"),
 		ApprovalExpiry: time.Now().Add(time.Hour),
 	})
 	if out3.Denied || len(out3.Obligations) != 1 {

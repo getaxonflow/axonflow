@@ -3,7 +3,7 @@
 
 package orchestrator
 
-// Regression tests for the GET /api/v1/policies/dynamic cross-tenant
+// Regression tests for the dynamic-policy list's cross-tenant
 // information-disclosure fix: listDynamicPoliciesHandler used to return the
 // orchestrator's DEPLOYMENT-WIDE in-memory dynamic-policy cache verbatim —
 // every tenant's policy id, name, priority, owning tenant_id, and full
@@ -127,7 +127,7 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 		t.Fatal("vacuity control failed: tenant-b policy not present in the raw engine cache; the cross-tenant assertions below would be vacuous")
 	}
 
-	req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil)
+	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Org-ID", "tenant-a") // gateway-stamped, from the signed licence payload
 	w := httptest.NewRecorder()
 
@@ -270,7 +270,7 @@ func TestListDynamicPoliciesHandler_FailClosedWithoutOrg(t *testing.T) {
 		t.Fatal("vacuity control failed: engine cache is empty")
 	}
 
-	req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil) // no X-Org-ID
+	req := httptest.NewRequest("GET", "/", nil) // no X-Org-ID
 	w := httptest.NewRecorder()
 
 	listDynamicPoliciesHandler(w, req)
@@ -290,7 +290,7 @@ func TestListDynamicPoliciesHandler_FailClosedWithoutOrg(t *testing.T) {
 // response's total_policies counts only the CALLER's visible policies. It
 // previously counted len(ListActivePolicies()) — the deployment-wide cache —
 // leaking the total number of policies across all tenants in every
-// /api/v1/policies/simulate response.
+// simulate response.
 func TestSimulatePolicies_TotalPoliciesScopedToTenant(t *testing.T) {
 	checker := &mockLicenseCheckerForSim{
 		tier:             license.TierEvaluation,
@@ -312,7 +312,7 @@ func TestSimulatePolicies_TotalPoliciesScopedToTenant(t *testing.T) {
 	}
 
 	body := []byte(`{"query":"hello","request_type":"chat"}`)
-	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	req.Header.Set("X-Org-ID", "tenant-a")
 	w := httptest.NewRecorder()
@@ -378,7 +378,7 @@ func TestListDynamicPoliciesHandler_TenantHeaderIsNotConsulted(t *testing.T) {
 
 	for _, tenantHeader := range []string{"alpha", "beta", "a-name-no-policy-targets", ""} {
 		t.Run("X-Tenant-ID="+tenantHeader, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil)
+			req := httptest.NewRequest("GET", "/", nil)
 			req.Header.Set("X-Org-ID", "org-a")
 			if tenantHeader != "" {
 				req.Header.Set("X-Tenant-ID", tenantHeader)

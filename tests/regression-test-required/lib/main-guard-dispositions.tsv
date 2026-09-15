@@ -38,7 +38,7 @@ infra-validation.yml :: partner-template-parity	WATCH	the #3730 instance. Docume
 infra-validation.yml :: partner-preflight-parity	WATCH	same vendored-copy contract and same strict-on-main-only arm as partner-template-parity.
 infra-validation.yml :: partner-operator-script-parity	WATCH	same vendored-copy contract and same strict-on-main-only arm as partner-template-parity.
 infra-validation.yml :: cfn-lint	WATCH	a CloudFormation template that fails cfn-lint on main is a deploy-time break in a customer-facing marketplace artifact. Nothing requires this context.
-infra-validation.yml :: monitoring-rules	WATCH	validates the ADR-065 observation-window Prometheus rules that ship with the product. A red is a correctness claim about shipped alerting.
+infra-validation.yml :: monitoring-rules	WATCH	validates the Prometheus rules the monitoring image ships. A red is a correctness claim about shipped alerting.
 infra-validation.yml :: community-saas-regression	WATCH	structural pins on the community-SaaS CloudFormation stack that is actually deployed. A red means the deployed shape drifted.
 infra-validation.yml :: telemetry-filter-regression	WATCH	pins the telemetry filter and the P5a scrub script. A regression here is a data-egress correctness claim, not a cost one.
 infra-validation.yml :: no-compliance-overlay	WATCH	asserts the compliance module is absent from the enterprise image - an edition-boundary and licensing claim about a shipped artifact.
@@ -78,5 +78,4 @@ build-community.yml :: build-summary	ADVISORY	the one job here with no repositor
 # not a claim about the tree - which is the textbook ADVISORY case.
 cache-seed.yml :: seed	ADVISORY	seeds the platform/decision Go module cache. A failure costs cache warmth and billable minutes on the next PR; it asserts nothing about the tree's correctness.
 cache-seed.yml :: seed-enterprise	ADVISORY	seeds the platform+ee/portal Go module caches. Cost, not correctness.
-cache-seed.yml :: seed-risk-scorer	ADVISORY	seeds the risk-scorer toolchain cache. Cost, not correctness.
 cache-seed.yml :: seed-golangci	ADVISORY	seeds the golangci-lint cache. Cost, not correctness.

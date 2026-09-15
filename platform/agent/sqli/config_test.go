@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package sqli
 
 import (
@@ -399,7 +402,6 @@ func TestConfig_ChainedWith(t *testing.T) {
 func TestConfigFromEnv_DefaultValues(t *testing.T) {
 	// Clear any existing env vars
 	os.Unsetenv(EnvSQLIScannerMode)
-	os.Unsetenv(EnvSQLIBlockMode)
 
 	cfg := ConfigFromEnv()
 
@@ -438,7 +440,6 @@ func TestConfigFromEnv_ScannerMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv(EnvSQLIScannerMode, tt.envValue)
-			os.Unsetenv(EnvSQLIBlockMode)
 			defer os.Unsetenv(EnvSQLIScannerMode)
 
 			cfg := ConfigFromEnv()
@@ -460,7 +461,6 @@ func TestConfigFromEnv_InvalidScannerMode(t *testing.T) {
 	for _, mode := range invalidModes {
 		t.Run("invalid mode "+mode, func(t *testing.T) {
 			os.Setenv(EnvSQLIScannerMode, mode)
-			os.Unsetenv(EnvSQLIBlockMode)
 			defer os.Unsetenv(EnvSQLIScannerMode)
 
 			cfg := ConfigFromEnv()
@@ -476,94 +476,22 @@ func TestConfigFromEnv_InvalidScannerMode(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_BlockMode tests SQLI_BLOCK_MODE parsing.
-func TestConfigFromEnv_BlockMode(t *testing.T) {
-	tests := []struct {
-		name          string
-		envValue      string
-		expectedBlock bool
-	}{
-		{"block mode", "block", true},
-		{"warn mode", "warn", false},
-		{"block mode uppercase", "BLOCK", true},
-		{"warn mode uppercase", "WARN", false},
-		{"block mode mixed case", "Block", true},
-		{"warn mode mixed case", "Warn", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Unsetenv(EnvSQLIScannerMode)
-			os.Setenv(EnvSQLIBlockMode, tt.envValue)
-			defer os.Unsetenv(EnvSQLIBlockMode)
-
-			cfg := ConfigFromEnv()
-
-			if cfg.BlockOnDetection != tt.expectedBlock {
-				t.Errorf("BlockOnDetection = %v, want %v", cfg.BlockOnDetection, tt.expectedBlock)
-			}
-		})
-	}
-}
-
-// TestConfigFromEnv_InvalidBlockMode tests fallback for invalid SQLI_BLOCK_MODE.
-func TestConfigFromEnv_InvalidBlockMode(t *testing.T) {
-	invalidModes := []string{"invalid", "log", "123", "on", "off", "true", "false"}
-
-	for _, mode := range invalidModes {
-		t.Run("invalid block mode "+mode, func(t *testing.T) {
-			os.Unsetenv(EnvSQLIScannerMode)
-			os.Setenv(EnvSQLIBlockMode, mode)
-			defer os.Unsetenv(EnvSQLIBlockMode)
-
-			cfg := ConfigFromEnv()
-
-			// Should fall back to block mode (security-first)
-			if !cfg.BlockOnDetection {
-				t.Errorf("BlockOnDetection = false, want true (fallback to block for security)")
-			}
-		})
-	}
-}
-
-// TestConfigFromEnv_CombinedSettings tests both environment variables together.
-func TestConfigFromEnv_CombinedSettings(t *testing.T) {
-	tests := []struct {
-		name          string
-		scannerMode   string
-		blockMode     string
-		expectedMode  Mode
-		expectedBlock bool
-	}{
-		{"off mode with warn", "off", "warn", ModeOff, false},
-		{"off mode with block", "off", "block", ModeOff, true},
-		{"basic mode with warn", "basic", "warn", ModeBasic, false},
-		{"basic mode with block", "basic", "block", ModeBasic, true},
-		{"advanced mode with warn", "advanced", "warn", ModeAdvanced, false},
-		{"advanced mode with block", "advanced", "block", ModeAdvanced, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv(EnvSQLIScannerMode, tt.scannerMode)
-			os.Setenv(EnvSQLIBlockMode, tt.blockMode)
-			defer func() {
-				os.Unsetenv(EnvSQLIScannerMode)
-				os.Unsetenv(EnvSQLIBlockMode)
-			}()
-
-			cfg := ConfigFromEnv()
-
-			if cfg.InputMode != tt.expectedMode {
-				t.Errorf("InputMode = %v, want %v", cfg.InputMode, tt.expectedMode)
-			}
-			if cfg.ResponseMode != tt.expectedMode {
-				t.Errorf("ResponseMode = %v, want %v", cfg.ResponseMode, tt.expectedMode)
-			}
-			if cfg.BlockOnDetection != tt.expectedBlock {
-				t.Errorf("BlockOnDetection = %v, want %v", cfg.BlockOnDetection, tt.expectedBlock)
-			}
-		})
+// TestConfigFromEnv_RemovedActionVariablesSetNothing pins #3961: SQLI_ACTION
+// and SQLI_BLOCK_MODE no longer reach the scanner configuration. Every value
+// either of them used to understand - including the ones that turned blocking
+// OFF - leaves BlockOnDetection at the constructor's default.
+func TestConfigFromEnv_RemovedActionVariablesSetNothing(t *testing.T) {
+	os.Unsetenv(EnvSQLIScannerMode)
+	for _, name := range []string{"SQLI_ACTION", "SQLI_BLOCK_MODE"} {
+		for _, value := range []string{"block", "warn", "log", "WARN", "false"} {
+			t.Run(name+"="+value, func(t *testing.T) {
+				t.Setenv(name, value)
+				cfg := ConfigFromEnv()
+				if !cfg.BlockOnDetection {
+					t.Errorf("%s=%s turned BlockOnDetection off; the variable is removed and must set nothing", name, value)
+				}
+			})
+		}
 	}
 }
 
@@ -571,8 +499,5 @@ func TestConfigFromEnv_CombinedSettings(t *testing.T) {
 func TestEnvVarConstants(t *testing.T) {
 	if EnvSQLIScannerMode != "SQLI_SCANNER_MODE" {
 		t.Errorf("EnvSQLIScannerMode = %q, want %q", EnvSQLIScannerMode, "SQLI_SCANNER_MODE")
-	}
-	if EnvSQLIBlockMode != "SQLI_BLOCK_MODE" {
-		t.Errorf("EnvSQLIBlockMode = %q, want %q", EnvSQLIBlockMode, "SQLI_BLOCK_MODE")
 	}
 }

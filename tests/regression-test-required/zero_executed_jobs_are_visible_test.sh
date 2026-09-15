@@ -96,8 +96,18 @@ for path in files:
     if not env_ok:
         findings.append(f"{name}: tests-executed-census has no step with env NEEDS_JSON: ${{{{ toJSON(needs) }}}}; the count must be derived from the needs context, not typed")
     body = "\n".join(str(s.get("run") or "") for s in steps if isinstance(s, dict))
+    # WHAT THIS ROW ACTUALLY ASSERTS, stated because its old wording outlived the
+    # code. It checks the census still carries the not-evidence SENTENCE and can
+    # still exit non-zero at all - i.e. that the block has not been hollowed out.
+    # It does NOT establish "red whenever zero executed", and since #3649 that
+    # claim is false by design: zero-executed is a NOTICE when the detector
+    # selected nothing or was itself skipped. The old text said otherwise and
+    # would have been quoted as an observation, which is the exact defect #3649
+    # retired. WHICH branch fires for which state is pinned by
+    # census_red_only_when_jobs_were_expected_test.sh, which drives eight
+    # fixtures through the real block; this row only proves the block is intact.
     if "nothing failed and nothing was tested" not in body or "sys.exit(1)" not in body:
-        findings.append(f"{name}: tests-executed-census does not fail on zero executed jobs (missing the 'nothing failed and nothing was tested' refusal); a census that cannot go red is decoration")
+        findings.append(f"{name}: tests-executed-census has lost the not-evidence sentence or can no longer exit non-zero at all; a census that cannot go red on ANY state is decoration (which state reds is pinned by census_red_only_when_jobs_were_expected_test.sh)")
 
 if rollups_seen == 0:
     print(f"FAIL: no skip-accepting rollup found under {d}; the selector stopped seeing the tree (or the fixture is wrong)")
@@ -178,4 +188,4 @@ if [ "$rc" -ne 0 ]; then
   echo "FAIL: zero-executed-jobs visibility (#3649)"
   exit 1
 fi
-echo "PASS: every skip-accepting rollup has a census beside it that goes red when nothing executed"
+echo "PASS: every skip-accepting rollup has a census beside it that can still refuse, with the per-state rules pinned separately"

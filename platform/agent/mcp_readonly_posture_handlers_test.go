@@ -54,6 +54,9 @@ func TestMCPExecuteHandler_ReadOnlyPosture_BlocksWrite(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("write-path execute block did not emit a canonical 'blocked' audit row: %v", err)
 	}
+	if blocked := mrqRefusal(t, w)["blocked"]; blocked != true {
+		t.Fatalf("the read-only posture's refusal says blocked=%v; a 403 is a block. body=%s", blocked, w.Body.String())
+	}
 }
 
 // TestMCPExecuteHandler_ReadOnlyPosture_OffAllowsWrite: with the posture off, a
@@ -94,6 +97,9 @@ func TestMCPQueryHandler_ReadOnlyPosture_BlocksWriteStatement(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("write statement block did not emit a canonical 'blocked' audit row: %v", err)
+	}
+	if blocked := mrqRefusal(t, w)["blocked"]; blocked != true {
+		t.Fatalf("the read-only posture's refusal says blocked=%v; a 403 is a block. body=%s", blocked, w.Body.String())
 	}
 }
 
@@ -219,8 +225,8 @@ func TestMCPCheckInputHandler_ReadOnlyPosture_BlocksWrite(t *testing.T) {
 }
 
 // TestMCPCheckInputHandler_ReadOnlyPosture_AllowsRead: a read-path check-input is
-// NOT blocked by the posture and falls through to normal evaluation (allowed
-// with engines nil).
+// NOT blocked by the posture and falls through to normal evaluation (allowed:
+// no shipped row matches it).
 func TestMCPCheckInputHandler_ReadOnlyPosture_AllowsRead(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()

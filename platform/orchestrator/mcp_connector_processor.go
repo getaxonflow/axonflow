@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -116,6 +108,26 @@ func executionTenantID(execution *WorkflowExecution) string {
 	}
 	if execution.UserContext.TenantID != "" {
 		return execution.UserContext.TenantID
+	}
+	return execution.UserContext.OrgID
+}
+
+// executionOrgID returns the organization a workflow execution belongs to, for
+// the routed connector call to carry (#3828).
+//
+// It has NO fall-back to the tenant id, which is the one asymmetry with
+// executionTenantID above and is deliberate. That helper substitutes the org
+// for a missing tenant because the failure it prevents is a lockout - a lookup
+// that misses the tenant's own connector. Substituting the other way round has
+// a different consequence: `orgScopeOf` already falls back to the tenant id
+// when no org is present, and an org scope carrying a tenant id is the exact
+// shape the decision shadow refuses by name. Supplying one here would turn a
+// refusal that is VISIBLE in the observation window into a comparison recorded
+// against the wrong scope - a silent wrong answer in place of a loud missing
+// one.
+func executionOrgID(execution *WorkflowExecution) string {
+	if execution == nil {
+		return ""
 	}
 	return execution.UserContext.OrgID
 }
@@ -446,6 +458,37 @@ func (p *MCPConnectorProcessor) routeToAgent(ctx context.Context, step WorkflowS
 	if tenantID := executionTenantID(execution); tenantID != "" {
 		req.Client.TenantID = tenantID
 		req.User.TenantID = tenantID
+	}
+
+	// THE ORGANIZATION TRAVELS WITH THE TENANT, AND IT DID NOT (#3828).
+	//
+	// This is RouteToAgent's SECOND caller. The first (run.go:2798) serves a
+	// user-facing /api/request; this one serves a WORKFLOW STEP, and until this
+	// block it set the tenancy and left the org empty. RouteToAgent then found
+	// nothing on either rung - req.User.OrgID, then req.Client.OrgID - and sent
+	// no X-Org-ID, so every connector call made from a workflow step reproduced
+	// exactly the defect this PR fixes on the other path: the agent's MCP call
+	// sites evaluated with an empty organization, OrgScopePtr("") returned nil,
+	// and the decision shadow refused the observation. Fixing one caller and not
+	// the other would have left the `mcp` plane's window empty for every
+	// workflow-driven query while the PR claimed the plane was fixed.
+	//
+	// The value comes from the execution's AUTHENTICATED identity, the same
+	// source and the same trust as the tenant block above - `req.User` is built
+	// fresh at the top of this function rather than from execution.Input, so
+	// unlike the tenancy there is no body-supplied org to displace here.
+	//
+	// NO FALL-BACK TO THE TENANT ID, deliberately, and this is where it differs
+	// from executionTenantID. That helper falls back to OrgID because a missing
+	// tenant would miss the tenant's own connector - a lockout. The reverse
+	// substitution is not equally harmless: an "org" that is really a tenant id
+	// is precisely what orgScopeOf already does by accident, and it is the shape
+	// Observe refuses by name. Inventing one here would convert a refusal that
+	// is visible in the window into a COMPARISON against the wrong scope, which
+	// is worse than the empty window it replaces.
+	if orgID := executionOrgID(execution); orgID != "" {
+		req.Client.OrgID = orgID
+		req.User.OrgID = orgID
 	}
 
 	// Nothing else is read from execution.Input. The previous `client_id` and

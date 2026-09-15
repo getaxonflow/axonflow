@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -26,9 +29,9 @@ const (
 	groupBots     = "Group::bots:automation"
 	groupFlat     = "Group::flat:reviewers"
 
-	principalAlice = "Principal::acme:alice"
-	principalBob   = "Principal::acme:bob"
-	principalCarol = "Principal::acme:carol"
+	principalAlice = "User::acme:alice"
+	principalBob   = "User::acme:bob"
+	principalCarol = "User::acme:carol"
 )
 
 func gid(t *testing.T, s string) contract.ID {
@@ -231,7 +234,7 @@ func basePDPDocument(t *testing.T) pdp.Document {
 func baseDocument(t *testing.T) *Document {
 	t.Helper()
 	cat := baseCatalog(t)
-	d, findings, err := NewDocument(baseMetadata(t), basePDPDocument(t), cat)
+	d, findings, err := NewDocument(Document{Metadata: baseMetadata(t), Policy: basePDPDocument(t)}, cat)
 	if err != nil {
 		t.Fatalf("the baseline document must be clean, got: %v\nfindings: %v", err, findings)
 	}
@@ -255,7 +258,7 @@ func baseFixtures() []Fixture {
 		pdp.ActionIDPath:         known(actionRefund, contract.ProvPlatform),
 		pdp.ActionTagsPath:       known([]any{"money", "irreversible"}, contract.ProvPlatform),
 		"args.amount_cents":      known(json100k, contract.ProvCaller),
-		"resource.project.owner": known("Principal::acme:bob", contract.ProvResource),
+		"resource.project.owner": known("User::acme:bob", contract.ProvResource),
 		"signal.pii_score":       known(json0, contract.ProvDetector),
 	}
 	export := contract.AttributeSet{
@@ -264,7 +267,7 @@ func baseFixtures() []Fixture {
 		pdp.ActionIDPath:         known(actionExport, contract.ProvPlatform),
 		pdp.ActionTagsPath:       known([]any{"pii_egress"}, contract.ProvPlatform),
 		"args.amount_cents":      known(json100k, contract.ProvCaller),
-		"resource.project.owner": known("Principal::acme:alice", contract.ProvResource),
+		"resource.project.owner": known("User::acme:alice", contract.ProvResource),
 		"signal.pii_score":       known(json09, contract.ProvDetector),
 	}
 	return []Fixture{
@@ -343,15 +346,91 @@ func systemTrust(t *testing.T) (*pdp.TrustStore, ed25519.PrivateKey) {
 	return trust, priv
 }
 
+// THE ORGANIZATION-ROOT FIXTURE WORLD (#4047).
+//
+// The baseline above is a SYSTEM-root document, which is right for the
+// package-level pipeline - Publish, Store, LoadArtifact are root-agnostic
+// primitives, and the fixture world exercises the rules they share. An API is
+// the organization authority and refuses the system root, so a test that
+// drives the API drives the same baseline re-rooted here. The re-rooting is
+// the smallest edit that makes it an organization document: every policy moves
+// with the document, and break-glass piercing is removed because an
+// organization root cannot declare it (pdp.RuleOrgPolicyPiercesSystem).
+
+const organizationKeyID = "organization-key-1"
+
+func toOrganizationRoot(doc *pdp.Document) {
+	doc.Root = pdp.RootOrganization
+	for i := range doc.Policies {
+		doc.Policies[i].Root = pdp.RootOrganization
+		doc.Policies[i].PierceableBy = nil
+	}
+}
+
+// organizationDocumentWith is documentWith over the organization-root baseline.
+func organizationDocumentWith(t *testing.T, cat *Catalog, edit func(*Metadata, *pdp.Document)) *Document {
+	t.Helper()
+	return documentWith(t, cat, func(m *Metadata, doc *pdp.Document) {
+		toOrganizationRoot(doc)
+		if edit != nil {
+			edit(m, doc)
+		}
+	})
+}
+
+func organizationDocument(t *testing.T) *Document {
+	t.Helper()
+	return organizationDocumentWith(t, baseCatalog(t), nil)
+}
+
+func organizationTrust(t *testing.T) (*pdp.TrustStore, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv := testKeys(t)
+	trust := pdp.NewTrustStore()
+	trust.Authorize(pdp.RootOrganization, organizationKeyID, pub)
+	return trust, priv
+}
+
+func organizationPublishOptions(t *testing.T, priv ed25519.PrivateKey) PublishOptions {
+	t.Helper()
+	opts := publishOptions(t, priv)
+	opts.Root = pdp.RootOrganization
+	opts.KeyID = organizationKeyID
+	return opts
+}
+
+// mustProfile is ProfileFor with the error handled, for tests that are about
+// something other than an invalid edition. It always produces an ESTABLISHED
+// profile: a test that means "this process could not establish its tier" says
+// so with ProfileForUnestablishedTier, and the two are never spelled the same
+// way by accident.
+func mustProfile(t *testing.T, e Edition) Profile {
+	t.Helper()
+	p, err := ProfileFor(e)
+	if err != nil {
+		t.Fatalf("ProfileFor(%q): %v", e, err)
+	}
+	return p
+}
+
 func publishOptions(t *testing.T, priv ed25519.PrivateKey) PublishOptions {
 	t.Helper()
 	return PublishOptions{
 		Root:       pdp.RootSystem,
 		KeyID:      "system-key-1",
 		PrivateKey: priv,
-		Approvers:  []contract.ID{pid(t, principalBob)},
-		Fixtures:   baseFixtures(),
-		Now:        time.Unix(1_700_000_100, 0).UTC(),
+		// EditionEnterprise, so that every test written before the edition
+		// boundary existed keeps asserting exactly what it asserted before it.
+		// That is what makes those tests the NEGATIVE TWIN for this change:
+		// they are the evidence that an Enterprise deployment is not newly
+		// bounded by any of it, and they are only that evidence while they run
+		// unmodified apart from this one field. The community and evaluation
+		// boundaries get their own tests in edition_test.go rather than being
+		// retrofitted onto these.
+		Profile:   mustProfile(t, EditionEnterprise),
+		Approvers: []contract.ID{pid(t, principalBob)},
+		Fixtures:  baseFixtures(),
+		Now:       time.Unix(1_700_000_100, 0).UTC(),
 	}
 }
 

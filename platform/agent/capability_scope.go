@@ -25,5 +25,7 @@ func capabilityScopedEngineConfig() sharedpolicy.EngineConfig {
 	cfg.DisableCapabilityScoping = strings.EqualFold(
 		strings.TrimSpace(os.Getenv("AXONFLOW_CAPABILITY_SCOPING_DISABLED")), "true")
 	cfg.ExtraTextDocumentTools = extraTextDocumentToolsFromEnv()
+	// The installed policy packs' detectors (policy_packs.go, PRD v11 §1.9).
+	cfg.InstalledDetectors = installedPackDetectors
 	return cfg
 }

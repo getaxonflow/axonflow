@@ -140,7 +140,7 @@ func TestStringTermComment_CommentOutAuthBypass(t *testing.T) {
 		// Balanced-quote token with a trailing EMPTY comment on an EXECUTION
 		// connector (NOT text-document-scoped): the first quote closes its own
 		// literal, so the breakout gate excludes it. These are the FP class the
-		// naive end-of-line-only pattern denied under SQLI_ACTION=block.
+		// naive end-of-line-only pattern denied wherever the resolved action is block.
 		{"shell echo with trailing hash", `echo 'done'  #`},
 		{"git commit with trailing hash", `git commit -m 'wip' #`},
 		{"sql select with trailing empty dash comment", `SELECT count(*) FROM t WHERE region='EU' --`},

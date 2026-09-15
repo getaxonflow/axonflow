@@ -9,7 +9,15 @@ Decision Mode integration, OJK audit export, and UU PDP Art. 46 breach notificat
 docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 ./scripts/setup-e2e-testing.sh enterprise
 source /tmp/axonflow-e2e-env.sh
-export PII_ACTION=block  # Required for deny-path tests
+
+# Deny-path tests need your organization's recorded PII override set to block.
+# Since v11 environment variables no longer set detection actions. With a
+# customer-portal session for a user holding sso:configure:
+curl -X PUT http://localhost:8082/api/v1/detection-posture/pii \
+  -H "Content-Type: application/json" \
+  -b "axonflow_session=$PORTAL_SESSION" \
+  -d '{"action":"block"}'
+# Agents pick the change up within AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS (default 60).
 ```
 
 ## Examples

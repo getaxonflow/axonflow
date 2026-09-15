@@ -1,19 +1,15 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
+	"time"
 
 	"axonflow/platform/agent/license"
 )
@@ -33,10 +29,6 @@ type LicenseChecker interface {
 	// OrgPolicyLimit returns the maximum number of organization policies allowed.
 	// Returns -1 for unlimited (Enterprise).
 	OrgPolicyLimit() int
-
-	// CustomPolicyConnectorLimit returns the maximum number of connectors with custom policies.
-	// Returns -1 for unlimited (Enterprise).
-	CustomPolicyConnectorLimit() int
 
 	// AuditRetentionDays returns the number of days audit logs are retained.
 	AuditRetentionDays() int
@@ -130,11 +122,6 @@ func (d *DefaultLicenseChecker) PolicyLimit() int {
 // OrgPolicyLimit returns 0 for Community (org policies not allowed).
 func (d *DefaultLicenseChecker) OrgPolicyLimit() int {
 	return 0
-}
-
-// CustomPolicyConnectorLimit returns the Community custom policy connector limit.
-func (d *DefaultLicenseChecker) CustomPolicyConnectorLimit() int {
-	return license.CommunityLimits.CustomPolicyConnectors
 }
 
 // AuditRetentionDays returns 3 days for Community.
@@ -264,12 +251,6 @@ func (e *EnvLicenseChecker) OrgPolicyLimit() int {
 	return limits.OrgPolicies
 }
 
-// CustomPolicyConnectorLimit returns the maximum number of connectors with custom policies.
-func (e *EnvLicenseChecker) CustomPolicyConnectorLimit() int {
-	limits := license.GetCurrentLimits(context.Background())
-	return limits.CustomPolicyConnectors
-}
-
 // AuditRetentionDays returns the number of days audit logs are retained.
 func (e *EnvLicenseChecker) AuditRetentionDays() int {
 	limits := license.GetCurrentLimits(context.Background())
@@ -388,16 +369,59 @@ func (e *EnvLicenseChecker) MaxEvidenceExportsPerDay() int {
 type TierValidationError struct {
 	Message string
 	Code    string
+	// RetryAfter is non-zero only when the refusal is the OUTAGE one
+	// (admission.ReasonDependencyUnreachable), which is the one refusal a
+	// client should retry. It renders as the Retry-After header.
+	//
+	// Without it a database blip on this plane renders as a bare 402 "Payment
+	// Required", which is the wrong word for it and gives the client nothing
+	// to act on. The agent planes already pair the same status with the same
+	// header for the same condition, so this keeps ONE rendering of "tier
+	// admission refused" across both binaries rather than introducing a 503
+	// here that the agent does not send. (R3 round 2, NIT-R2-3.)
+	RetryAfter time.Duration
+	// Policy is the principal that crossed the ceiling, on a refusal that came
+	// from a batch admission. Empty on every other refusal.
+	//
+	// A ceiling that says only "too many" leaves an author a document to
+	// bisect. While admission was one call per policy the route reported the
+	// loop variable; #3973 made it a single all-or-nothing call, so the name has
+	// to travel on the refusal itself or it is lost.
+	Policy string
 }
 
 // Error implements the error interface.
+// HTTPStatus is the status this refusal renders as.
+//
+// 402 for a SCALE limit (#3593: ERR_TIER_LIMIT_*), 403 for everything else.
+// The distinction is the one the agent planes already make: a scale ceiling is
+// a commercial fact about the deployment's entitlement, and 402 is what the
+// rest of this codebase uses for that (budget exhaustion in the gateway
+// pre-check and clientRequestHandler); a tier GATE - "this tier may not do
+// that at all" - stays 403. Without this the org-root refusal rendered 403
+// while doc.go, the CHANGELOG and the PR body all promised 402 "on every wire
+// that carries a status", which the independent R3 caught as MAJOR-3.
+func (e *TierValidationError) HTTPStatus() int {
+	if strings.HasPrefix(e.Code, "ERR_TIER_LIMIT_") {
+		return http.StatusPaymentRequired
+	}
+	return http.StatusForbidden
+}
+
+// Error carries Policy when the refusal names one, because this string is what
+// the logs get and a batch refusal that does not name its policy replaced the
+// old per-row "policy %d: " prefix with nothing.
 func (e *TierValidationError) Error() string {
+	if e.Policy != "" {
+		return fmt.Sprintf("%s [policy %s] (%s)", e.Message, e.Policy, e.Code)
+	}
 	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
 }
 
 // IsTierValidationError checks if an error is a TierValidationError.
 func IsTierValidationError(err error) bool {
-	_, ok := err.(*TierValidationError)
+	var t *TierValidationError
+	ok := errors.As(err, &t)
 	return ok
 }
 
@@ -416,7 +440,6 @@ const (
 	ErrCodeOrgTierEvaluationOrHigher    = "ORG_TIER_REQUIRES_EVALUATION_OR_HIGHER"
 	ErrCodePolicyLimitExceeded          = "POLICY_LIMIT_EXCEEDED"
 	ErrCodeOrgPolicyLimitExceeded       = "ORG_POLICY_LIMIT_EXCEEDED"
-	ErrCodeConnectorLimitExceeded       = "CONNECTOR_LIMIT_EXCEEDED"
 	ErrCodeLicenseExpired               = "LICENSE_EXPIRED"
 	ErrCodeCostEstimateLimitExceeded    = "COST_ESTIMATE_LIMIT_EXCEEDED"
 	ErrCodePendingApprovalLimitExceeded = "PENDING_APPROVAL_LIMIT_EXCEEDED"

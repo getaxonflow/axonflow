@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** 9.0.0 | **Platform Version:** 9.14.0
+**SDK Version:** 9.4.0 | **Platform Version:** 11.0.0
 
 **Status:** Production Ready
 
@@ -226,6 +226,8 @@ async getPlanVersions(planId: string): Promise<PlanVersionsResponse>
 
 ### Policy Management
 
+> **v11:** the create, update, delete and toggle methods below call routes that refuse the write, because `migrations/core/172` makes the legacy policy tables read-only to the application roles. The Orchestrator and the Agent both answer `409 LEGACY_POLICY_WRITE_FROZEN`. Reads, pattern tests and overrides are unaffected. Policy is authored through `/api/v1/typed-policies`.
+
 #### Static Policies (Regex-based)
 
 ```typescript
@@ -417,7 +419,7 @@ try {
 The SDK exports from `@axonflow/sdk`:
 
 - **`AxonFlow`** -- The client class (also available as `default` export).
-- **`VERSION`** -- SDK version string (`'9.0.0'`).
+- **`VERSION`** -- SDK version string (`'9.4.0'`).
 - **`wasRedacted()`** -- Utility to check if a connector response was redacted.
 - **`WorkflowHelpers`** -- Helper utilities for workflow operations.
 - **`ExecutionHelpers`** -- Helper utilities for unified execution operations.
@@ -426,4 +428,4 @@ The SDK exports from `@axonflow/sdk`:
 
 ---
 
-*This specification describes the AxonFlow TypeScript SDK v9.3.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
+*This specification describes the AxonFlow TypeScript SDK v9.4.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*

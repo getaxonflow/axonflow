@@ -6,30 +6,32 @@ package obligation
 import (
 	"fmt"
 	"sort"
+
+	"axonflow/platform/decision/contract"
 )
 
-// Schema is the versioned contract for one obligation type.
+// Schema is the EXECUTOR REGISTRATION for one obligation type at one version:
+// who discharges it, when, with what evidence, and what happens on failure.
 //
 // WHAT IS DELIBERATELY ABSENT: there is no composition function, no precedence
-// list, no "beats" or "overrides" field, and no family override. ADR-065 says
-// "a schema can validate its own parameters but cannot redefine its family's
-// algebra", and the way to guarantee that is to give the schema nowhere to put
-// one. The single func-typed field is ValidateParams, and
+// list, no "beats" or "overrides" field, no family, and no parameter model.
+// ADR-065 says "a schema can validate its own parameters but cannot redefine
+// its family's algebra", and the way to guarantee that is to give the schema
+// nowhere to put one. The family is a property of the canonical TYPE
+// (contract.FamilyOf), so a schema cannot record one axis and have composition
+// enforce another. The single func-typed field is ValidateParams, and
 // TestSchemaCannotCarryACompositionHook fails if a second one is ever added -
 // including one added in good faith with an innocuous name.
 type Schema struct {
-	// Type and Version are the identity. (Type, Version) is the registry key.
-	Type    Type
+	// Type and Version are the identity. (Type, Version) is the registry key
+	// and is the same identity a PEP advertises (contract.Capability).
+	Type    contract.ObligationType
 	Version int
-
-	// Family selects the composition algebra. It is read by the algebra
-	// dispatcher and cannot be overridden per-schema.
-	Family Family
 
 	// Owner is the named enforcement component that discharges this
 	// obligation. ADR-065: "an obligation is a typed instruction owned by a
 	// named enforcement component". An obligation with no owner has no
-	// executor, and the phase-ordering algebra denies on a missing executor.
+	// executor, and the phase-ordering pass denies on a missing executor.
 	Owner string
 
 	// Phases are the phases in which this obligation may be discharged. An
@@ -48,9 +50,12 @@ type Schema struct {
 	// include a release-gating phase.
 	CompletionEvidence string
 
-	// Delivery is the guarantee an out-of-band obligation must have. Required
-	// for schemas whose Phases include PhaseOutOfBand.
-	Delivery DeliveryGuarantee
+	// Delivery is the guarantee an out-of-band obligation's EXECUTOR provides,
+	// in the canonical vocabulary. Required for schemas whose Phases include
+	// PhaseOutOfBand. The guarantee an OBLIGATION demands travels as its
+	// `delivery` parameter and is composed by the algebra; this is the
+	// executor's side of that contract, and pre-permit proof 6 compares them.
+	Delivery contract.Delivery
 
 	// OnFailure is the failure behaviour. FailRecorded is legal only where the
 	// obligation can only ever be advisory.
@@ -62,35 +67,29 @@ type Schema struct {
 	// DependsOn lists obligation types that must be discharged BEFORE this
 	// one. It is the input to the phase-ordering DAG. A dependency on a type
 	// absent from the plan is not an error (nothing to wait for); a CYCLE is.
-	DependsOn []Type
+	DependsOn []contract.ObligationType
 
 	// ValidateParams is the schema's own parameter validation, run in addition
-	// to Params.Validate. This is the ONLY behaviour a schema contributes, and
-	// it can only REJECT - it is handed a copy and returns an error, so it
-	// cannot rewrite what it was given.
-	ValidateParams func(Params) error
+	// to the canonical validator. This is the ONLY behaviour a schema
+	// contributes, and it can only REJECT - it is handed a copy and returns an
+	// error, so it cannot rewrite what it was given.
+	ValidateParams func(contract.Obligation) error
 }
+
+// Family returns the composition family of the schema's type. It is derived,
+// never declared: a schema has no say in which algebra composes its type.
+func (s Schema) Family() (contract.ObligationFamily, error) { return contract.FamilyOf(s.Type) }
 
 // Validate checks a schema's internal consistency at registration time.
 func (s Schema) Validate() error {
 	if s.Type == "" {
 		return fmt.Errorf("obligation schema: type is required")
 	}
+	if _, err := contract.FamilyOf(s.Type); err != nil {
+		return fmt.Errorf("obligation schema: %w; the registry cannot register a type the canonical vocabulary does not declare", err)
+	}
 	if s.Version <= 0 {
 		return fmt.Errorf("obligation schema %s: version must be >= 1", s.Type)
-	}
-	if s.Family == "" {
-		return fmt.Errorf("obligation schema %s: family is required", s.Type)
-	}
-	if _, ok := familyAlgebras[s.Family]; !ok {
-		return fmt.Errorf("obligation schema %s: family %q has no algebra", s.Type, s.Family)
-	}
-	if s.Family == FamilyPhaseOrdering {
-		// Phase ordering composes the whole plan; no type belongs to it. A
-		// schema claiming it would be asking for an algebra whose domain is
-		// not a set of obligations.
-		return fmt.Errorf("obligation schema %s: family %q is a plan-level algebra and cannot own a type",
-			s.Type, FamilyPhaseOrdering)
 	}
 	if s.Owner == "" {
 		return fmt.Errorf("obligation schema %s: owner is required (an obligation with no owner has no executor)", s.Type)
@@ -112,8 +111,12 @@ func (s Schema) Validate() error {
 	if gates && s.CompletionEvidence == "" {
 		return fmt.Errorf("obligation schema %s: a release-gating phase requires completion_evidence (ADR-065 pre-permit proof 5)", s.Type)
 	}
-	if oob && s.Delivery.Rank() < 0 {
-		return fmt.Errorf("obligation schema %s: an out-of-band phase requires a delivery guarantee (ADR-065 pre-permit proof 6)", s.Type)
+	if oob {
+		if err := s.Delivery.Validate(); err != nil {
+			return fmt.Errorf("obligation schema %s: an out-of-band phase requires a delivery guarantee (ADR-065 pre-permit proof 6): %w", s.Type, err)
+		}
+	} else if s.Delivery != "" {
+		return fmt.Errorf("obligation schema %s: declares delivery %q but no out-of-band phase, so nothing would honour it", s.Type, s.Delivery)
 	}
 	switch s.OnFailure {
 	case FailClosed:
@@ -129,40 +132,25 @@ func (s Schema) Validate() error {
 		if d == s.Type {
 			return fmt.Errorf("obligation schema %s: depends on itself", s.Type)
 		}
+		if _, err := contract.FamilyOf(d); err != nil {
+			return fmt.Errorf("obligation schema %s: depends on %q, which %v", s.Type, d, err)
+		}
 	}
 	return nil
 }
 
-// SubsumptionRule is the REVIEWED escape hatch ADR-065 allows for otherwise
-// incomparable disclosure transforms: "incomparable unless the registry
-// contains a reviewed subsumption rule".
-//
-// It lives on the REGISTRY, not on a schema, and that placement is the whole
-// point. A schema is authored per obligation type and could be added by
-// anyone extending the type set; a registry entry is platform-owned, reviewed
-// once, and applies to the family. This is how the ADR permits an exception
-// without letting a policy or schema invent one.
-type SubsumptionRule struct {
-	// Weaker and Stronger are canonical transform renderings (Transform.Canonical).
-	// The rule asserts: Stronger reveals no more than Weaker, so on a leaf
-	// carrying both, Stronger wins.
-	Weaker   string
-	Stronger string
-	// Reason records the review that approved the rule. Required: an
-	// unexplained subsumption rule is an unreviewed one.
-	Reason string
-}
-
-// Registry holds the versioned obligation schemas and the reviewed
-// disclosure-subsumption rules.
+// Registry holds the versioned executor registrations and the reviewed
+// disclosure-subsumption rules the algebra is handed.
 //
 // A Registry is immutable after Build. Nothing in the decision path may
 // register a schema; a runtime registration would let a request change the
 // meaning of the plan that is evaluating it.
 type Registry struct {
-	schemas     map[Capability]Schema
-	subsumption map[string]string // weaker -> stronger
-	rules       []SubsumptionRule
+	schemas map[contract.Capability]Schema
+	// subsumption is contract's validated rule set. The registry HOLDS the
+	// reviewed rules - registration is platform-owned - and hands them to the
+	// algebra unchanged; it never applies one.
+	subsumption *contract.SubsumptionRules
 	// version identifies the registry snapshot. It is bound into the decision
 	// proof, so a registry change invalidates outstanding proofs loudly.
 	version string
@@ -172,7 +160,7 @@ type Registry struct {
 type RegistryBuilder struct {
 	version string
 	schemas []Schema
-	rules   []SubsumptionRule
+	rules   []contract.SubsumptionRule
 }
 
 // NewRegistryBuilder starts an empty builder. version is bound into decision
@@ -188,7 +176,7 @@ func (b *RegistryBuilder) Add(s Schema) *RegistryBuilder {
 }
 
 // AddSubsumption stages a reviewed disclosure-subsumption rule.
-func (b *RegistryBuilder) AddSubsumption(r SubsumptionRule) *RegistryBuilder {
+func (b *RegistryBuilder) AddSubsumption(r contract.SubsumptionRule) *RegistryBuilder {
 	b.rules = append(b.rules, r)
 	return b
 }
@@ -199,62 +187,29 @@ func (b *RegistryBuilder) Build() (*Registry, error) {
 		return nil, fmt.Errorf("obligation registry: version is required (it is bound into decision proofs)")
 	}
 	r := &Registry{
-		schemas:     make(map[Capability]Schema, len(b.schemas)),
-		subsumption: make(map[string]string, len(b.rules)),
-		version:     b.version,
+		schemas: make(map[contract.Capability]Schema, len(b.schemas)),
+		version: b.version,
 	}
 	for _, s := range b.schemas {
 		if err := s.Validate(); err != nil {
 			return nil, err
 		}
-		key := Capability{Type: s.Type, Version: s.Version}
+		key := contract.Capability{Type: s.Type, Version: s.Version}
 		if _, dup := r.schemas[key]; dup {
 			return nil, fmt.Errorf("obligation registry: duplicate schema %s", key)
 		}
 		r.schemas[key] = s
 	}
-	for _, rule := range b.rules {
-		if rule.Weaker == "" || rule.Stronger == "" {
-			return nil, fmt.Errorf("obligation registry: subsumption rule needs both a weaker and a stronger transform")
-		}
-		if rule.Reason == "" {
-			return nil, fmt.Errorf("obligation registry: subsumption rule %s -> %s has no recorded review reason", rule.Weaker, rule.Stronger)
-		}
-		if rule.Weaker == rule.Stronger {
-			return nil, fmt.Errorf("obligation registry: subsumption rule is reflexive (%s)", rule.Weaker)
-		}
-		if existing, dup := r.subsumption[rule.Weaker]; dup {
-			return nil, fmt.Errorf("obligation registry: %s already subsumed by %s; a second rule (%s) would make resolution order-dependent",
-				rule.Weaker, existing, rule.Stronger)
-		}
-		r.subsumption[rule.Weaker] = rule.Stronger
-		r.rules = append(r.rules, rule)
+	// The rule set is validated by the algebra's own constructor - reason
+	// required, no reflexive rule, one stronger per weaker, acyclic, disclosure
+	// family only - so that a rule this registry accepts is a rule composition
+	// accepts, with no second reading of what a valid rule is.
+	rules, err := contract.NewSubsumptionRules(b.rules...)
+	if err != nil {
+		return nil, fmt.Errorf("obligation registry: %w", err)
 	}
-	// A subsumption CYCLE would make "the least-disclosing transform" depend
-	// on which one the loop happened to visit first.
-	if err := r.checkSubsumptionAcyclic(); err != nil {
-		return nil, err
-	}
+	r.subsumption = rules
 	return r, nil
-}
-
-func (r *Registry) checkSubsumptionAcyclic() error {
-	for start := range r.subsumption {
-		seen := map[string]struct{}{start: {}}
-		cur := start
-		for {
-			next, ok := r.subsumption[cur]
-			if !ok {
-				break
-			}
-			if _, loop := seen[next]; loop {
-				return fmt.Errorf("obligation registry: subsumption cycle through %s", next)
-			}
-			seen[next] = struct{}{}
-			cur = next
-		}
-	}
-	return nil
 }
 
 // Version reports the registry snapshot version.
@@ -266,87 +221,98 @@ func (r *Registry) Version() string { return r.version }
 // advertise the EXACT capability and version; a registry that resolves v0 or a
 // missing version to "whatever is newest" would let a v1 PEP be handed a v2
 // obligation it cannot discharge.
-func (r *Registry) Lookup(t Type, version int) (Schema, bool) {
-	s, ok := r.schemas[Capability{Type: t, Version: version}]
+func (r *Registry) Lookup(t contract.ObligationType, version int) (Schema, bool) {
+	s, ok := r.schemas[contract.Capability{Type: t, Version: version}]
 	return s, ok
 }
 
-// Capabilities lists every (type, version) the registry knows, sorted. Used by
-// a PEP to publish "the exact obligation types and versions it supports".
-func (r *Registry) Capabilities() []Capability {
-	out := make([]Capability, 0, len(r.schemas))
+// Capabilities lists every (type, version) the registry knows, sorted. It is
+// the identity set a PEP built from this registry advertises, in the same
+// spelling the wire and the handshake use.
+func (r *Registry) Capabilities() []contract.Capability {
+	out := make([]contract.Capability, 0, len(r.schemas))
 	for c := range r.schemas {
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].Version < out[j].Version
-	})
-	return out
+	return contract.SortCapabilities(out)
+}
+
+// Profile renders the registry as an enforcement profile advertising every
+// capability it registers. A PEP that executes every registered obligation
+// advertises exactly this.
+func (r *Registry) Profile(id string) *contract.PEPProfile {
+	return &contract.PEPProfile{ID: id, Capabilities: r.Capabilities()}
 }
 
 // SubsumptionRules lists the reviewed rules, sorted, for the trace and for
 // tests that assert the default registry ships none.
-func (r *Registry) SubsumptionRules() []SubsumptionRule {
-	out := append([]SubsumptionRule(nil), r.rules...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Weaker != out[j].Weaker {
-			return out[i].Weaker < out[j].Weaker
-		}
-		return out[i].Stronger < out[j].Stronger
-	})
-	return out
-}
+func (r *Registry) SubsumptionRules() []contract.SubsumptionRule { return r.subsumption.Rules() }
 
-// subsumes reports whether stronger subsumes weaker through a reviewed rule,
-// following the chain. Both arguments are Transform.Canonical renderings.
-func (r *Registry) subsumes(weaker, stronger string) bool {
-	cur := weaker
-	for i := 0; i < len(r.subsumption)+1; i++ {
-		next, ok := r.subsumption[cur]
-		if !ok {
-			return false
-		}
-		if next == stronger {
-			return true
-		}
-		cur = next
+// Subsumption returns the sealed rule set for the algebra.
+func (r *Registry) Subsumption() *contract.SubsumptionRules { return r.subsumption }
+
+// UnknownCapabilities reports capabilities the profile advertises that the
+// registry does not define.
+//
+// This is not a decision gate - a PEP advertising a capability nobody asks for
+// is harmless - but it is the tell for a version-skewed deployment, and an
+// operator wants it in a startup log rather than discovering it when a
+// mandatory obligation denies in production.
+func (r *Registry) UnknownCapabilities(p *contract.PEPProfile) []contract.Capability {
+	if p == nil {
+		return nil
 	}
-	return false
+	var unknown []contract.Capability
+	for _, c := range contract.SortCapabilities(p.Capabilities) {
+		if _, ok := r.schemas[c]; !ok {
+			unknown = append(unknown, c)
+		}
+	}
+	return unknown
 }
 
 // ValidateObligation checks one obligation against the registry: instance
-// invariants, schema presence, family agreement, advisory-only, and the
+// invariants, schema presence, phase membership, advisory-only, and the
 // schema's own parameter validation.
 func (r *Registry) ValidateObligation(o Obligation) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	s, ok := r.Lookup(o.Type, o.Version)
+	s, ok := r.Lookup(o.Type, o.SchemaVersion)
 	if !ok {
-		return fmt.Errorf("obligation %s: no schema registered for version %d", o.Type, o.Version)
+		return fmt.Errorf("obligation %s: no schema registered for version %d", o.Type, o.SchemaVersion)
 	}
-	if s.AdvisoryOnly && o.Enforcement == Mandatory {
+	if s.AdvisoryOnly && o.Mandatory {
 		return fmt.Errorf("obligation %s: schema is advisory-only and cannot be instantiated as mandatory", o.Type)
 	}
-	// A NotApplicable or Unknown obligation may carry nil params (see
+	phaseOK := false
+	for _, p := range s.Phases {
+		if p == o.Phase {
+			phaseOK = true
+		}
+	}
+	if !phaseOK {
+		return fmt.Errorf("obligation %s: phase %q is not one the schema declares (%v)", o.Type, o.Phase, s.Phases)
+	}
+	// A NotApplicable or Unknown obligation carries no parameters (see
 	// Obligation.Validate); there is nothing to check against the schema.
-	if o.Params == nil {
+	if o.Applicability != Applicable {
 		return nil
 	}
-	if o.Params.Family() != s.Family {
-		return fmt.Errorf("obligation %s: params belong to family %q but the schema declares %q",
-			o.Type, o.Params.Family(), s.Family)
-	}
-	if err := o.Params.Validate(); err != nil {
-		return fmt.Errorf("obligation %s: %w", o.Type, err)
-	}
 	if s.ValidateParams != nil {
-		if err := s.ValidateParams(o.Params); err != nil {
+		if err := s.ValidateParams(o.Obligation); err != nil {
 			return fmt.Errorf("obligation %s: schema validation: %w", o.Type, err)
 		}
 	}
 	return nil
+}
+
+// sortedTypes renders a type set in a stable order for traces.
+func sortedTypes(in map[contract.ObligationType]struct{}) []string {
+	out := make([]string, 0, len(in))
+	for t := range in {
+		out = append(out, string(t))
+	}
+	sort.Strings(out)
+	return out
 }

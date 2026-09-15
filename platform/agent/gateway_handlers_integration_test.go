@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -18,9 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
+	"axonflow/platform/decision/activation"
+	"axonflow/platform/decision/contract"
+	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/testutil"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -262,9 +258,11 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("Pre-check blocks Indonesia NIK when PII_ACTION=block", func(t *testing.T) {
-		t.Setenv("PII_ACTION", "block")
-		ResetDetectionConfigCache()
+	// The pre-checks below resolve no organization, so each pins the pii
+	// override into the gateway config's override slot (#3961: no environment
+	// variable sets an action).
+	t.Run("Pre-check blocks Indonesia NIK under a pii=block override", func(t *testing.T) {
+		pinGatewayOverride(t, func(c *ModeDetectionConfig) { c.PIIAction = DetectionActionBlock })
 
 		reqBody := PreCheckRequest{
 			ClientID: "test-client-nik",
@@ -289,7 +287,7 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 
 		if resp.Approved {
-			t.Error("Expected approved=false for NIK-containing query with PII_ACTION=block")
+			t.Error("Expected approved=false for NIK-containing query under a pii=block override")
 		}
 		if resp.BlockReason == "" {
 			t.Error("Expected non-empty block_reason for NIK detection")
@@ -297,9 +295,8 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		t.Logf("NIK blocked: reason=%s policies=%v", resp.BlockReason, resp.Policies)
 	})
 
-	t.Run("Pre-check detects Indonesia NIK as warn (default PII_ACTION)", func(t *testing.T) {
-		t.Setenv("PII_ACTION", "warn")
-		ResetDetectionConfigCache()
+	t.Run("Pre-check detects Indonesia NIK under a pii=warn override", func(t *testing.T) {
+		pinGatewayOverride(t, func(c *ModeDetectionConfig) { c.PIIAction = DetectionActionWarn })
 
 		reqBody := PreCheckRequest{
 			ClientID: "test-client-nik-warn",
@@ -317,32 +314,32 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		var resp PreCheckResponse
 		json.NewDecoder(rr.Body).Decode(&resp)
 
-		// With PII_ACTION=warn, PII is detected but not blocked
+		// Under a pii=warn override, PII is detected but not blocked
 		if rr.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d", rr.Code)
 		}
 		t.Logf("NIK warn mode: approved=%v", resp.Approved)
 	})
 
-	t.Run("Pre-check flags Indonesia NIK for redaction when PII_ACTION=redact", func(t *testing.T) {
-		// Regression for the NIK-slips-through-unredacted bug: under
-		// PII_ACTION=redact, critical Indonesia PII (NIK/NPWP) must signal
-		// redaction (approved=true + requires_redaction=true + the
-		// indonesia_pii_protection policy) exactly like India/RBI PII does.
-		// Before the fix this flag was never set, so NIK was forwarded
-		// unredacted while SSN/Aadhaar were redacted.
-		t.Setenv("PII_ACTION", "redact")
-		ResetDetectionConfigCache()
+	t.Run("Pre-check flags Indonesia NIK for redaction under a pii=redact override", func(t *testing.T) {
+		// Regression for the NIK-slips-through-unredacted bug, on the anchored
+		// engine: the organization's recorded pii=redact displaces the shipped
+		// NIK control, and the pre-check approves while instructing the
+		// redaction (requires_redaction) to a caller that declares it discharges
+		// field_redact. The organization root's replacement of the control is
+		// the policy that decided.
+		installNIKWorld(t, getDeploymentOrgID(), DetectionActionRedact)
 
 		reqBody := PreCheckRequest{
 			ClientID: "test-client-nik-redact",
-			Query:    "Customer NIK is 3174042506780001",
+			Query:    "Customer NIK is " + fixtureNIK,
 		}
 		bodyBytes, _ := json.Marshal(reqBody)
 
 		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-License-Key", "test-key")
+		req.Header.Set(contract.PEPHandshakeHeader, redactionHandshake(t))
 
 		rr := httptest.NewRecorder()
 		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
@@ -357,22 +354,14 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 
 		if !resp.Approved {
-			t.Errorf("Expected approved=true under PII_ACTION=redact (redact, not block); got block_reason=%s", resp.BlockReason)
+			t.Errorf("Expected approved=true under a pii=redact override (redact, not block); got block_reason=%s", resp.BlockReason)
 		}
 		if !resp.RequiresRedaction {
-			t.Error("BUG: expected requires_redaction=true for NIK under PII_ACTION=redact — NIK is slipping through unredacted")
+			t.Error("BUG: expected requires_redaction=true for NIK under a pii=redact override — NIK is slipping through unredacted")
 		}
-		foundPolicy := false
-		for _, p := range resp.Policies {
-			if p == "indonesia_pii_protection" {
-				foundPolicy = true
-				break
-			}
+		if want := activation.OverridePolicyIDPrefix + nikControl(t, gatewayRequestSeamScope); !slices.Contains(resp.Policies, want) {
+			t.Errorf("Expected the organization root's replacement %q in policies, got %v", want, resp.Policies)
 		}
-		if !foundPolicy {
-			t.Errorf("Expected 'indonesia_pii_protection' in policies, got %v", resp.Policies)
-		}
-		t.Logf("NIK redact mode: approved=%v requires_redaction=%v policies=%v", resp.Approved, resp.RequiresRedaction, resp.Policies)
 	})
 
 	t.Run("Pre-check allows clean Indonesian query", func(t *testing.T) {
@@ -403,9 +392,8 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("Pre-check blocks Indonesia NPWP legacy when PII_ACTION=block", func(t *testing.T) {
-		t.Setenv("PII_ACTION", "block")
-		ResetDetectionConfigCache()
+	t.Run("Pre-check blocks Indonesia NPWP legacy under a pii=block override", func(t *testing.T) {
+		pinGatewayOverride(t, func(c *ModeDetectionConfig) { c.PIIAction = DetectionActionBlock })
 
 		reqBody := PreCheckRequest{
 			ClientID: "test-client-npwp",
@@ -424,7 +412,7 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		json.NewDecoder(rr.Body).Decode(&resp)
 
 		if resp.Approved {
-			t.Error("Expected approved=false for NPWP-containing query with PII_ACTION=block")
+			t.Error("Expected approved=false for NPWP-containing query under a pii=block override")
 		}
 		t.Logf("NPWP blocked: reason=%s", resp.BlockReason)
 	})
@@ -520,9 +508,14 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 
 	t.Run("Valid JWT accepted", func(t *testing.T) {
 		validToken := generateTestJWT(map[string]interface{}{
+			"iss":       sharedidentity.UserTokenIssuer,
+			"sub":       "test-user-1",
 			"user_id":   "test-user-1",
 			"tenant_id": "test-client-enterprise",
+			"org_id":    "test-client-enterprise",
+			"jti":       "jti-gateway-integration",
 			"email":     "test@example.com",
+			"exp":       time.Now().Add(time.Hour).Unix(),
 		}, testJWTSecret)
 
 		reqBody := PreCheckRequest{

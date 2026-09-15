@@ -88,6 +88,10 @@ jobs:
               - 'platform/decision/**/*.tsv'
               - 'platform/decision/**/*.rego'
               - 'platform/decision/**/*.json'
+              # Untagged Go tests read the upgrade preflight itself (check 26's
+              # declarations among them), so an edit to the script alone must run
+              # the lanes that would catch it (#3746), as in test.yml.
+              - 'scripts/deployment/v9_self_hosted_preflight.sh'
 
   unit-tests:
     name: Unit Tests (All Modules)
@@ -334,21 +338,16 @@ jobs:
           cd platform/orchestrator
           go test -race -count=1 -timeout 10m
 
-      # THE SHADOW'S CONCURRENCY IS ONLY MEANINGFUL UNDER -race.
+      # THE SHARED POLICY ENGINE UNDER -race.
       #
-      # planeshadow runs a worker POOL (up to 64) sharing a recorder, a
-      # refcounted build-lock map and a bounded world cache, and every
-      # deployment wires it. Round 1 of this PR's review found a plain uint64
-      # incremented from every worker in code that ships enabled - and nothing
-      # in CI would have caught it, because no -race job covered this package
-      # and the one concurrent test wired a different recorder.
-      #
-      # shared/policy is included because it owns the emit sites the workers
-      # read their Observation from.
-      - name: Run the decision-shadow packages with the race detector
+      # This step was added for the decision-shadow observer's worker pool,
+      # which v11 removed (PRD v11 §1.3). shared/policy stays under the race
+      # detector because every enforcing seam reads its detector facts from
+      # request goroutines that share the engine's cached policy load.
+      - name: Run the shared policy engine with the race detector
         run: |
           cd platform
-          go test -race -count=1 -timeout 10m ./shared/planeshadow/ ./shared/policy/
+          go test -race -count=1 -timeout 10m ./shared/policy/
 
   integration-tests:
     name: Integration Tests
@@ -594,94 +593,13 @@ jobs:
             -bench 'BenchmarkGate17Decide|BenchmarkGate17Compile|BenchmarkGate17TimerFloor|BenchmarkGate17Activation/policies=(0|1|10)$' \
             -benchtime 1x
 
-      # ADR-065 gate 18 is "shadow migration has no unexplained fail-open
-      # difference for the agreed window". This is that sentence, executable:
-      # the legacy substrate is compiled, both engines are evaluated on every
-      # plane, and every difference is classified. UNEXPLAINED == 0 over a
-      # non-vacuous corpus is the operand, and the gate refuses an empty
-      # corpus, a plane with policy and no cases, and any compiled row the
-      # corpus never reached - because zero unexplained out of zero compared
-      # passes forever and passes hardest when the corpus is broken.
-      #
-      # -v so the per-plane counters and the coverage block land in the log.
-      # The number a reader needs is UNEXPLAINED per plane, and a summary
-      # nobody can see is a summary nobody checks.
-      # ADR-065 gate 18 and the compiler's own invariants.
+      # The legacy compiler's own invariants.
       #
       # `go test -run` with a name that matches NOTHING prints "no tests to
       # run" and exits 0, so a rename turns a named gate into a green step that
       # verified nothing. Each name is therefore run individually and its
       # `--- PASS:` line is required, which is the only way this shape of step
       # can fail for the right reason.
-      # ADR-065 gate 18 is "shadow migration has no unexplained fail-open
-      # difference for the agreed window". This is that sentence, executable:
-      # the legacy substrate is compiled, both engines are evaluated on every
-      # plane, and every difference is classified. UNEXPLAINED == 0 over a
-      # non-vacuous corpus is the operand, and the gate refuses an empty
-      # corpus, a plane with policy and no cases, and any compiled row the
-      # corpus never reached - because zero unexplained out of zero compared
-      # passes forever and passes hardest when the corpus is broken.
-      #
-      # -v so the per-plane counters and the coverage block land in the log.
-      # The number a reader needs is UNEXPLAINED per plane, and a summary
-      # nobody can see is a summary nobody checks.
-      # ADR-065 gate 18 and the compiler's own invariants.
-      #
-      # `go test -run` with a name that matches NOTHING prints "no tests to
-      # run" and exits 0, so a rename turns a named gate into a green step that
-      # verified nothing. Each name is therefore run individually and its
-      # `--- PASS:` line is required, which is the only way this shape of step
-      # can fail for the right reason.
-      - name: "ADR-065 gate 18: shadow diff, zero unexplained differences"
-        run: |
-          set -euo pipefail
-          cd platform/decision
-          echo "::notice::ADR-065 gate 18 running against head ${{ github.event.pull_request.head.sha || github.sha }}"
-          run_gate() {
-            local pkg="$1" name="$2" out
-            out=$(go test "$pkg" -count=1 -timeout 10m -v -run "^${name}$" 2>&1) || { echo "$out"; exit 1; }
-            echo "$out"
-            if ! grep -q -- "--- PASS: ${name}" <<< "$out"; then
-              echo "::error::${name} did not run. A -run pattern that matches nothing exits 0, so a renamed or"
-              echo "::error::deleted gate would otherwise be a green step that verified nothing."
-              exit 1
-            fi
-          }
-          for t in \
-            TestGatePassesOnAFaithfulCompilation \
-            TestPlantedSemanticChangeIsUnexplainedAndFailsTheGate \
-            TestPlantedObligationChangeIsUnexplained \
-            TestGateRefusesVacuity \
-            TestGateRefusesAReportThatCompiledNothing \
-            TestUnmigratedRowProducesAnUnexplainedFailOpen \
-            TestAnExpectedChangeDoesNotLaunderAResidualDifference \
-            TestAPreservedDefectIsContextAndNeverAnExplanation \
-            TestAPermanentlyAsymmetricRowExplainsNothing \
-            TestLegacyDefectDoesNotAbsorbAnExpectedChange \
-            TestProxyTierOrdersByTierBeforePriority \
-            TestProxyTierReturnsOneResult \
-            TestTheModelReadsContextFallthroughFields \
-            TestCallerSuppliableContextFieldIsDiffed \
-            TestTheCorpusUsesTheCompilationOptions \
-            TestOneOrgsPoliciesDoNotReachAnotherOrg \
-            TestSanitizedIdentifiersDoNotCollide \
-            TestUnmeasurableRowsAreReported \
-            TestTheSummaryStatesItsOwnProvenance \
-            TestDynamicRowsAreAlsoScanDropped \
-            TestCorrespondenceTableCoversEveryActionTheCompilerEmits \
-            TestLegacyModelRefusesARowItHasNoFactsFor \
-            TestEveryExpectedChangeRuleIsFalsifiable \
-            TestExpectedChangeRulesAreReachable \
-            TestObligationTargetsAndMultiplicityAreCompared \
-            TestApprovalClauseCountMustMatch \
-            TestProxyTierIsFirstMatchWins \
-            TestRowIdentityIsTableAndPolicyID \
-            TestACaseThatMissesItsClaimedRowFailsTheGate \
-            TestEmptyAuthorityRootActivates \
-          ; do
-            run_gate ./legacycompile/shadow/ "$t"
-          done
-
       - name: "ADR-065: legacy compiler, zero silent drops"
         run: |
           set -euo pipefail
@@ -691,21 +609,18 @@ jobs:
             out=$(go test ./legacycompile/ -count=1 -timeout 5m -v -run "^${name}$" 2>&1) || { echo "$out"; exit 1; }
             echo "$out"
             if ! grep -q -- "--- PASS: ${name}" <<< "$out"; then
-              echo "::error::${name} did not run; see the note in the gate-18 step above."
+              echo "::error::${name} did not run; a -run pattern that matches nothing exits 0 (this step's note)."
               exit 1
             fi
           }
           for t in \
             TestEveryRowProducesExactlyOneRecord \
             TestStatusIsDerivedNotAsserted \
-            TestBothReadPathsAreCompiled \
-            TestPostureLeverIsPerPlane \
-            TestEffectiveScanModelsBothTimestamps \
+            TestCategoryActionsArePerPlane \
             TestContextFallthroughFieldsCompileLive \
             TestContentOperatorsCompileAsDetectors \
             TestAnInexpressibleRowIsFiledAsAMigrationGap \
             TestEveryConditionIsExaminedRegardlessOfOrder \
-            TestReadPathDivergenceReportsAnEmptySide \
             TestPhaseExcludedPlanesCarryAReason \
             TestUIFieldListMatchesTheConstant \
             TestPlaneModelCoversEveryStaticEvaluationSurface \
@@ -714,7 +629,7 @@ jobs:
             TestPlaneModelMatchesTheCensus \
             TestUnimplementedPlanesAreRecordedNotModelled \
             TestResolutionTableIsExhaustiveAndAgrees \
-            TestPostureLeverTableAgrees \
+            TestCategoryActionsApplyByCategory \
           ; do
             run_gate "$t"
           done
@@ -744,13 +659,13 @@ jobs:
         run: |
           cd platform/decision
           go test ./authoring/ -count=1 -timeout 10m -v \
-            -run 'TestPublishRunsEveryGateAndSigns|TestPublishIsTheOnlyPathToASignedArtifact|TestGauntlet|TestCrossRootPublicationIsRefused|TestASwappedSourceIsRefused|TestATamperedReportIsRefused|TestUnicodeNormalizationCannotForgeAnArtifact|TestActivationLifecycle|TestADeauthorizedKeyStopsActivation'
+            -run 'TestPublishRunsEveryGateAndSigns|TestPublishIsTheOnlyPathToASignedArtifact|TestPublishRefusesAnApproverOutsideThePrincipalVocabulary|TestTheAuthorCannotApproveTheirOwnPolicyUnderAnyPrincipalType|TestActivationComparesIdentityRatherThanItsRenderedForm|TestGauntlet|TestCrossRootPublicationIsRefused|TestASwappedSourceIsRefused|TestATamperedReportIsRefused|TestUnicodeNormalizationCannotForgeAnArtifact|TestActivationLifecycle|TestADeauthorizedKeyStopsActivation'
 
       - name: "Authoring: the published JSON Schema against the Go declarations"
         run: |
           cd platform/decision
           go test ./authoring/ -count=1 -timeout 10m \
-            -run 'TestSchemaCompiles|TestEveryEnumMatchesTheGoDeclarations|TestGeneratedDocumentsSatisfyTheSchema|TestTheSchemaRejectsWhatItShould'
+            -run 'TestSchemaCompiles|TestEveryEnumMatchesTheGoDeclarations|TestGeneratedDocumentsSatisfyTheSchema|TestTheSchemaRejectsWhatItShould|TestTheCompiledSchemaRefusesAPrincipalTypeOutsideTheVocabulary'
 
       - name: "Registry: posture, governed tags and the capability check"
         run: |
@@ -1050,11 +965,23 @@ jobs:
       - name: Test every standalone Go module under platform/ and scripts/
         run: |
           set -euo pipefail
-          # Exemptions: `<module> :: <reason>`. Each is checked below to be
-          # load-bearing, so an entry cannot outlive the module it excuses and
-          # then quietly cover its replacement.
-          EXEMPT='platform/decision :: has its own lane ("Unit Tests: Decision Contracts", and the twin in the community workflow) whose fixture, mutation and authoring gates a generic `go test ./...` would not replay'
-          EXEMPT_PATHS="$(printf '%s\n' "$EXEMPT" | sed 's/ :: .*//')"
+          # Exemptions come from go-module-dispositions.tsv, NOT from a variable
+          # here (#3940). This lane kept its own inline list, which is the exact
+          # shape the dispositions file exists to end: two exclusion sets over
+          # one tree, and the one that drifts is the one fewer people read.
+          # nested_module_discovery_test.sh requires a discovering lane to read
+          # this file for that reason, and it could not see this lane until
+          # #3940 widened its scope past the roots ee/ and examples/.
+          DISPOSITIONS=tests/regression-test-required/lib/go-module-dispositions.tsv
+          [ -f "$DISPOSITIONS" ] || { echo "::error::$DISPOSITIONS is absent; the exclusion set cannot be read and this step must not pass having guessed"; exit 1; }
+          # RESTRICTED TO WHAT THIS LANE DISCOVERS. The dispositions file covers
+          # the whole tree; this lane discovers platform/ and scripts/ only, and
+          # its staleness check below requires every exempt entry to be a module
+          # it found. Taking the file wholesale made rows for `ee` and for the
+          # runtime-e2e harnesses read as stale exemptions and failed the lane -
+          # a real red on the first CI run of #3940, because the structural
+          # guards check the lane's SHAPE and only running it checks this.
+          EXEMPT_ALL="$(awk -F'\t' '!/^#/ && NF >= 2 {print $1}' "$DISPOSITIONS")"
           for d in platform scripts; do
             [ -d "$d" ] || { echo "::error::$d/ does not exist, so module discovery is looking at nothing"; exit 1; }
           done
@@ -1088,6 +1015,9 @@ jobs:
             -not -path '*/vendor/*' \
             -print0 | xargs -0 -n1 dirname | awk '$0 != "platform"' | sort)"
           [ -n "$FOUND" ] || { echo "::error::no separate Go modules discovered under platform/ or scripts/; discovery has stopped working"; exit 1; }
+          # The exemptions that apply HERE: the dispositions rows intersected
+          # with what this lane discovered. Computed after FOUND for that reason.
+          EXEMPT_PATHS="$(printf '%s\n' "$EXEMPT_ALL" | grep -xF -f <(printf '%s\n' "$FOUND") || true)"
           # -print0 above fixes only the FIND half of the whitespace problem.
           # `for m in $FOUND` still word-splits, and SELECTED is a
           # space-joined list read back by `case " $SELECTED " in *" $req "*`,
@@ -1105,7 +1035,7 @@ jobs:
           SELECTED=""
           for m in $FOUND; do
             if printf '%s\n' "$EXEMPT_PATHS" | grep -qxF "$m"; then
-              echo "exempt: $m -- $(printf '%s\n' "$EXEMPT" | grep -F "$m :: " | sed 's/.* :: //')"
+              echo "exempt: $m -- $(awk -F'\t' -v m="$m" '$1 == m {print $2 ": " $3}' "$DISPOSITIONS")"
               continue
             fi
             SELECTED="$SELECTED $m"
@@ -1157,14 +1087,21 @@ jobs:
   # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
   # The summary job above cannot carry this - it is a REQUIRED context and must
   # stay satisfiable on a docs-only change, so it accepts a skip. This job is
-  # NOT required: it counts the jobs that executed, writes the count to the step
-  # summary and goes RED when the count is zero, so "nothing ran" is a
-  # first-class outcome a citer sees on the checks list rather than a detail
-  # inside a green run. Red, not neutral: a skipped or neutral conclusion
-  # satisfies a required check exactly as success does (#3755), and a census
-  # that could be satisfied by not running would be the defect it counts.
-  # `needs` mirrors the summary's so the two report on one set. Pinned by
-  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  # NOT required: it counts the jobs that executed and writes the count to the
+  # step summary. Zero executed is reported either way, but the CONCLUSION now
+  # depends on why (#3649): RED when jobs were SELECTED and did not run, or when
+  # the detector broke or declared no output carrying a value; a NOTICE when it
+  # selected nothing or was itself skipped. It used to go red on ALL FIVE, which
+  # made every PR that touched no gated path carry a permanent red - and the red
+  # was then explained away with a sentence about drafts that the tool had never
+  # observed. Red where it means something, so it is not the noise a citer
+  # learns to skip past. Red rather than neutral in those cases: a skipped or
+  # neutral conclusion satisfies a required check exactly as success does
+  # (#3755), and a census that could be satisfied by not running would be the
+  # defect it counts. `needs` mirrors the summary's so the two report on one
+  # set. Pinned by tests/regression-test-required/
+  # census_red_only_when_jobs_were_expected_test.sh (which branch fires for
+  # which state) and zero_executed_jobs_are_visible_test.sh (the block's shape).
   tests-executed-census:
     name: Tests executed census
     runs-on: ubuntu-latest
@@ -1193,29 +1130,64 @@ jobs:
               print("::error::the census needs no job besides the change detector; it is counting nothing")
               sys.exit(1)
           executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
-          skipped = [j for j, r in substantive if r == "skipped"]
           verdict = f"{len(executed)} of {len(substantive)} jobs executed"
           lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
           lines += [f"| `{j}` | {r} |" for j, r in rows]
-          if not executed:
-              detector_result = dict(rows).get(detector, "absent")
-              if detector_result == "success":
-                  why = "the change detector ran and matched no relevant path"
-              elif detector_result == "skipped":
-                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
-              else:
-                  why = f"the change detector reported {detector_result}"
-              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
-                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
-                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not executed:
-              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+          def emit():
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as fh:
+                      fh.write("\n".join(lines) + "\n")
+              print("\n".join(lines))
+          if executed:
+              emit()
+              sys.exit(0)
+          # Nothing executed. Whether that is a finding depends on whether anything
+          # was EXPECTED to run, which only the change detector can say (#3649):
+          #   detector success + an output flag true  -> jobs were selected and did
+          #       not run: RED, the rollup beside this is green on a skip.
+          #   detector success + no flag true        -> nothing was SELECTED. What is
+          #       observed is that no output was the string `true` - NOT that the
+          #       globs matched nothing, and NOT that any skip was by design. Say
+          #       only that. Not evidence, not a failure: NOTICE.
+          #   detector success + no output with a VALUE -> a detector that declares no
+          #       output carrying a value cannot have selected anything: wiring broken,
+          #       not a path miss, and indistinguishable from the line above unless it is
+          #       separated here. RED.
+          #   detector skipped                       -> draft tier or an event this
+          #       workflow does not act on: nothing was asked to run: NOTICE.
+          #   detector failure/cancelled             -> the selector itself broke: RED.
+          detector_info = needs.get(detector) or {}
+          detector_result = detector_info.get("result", "absent")
+          outputs = detector_info.get("outputs") or {}
+          selected = sorted(k for k, v in outputs.items() if str(v).strip().lower() == "true")
+          sentence = ("**Nothing failed and nothing was tested.** Every job this workflow could run was skipped, "
+                      "so this run is NOT evidence about the code; a green summary beside it is a statement about "
+                      "mergeability only (#3649).")
+          if detector_result == "success" and not any(str(v).strip() for v in outputs.values()):
+              lines += ["", sentence, f"The change detector reported success but declared no output carrying a VALUE (outputs: {json.dumps(outputs)}). Every detector here declares at least one, and `dorny/paths-filter` always writes the literal `true` or `false` - so an absent map, or one whose values are all empty, is the detector's own wiring rather than a path that failed to match. The two causes its comment names, a renamed step id and a misspelled output key, yield the EMPTY STRING rather than a missing key, so testing for an absent map alone would have missed exactly the defects this branch is for. A run in this state would acquit itself on every PR forever."]
+              emit()
+              print(f"::error::{verdict}: the change detector succeeded but declared no output carrying a value; it cannot have selected anything, so this is a detector wiring defect rather than a path miss (#3649).")
               sys.exit(1)
+          if detector_result == "success" and not selected:
+              lines += ["", sentence, f"The change detector reported no selection flag true (outputs: {json.dumps(outputs)}). That is what was OBSERVED; whether its globs matched nothing, or matched something this workflow does not gate on, is not visible from here."]
+              emit()
+              print(f"::notice::{verdict}: the change detector reported no selection flag true; nothing was expected to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "skipped":
+              lines += ["", sentence, "The change detector itself was skipped (a draft-tier run, or an event this workflow does not act on), so nothing was asked to run."]
+              emit()
+              print(f"::notice::{verdict}: the change detector was skipped; nothing was asked to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "success":
+              lines += ["", sentence, f"The change detector SELECTED {', '.join('`'+s+'`' for s in selected)} and the jobs that carry them did not run - a skip-accepting rollup would call that green."]
+              emit()
+              print(f"::error::{verdict}: nothing failed and nothing was tested, but the change detector selected {', '.join(selected)} and no job ran. Jobs were expected and did not execute; this run proves nothing about the code (#3649).")
+              sys.exit(1)
+          lines += ["", sentence, f"The change detector reported `{detector_result}`, so nothing downstream could be selected."]
+          emit()
+          print(f"::error::{verdict}: nothing failed and nothing was tested, and the change detector reported {detector_result}; the selector itself did not run to a verdict (#3649).")
+          sys.exit(1)
           PY
 
   test-summary:

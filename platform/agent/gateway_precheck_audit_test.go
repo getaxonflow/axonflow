@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -23,7 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"axonflow/platform/agent/indonesia"
-	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/decision/contract"
 )
 
 // =============================================================================
@@ -52,29 +44,26 @@ import (
 // by TestRecordGatewayPreCheckAudit_WritesCanonicalRow below.
 // =============================================================================
 
-// TestGatewayPreCheckAuditVerdict pins the terminal-outcome → canonical-verdict
-// mapping, including precedence: a HITL hold outranks a hard block (the request is
-// pending approval, not refused), and a block outranks a redaction.
+// TestGatewayPreCheckAuditVerdict pins the terminal-outcome to canonical-verdict
+// mapping, including precedence: a block outranks a redaction. The pre-check
+// has no hold: its verdict is the anchored engine's, which answers a CHALLENGE
+// with a deny.
 func TestGatewayPreCheckAuditVerdict(t *testing.T) {
 	cases := []struct {
 		name              string
 		blocked           bool
-		requiresHITL      bool
 		requiresRedaction bool
 		want              string
 	}{
-		{"clean allow", false, false, false, gatewayAuditAllowed},
-		{"redaction only", false, false, true, gatewayAuditRedacted},
-		{"hard block", true, false, false, gatewayAuditBlocked},
-		{"HITL hold", false, true, false, gatewayAuditNeedsApproval},
-		{"block outranks redaction", true, false, true, gatewayAuditBlocked},
-		{"HITL outranks block", true, true, false, gatewayAuditNeedsApproval},
-		{"HITL outranks block+redaction", true, true, true, gatewayAuditNeedsApproval},
+		{"clean allow", false, false, gatewayAuditAllowed},
+		{"redaction only", false, true, gatewayAuditRedacted},
+		{"hard block", true, false, gatewayAuditBlocked},
+		{"block outranks redaction", true, true, gatewayAuditBlocked},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := gatewayPreCheckAuditVerdict(tc.blocked, tc.requiresHITL, tc.requiresRedaction); got != tc.want {
-				t.Errorf("gatewayPreCheckAuditVerdict(%v,%v,%v) = %q, want %q", tc.blocked, tc.requiresHITL, tc.requiresRedaction, got, tc.want)
+			if got := gatewayPreCheckAuditVerdict(tc.blocked, tc.requiresRedaction); got != tc.want {
+				t.Errorf("gatewayPreCheckAuditVerdict(%v,%v) = %q, want %q", tc.blocked, tc.requiresRedaction, got, tc.want)
 			}
 		})
 	}
@@ -88,7 +77,7 @@ func TestGatewayPreCheckAuditVerdict(t *testing.T) {
 // gatewayAuditBlocked through this same writer, so this is the red-on-revert guard
 // for those paths' persistence as well.
 func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
-	verdicts := []string{gatewayAuditAllowed, gatewayAuditBlocked, gatewayAuditRedacted, gatewayAuditNeedsApproval}
+	verdicts := []string{gatewayAuditAllowed, gatewayAuditBlocked, gatewayAuditRedacted}
 	for _, verdict := range verdicts {
 		t.Run(verdict, func(t *testing.T) {
 			mockDB, mock, err := sqlmock.New()
@@ -151,10 +140,20 @@ func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
 // community mode (the integration-test pattern) and returns the recorder.
 func newPreCheckRecorder(t *testing.T, query string) *httptest.ResponseRecorder {
 	t.Helper()
+	return newPreCheckRecorderWithHandshake(t, query, "")
+}
+
+// newPreCheckRecorderWithHandshake is newPreCheckRecorder for a caller
+// presenting handshake as its PEP handshake ("" presents none).
+func newPreCheckRecorderWithHandshake(t *testing.T, query, handshake string) *httptest.ResponseRecorder {
+	t.Helper()
 	body, _ := json.Marshal(PreCheckRequest{ClientID: "test-client-2642", Query: query})
 	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-License-Key", "test-key")
+	if handshake != "" {
+		req.Header.Set(contract.PEPHandshakeHeader, handshake)
+	}
 	rr := httptest.NewRecorder()
 	apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 	return rr
@@ -162,8 +161,10 @@ func newPreCheckRecorder(t *testing.T, query string) *httptest.ResponseRecorder 
 
 // setupPreCheckAuditTest wires community mode, a sqlmock usageDB, deterministic
 // detectors, and nils out the optional DB-backed services (circuit-breaker / cost /
-// shared engine / satellite authDB) so the ONLY DB write the handler performs is
-// the canonical audit row under test. Returns the mock + a cleanup.
+// satellite authDB) so the ONLY DB write the handler performs is the canonical
+// audit row under test. The shared engine stays the package's, which reads the
+// migrated database rather than usageDB: it is the anchored engine's detector
+// input, and a process without it cannot exist. Returns the mock + a cleanup.
 func setupPreCheckAuditTest(t *testing.T) (sqlmock.Sqlmock, func()) {
 	t.Helper()
 	communityCleanup := setupCommunityModeForTest(t)
@@ -177,14 +178,12 @@ func setupPreCheckAuditTest(t *testing.T) (sqlmock.Sqlmock, func()) {
 	origAuthDB := authDB
 	origCB := circuitBreakerInstance
 	origCost := costService
-	origEngine := sharedpolicy.GetGlobalEngine()
 	origIndo := indonesiaPIIDetector
 
 	usageDB = mockDB
 	authDB = nil // satellite write no-ops → only the canonical row hits usageDB
 	circuitBreakerInstance = nil
 	costService = nil
-	sharedpolicy.SetGlobalEngine(nil) // main exit takes the no-policy-engine branch (no DB)
 	indonesiaPIIDetector = indonesia.NewIndonesiaPIIDetector(indonesia.DefaultIndonesiaPIIDetectorConfig())
 	ResetDetectionConfigCache()
 
@@ -193,7 +192,6 @@ func setupPreCheckAuditTest(t *testing.T) (sqlmock.Sqlmock, func()) {
 		authDB = origAuthDB
 		circuitBreakerInstance = origCB
 		costService = origCost
-		sharedpolicy.SetGlobalEngine(origEngine)
 		indonesiaPIIDetector = origIndo
 		mockDB.Close()
 		ResetDetectionConfigCache()
@@ -232,15 +230,16 @@ func expectGatewayAuditRow(mock sqlmock.Sqlmock, wantDecision string) {
 }
 
 // TestGatewayPreCheck_IndonesiaBlockEmitsCanonicalAuditRow is the red-on-revert
-// guard for the Indonesia PII block deny path: a NIK under PII_ACTION=block MUST
-// write a canonical audit_logs row with policy_decision='blocked' + plane=gateway.
-// Remove the recordGatewayPreCheckAudit call from that branch and the expected
-// INSERT never fires → ExpectationsWereMet fails.
+// guard for the Indonesia PII block deny path: a NIK under a pii=block override
+// MUST write a canonical audit_logs row with policy_decision='blocked' +
+// plane=gateway. Remove the recordGatewayPreCheckAudit call from that branch and
+// the expected INSERT never fires → ExpectationsWereMet fails. The community
+// pre-check resolves no org, so the override is pinned into the gateway config's
+// override slot (pinGatewayOverride).
 func TestGatewayPreCheck_IndonesiaBlockEmitsCanonicalAuditRow(t *testing.T) {
 	mock, cleanup := setupPreCheckAuditTest(t)
 	defer cleanup()
-	t.Setenv("PII_ACTION", "block")
-	ResetDetectionConfigCache()
+	pinGatewayOverride(t, func(c *ModeDetectionConfig) { c.PIIAction = DetectionActionBlock })
 
 	expectGatewayAuditRow(mock, gatewayAuditBlocked)
 
@@ -251,7 +250,7 @@ func TestGatewayPreCheck_IndonesiaBlockEmitsCanonicalAuditRow(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if resp.Approved {
-		t.Error("expected approved=false for NIK under PII_ACTION=block")
+		t.Error("expected approved=false for NIK under a pii=block override")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Indonesia block path did not emit the canonical audit_logs row: %v", err)
@@ -265,8 +264,7 @@ func TestGatewayPreCheck_IndonesiaBlockEmitsCanonicalAuditRow(t *testing.T) {
 func TestGatewayPreCheck_IndiaBlockEmitsCanonicalAuditRow(t *testing.T) {
 	mock, cleanup := setupPreCheckAuditTest(t)
 	defer cleanup()
-	t.Setenv("PII_ACTION", "block")
-	ResetDetectionConfigCache()
+	pinGatewayOverride(t, func(c *ModeDetectionConfig) { c.PIIAction = DetectionActionBlock })
 
 	expectGatewayAuditRow(mock, gatewayAuditBlocked)
 
@@ -277,7 +275,7 @@ func TestGatewayPreCheck_IndiaBlockEmitsCanonicalAuditRow(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if resp.Approved {
-		t.Error("expected approved=false for Aadhaar under PII_ACTION=block")
+		t.Error("expected approved=false for Aadhaar under a pii=block override")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("India/RBI block path did not emit the canonical audit_logs row: %v", err)
@@ -383,27 +381,26 @@ func TestGatewayPreCheck_TenantMismatchEmitsCanonicalAuditRow(t *testing.T) {
 // TestGatewayPreCheck_RedactionDistinguishableFromAllow is the headline guard for
 // bucket D: a redaction and a clean allow must land as DIFFERENT canonical verdicts
 // (redacted vs allowed), not both collapsed to approved=true. NIK under
-// PII_ACTION=redact → 'redacted'; a clean query → 'allowed'.
+// a pii=redact override → 'redacted'; a clean query → 'allowed'.
 func TestGatewayPreCheck_RedactionDistinguishableFromAllow(t *testing.T) {
 	t.Run("NIK under redact → redacted", func(t *testing.T) {
 		mock, cleanup := setupPreCheckAuditTest(t)
 		defer cleanup()
-		t.Setenv("PII_ACTION", "redact")
-		ResetDetectionConfigCache()
+		installNIKWorld(t, getDeploymentOrgID(), DetectionActionRedact)
 
 		expectGatewayAuditRow(mock, gatewayAuditRedacted)
 
-		rr := newPreCheckRecorder(t, "Customer NIK is 3174042506780001")
+		rr := newPreCheckRecorderWithHandshake(t, "Customer NIK is "+fixtureNIK, redactionHandshake(t))
 
 		var resp PreCheckResponse
 		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 		if !resp.Approved {
-			t.Errorf("expected approved=true under PII_ACTION=redact, got block_reason=%s", resp.BlockReason)
+			t.Errorf("expected approved=true under a pii=redact override, got block_reason=%s", resp.BlockReason)
 		}
 		if !resp.RequiresRedaction {
-			t.Error("expected requires_redaction=true for NIK under PII_ACTION=redact")
+			t.Error("expected requires_redaction=true for NIK under a pii=redact override")
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Errorf("redaction did not emit policy_decision='redacted': %v", err)

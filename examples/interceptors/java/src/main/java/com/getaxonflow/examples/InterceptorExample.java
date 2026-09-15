@@ -98,9 +98,9 @@ public class InterceptorExample {
         assertCheck(result1.response != null && !result1.response.isEmpty(), "Response received for safe query");
         System.out.println();
 
-        // Example 2: Query with PII (should be blocked OR allowed with redaction)
-        // Default policies are set to "redact" for PII, so request may be approved
-        // but with PII redacted from the query before LLM processing
+        // Example 2: Query with PII (may be blocked OR allowed)
+        // The stored action of sys_pii_ssn is warn for the request phase, so the
+        // request is approved by default; an org pii=block override blocks it
         System.out.println("Example 2: Query with PII (Expected: Blocked or Redacted)");
         System.out.println("----------------------------------------");
         TestResult result2 = runTest(governedCall, "Process refund for SSN 123-45-6789");
@@ -109,11 +109,13 @@ public class InterceptorExample {
         assertCheck(result2.blocked || result2.approved, "PII query was processed (blocked or allowed with redaction)");
         System.out.println();
 
-        // Example 3: SQL injection attempt (should be blocked)
-        System.out.println("Example 3: SQL Injection (Expected: Blocked)");
+        // Example 3: SQL injection attempt. Every shipped sys_sqli_* policy stores
+        // warn, so it is detected and approved, not blocked. An org sqli=block
+        // override (or a policy whose action is block) blocks it instead.
+        System.out.println("Example 3: SQL Injection (Expected: Approved - SQLi warns by default)");
         System.out.println("----------------------------------------");
         TestResult result3 = runTest(governedCall, "SELECT * FROM users WHERE 1=1; DROP TABLE users;--");
-        assertCheck(result3.blocked || result3.sqliDetected, "SQL injection attempt was blocked");
+        assertCheck(result3.approved, "SQL injection attempt was approved with a warning (stored action: warn)");
         System.out.println();
 
         System.out.println("============================================================");

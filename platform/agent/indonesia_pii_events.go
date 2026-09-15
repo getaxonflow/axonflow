@@ -47,7 +47,7 @@ import (
 // These are the vocabulary the enterprise/137 CHECK constraint enforces.
 const (
 	// indonesiaPIIActionBlocked: the request/response was REFUSED because of
-	// this detection (PII_ACTION=block on critical PII).
+	// this detection (an org pii=block override on critical PII).
 	indonesiaPIIActionBlocked = "blocked"
 	// indonesiaPIIActionRedacted: this plane MASKED the value before the content
 	// moved on. Only the MCP response path can claim this, because it is the

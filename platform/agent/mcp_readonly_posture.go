@@ -34,9 +34,9 @@ import (
 // mcp_server_handler.go), the request-phase boundary every plugin pre-tool
 // hook flows through. When the posture is on and a call classifies as
 // write-path, the gate returns a blocked decision (canonical "blocked" verdict,
-// audited) before any other policy evaluation or session-override flow runs.
-// The posture is a deployment-wide safety boundary and is intentionally NOT
-// overridable via the per-policy session-override (ADR-044) flow.
+// audited) before any other policy evaluation runs. The posture is a
+// deployment-wide safety boundary; no override flow reaches it (ADR-044
+// session overrides are retired in v11, #4252).
 // =============================================================================
 
 // EnvMCPReadOnly is the single env toggle that activates the read-only posture

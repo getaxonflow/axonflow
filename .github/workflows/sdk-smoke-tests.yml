@@ -165,62 +165,70 @@ jobs:
           echo ""
           echo "✅ All services are healthy!"
 
-      - name: Test PII Detection (SSN - Redact Mode)
+      - name: Test PII Detection (SSN - stored action)
         shell: bash
         run: |
-          echo "🧪 Testing PII detection (SSN - redact mode)..."
+          echo "🧪 Testing PII detection (SSN - stored action)..."
           response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
             -H "Content-Type: application/json" \
             -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Look up customer with SSN 123-45-6789"}')
 
           echo "Response: $response"
 
-          # SSN detection defaults to redact mode (approved=true, requires_redaction=true)
-          # Issue #891: PII now defaults to redact instead of block
-          if echo "$response" | jq -e '.requires_redaction == true' > /dev/null 2>&1; then
-            policy=$(echo "$response" | jq -r '.policies[0]')
-            echo "✅ SSN detected, flagged for redaction (policy: $policy)"
+          # v11 (#3961): no environment variable sets a detection action. sys_pii_ssn
+          # stores action_request=warn, so the pre-check approves, lists the control it
+          # matched, and flags no redaction. The anchored engine names a shipped control
+          # by its corpus id, and a control split by scope with its action appended
+          # (#3564): corpus:static_policies:sys__pii__ssn, or ...:warn.
+          if echo "$response" | jq -e --arg c 'corpus:static_policies:sys__pii__ssn' '.approved == true and any((.policies // [])[]; . == $c or startswith($c + ":")) and ((.requires_redaction // false) == false)' > /dev/null 2>&1; then
+            echo "✅ SSN detected by the sys_pii_ssn control, recorded under its stored warn action"
           else
-            echo "❌ SSN not flagged for redaction"
-            echo "Expected: requires_redaction=true"
+            echo "❌ SSN not detected by the sys_pii_ssn control under its stored warn action"
+            echo "Expected: approved=true, policies names corpus:static_policies:sys__pii__ssn (or a :<action> variant), requires_redaction not true"
             exit 1
           fi
 
-      - name: Test PII Detection (Credit Card - Redact Mode)
+      - name: Test PII Detection (Credit Card - stored action)
         shell: bash
         run: |
-          echo "🧪 Testing PII detection (Credit Card - redact mode)..."
+          echo "🧪 Testing PII detection (Credit Card - stored action)..."
           response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
             -H "Content-Type: application/json" \
             -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Process payment for card 4111-1111-1111-1111"}')
 
           echo "Response: $response"
 
-          # Credit card detection defaults to redact mode (approved=true, requires_redaction=true)
-          # Issue #891: PII now defaults to redact instead of block
-          if echo "$response" | jq -e '.requires_redaction == true' > /dev/null 2>&1; then
-            echo "✅ Credit card detected, flagged for redaction"
+          # v11 (#3961): sys_pii_credit_card stores action_request=warn (redact is its
+          # RESPONSE-phase action), so the request is approved and not flagged. It is
+          # named by its corpus id (#3564), a split control's with its action appended.
+          if echo "$response" | jq -e --arg c 'corpus:static_policies:sys__pii__credit__card' '.approved == true and any((.policies // [])[]; . == $c or startswith($c + ":")) and ((.requires_redaction // false) == false)' > /dev/null 2>&1; then
+            echo "✅ Credit card detected by the sys_pii_credit_card control, recorded under its stored warn action"
           else
-            echo "❌ Credit card not flagged for redaction"
-            echo "Expected: requires_redaction=true"
+            echo "❌ Credit card not detected by the sys_pii_credit_card control under its stored warn action"
+            echo "Expected: approved=true, policies names corpus:static_policies:sys__pii__credit__card (or a :<action> variant), requires_redaction not true"
             exit 1
           fi
 
-      - name: Test SQL Injection Blocking
+      - name: Test SQL Injection Detection
         shell: bash
         run: |
-          echo "🧪 Testing SQL injection blocking..."
+          echo "🧪 Testing SQL injection detection..."
           response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
             -H "Content-Type: application/json" \
             -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "SELECT * FROM users UNION SELECT * FROM passwords"}')
 
           echo "Response: $response"
 
-          if echo "$response" | jq -e '.approved == false or .policyApproved == false or .blocked == true' > /dev/null 2>&1; then
-            echo "✅ SQL injection correctly blocked"
+          # v11 (#3961): every sys_sqli_* row stores warn and no environment variable
+          # raises it, so the UNION payload is detected and recorded, not blocked. An
+          # organization blocks it by recording sqli=block (its own runtime suites do).
+          # The controls are named by corpus id (#3564): sys_sqli_union_* is
+          # corpus:static_policies:sys__sqli__union__*.
+          if echo "$response" | jq -e '.approved == true and any((.policies // [])[]; startswith("corpus:static_policies:sys__sqli__union"))' > /dev/null 2>&1; then
+            echo "✅ SQL injection detected by a sys_sqli_union_* control, recorded under its stored warn action"
           else
-            echo "❌ SQL injection not blocked"
-            echo "Expected: approved=false or blocked=true"
+            echo "❌ SQL injection not detected by a sys_sqli_union_* control"
+            echo "Expected: approved=true, policies names a corpus:static_policies:sys__sqli__union__* id"
             exit 1
           fi
 
@@ -666,14 +674,21 @@ jobs:
   # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
   # The summary job above cannot carry this - it is a REQUIRED context and must
   # stay satisfiable on a docs-only change, so it accepts a skip. This job is
-  # NOT required: it counts the jobs that executed, writes the count to the step
-  # summary and goes RED when the count is zero, so "nothing ran" is a
-  # first-class outcome a citer sees on the checks list rather than a detail
-  # inside a green run. Red, not neutral: a skipped or neutral conclusion
-  # satisfies a required check exactly as success does (#3755), and a census
-  # that could be satisfied by not running would be the defect it counts.
-  # `needs` mirrors the summary's so the two report on one set. Pinned by
-  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  # NOT required: it counts the jobs that executed and writes the count to the
+  # step summary. Zero executed is reported either way, but the CONCLUSION now
+  # depends on why (#3649): RED when jobs were SELECTED and did not run, or when
+  # the detector broke or declared no output carrying a value; a NOTICE when it
+  # selected nothing or was itself skipped. It used to go red on ALL FIVE, which
+  # made every PR that touched no gated path carry a permanent red - and the red
+  # was then explained away with a sentence about drafts that the tool had never
+  # observed. Red where it means something, so it is not the noise a citer
+  # learns to skip past. Red rather than neutral in those cases: a skipped or
+  # neutral conclusion satisfies a required check exactly as success does
+  # (#3755), and a census that could be satisfied by not running would be the
+  # defect it counts. `needs` mirrors the summary's so the two report on one
+  # set. Pinned by tests/regression-test-required/
+  # census_red_only_when_jobs_were_expected_test.sh (which branch fires for
+  # which state) and zero_executed_jobs_are_visible_test.sh (the block's shape).
   tests-executed-census:
     name: Tests executed census
     runs-on: ubuntu-latest
@@ -704,29 +719,64 @@ jobs:
               print("::error::the census needs no job besides the change detector; it is counting nothing")
               sys.exit(1)
           executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
-          skipped = [j for j, r in substantive if r == "skipped"]
           verdict = f"{len(executed)} of {len(substantive)} jobs executed"
           lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
           lines += [f"| `{j}` | {r} |" for j, r in rows]
-          if not executed:
-              detector_result = dict(rows).get(detector, "absent")
-              if detector_result == "success":
-                  why = "the change detector ran and matched no relevant path"
-              elif detector_result == "skipped":
-                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
-              else:
-                  why = f"the change detector reported {detector_result}"
-              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
-                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
-                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not executed:
-              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+          def emit():
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as fh:
+                      fh.write("\n".join(lines) + "\n")
+              print("\n".join(lines))
+          if executed:
+              emit()
+              sys.exit(0)
+          # Nothing executed. Whether that is a finding depends on whether anything
+          # was EXPECTED to run, which only the change detector can say (#3649):
+          #   detector success + an output flag true  -> jobs were selected and did
+          #       not run: RED, the rollup beside this is green on a skip.
+          #   detector success + no flag true        -> nothing was SELECTED. What is
+          #       observed is that no output was the string `true` - NOT that the
+          #       globs matched nothing, and NOT that any skip was by design. Say
+          #       only that. Not evidence, not a failure: NOTICE.
+          #   detector success + no output with a VALUE -> a detector that declares no
+          #       output carrying a value cannot have selected anything: wiring broken,
+          #       not a path miss, and indistinguishable from the line above unless it is
+          #       separated here. RED.
+          #   detector skipped                       -> draft tier or an event this
+          #       workflow does not act on: nothing was asked to run: NOTICE.
+          #   detector failure/cancelled             -> the selector itself broke: RED.
+          detector_info = needs.get(detector) or {}
+          detector_result = detector_info.get("result", "absent")
+          outputs = detector_info.get("outputs") or {}
+          selected = sorted(k for k, v in outputs.items() if str(v).strip().lower() == "true")
+          sentence = ("**Nothing failed and nothing was tested.** Every job this workflow could run was skipped, "
+                      "so this run is NOT evidence about the code; a green summary beside it is a statement about "
+                      "mergeability only (#3649).")
+          if detector_result == "success" and not any(str(v).strip() for v in outputs.values()):
+              lines += ["", sentence, f"The change detector reported success but declared no output carrying a VALUE (outputs: {json.dumps(outputs)}). Every detector here declares at least one, and `dorny/paths-filter` always writes the literal `true` or `false` - so an absent map, or one whose values are all empty, is the detector's own wiring rather than a path that failed to match. The two causes its comment names, a renamed step id and a misspelled output key, yield the EMPTY STRING rather than a missing key, so testing for an absent map alone would have missed exactly the defects this branch is for. A run in this state would acquit itself on every PR forever."]
+              emit()
+              print(f"::error::{verdict}: the change detector succeeded but declared no output carrying a value; it cannot have selected anything, so this is a detector wiring defect rather than a path miss (#3649).")
               sys.exit(1)
+          if detector_result == "success" and not selected:
+              lines += ["", sentence, f"The change detector reported no selection flag true (outputs: {json.dumps(outputs)}). That is what was OBSERVED; whether its globs matched nothing, or matched something this workflow does not gate on, is not visible from here."]
+              emit()
+              print(f"::notice::{verdict}: the change detector reported no selection flag true; nothing was expected to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "skipped":
+              lines += ["", sentence, "The change detector itself was skipped (a draft-tier run, or an event this workflow does not act on), so nothing was asked to run."]
+              emit()
+              print(f"::notice::{verdict}: the change detector was skipped; nothing was asked to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "success":
+              lines += ["", sentence, f"The change detector SELECTED {', '.join('`'+s+'`' for s in selected)} and the jobs that carry them did not run - a skip-accepting rollup would call that green."]
+              emit()
+              print(f"::error::{verdict}: nothing failed and nothing was tested, but the change detector selected {', '.join(selected)} and no job ran. Jobs were expected and did not execute; this run proves nothing about the code (#3649).")
+              sys.exit(1)
+          lines += ["", sentence, f"The change detector reported `{detector_result}`, so nothing downstream could be selected."]
+          emit()
+          print(f"::error::{verdict}: nothing failed and nothing was tested, and the change detector reported {detector_result}; the selector itself did not run to a verdict (#3649).")
+          sys.exit(1)
           PY
 
   smoke-test-summary:

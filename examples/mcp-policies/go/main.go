@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates MCP policy enforcement with phase-aware blocking and redaction.
 //
 // This example validates:

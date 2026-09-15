@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // MCP Audit Logging Example - Go SDK
 //
 // This example demonstrates and VALIDATES how MCP query operations are automatically

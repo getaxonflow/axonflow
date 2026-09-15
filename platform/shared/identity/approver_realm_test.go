@@ -201,7 +201,7 @@ func TestEligibleApproversExcludeTheWholeChain(t *testing.T) {
 		t.Fatalf("a pool with two remaining approvers was refused: %s", adm)
 	}
 	for _, m := range eligible {
-		if chain.Contains(m) {
+		if chain.ContainsSubject(m) {
 			t.Fatalf("%s is in the requesting chain and remained eligible", m)
 		}
 	}

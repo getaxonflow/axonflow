@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -23,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -142,10 +135,14 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 		}
 	})
 
+	// Under the anchored engine the fallback id is a corpus control, kept by its
+	// id, or an organization's own, which collapses to tenant_custom
+	// (TestADecideDenyWithNoBlockingPolicyIsLabelledAtTheBoundedTier, #4227).
 	t.Run("deny falls back to evaluated_policies[0] when blockingPolicyID empty", func(t *testing.T) {
-		before := testutil.ToFloat64(decideBlocks.WithLabelValues("rbi_pii_protection", origin))
-		recordDecideOutcomeMetrics(VerdictDeny, "tool", origin, nil, "", "", []string{"rbi_pii_protection"}, nil)
-		if got := testutil.ToFloat64(decideBlocks.WithLabelValues("rbi_pii_protection", origin)); got != before+1 {
+		const shipped = "corpus:static_policies:rbi__pii__protection"
+		before := testutil.ToFloat64(decideBlocks.WithLabelValues(shipped, origin))
+		recordDecideOutcomeMetrics(VerdictDeny, "tool", origin, nil, "", "", []string{shipped}, nil)
+		if got := testutil.ToFloat64(decideBlocks.WithLabelValues(shipped, origin)); got != before+1 {
 			t.Errorf("decideBlocks fallback = %v, want %v", got, before+1)
 		}
 	})
@@ -235,8 +232,7 @@ func TestHandleDecide_OriginLabel_ClaudeCode(t *testing.T) {
 	req := httptest.NewRequest("POST", decisionHandlerPath, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Axonflow-Client", "claude-code-plugin")
-	rr := httptest.NewRecorder()
-	handleDecide(rr, req)
+	rr := serveDecide(t, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
@@ -255,24 +251,27 @@ func TestHandleDecide_OriginLabel_ClaudeCode(t *testing.T) {
 }
 
 // TestHandleDecide_OriginLabel_IndonesiaBlock proves the EARLY-RETURN policy
-// deny path (Indonesia PII block under PII_ACTION=block) records BOTH the
-// origin-labelled deny count AND the top-blocked-policies series — i.e. block
-// attribution is complete across the early-return paths, not only the terminal
-// shared-engine deny.
+// deny path (Indonesia PII block under an organization's pii=block override)
+// records BOTH the origin-labelled deny count AND the top-blocked-policies
+// series — i.e. block attribution is complete across the early-return paths,
+// not only the terminal shared-engine deny. The org rides caller_identity.org_id
+// (community mode) and its override comes through the per-org cache.
 func TestHandleDecide_OriginLabel_IndonesiaBlock(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("PII_ACTION", "block")
 	ResetDetectionConfigCache()
 	installSharedEngineWithMockDB(t)
 	installCircuitBreaker(t)
+	installTestOverrideCache(t, &fakeOverrideReader{
+		data: map[string]map[string]DetectionAction{"org-pii-block": {DetectionCategoryPII: DetectionActionBlock}},
+	}, time.Minute)
 
 	denyBefore := testutil.ToFloat64(decideRequests.WithLabelValues(VerdictDeny, DecisionStageTool, OriginClaudeCode))
 	blockBefore := testutil.ToFloat64(decideBlocks.WithLabelValues("indonesia_pii_protection", OriginClaudeCode))
 
 	body, _ := json.Marshal(DecideRequest{
 		Stage:          DecisionStageTool,
-		CallerIdentity: DecisionCallerIdentity{GatewayID: "test-tool-gateway", TenantID: "test-tenant"},
+		CallerIdentity: DecisionCallerIdentity{GatewayID: "test-tool-gateway", TenantID: "test-tenant", OrgID: "org-pii-block"},
 		Target:         DecisionTarget{Type: "tool", Tool: "db.query"},
 		Query:          "Customer NIK is 3174042506780001",
 	})

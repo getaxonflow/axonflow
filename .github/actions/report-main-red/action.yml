@@ -1,0 +1,31 @@
+# report-main-red (#4041): the last step of every job that runs after the
+# merge. Which runs speak for main - a push to main or a schedule - is decided
+# in report-main-red.sh, so a job ends with this step under `if: always()` and
+# restates nothing. The job's token needs `issues: write`.
+name: Report a job that is red on main
+description: Opens or re-opens the job's main-red issue when it fails on a push to main or a schedule, and closes it on the job's next green run (#4041).
+inputs:
+  status:
+    description: The job's status, `job.status`.
+    required: true
+  matrix:
+    description: The job's matrix, `toJSON(matrix)`, so each leg has an issue of its own.
+    required: false
+    default: ""
+  token:
+    description: A token with issues:write, usually `github.token`.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Report to the job's main-red issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        JOB_STATUS: ${{ inputs.status }}
+        JOB_MATRIX: ${{ inputs.matrix }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/report-main-red.sh" \
+          --status "$JOB_STATUS" --workflow "$GITHUB_WORKFLOW" --job "$GITHUB_JOB" \
+          --matrix "$JOB_MATRIX" --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
+          --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

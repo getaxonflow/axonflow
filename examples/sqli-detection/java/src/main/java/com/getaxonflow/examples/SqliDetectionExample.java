@@ -24,6 +24,7 @@ import com.getaxonflow.sdk.types.PolicyApprovalResult;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * AxonFlow SQL Injection Detection - Java SDK
@@ -39,12 +40,15 @@ import java.util.List;
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
- * Policy Configuration (env vars):
- *   SQLI_ACTION - Controls SQLi detection behavior: "block" (default), "warn", or "log"
- *
- *   When SQLI_ACTION=block: (default) SQLi patterns are blocked
- *   When SQLI_ACTION=warn:  SQLi is detected and flagged but NOT blocked
- *   When SQLI_ACTION=log:   SQLi is detected and logged only
+ * Expected outcome (v11): the stored policy action decides. Every shipped
+ * sys_sqli_* policy stores action "warn", so a detected SQLi pattern is APPROVED
+ * and the matched sys_sqli_* policy id is returned in getPolicies() - the
+ * detection signal. It is not blocked. To block SQL injection, record an
+ * organization override of category "sqli" with action "block"
+ * (PUT /api/v1/detection-posture/sqli on the customer portal API, Enterprise) or
+ * change the policy's action. This example validates the shipped actions with no
+ * override recorded; against an org with sqli=block it fails loudly.
+ * The SQLI_ACTION environment variable no longer sets an action.
  *
  * Run with: mvn compile exec:java
  * Prerequisites: docker compose up -d
@@ -56,6 +60,15 @@ public class SqliDetectionExample {
     private static String getEnv(String key, String defaultValue) {
         String value = System.getenv(key);
         return (value != null && !value.isEmpty()) ? value : defaultValue;
+    }
+
+    private static List<String> sqliPolicies(List<String> policies) {
+        if (policies == null) {
+            return new ArrayList<>();
+        }
+        return policies.stream()
+            .filter(p -> p.startsWith("sys_sqli_"))
+            .collect(Collectors.toList());
     }
 
     private static void assertCheck(boolean condition, String message) {
@@ -122,59 +135,37 @@ public class SqliDetectionExample {
                 return;
             }
 
+            boolean wasApproved = !wasBlocked && result != null && result.isApproved();
+            List<String> detected = result != null ? sqliPolicies(result.getPolicies()) : new ArrayList<>();
+
             // Validate result
-            if (!wasBlocked && result != null) {
+            if (wasApproved) {
                 assertCheck(
                     result.getContextId() != null && !result.getContextId().isEmpty(),
                     "contextId is not empty"
                 );
-                System.out.println("   Status: APPROVED");
+                if (!detected.isEmpty()) {
+                    System.out.printf("   Status: APPROVED - SQLi WARNED (%s)%n", String.join(", ", detected));
+                } else {
+                    System.out.println("   Status: APPROVED");
+                }
             } else {
                 System.out.println("   Status: BLOCKED");
-                System.out.printf("   Reason: %s%n", blockReason);
-                assertCheck(
-                    blockReason != null && !blockReason.isEmpty(),
-                    "blockReason is provided for blocked requests"
-                );
+                System.out.printf("   Reason: %s%n", blockReason != null ? blockReason : (result != null ? result.getBlockReason() : ""));
+                System.out.println("   (the shipped sys_sqli_* action is warn; a block means an org sqli=block override or an edited policy action)");
             }
 
-            // Verify expected behavior
-            if (test.shouldBlock) {
-                assertCheck(wasBlocked, "SQLi type '" + test.sqliType + "' is blocked");
+            // Verify expected behavior: the stored "warn" action approves the request
+            if (test.expectDetected) {
+                assertCheck(wasApproved, "SQLi type '" + test.sqliType + "' is approved with a warning (stored action: warn)");
+                assertCheck(!detected.isEmpty(), "SQLi type '" + test.sqliType + "' is detected (sys_sqli_* policy matched)");
+            } else if (test.sqliType.isEmpty()) {
+                assertCheck(wasApproved, "Safe query is approved");
+                assertCheck(detected.isEmpty(), "Safe query matches no sys_sqli_* policy");
             } else {
-                assertCheck(!wasBlocked, "Safe query is approved");
+                assertCheck(wasApproved, "SQLi type '" + test.sqliType + "' is approved");
             }
 
-            System.out.println();
-        }
-
-        // ========================================
-        // Policy Configuration Test (SQLI_ACTION)
-        // ========================================
-        String sqliAction = getEnv("SQLI_ACTION", "block");
-        System.out.printf("Policy Config: SQLI_ACTION=%s%n", sqliAction);
-        System.out.println();
-
-        if ("warn".equals(sqliAction)) {
-            System.out.println("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked");
-            PolicyApprovalResult configResult = null;
-            boolean configBlocked = false;
-            try {
-                configResult = client.getPolicyApprovedContext(
-                    PolicyApprovalRequest.builder()
-                        .query("SELECT * FROM users; DROP TABLE users;--")
-                        .userToken(getEnv("AXONFLOW_USER_TOKEN", "sqli-config-test-user"))
-                        .build()
-                );
-            } catch (PolicyViolationException e) {
-                configBlocked = true;
-            } catch (Exception e) {
-                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
-                System.exit(1);
-                return;
-            }
-            boolean wasApproved = !configBlocked && configResult != null && configResult.isApproved();
-            assertCheck(wasApproved, "SQLI_ACTION=warn: SQLi query is approved (warn only, not blocked)");
             System.out.println();
         }
 
@@ -184,12 +175,15 @@ public class SqliDetectionExample {
             System.out.println();
             System.out.println("SQLi patterns validated:");
             System.out.println("  - Safe query (approved)");
-            System.out.println("  - DROP TABLE (blocked)");
-            System.out.println("  - UNION SELECT (blocked)");
-            System.out.println("  - Boolean injection (blocked)");
+            System.out.println("  - DROP TABLE (detected, warned)");
+            System.out.println("  - UNION SELECT (detected, warned)");
+            System.out.println("  - Boolean injection (detected, warned)");
             System.out.println("  - Comment injection (not detected)");
-            System.out.println("  - Stacked queries (blocked)");
-            System.out.println("  - TRUNCATE (blocked)");
+            System.out.println("  - Stacked queries (detected, warned)");
+            System.out.println("  - TRUNCATE (detected, warned)");
+            System.out.println();
+            System.out.println("SQL injection warns by default. To block it, record an org override");
+            System.out.println("sqli=block or change the policy action.");
         } else {
             System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
             for (String f : failures) {
@@ -209,13 +203,13 @@ public class SqliDetectionExample {
     private static class TestCase {
         final String name;
         final String query;
-        final boolean shouldBlock;
+        final boolean expectDetected;
         final String sqliType;
 
-        TestCase(String name, String query, boolean shouldBlock, String sqliType) {
+        TestCase(String name, String query, boolean expectDetected, String sqliType) {
             this.name = name;
             this.query = query;
-            this.shouldBlock = shouldBlock;
+            this.expectDetected = expectDetected;
             this.sqliType = sqliType;
         }
     }

@@ -35,6 +35,9 @@ const (
 	// CodeDelegationDepthNotDeclared is an action with no positive maximum
 	// delegation depth.
 	CodeDelegationDepthNotDeclared Code = "DELEGATION_DEPTH_NOT_DECLARED"
+	// CodeDisplayNameNotDeclared is an action with no display name: the name
+	// an operator reads in place of its identifier (#3789).
+	CodeDisplayNameNotDeclared Code = "DISPLAY_NAME_NOT_DECLARED"
 	// CodeArgumentNotDeclared is a required argument absent from the schema.
 	CodeArgumentNotDeclared Code = "ARGUMENT_NOT_DECLARED"
 	// CodeTagNotDeclared is an action tag absent from the tag vocabulary.
@@ -91,6 +94,46 @@ const (
 	// CodeObligationTypeUndeclared is a capability or requirement naming an
 	// obligation type the contract does not declare.
 	CodeObligationTypeUndeclared Code = "OBLIGATION_TYPE_UNDECLARED"
+	// CodeUnknownDetector names a detector identifier the catalog does not
+	// hold.
+	CodeUnknownDetector Code = "UNKNOWN_DETECTOR"
+	// CodeDetectorIdentifierInvalid is a detector record with an empty or
+	// untrimmed identifier.
+	CodeDetectorIdentifierInvalid Code = "DETECTOR_IDENTIFIER_INVALID"
+	// CodeDetectorClassNotDeclared is a detector whose implementation class is
+	// unset.
+	CodeDetectorClassNotDeclared Code = "DETECTOR_CLASS_NOT_DECLARED"
+	// CodeDetectorVersionInvalid is a detector with a non-positive
+	// implementation version.
+	CodeDetectorVersionInvalid Code = "DETECTOR_VERSION_INVALID"
+	// CodeDetectorDialectNotDeclared is a pattern detector with no declared
+	// pattern dialect.
+	CodeDetectorDialectNotDeclared Code = "DETECTOR_DIALECT_NOT_DECLARED"
+	// CodeDetectorImplementationMissing is an algorithmic detector naming no
+	// implementation, or a pattern detector naming one.
+	CodeDetectorImplementationMissing Code = "DETECTOR_IMPLEMENTATION_MISSING"
+	// CodeDetectorConformanceMissing is an algorithmic detector with no
+	// conformance case, or a pattern detector carrying one.
+	CodeDetectorConformanceMissing Code = "DETECTOR_CONFORMANCE_MISSING"
+	// CodeDetectorPlanesNotDeclared is a detector whose plane sets are absent
+	// or inconsistent, or a policy selecting a plane the detector is not
+	// evaluated on.
+	CodeDetectorPlanesNotDeclared Code = "DETECTOR_PLANES_NOT_DECLARED"
+	// CodeDetectorEmitNotDeclared is a default emit outside Signal, Deny and
+	// Escalate.
+	CodeDetectorEmitNotDeclared Code = "DETECTOR_EMIT_NOT_DECLARED"
+	// CodeDetectorPlaneCannotGate is a policy selecting a plane on which the
+	// detector's implementation is present in the binary and not consulted.
+	CodeDetectorPlaneCannotGate Code = "DETECTOR_PLANE_CANNOT_GATE"
+	// CodeDetectorSelectsANonDetector is a policy selecting, by plane, a
+	// registered record that inspects no content. It is distinct from
+	// CodeUnknownDetector because the catalog DOES hold the identifier.
+	CodeDetectorSelectsANonDetector Code = "DETECTOR_SELECTS_A_NON_DETECTOR"
+	// CodeDetectorPlanePartiallyGates is a policy selecting a plane whose name
+	// covers call sites that do not agree about whether the implementation
+	// gates. It is a separate code from CodeDetectorPlaneCannotGate because
+	// the remedy is to split the plane rather than to change the policy.
+	CodeDetectorPlanePartiallyGates Code = "DETECTOR_PLANE_PARTIALLY_GATES"
 )
 
 // Finding is one reason a registration, a validation or a query refused.

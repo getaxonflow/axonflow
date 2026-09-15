@@ -1,6 +1,8 @@
 # Identity-Header Trust Model (Per-User Audit Attribution)
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 
-**Platform Version:** v10.3.0 (feature introduced in v9.9.0)
+
+**Platform Version:** v11.0.0 (feature introduced in v9.9.0)
 
 **Status:** Active
 
@@ -63,7 +65,7 @@ All four governance planes apply the same rule — `/api/v1/decide`,
 |---|---|---|
 | `audit_logs.user_email` | The plane's **verified** per-user identity when the request carried one; `X-User-Email` only where none was verified | Plane's validated/fallback identity only |
 | `audit_logs.session_id` | `X-Session-Id` | NULL (header ignored) — session-summary reporting and the Claude Code dashboard's per-session drill-down stop attributing new rows |
-| ADR-044 session-override scope | Per-user, keyed on the same trusted identity | The plane's validated identity; overrides asserted via headers do not apply |
+| ADR-044 session-override scope (retired in v11.0.0, #4252) | Per-user, keyed on the same trusted identity, for the override reads only: the writes answer `409 LEGACY_POLICY_WRITE_FROZEN` | The plane's validated identity |
 | Per-user dynamic policies (MCP-server plane: user-scoped rate limits / budgets keyed on `X-User-ID`/`X-User-Email`) | Keyed on the trusted identity (as for pre-9.9.0 trusted fleets) | Keyed on the client-scoped identity |
 | Verdicts / authz / policy selection / tenant + org resolution | **Never influenced by a forged header** | **Never influenced by the headers at all** |
 
@@ -84,6 +86,8 @@ check-output resolve the user from the authenticated credentials
 otherwise); the MCP-server plane uses the client-scoped pseudo-identity
 `mcp-client:<client-id>`. Neither is ever an attacker-controlled value.
 
+> **v11.0.0: ADR-044 session overrides are retired (#4252).** The workflow step gate no longer reads a session override (the last deciding reader, the agent's tier pass, goes with #4281), and the override create and revoke routes listed below and the MCP `create_override` and `delete_override` tools answer `409 LEGACY_POLICY_WRITE_FROZEN` after the identity checks described below. Those checks still apply; nothing they describe changes a decision in v11.
+
 ### No shared identity holds session overrides
 
 Session overrides are scoped to an individual user. From 9.9.0 **no
@@ -102,7 +106,7 @@ flip a deny for every caller on the client. The full set the guard rejects:
 
 A `create_override` attempt under any of these fails with an actionable error
 naming the trust gate; blocked responses under them carry no override
-affordance.
+affordance (from v11.0.0 no blocked response carries one).
 
 ### Overrides with the gate off: what the caller sees
 
@@ -124,7 +128,7 @@ The refusal is intended; only the message changed (#3062). Previously it read
 to re-send a header they had already sent and gave no way to discover that a
 server-side flag governed the feature.
 
-To enable the override tools, pick one:
+To pass the identity check (from v11.0.0 the write then answers `409 LEGACY_POLICY_WRITE_FROZEN`), pick one:
 
 | Remedy | When it applies |
 |---|---|
@@ -172,14 +176,14 @@ identity requires the AxonFlow Agent's HMAC proxy token
 - `DELETE /api/v1/overrides/{id}` — override revoke (the identity is recorded as
   `revoked_by`, and decides whether a non-admin caller may revoke this override
   at all);
-- the Workflow Control Plane step-gate — the identity keys the override apply;
+- the Workflow Control Plane step-gate — the identity keyed the override apply until v11.0.0 deleted it (#4252);
 - `POST /api/v1/plan/execute` and `POST /api/v1/plan/{id}/resume` — the MAP
   confirm-mode execute and plan-resume paths persist the actor identity into
   a resumable checkpoint;
 - `POST /api/v1/workflows/{id}/checkpoints/resume` and
   `.../checkpoints/{checkpoint_id}/resume` — checkpoint resume re-evaluates
-  the step and applies any override keyed on the checkpoint's stored actor
-  identity.
+  the step (before v11.0.0 it also applied any override keyed on the
+  checkpoint's stored actor identity).
 
 The MAP execute path additionally sources the checkpoint's actor **email**
 from the trust-gated `X-User-Email` header, never the request body — the body
@@ -222,8 +226,9 @@ request's verdict and audit identity are identical with and without the
 headers. This invariant is pinned by verdict-invariance and forged-header
 tests on every plane.
 
-The one identity-*scoped* feature is the ADR-044 per-user session override:
-an override is created by and applies to a specific user identity. That scope
+The one identity-*scoped* feature was the ADR-044 per-user session override
+(retired in v11.0.0, #4252): an override was created by and applied to a
+specific user identity. That scope
 rides on the same trusted identity as attribution — which is exactly why the
 gate must default to off: honoring an unvalidated `X-User-Email` for override
 scope (the pre-9.9.0 behavior on check-input and MCP-server) let any governed
@@ -250,8 +255,8 @@ the gate off.
 ## Upgrade Note (pre-9.9.0 deployments)
 
 Before 9.9.0 the check-input and MCP-server planes honored `X-User-Email`
-unconditionally. If your deployment relies on per-user attribution or
-per-user session overrides from plugin-supplied headers, set
+unconditionally. If your deployment relies on per-user attribution from
+plugin-supplied headers, set
 `AXONFLOW_TRUST_IDENTITY_HEADERS=true` after upgrading — the always-trust
 behavior was a forgery exposure and was deliberately not preserved. Until the
 flag is set, attribution falls back to the validated/fleet identity and the

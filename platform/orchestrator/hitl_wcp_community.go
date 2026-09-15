@@ -126,8 +126,9 @@ func InitializeWCPHITL(db *sql.DB, wcpAdapter *WCPPolicyAdapter) error {
 		// read "(Community mode)", which is a lie to an operator holding a
 		// valid Evaluation licence - and since the entitlement change,
 		// Evaluation is exactly who reaches it.
-		log.Printf("ℹ️  WCP HITL disabled by licence tier %q - require_approval actions will block "+
-			"and report approval_enqueue=tier_disabled, creating no reviewer entry "+
+		log.Printf("ℹ️  WCP HITL disabled by licence tier %q - a require_approval step is withheld "+
+			"(capability_requires_upgrade) before any enqueue, creating no reviewer entry; during a "+
+			"declared licence transition it is held and reports approval_enqueue=tier_disabled "+
 			"(existing entries still expire and can still be approved or rejected)", string(tier))
 		return nil
 	}

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -146,6 +138,9 @@ func validateClientCredentials(ctx context.Context, clientID, clientSecret strin
 
 	if !validationResult.Valid {
 		return nil, fmt.Errorf("license invalid or expired: %s", validationResult.Error)
+	}
+	if err := refuseOrgLessLicence(validationResult); err != nil {
+		return nil, err
 	}
 
 	// Check rate limit
@@ -295,6 +290,7 @@ type CommunitySaasAuthError struct {
 	StatusCode int
 	Message    string
 	RetryAfter string // non-empty → set Retry-After header
+	Limit      int    // the per-minute limit a 429 reached; 0 otherwise
 }
 
 func (e *CommunitySaasAuthError) Error() string { return e.Message }
@@ -358,6 +354,7 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 			StatusCode: http.StatusTooManyRequests,
 			Message:    fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", minuteLimit),
 			RetryAfter: "60",
+			Limit:      minuteLimit,
 		}
 	}
 
@@ -515,6 +512,11 @@ const (
 	// ContextKeyAuthKind stores the AuthKind in request context so handlers
 	// behind apiAuthMiddleware can call ResolveUser() with the correct kind.
 	ContextKeyAuthKind authContextKey = "auth_kind"
+	// ContextKeyAuthResult stores the whole *AuthResult apiAuthMiddleware
+	// admitted, for a handler that must hand it to an enforcing seam: the
+	// policy-test preview (policyTestHandler, #4253). Re-authenticating there would admit
+	// the service principal a second time (Authenticate's admitPrincipal).
+	ContextKeyAuthResult authContextKey = "auth_result"
 )
 
 // TenantIDFromContext extracts the auth-derived tenant ID from request
@@ -558,6 +560,14 @@ func AuthKindFromContext(ctx context.Context) AuthKind {
 		return v
 	}
 	return AuthKindEnterprise
+}
+
+// authResultFromContext returns the whole authentication result
+// apiAuthMiddleware stored. ok is false on a request the middleware did not
+// authenticate.
+func authResultFromContext(ctx context.Context) (*AuthResult, bool) {
+	auth, ok := ctx.Value(ContextKeyAuthResult).(*AuthResult)
+	return auth, ok && auth != nil
 }
 
 // writeTerminalPreflightResponse answers an OPTIONS request AT the auth
@@ -676,6 +686,7 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ContextKeyOrgID, orgID)
 		ctx = context.WithValue(ctx, ContextKeyClientID, clientID)
 		ctx = context.WithValue(ctx, ContextKeyAuthKind, auth.Kind)
+		ctx = context.WithValue(ctx, ContextKeyAuthResult, auth)
 
 		// (Telemetry identity is populated earlier — before the daily-cap
 		// check — so that 429 responses also land in the telemetry table.
@@ -696,6 +707,14 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// The internal-service credential pair: internalServiceHints reads it, and
+// the customer portal and the agent's own loopback reads (mcpProxyToLocal)
+// send it.
+const (
+	internalServiceIDHeader    = "X-Internal-Service-ID"
+	internalServiceTokenHeader = "X-Internal-Service-Token"
+)
+
 // internalServiceHints lifts the customer-portal's signed internal-service
 // credentials off the request headers.
 //
@@ -710,13 +729,13 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 // Returns nil when no internal-service id is present, which is exactly what
 // Authenticate() expects for an ordinary caller.
 func internalServiceHints(r *http.Request) *AuthHints {
-	svcID := r.Header.Get("X-Internal-Service-ID")
+	svcID := r.Header.Get(internalServiceIDHeader)
 	if svcID == "" {
 		return nil
 	}
 	return &AuthHints{
 		ClientID:  svcID,
-		UserToken: r.Header.Get("X-Internal-Service-Token"),
+		UserToken: r.Header.Get(internalServiceTokenHeader),
 		TenantID:  r.Header.Get("X-Tenant-ID"),
 	}
 }

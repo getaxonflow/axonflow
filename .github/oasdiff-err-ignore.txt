@@ -397,3 +397,158 @@ in API POST /api/v1/sebi/audit/export the response property `summary/compliance_
 # 413 the contract never mentioned. A cross-pin test now holds the
 # schema's maxItems and the server constant equal in both directions.
 POST /api/v1/access/evaluation the `evaluations/evaluations` request property's maxItems was set to `64`
+
+# ---------------------------------------------------------------------------
+# The #3896 / #3901 error-component reconciliation.
+#
+# THE WIRE DID NOT CHANGE. Not one byte of any response moved. What changed is
+# that the DOCUMENT stopped lying about it.
+#
+# orchestrator-api.yaml declared `BadRequest` as the flat `{success, error}`
+# envelope and `Unauthorized` as the coded `{error: {code, message}}` one, and
+# ten operations referenced BOTH - so a spec-generated client got two
+# incompatible error types on one endpoint and could not write a single
+# deserialiser. Every one of the operations below is served by a per-handler
+# `writeError` that has always emitted the CODED shape; the document said flat.
+#
+# So oasdiff is right that a generated client's error type changes, and it is
+# right to call that breaking. It cannot know that such a client was ALREADY
+# broken against the running server, and that this change is what makes the two
+# agree. Correcting a document that never matched its handler is not a
+# narrowing of the contract; it is the first time the contract has been stated.
+#
+# Each entry is scoped to one method, one path, one status and one change
+# sentence, so none of them can suppress an unrelated future finding. Verified
+# rather than assumed: with the full list oasdiff exits 0, and removing any
+# single line produces exactly one failure - that line's own.
+#
+# These entries can be deleted once main's base spec carries the corrected
+# shapes, i.e. one merge after this one.
+POST /api/v1/llm-providers the `error` response's property `type` changed from `string` to `object` for status `400`
+PUT /api/v1/llm-providers/routing the `error` response's property `type` changed from `string` to `object` for status `400`
+PUT /api/v1/llm-providers/{name} the `error` response's property `type` changed from `string` to `object` for status `400`
+GET /api/v1/media-governance/config the `error` response's property `type` changed from `string` to `object` for status `500`
+PUT /api/v1/media-governance/config the `error` response's property `type` changed from `string` to `object` for status `400`
+PUT /api/v1/media-governance/config the `error` response's property `type` changed from `string` to `object` for status `403`
+PUT /api/v1/media-governance/config the `error` response's property `type` changed from `string` to `object` for status `500`
+GET /api/v1/media-governance/status the `error` response's property `type` changed from `string` to `object` for status `500`
+GET /api/v1/policies the `error` response's property `type` changed from `string` to `object` for status `400`
+POST /api/v1/policies the `error` response's property `type` changed from `string` to `object` for status `400`
+POST /api/v1/policies/import the `error` response's property `type` changed from `string` to `object` for status `400`
+PUT /api/v1/policies/{id} the `error` response's property `type` changed from `string` to `object` for status `400`
+POST /api/v1/rbi/audit-exports the `error` response's property `type` changed from `string` to `object` for status `400`
+DELETE /api/v1/rbi/audit-exports/{export_id} the `error` response's property `type` changed from `string` to `object` for status `404`
+GET /api/v1/rbi/audit-exports/{export_id} the `error` response's property `type` changed from `string` to `object` for status `404`
+POST /api/v1/rbi/audit-exports/{export_id}/process the `error` response's property `type` changed from `string` to `object` for status `400`
+POST /api/v1/rbi/audit-exports/{export_id}/process the `error` response's property `type` changed from `string` to `object` for status `404`
+GET /api/v1/sebi/audit/export/{export_id} the `error` response's property `type` changed from `string` to `object` for status `501`
+
+# The SEBI module's handlers all write through writeError -> SEBIAPIError,
+# which is the coded shape; the document said flat. Same justification as the
+# block above - the wire did not change.
+POST /api/v1/sebi/audit/export the `error` response's property `type` changed from `string` to `object` for status `400`
+GET /api/v1/sebi/audit/export/{export_id} the `error` response's property `type` changed from `string` to `object` for status `400`
+GET /api/v1/sebi/audit/export/{export_id} the `error` response's property `type` changed from `string` to `object` for status `401`
+GET /api/v1/sebi/dashboard the `error` response's property `type` changed from `string` to `object` for status `403`
+
+# PR axonflow-enterprise#3935 - RBI AI-system update verb correction.
+# `PUT /api/v1/rbi/ai-systems/{id}` is not an operation being withdrawn: it
+# never worked. The mux registered PUT, the handler's switch implements only
+# PATCH, and the route answered 405 METHOD NOT ALLOWED to every request from
+# the module's first release - driven against the production registrar, not
+# read from source (platform/orchestrator/rbi/wire_registered_verbs_are_served_test.go).
+# It is documented here as PATCH now, which is the verb that has always been
+# implemented. oasdiff diffs DOCUMENTS, not behaviour, so correcting a document
+# that was wrong necessarily reads as a removal; no client can have depended on
+# a verb that returned 405, and this entry is scoped to that one operation so a
+# genuine future withdrawal on the same path still trips the gate.
+in API PUT /api/v1/rbi/ai-systems/{id} api removed without deprecation
+# PR axonflow-enterprise#3941 - the workflow control plane's error envelope.
+#
+# THE DOCUMENT MOVED TOWARD THE HANDLER; THE WIRE DID NOT CHANGE. These eleven
+# operations are served by workflow_control.Handler.writeError, which emits the
+# TRIPLET envelope `{error, code, message}` and has never emitted `success` -
+# on any of them, in any release. The document said `ErrorResponse` (the flat
+# `{success, error}` shape) because the triplet family existed as a schema with
+# no reusable responses to point at, so there was nothing correct to reference.
+# `success` is `required` on ErrorResponse, so a strict generated client failed
+# to DESERIALISE every error from this plane rather than silently reading a
+# missing `false`.
+#
+# So oasdiff is right that a required property was removed from the DOCUMENT,
+# and the change is not breaking for any client of the SERVER: nothing could
+# ever have read `success` from these responses. Each operation was verified by
+# CALLING it against a live stack and decoding the bytes - the envelope came
+# back `{error, code, message}` on every one.
+#
+# Each line is scoped to one method, one path and one status, so an unrelated
+# future removal on the same operation still trips the gate. Removing any single
+# line reproduces exactly that line's failure - checked, not assumed.
+GET /api/v1/workflows/{workflow_id} removed the required property `success` from the response with the `404` status
+GET /api/v1/workflows/{workflow_id}/checkpoints removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows removed the required property `success` from the response with the `400` status
+POST /api/v1/workflows/{workflowId}/steps/{stepId}/approve removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflowId}/steps/{stepId}/approve removed the required property `success` from the response with the `409` status
+POST /api/v1/workflows/{workflowId}/steps/{stepId}/reject removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflowId}/steps/{stepId}/reject removed the required property `success` from the response with the `409` status
+POST /api/v1/workflows/{workflow_id}/abort removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflow_id}/checkpoints/resume removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflow_id}/checkpoints/{checkpoint_id}/resume removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflow_id}/complete removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflow_id}/fail removed the required property `success` from the response with the `400` status
+POST /api/v1/workflows/{workflow_id}/fail removed the required property `success` from the response with the `404` status
+POST /api/v1/workflows/{workflow_id}/resume removed the required property `success` from the response with the `404` status
+
+# PR axonflow-enterprise#4221 - per-policy overrides of system controls are
+# retired (PRD v11 §1.5, §1.11). POST and DELETE on
+# /api/v1/{static,system}-policies/{id}/override write nothing: after
+# authentication every caller, in every edition, is answered 409
+# LEGACY_POLICY_WRITE_FROZEN naming the organization document's
+# system_controls (HandleCreateOverride and HandleDeleteOverride call
+# legacyfreeze.RefuseOverride, which has no owner-pool branch). The 201 and 204
+# the spec documented can no longer be returned, so removing them is the
+# contract, not drift. #4113's freeze kept its success responses because an
+# owner-pool deployment still writes there; these routes have no such case.
+# The override reads (GET) and ADR-044 session break-glass overrides are
+# unaffected.
+#
+# Each line names one method, one path and one status, so an unrelated removal
+# on these operations still trips the gate. Removing any single line reproduces
+# exactly that line's failure - checked with oasdiff, not assumed.
+POST /api/v1/static-policies/{id}/override removed the success response with the status `201`
+DELETE /api/v1/static-policies/{id}/override removed the success response with the status `204`
+POST /api/v1/system-policies/{id}/override removed the success response with the status `201`
+DELETE /api/v1/system-policies/{id}/override removed the success response with the status `204`
+
+# #3564 (W3-H H1b) - the MCP dynamic-policy endpoint is removed.
+# PRD v11 §1.2 retires the MCP dynamic-policy plane, and §1.3 makes no
+# compatibility promise for an engine v11 retires. The agent stopped calling
+# this route in #4216; H1b removes its handler, the agent's proxy route and
+# this path from the spec, so a caller that still sends it gets no route.
+in API POST /api/v1/mcp/evaluate-policies api path removed without deprecation
+
+# PR axonflow-enterprise#4266 (#4255) - the typed-policies 503 names its reasons.
+# /publish and /activate already answered 503 `storage_unavailable` for a
+# degraded store (refuseIfStorageDegraded) while the spec listed only
+# `catalog_not_configured`; #4255 makes /active answer it too, and
+# `key_not_loaded` (/active only) for a signing key a deferred reload has not
+# loaded. The shared TypedAuthoringUnavailable response now lists all three, so a
+# client learns reasons the platform sends. The entries are scoped to those two
+# values on the `reason` property of these three 503s, so any other change
+# to these responses still trips the gate.
+in API POST /api/v1/typed-policies/activate added the new `key_not_loaded` enum value to the `reason` response property for the response status `503`
+in API POST /api/v1/typed-policies/activate added the new `storage_unavailable` enum value to the `reason` response property for the response status `503`
+in API GET /api/v1/typed-policies/active added the new `key_not_loaded` enum value to the `reason` response property for the response status `503`
+in API GET /api/v1/typed-policies/active added the new `storage_unavailable` enum value to the `reason` response property for the response status `503`
+in API POST /api/v1/typed-policies/publish added the new `key_not_loaded` enum value to the `reason` response property for the response status `503`
+in API POST /api/v1/typed-policies/publish added the new `storage_unavailable` enum value to the `reason` response property for the response status `503`
+
+# #4252 - ADR-044 session override writes are retired (PRD v11 §1.5, §1.11).
+# POST /api/v1/overrides and DELETE /api/v1/overrides/{id} write nothing: after
+# the proxy-auth, identity and tenant guards every caller is answered 409
+# LEGACY_POLICY_WRITE_FROZEN (createOverrideHandler and revokeOverrideHandler
+# call legacyfreeze.RefuseOverride). The 201 and 200 can no longer be returned,
+# so removing them is the contract, not drift. The override reads are
+# unaffected.
+POST /api/v1/overrides removed the success response with the status `201`
+DELETE /api/v1/overrides/{id} removed the success response with the status `200`

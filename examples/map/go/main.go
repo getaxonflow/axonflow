@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow MAP (Multi-Agent Planning) Example - Go SDK
 //
 // This example demonstrates and VALIDATES all MAP SDK methods:
@@ -367,8 +370,9 @@ func main() {
 	// ========================================
 	fmt.Println("10. PII in Plan Query - Testing policy enforcement on plan with SSN...")
 	piiQuery := "Create a plan to process refund for customer with SSN 123-45-6789"
-	gatewayPiiAction := getEnv("GATEWAY_PII_ACTION", getEnv("PII_ACTION", "redact"))
-	fmt.Printf("   GATEWAY_PII_ACTION=%s\n", gatewayPiiAction)
+	// v11: the stored action of the matched PII policy decides. sys_pii_ssn
+	// stores action_request=warn, so plan generation is not blocked. An
+	// organization pii=block override or a policy action change would block it.
 
 	var piiPlan *axonflow.PlanResponse
 	var piiErr error
@@ -378,31 +382,11 @@ func main() {
 		piiPlan, piiErr = client.GeneratePlan(piiQuery, domain)
 	}
 
-	if gatewayPiiAction == "block" {
-		// When blocking, plan generation should fail or return an error
-		if piiErr != nil {
-			assert(true, "PII plan blocked as expected (GATEWAY_PII_ACTION=block)")
-			fmt.Printf("   Block reason: %v\n", piiErr)
-		} else {
-			assert(false, "PII plan should have been blocked (GATEWAY_PII_ACTION=block)")
-		}
-	} else if gatewayPiiAction == "log" {
-		// When logging, plan should succeed without redaction flags
-		if piiErr != nil {
-			fmt.Printf("   Warning: PII plan failed: %v\n", piiErr)
-		} else {
-			assert(piiPlan.PlanID != "", "PII plan approved with log-only mode")
-			fmt.Printf("   Plan ID: %s (PII logged but not redacted)\n", piiPlan.PlanID)
-		}
+	if piiErr != nil {
+		fmt.Printf("   Warning: PII plan failed: %v\n", piiErr)
 	} else {
-		// Default "redact" mode: plan should succeed; check for policy_info if available
-		if piiErr != nil {
-			fmt.Printf("   Warning: PII plan failed: %v\n", piiErr)
-		} else {
-			assert(piiPlan.PlanID != "", "PII plan generated (redaction may apply downstream)")
-			fmt.Printf("   Plan ID: %s\n", piiPlan.PlanID)
-			fmt.Println("   Note: PII redaction is applied downstream by the Orchestrator")
-		}
+		assert(piiPlan.PlanID != "", "PII plan generated (stored request action for SSN is warn)")
+		fmt.Printf("   Plan ID: %s\n", piiPlan.PlanID)
 	}
 	fmt.Println()
 

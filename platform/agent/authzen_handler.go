@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -834,16 +837,25 @@ func delegateToDecide(r *http.Request, req DecideRequest) (decideOutcome, int, e
 const authzenRedactionTarget = "args.query"
 
 // legacyObligationType maps each obligation the Decision API can emit onto the
-// contract's typed equivalent.
+// contract's typed capability: its type and the schema version the wire name
+// stands for.
 //
 // It is a closed table, and an absent key is an ERROR rather than a default.
 // Defaulting is the tempting shortcut here and it is wrong twice over: mapping
 // an unrecognised instruction onto field_redact would tell a PEP to redact when
 // the policy asked for something else, and DROPPING it would hand the caller an
 // allow whose conditions it never saw. Both misrepresent the decision.
-var legacyObligationType = map[string]contract.ObligationType{
-	ObligationRedactPII: contract.ObFieldRedact,
-}
+//
+// DERIVED from contract.DecisionWireObligations, never restated (#4046): the
+// same vocabulary tells activation what the decide scope's wire delivers, and a
+// second copy here would let the projection and the activation guard disagree.
+var legacyObligationType = func() map[string]contract.Capability {
+	out := map[string]contract.Capability{}
+	for _, w := range contract.DecisionWireObligations() {
+		out[w.Name] = w.Capability
+	}
+	return out
+}()
 
 // mapObligations translates the legacy obligations onto the contract's typed
 // obligation.
@@ -865,7 +877,7 @@ var legacyObligationType = map[string]contract.ObligationType{
 func mapObligations(in []DecisionObligation) ([]contract.Obligation, error) {
 	out := make([]contract.Obligation, 0, len(in))
 	for _, o := range in {
-		typ, ok := legacyObligationType[o.Type]
+		capability, ok := legacyObligationType[o.Type]
 		if !ok {
 			return nil, fmt.Errorf(
 				"the evaluator attached the obligation %q, which this surface has no typed equivalent for; "+
@@ -893,14 +905,14 @@ func mapObligations(in []DecisionObligation) ([]contract.Obligation, error) {
 			params["detail"] = o.Detail
 		}
 		ob := contract.Obligation{
-			Type:   typ,
+			Type:   capability.Type,
 			Target: authzenRedactionTarget,
 			Params: params,
 			// Mandatory: the legacy contract has no advisory obligations, and an
 			// instruction whose enforceability is unknown is not advisory.
 			Mandatory:     true,
 			SourcePolicy:  "legacy:" + o.Type,
-			SchemaVersion: 1,
+			SchemaVersion: capability.Version,
 		}
 		if err := ob.Validate(); err != nil {
 			return nil, fmt.Errorf("the obligation this surface would emit is not valid under the contract: %w", err)

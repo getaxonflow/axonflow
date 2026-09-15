@@ -9,11 +9,11 @@ info:
     - **Gateway Mode**: Pre-check and audit endpoints for SDK-managed LLM calls
     - **MCP (Model Context Protocol)**: Data connector queries and commands
     - **Authentication**: License and token validation
-    - **Static Policy Enforcement**: Fast regex-based content filtering
+    - **Static Policy Enforcement**: Fast regex-based content filtering (the system policies are read-only to the application roles in v11; see the System Policies tag)
 
     ## Single Entry Point
 
-    The Agent is the single entry point for all client traffic (ADR-026):
+    The Agent is the single entry point for all client traffic (ADR-024):
     clients never call the Orchestrator directly — it is an internal service
     and must not be exposed. **Every `/api/v1/*` endpoint is reachable
     through the Agent.** This spec documents the endpoints the Agent serves
@@ -42,7 +42,13 @@ info:
     - **Enterprise**: Customer-deployed (`DEPLOYMENT_MODE=enterprise`)
     - **Community**: Local development (`DEPLOYMENT_MODE=community`) - bypasses license validation
 
-  version: 2.1.0
+  # Tracks the platform VERSION file. These four documents describe ONE
+  # platform, so a per-spec version answered a question nobody asks and
+  # answered it wrong: agent-api sat at 2.1.0 and orchestrator-api at
+  # 1.1.0 through 139 commits between them. Kept true by
+  # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
+  # scripts/docs/stamp-docs-versions.py.
+  version: 11.0.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -54,7 +60,7 @@ servers:
   - url: https://agent.getaxonflow.com
     description: Production (SaaS)
   - url: https://axonflow.example.com
-    description: Self-hosted deployment (agent single entry point, ADR-026)
+    description: Self-hosted deployment (agent single entry point, ADR-024)
   - url: http://localhost:8080
     description: Local Development
 
@@ -69,7 +75,7 @@ tags:
     description: |
       Synchronous policy decision endpoint (ADR-056). Called by an
       infrastructure gateway acting as a Policy Enforcement Point (PEP);
-      AxonFlow returns a verdict (`allow` / `deny` / `needs_approval`) and
+      AxonFlow returns a verdict (`allow` or `deny`) and
       the PEP enforces it. Same shared-policy engine as Gateway Mode
       pre-check; difference is the caller.
   - name: MCP Connectors
@@ -99,22 +105,40 @@ tags:
       response. Customers change only `baseURL` in their OpenAI SDK setup.
   - name: System Policies
     description: |
-      System policy management (ADR-018), served at `/api/v1/system-policies`.
+      System policy management (ADR-019), served at `/api/v1/system-policies`.
       Pattern-based enforcement rules for SQL injection detection, PII
       detection and similar checks, resolved across the system, organization
       and tenant tiers.
+
+      **v11: writes to this family are refused by the legacy policy freeze.**
+      `migrations/core/172` makes `static_policies` read-only to the
+      application roles, and create, update, delete and the enabled toggle
+      write that table. On a deployment whose connection is an application
+      role (the agent's default) those writes are
+      refused with `409 LEGACY_POLICY_WRITE_FROZEN`, the answer the
+      orchestrator gives for its own policy writes (see `policy-api.yaml`).
+      Its `error.code` is that string, where the other errors on these routes
+      carry the numeric status. Author policy through the typed authoring
+      route, `/api/v1/typed-policies` in `orchestrator-api.yaml`. Reads, the
+      pattern test, and the per-policy overrides - which are stored in their
+      own table - are unaffected. A deployment whose connection may still
+      write the table (the database owner; a property of the connection, not
+      of `AXONFLOW_DB_USE_APP_ROLE` alone) is not bound by the revoke.
   - name: Static Policies
     description: |
       DEPRECATED spelling of System Policies, served at
       `/api/v1/static-policies`. Every operation is the same handler as its
       `/api/v1/system-policies` counterpart and returns the same status code
-      and body; responses additionally carry `Deprecation: true` and a
-      `Link: </api/v1/system-policies...>; rel="successor-version"` header
-      naming the replacement.
+      and body.
 
-      These paths remain served. No removal date is published and clients
-      should not infer one - migrate when convenient, and watch the release
-      notes rather than a `Sunset` header, which is deliberately not emitted.
+      In v11 BOTH spellings are the deprecated export surface (PRD §1.11):
+      reads are served, and every response carries
+      `Link: </api/v1/typed-policies>; rel="successor-version"` and
+      `X-AxonFlow-Removed-In: v11.1`, plus an RFC 9745
+      `Deprecation: @<epoch>` from the v11.0.0 tag. v11.1 removes both
+      spellings; there is no `Sunset` header until that release has a date.
+      The v11 write refusal described under System Policies applies to these
+      paths identically.
   - name: Audit Verification
     description: |
       Non-repudiation verification of the signed decision chain (#2722).
@@ -144,6 +168,60 @@ tags:
       license, never from OTLP resource attributes.
 
 paths:
+  # --- OAuth discovery (RFC 8414 / RFC 9728) ------------------------------
+  #
+  # The MCP server authenticates with HTTP Basic, NOT OAuth. These two
+  # endpoints exist because some MCP clients answer a 401 by probing OAuth
+  # discovery regardless of the WWW-Authenticate scheme; without them the probe
+  # reaches the router default and gets Go's plaintext "404 page not found",
+  # which the client then tries to parse as OAuth error JSON and reports as
+  # "HTTP 404: Invalid OAuth error response". Both therefore return a PARSEABLE
+  # RFC 6749 section 5.2 error body, and advertise no authorization server, so a
+  # client stops rather than starting a flow this server cannot complete.
+  #
+  # Both are registered with PathPrefix, so any sub-path answers identically -
+  # RFC 9728 clients request the bare path AND the resource-suffixed
+  # `/.well-known/oauth-protected-resource/api/v1/mcp-server`.
+  /.well-known/oauth-protected-resource:
+    get:
+      tags:
+        - MCP Server
+      summary: OAuth protected-resource metadata (always 404, by design)
+      description: |
+        Always answers `404` with an OAuth-shaped JSON error stating that this
+        server uses HTTP Basic authentication. No authorization server is
+        advertised. Any path under this prefix answers identically.
+      operationId: getOAuthProtectedResourceMetadata
+      security: []
+      responses:
+        '404':
+          description: |
+            No OAuth metadata exists for this resource. This is the only
+            response; it is not an error condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthDiscoveryNotSupported'
+  /.well-known/oauth-authorization-server:
+    get:
+      tags:
+        - MCP Server
+      summary: OAuth authorization-server metadata (always 404, by design)
+      description: |
+        Always answers `404` with an OAuth-shaped JSON error stating that this
+        server uses HTTP Basic authentication. Any path under this prefix
+        answers identically.
+      operationId: getOAuthAuthorizationServerMetadata
+      security: []
+      responses:
+        '404':
+          description: |
+            This deployment is not an OAuth authorization server. This is the
+            only response; it is not an error condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthDiscoveryNotSupported'
   /health:
     get:
       tags:
@@ -226,12 +304,44 @@ paths:
       summary: Process client request
       description: |
         Main entry point for Proxy Mode. The Agent:
-        1. Validates client license key
-        2. Validates user JWT token
-        3. Verifies tenant isolation
-        4. Evaluates static policies (PII detection, etc.)
-        5. Forwards to Orchestrator if allowed
-        6. Returns response with policy metadata
+        1. Authenticates the client credential. On Enterprise it also admits
+           the user token, which is required there: a request with no token,
+           or one that does not verify, is refused 401. On Community and
+           community-SaaS the credential is the principal and a user token is
+           ignored
+        2. Decides the request in ONE anchored pass: the shared static
+           engine's evaluation is the detector input, and the ADR-065 anchored
+           engine authors the verdict for the credential or the verified user
+           (PRD v11 §1.1, §1.6)
+        3. Forwards to the Orchestrator if allowed
+        4. Returns the response with the engine that decided it
+
+        **One pass since v11.0.0 (#4253).** The second pass that used to
+        follow an anchored approval - the tier engine, over `static_policies`'
+        stored action column and an organization's legacy per-policy
+        overrides - is retired. A legacy per-policy override (block or
+        require_approval) no longer decides this route; the effective-policies
+        read (`GET /api/v1/static-policies/effective`) keeps showing it under
+        its deprecation (PRD v11 §1.11). A shipped system control whose stored
+        action is block is still refused here, by the anchored engine, naming
+        its policy. The agent's pass resolves no governance segments, so a
+        segment-store outage refuses nothing at that pass (a request it
+        forwards to the orchestrator's `/api/v1/process` or
+        `/api/v1/plan/execute` is decided there by the anchored engine too,
+        whose facts resolve the user's segments and refuse when that fails), and
+        the pass never holds a request for approval: an anchored approval
+        challenge is a refusal.
+
+        Every policy verdict names the engine that decided it (`engine`,
+        always `anchored`), the type of principal it decided for
+        (`subject_type`) and the digest of the policy bundle
+        (`policy_bundle`).
+
+        **The LLM response is decided too.** A forwarded request's response
+        is decided by the orchestrator response plane, on the anchored
+        engine, and `response_plane` names that decision. A response it
+        withholds answers `success: false` and `blocked: true`, and is not
+        counted against the client's circuit breaker.
 
         **Use this endpoint when you want AxonFlow to intercept and process all LLM requests.**
       operationId: processRequest
@@ -298,12 +408,36 @@ paths:
                     - "credit_card"
                   processing_time: "45.2ms"
                   tenant_id: "tenant-123"
+                engine: "anchored"
+                subject_type: "User"
+                policy_bundle: "sha256:<the digest of the bundle that decided the request>"
+                response_plane:
+                  engine: "anchored"
+                  subject_type: "Client"
+                  policy_bundle: "sha256:<the digest of the bundle that decided the response>"
+                  verdict: "allowed"
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: |
+            A configured cost budget blocks the request (Enterprise cost
+            controls; `blocked: true`, `policy_info.matched_policies`
+            `["budget_exceeded"]`), or, on Enterprise, the licence's ceiling
+            refuses the client's service principal or the verified user
+            token's principal at authentication (`error` names the refusal). Both bodies are a `ClientResponse`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
         '403':
-          description: Request blocked by policy
+          description: |
+            Request refused by the anchored engine. `block_reason` is the
+            refusal's reason code (for example `explicit_constraint`) and
+            `policy_info.matched_policies` names the policy that decided it,
+            first. Since v11.0.0 no refusal on this route comes from another
+            engine, and none is an approval hold (#4253).
           content:
             application/json:
               schema:
@@ -311,16 +445,29 @@ paths:
               example:
                 success: false
                 blocked: true
-                block_reason: "Query contains PII (SSN detected)"
+                block_reason: "explicit_constraint"
                 policy_info:
+                  matched_policies:
+                    - "corpus:static_policies:drop__table__prevention"
                   policies_evaluated:
-                    - "pii-ssn"
-                  static_checks:
-                    - "ssn_pattern"
+                    - "corpus:static_policies:drop__table__prevention"
                   processing_time: "2.1ms"
                   tenant_id: "tenant-123"
+                engine: "anchored"
+                subject_type: "Client"
+                policy_bundle: "sha256:<the digest of the bundle that decided the request>"
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          description: |
+            The anchored engine could not decide the request (for example, no
+            enforcer is wired in the process). The route fails CLOSED and
+            never falls back to another engine: `blocked` is true and
+            `policy_info.matched_policies` is `["decision_enforcement_unavailable"]`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
 
   /api/policy/pre-check:
     post:
@@ -331,8 +478,14 @@ paths:
         Gateway Mode Step 1: Call this endpoint before making your own LLM API call.
 
         The Agent validates the request against policies and returns:
-        - `approved: true` if the request is allowed
-        - `context_id` to link with the subsequent audit call
+        - `verdict` - the canonical `allow` | `deny`, the same vocabulary
+          `POST /api/v1/decide` uses. Read this one. Since v11 the pre-check
+          never holds a request: a `require_approval` policy is a deny.
+        - `approved: true` if the request is allowed (retained)
+        - `decision_id` — the decision identifier. Use it for the subsequent
+          audit call, AND for `GET /api/v1/decisions/{decision_id}/explain`,
+          which is keyed on it.
+        - `context_id` — a deprecated alias of `decision_id`, same value
         - Optional `approved_data` from MCP connectors
         - Rate limit information
 
@@ -399,8 +552,8 @@ paths:
                       reset_at: "2025-01-15T11:00:00Z"
                     expires_at: "2025-01-15T10:35:00Z"
                 piiRedaction:
-                  summary: PII detected - flagged for redaction (default)
-                  description: Default behavior (PII_ACTION=redact). Request approved but PII will be redacted in response.
+                  summary: PII detected - flagged for redaction
+                  description: Returned when the matched PII policy's resolved request-phase action is redact - its stored action, or an organization's pii=redact detection-posture override (since v11 no environment variable sets it). Request approved but PII will be redacted in response.
                   value:
                     context_id: "ctx_abc123def456"
                     approved: true
@@ -409,49 +562,13 @@ paths:
                       - "pii-ssn"
                     expires_at: "2025-01-15T10:35:00Z"
                 blocked:
-                  summary: Request blocked (when PII_ACTION=block)
+                  summary: Request blocked (resolved action block - a stored block action or an organization's pii=block override)
                   value:
                     context_id: "ctx_abc123def456"
                     approved: false
                     policies:
                       - "pii-credit-card"
                     block_reason: "Query contains credit card number"
-                    expires_at: "2025-01-15T10:35:00Z"
-                blocked_segment_resolution_failed:
-                  summary: Request blocked fail-closed (governance segments could not be resolved)
-                  description: |
-                    A NEW refusal (#3312, ADR-060 #2989). This plane resolves
-                    the caller's governance-segment memberships to decide which
-                    segment-scoped policies apply. When that resolution
-                    genuinely FAILS (the directory backing it is unavailable)
-                    the pre-check denies fail-closed rather than evaluating as
-                    though the caller had no segments, which would let a
-                    segment-scoped restriction lapse exactly when the directory
-                    is down.
-
-                    This is an HTTP `200` carrying a deny verdict, not an HTTP
-                    error status. Key on `approved: false` together with the
-                    reserved `policies` value `segment_resolution_failed`.
-                    `block_reason` is populated but is deliberately not
-                    reproduced in the example below, and must NOT be keyed on:
-                    it is human-readable text rather than a stable interface,
-                    and the punctuation separating its clauses differs between
-                    the planes that emit this refusal, so a string match
-                    written against another plane's text silently misses this
-                    one.
-
-                    A caller with NO verified identity is a different case and
-                    is not an error: resolution succeeds with an empty set, the
-                    request proceeds org-only, and non-segment-scoped policies
-                    still enforce.
-
-                    Retriable: this signals unavailability, not a durable
-                    denial.
-                  value:
-                    context_id: "ctx_abc123def456"
-                    approved: false
-                    policies:
-                      - "segment_resolution_failed"
                     expires_at: "2025-01-15T10:35:00Z"
                 withData:
                   summary: Approved with data
@@ -568,8 +685,8 @@ paths:
       description: |
         Decision Mode endpoint (ADR-056 / epic #2426). The customer's
         infrastructure gateway (Policy Enforcement Point) calls this
-        endpoint per request to get a verdict (`allow` / `deny` /
-        `needs_approval`) and enforces the result. AxonFlow is consulted,
+        endpoint per request to get a verdict (`allow` or `deny`) and
+        enforces the result. AxonFlow is consulted,
         never on the traffic path.
 
         The shared-policy engine behind this endpoint is the same engine
@@ -636,7 +753,7 @@ paths:
                   query: "SELECT name, email FROM customers LIMIT 10"
       responses:
         '200':
-          description: Decision verdict (allow / deny / needs_approval)
+          description: Decision verdict (allow / deny)
           content:
             application/json:
               schema:
@@ -676,6 +793,19 @@ paths:
                       - type: "redact_pii"
                         detail: "SSN detected in query"
                     evaluated_policies: ["sys_pii_ssn"]
+                    expires_at: "2026-05-23T10:35:00Z"
+                denyUnknownConstraint:
+                  summary: Verdict deny, a constraint that could not be evaluated
+                  value:
+                    verdict: "deny"
+                    decision_id: "5b1e9c2d-8f4a-4e7b-9c3d-1a2b3c4d5e6f"
+                    trace_id: "0af7651916cd43dd8448eb211c80319c"
+                    stage: "tool"
+                    reasons:
+                      - "unknown_constraint"
+                      - "ceiling.finance_tools (organization, document version 3) could not be evaluated: no value was supplied for principal.department, which the document requires"
+                    obligations: []
+                    evaluated_policies: ["ceiling.finance_tools"]
                     expires_at: "2026-05-23T10:35:00Z"
         '400':
           description: Request malformed (invalid JSON or missing required fields).
@@ -724,43 +854,20 @@ paths:
                 $ref: '#/components/schemas/DecideErrorResponse'
         '403':
           description: |
-            TWO distinct causes.
+            **Tenant assertion mismatch** -- `caller_identity.tenant_id` or
+            `caller_identity.org_id` in the body did not match the
+            authenticated identity (non-community mode only).
 
-            1. **Tenant assertion mismatch** -- `caller_identity.tenant_id` or
-               `caller_identity.org_id` in the body did not match the
-               authenticated identity (non-community mode only).
-            2. **`segment_resolution_failed`** (#3456, ADR-060 #2989) -- a NEW
-               refusal. This endpoint resolves the caller's governance-segment
-               memberships to decide which segment-scoped policies apply. When
-               that resolution genuinely FAILS for a caller who HAS a verified
-               per-user principal (the directory backing it is unavailable),
-               the request is denied fail-closed rather than evaluated as
-               though the caller belonged to no segments, which would let a
-               segment-scoped restriction lapse exactly when the directory is
-               down. A canonical blocked audit row is written carrying the
-               reserved identifier `segment_resolution_failed`.
+            **Token tenant mismatch** -- the tenant of the resolved per-user
+            token differs from the client's tenant. The canonical row records
+            it with `security_event` `tenant_mismatch`.
 
-            Cause 2 is deliberately NOT reported as `503`: a policy-side deny
-            must stay distinguishable from a policy-evaluator outage in both
-            the audit row and the operator dashboard. This endpoint returns
-            `503` separately when its circuit breaker is open (see the `503`
-            response); the segment refusal is deliberately not folded into
-            that channel.
-
-            **Key on the reserved identifier, never on the human-readable
-            message.** That text is not a stable interface, and the
-            punctuation separating its clauses differs between the planes that
-            emit this refusal, so a string match written against another
-            plane's wording silently misses this one.
-
-            A caller with NO verified per-user identity is a different case
-            and is NOT an error: resolution succeeds with an empty set, the
-            request proceeds org-only, and non-segment-scoped policies still
-            enforce. A verified caller who belongs to no segments, and a
-            caller whose token names a shared synthetic identity, resolve the
-            same way. **Enforcement on this endpoint is therefore conditional
-            on the caller presenting a per-user token**; `require_user_token`
-            is what makes presenting one non-optional.
+            **`segment_resolution_failed` is no longer a cause** (it was one
+            from #3456). No segment gate stands here any more. It resolved the
+            caller's governance segments and refused the request when that
+            failed, on behalf of an organization's segment-scoped static rows,
+            and those rows no longer decide: the anchored engine authors this
+            verdict and reads no segments (PRD v11 §1.1, §1.2).
           content:
             application/json:
               schema:
@@ -814,10 +921,16 @@ paths:
         - OpenAI Compatible
       summary: OpenAI-compatible chat completions with policy enforcement
       description: |
-        Accepts a standard OpenAI Chat Completions request, runs AxonFlow
-        policy checks via the shared policy engine, forwards to the upstream
-        provider, records audit (tokens, cost, latency, policy decision),
-        and returns an OpenAI-compatible response.
+        Accepts a standard OpenAI Chat Completions request, decides it with
+        the ADR-065 decision plane (PRD v11 §1.1; #4092) - the shared policy
+        engine's detectors are its input - forwards an allowed request to the
+        upstream provider, records audit (tokens, cost, latency, policy
+        decision), and returns an OpenAI-compatible response.
+
+        The route carries no per-user identity, so every request is decided
+        for its client credential (`Client`). OpenAI's `user` request member
+        is NOT honoured as an identity: it is free text the caller chooses,
+        and a principal is never taken from it.
 
         The caller passes their upstream provider API key via the
         `X-Provider-Key` header. AxonFlow auth (Basic Auth or community
@@ -867,6 +980,19 @@ paths:
               schema:
                 type: string
                 pattern: '^[0-9a-f]{32}$'
+            X-AxonFlow-Engine:
+              description: The engine that decided - `anchored`, the ADR-065 decision plane. Absent when no engine decided.
+              schema:
+                type: string
+                enum: [anchored]
+            X-AxonFlow-Subject-Type:
+              description: The type of principal decided for - `Client`, the client credential this route evaluates.
+              schema:
+                type: string
+            X-AxonFlow-Policy-Bundle:
+              description: The digest of the policy set that decided (see `DecideResponse.policy_bundle`).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -884,6 +1010,19 @@ paths:
                 format: uuid
             X-AxonFlow-Trace-Id:
               description: W3C-compatible 32-hex trace ID
+              schema:
+                type: string
+            X-AxonFlow-Engine:
+              description: The engine that decided - `anchored`, the ADR-065 decision plane. Absent when no engine decided.
+              schema:
+                type: string
+                enum: [anchored]
+            X-AxonFlow-Subject-Type:
+              description: The type of principal decided for - `Client`, the client credential this route evaluates.
+              schema:
+                type: string
+            X-AxonFlow-Policy-Bundle:
+              description: The digest of the policy set that decided (see `DecideResponse.policy_bundle`).
               schema:
                 type: string
           content:
@@ -914,15 +1053,52 @@ paths:
                       code: "missing_provider_key"
         '401':
           $ref: '#/components/responses/Unauthorized'
-
+        '503':
+          description: |
+            No engine could decide the request: no enforcer is wired, the
+            organization's policy document cannot be read or activated, or the
+            identity plane cannot establish the request's subject. The request
+            is refused, never forwarded ungoverned, and the body is an OpenAI
+            error.
+          headers:
+            X-AxonFlow-Decision-Id:
+              description: UUID correlating this request in audit logs
+              schema:
+                type: string
+                format: uuid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIErrorResponse'
   /api/policies/test:
     post:
       tags:
         - Proxy Mode
-      summary: Test policy evaluation
+      summary: Preview /api/request's verdict (a dry run of its one pass)
       description: |
-        Test how policies would evaluate a query without making an actual request.
-        Useful for debugging and policy development.
+        Previews what `POST /api/request` would decide for the authenticated
+        credential, through the same pass: the same detector evaluation and
+        the same anchored enforcing seam. A policy is tested against the
+        engine that enforces it (PRD v11 §1 item 10). It records no decision:
+        no `audit_logs` row, no enforce-decision count, no circuit-breaker
+        violation and no signed decision. The shared engine's evaluation that
+        feeds the pass still counts in its metrics, and where the engine
+        carries an audit queue a matched block is logged to
+        `policy_violations`, as before v11.0.0.
+
+        **Changed in v11.0.0 (#4253).** It used to preview two legacy passes
+        and resolve the governance segments of the body's `user_email`. It now
+        decides for the credential that authenticated the call
+        (`subject_type` `Client`): on Community as `/api/request` decides a
+        request that carries no user token; on Enterprise, where
+        `/api/request` requires a user token, as the credential's service
+        identity, the way `/api/v1/decide` decides a token-less caller - and
+        it is refused 401 where the organization requires a user token, as
+        decide refuses it. `user_email` is accepted and ignored (a body field is not a
+        principal), `segments_resolved` is no longer in the response, and the
+        response gains `engine`, `subject_type` and `policy_bundle`. Where the
+        anchored engine cannot decide, the preview answers 503, as the route
+        does.
       operationId: testPolicies
       requestBody:
         required: true
@@ -935,49 +1111,49 @@ paths:
               properties:
                 query:
                   type: string
-                  description: Query to test
+                  description: Query to preview
                 user_email:
                   type: string
-                  description: User email for context
+                  description: |
+                    Accepted and ignored since v11.0.0 (#4253): the preview is
+                    decided for the authenticated credential.
                 request_type:
                   type: string
                   description: Request type
             example:
-              query: "Show me customer SSN 123-45-6789"
-              user_email: "analyst@company.com"
+              query: "DROP TABLE customers"
               request_type: "sql"
       responses:
         '200':
-          description: Policy test result
+          description: The verdict /api/request would give
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  blocked:
-                    type: boolean
-                  reason:
-                    type: string
-                  triggered_policies:
-                    type: array
-                    items:
-                      type: string
-                  checks_performed:
-                    type: array
-                    items:
-                      type: string
-                  processing_time_ms:
-                    type: number
+                $ref: '#/components/schemas/PolicyTestResponse'
               example:
                 blocked: true
-                reason: "PII detected: SSN pattern found in query"
+                reason: "explicit_constraint"
                 triggered_policies:
-                  - "pii-ssn"
+                  - "corpus:static_policies:drop__table__prevention"
                 checks_performed:
-                  - "ssn_pattern"
-                  - "credit_card_pattern"
-                  - "email_pattern"
-                processing_time_ms: 0.8
+                  - "shared_policy_engine"
+                processing_time_ms: 3
+                engine: "anchored"
+                subject_type: "Client"
+                policy_bundle: "sha256:<the digest of the bundle that decided the preview>"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: |
+            The anchored engine could not decide the preview (for example, no
+            enforcer is wired in the process): `blocked` is true and
+            `triggered_policies` is `["decision_enforcement_unavailable"]`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyTestResponse'
 
   /api/clients:
     get:
@@ -1234,6 +1410,10 @@ paths:
                     price: 299.99
                 row_count: 5
                 duration_ms: 450
+                engine: "anchored"
+                subject_type: "User"
+                policy_bundle: "sha256:4b8f2a7c9e1d3f5a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a"
+                policy_packs: ["rbi@sha256:7d1e9a3c5b7f9d1e3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f"]
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1300,6 +1480,10 @@ paths:
                 rows_affected: 1
                 duration_ms: 15
                 message: "Update successful"
+                engine: "anchored"
+                subject_type: "User"
+                policy_bundle: "sha256:4b8f2a7c9e1d3f5a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a"
+                policy_packs: ["rbi@sha256:7d1e9a3c5b7f9d1e3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f"]
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1593,11 +1777,9 @@ paths:
 
         ## Policy Evaluation
 
-        The following policies are evaluated in order:
-        1. **Dynamic policies** (if enabled): Rate limits, budgets, time-access, role-access via Orchestrator
-        2. **Static policies**: SQL injection detection, dangerous query blocking, PII detection
+        The anchored decision engine (ADR-065) decides the request from the organization's active typed policy document: the system detectors (SQL injection, dangerous queries, PII) run over the statement and its parameters, and the engine's verdict is the response. Tenant dynamic policies no longer decide MCP requests (PRD v11 §1.2).
 
-        If any policy blocks the request, the response returns `allowed: false` with a `block_reason`.
+        If the engine denies the request, the response returns `allowed: false` with a `block_reason`. A request the engine cannot decide is refused with 503; it is never let through (PRD v11 §1.7).
 
         ## When to Use
 
@@ -1657,28 +1839,23 @@ paths:
           description: |
             Input blocked by policy.
 
-            **A second, differently-shaped cause since #3447:**
-            `segment_resolution_failed`. This route resolves the caller's
-            governance-segment memberships to decide which segment-scoped
-            policies apply, and when that resolution genuinely FAILS for a
-            caller who HAS a verified per-user principal, the request is
-            denied fail-closed rather than evaluated as though the caller
-            belonged to no segments. That refusal uses this same
-            `MCPCheckInputResponse` shape -- `allowed: false` with a
-            `block_reason` and a `decision_id` -- so a client already handling
-            a policy block needs no new parsing. It additionally writes a
-            canonical blocked audit row carrying the reserved identifier
-            `segment_resolution_failed`, which is where a caller distinguishes
-            it from an ordinary policy block. Key on that identifier, never on
-            the human-readable `block_reason`: that text is not a stable
-            interface, and the punctuation separating its clauses differs
-            between the planes that emit this refusal.
+            **`segment_resolution_failed` is no longer a cause** (it was one
+            from #3447). No segment gate stands here any more: the anchored
+            engine authors the request pass's verdict (PRD v11 §1.1) and reads
+            no segments, as on decide.
 
-            It is deliberately not reported as the `503` this route also
-            defines: a policy-side deny must stay distinguishable from a
-            policy-evaluator outage. A caller with no verified per-user
-            identity is a different case entirely and is not an error; the
-            request proceeds org-only.
+            **`unsupported_obligation`: a redaction this route cannot
+            discharge** (#4264). Under an organization's `pii=redact` posture a
+            permit composes a mandatory redaction of the request, and this route
+            hands back only the statement (`redacted_statement`). The request
+            pass also scans `parameters`, so when the statement carries none of
+            what the redaction requires masking, or a parameter carries some of
+            it too, nothing this route returns can discharge it: the request is
+            refused with `allowed: false` and a `block_reason` that starts
+            `unsupported_obligation:` and names the obligation, the policy that
+            attached it and why. A redaction the platform could not attempt (no
+            redaction engine installed, the policies unreadable, a requirement
+            or detector the engine no longer holds) is a 503.
           content:
             application/json:
               schema:
@@ -1703,7 +1880,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Dynamic policy evaluator unavailable (only when graceful degradation is disabled)
+          description: The policy engine could not decide the request (for example, the organization's active policy document could not be read). The request is refused, never let through (PRD v11 §1.7).
           content:
             application/json:
               schema:
@@ -1799,6 +1976,10 @@ paths:
                   value:
                     allowed: true
                     policies_evaluated: 8
+                    engine: "anchored"
+                    subject_type: "User"
+                    policy_bundle: "sha256:4b8f2a7c9e1d3f5a6b8c0d2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a"
+                    policy_packs: ["rbi@sha256:7d1e9a3c5b7f9d1e3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f"]
                 redacted:
                   summary: PII detected and redacted
                   value:
@@ -1821,24 +2002,14 @@ paths:
             Output blocked by policy (exfiltration limit exceeded or SQLi
             detected).
 
-            **A second cause since #3447:** `segment_resolution_failed`. This
-            route resolves the caller's governance-segment memberships to
-            decide which segment-scoped response-phase policies apply, and
-            when that resolution genuinely FAILS for a caller who HAS a
-            verified per-user principal, the response is withheld fail-closed
-            rather than evaluated as though the caller belonged to no
-            segments. The refusal uses this same `MCPCheckOutputResponse`
-            shape -- `allowed: false` with a `block_reason` and a
-            `decision_id` -- and writes a canonical blocked audit row carrying
-            the reserved identifier `segment_resolution_failed`, which is
-            where a caller distinguishes it from an ordinary policy block. Key
-            on that identifier, never on the human-readable `block_reason`.
-
-            The response phase has no `503` availability channel at all and
-            deliberately does not grow one here: a resolver-error deny is a
-            policy decision, not an outage. A caller with no verified per-user
-            identity is a different case and is not an error; evaluation
-            proceeds org-only.
+            **`segment_resolution_failed` is no longer a cause** (it was one
+            from #3447). The route resolved the caller's governance segments
+            and refused the request when that failed, on behalf of an
+            organization's segment-scoped static rows, and those rows no
+            longer decide: the anchored engine authors this verdict and reads
+            no segments (PRD v11 §1.1, §1.2). So the shared engine's detector
+            pass runs with no segment set, and a segment resolution that
+            would fail changes nothing.
           content:
             application/json:
               schema:
@@ -1848,8 +2019,7 @@ paths:
                 block_reason: "Exfiltration limit exceeded: row_count 15000 > limit 10000"
                 policies_evaluated: 3
                 exfiltration_info:
-                  exceeded: true
-                  limit_type: rows
+                  within_limits: false
                   rows_returned: 15000
                   row_limit: 10000
                   bytes_returned: 5242880
@@ -1942,48 +2112,62 @@ paths:
 
         Authentication: HTTP Basic `org:license-key` on every request. An
         Enterprise deployment MAY additionally send a per-user token in
-        `X-User-Token` (ADR-043/044); it is optional in general, but see the
-        governance-segment note below for the one case where it is required.
+        `X-User-Token` (ADR-043/044). It is optional unless the organization's
+        `require_user_token` posture demands one (see `BasicAuth`).
 
-        Governance segments (ADR-060, #3430): if the org has at least one
-        ENABLED segment-scoped `static_policies` row, `check_policy` and
-        `check_output` REQUIRE a validated per-user token. A caller without
-        one has no determinable segment membership, so the tool result is a
-        deny carrying `allowed: false` and
-        `blocked_by: "segment_identity_unresolved"` (HTTP 200 with a JSON-RPC
-        result, not an HTTP error - the refusal is a governance verdict).
-        Orgs with no segment-scoped policy are unaffected and Basic alone
-        remains sufficient. A caller WITH a validated token whose segment
-        resolution fails (SCIM/DB outage) is denied the same way with
-        `blocked_by: "segment_resolution_failed"`.
+        Governance segments no longer gate `check_policy` or `check_output`
+        (they did from #3430, refusing with `blocked_by:
+        "segment_identity_unresolved"` or `"segment_resolution_failed"`).
+        Neither tool consults segments: each is decided by the anchored
+        engine, which reads none (PRD v11 §1.1, §1.2), so a segment
+        resolution that would fail changes nothing.
 
-        Two refusals are narrower than an operator usually expects, and both
-        are deliberate:
+        Two identity rules are narrower than an operator usually expects,
+        and both are deliberate:
 
         - **`X-User-Email` does not substitute for a validated per-user
-          token here, even when `AXONFLOW_TRUST_IDENTITY_HEADERS` is on.**
-          That header is caller-supplied, so accepting it as the key segment
-          membership is resolved from would let the same person shed their
-          segments by naming a non-member colleague, which is the bypass this
-          requirement exists to close, recreated one level down through a
-          different header. The header keeps its attribution and ADR-044
-          override roles unchanged; it simply never decides which
-          segment-scoped policies apply.
-        - **A token naming a shared synthetic identity is refused too.**
-          Token minting validates only that the subject contains `@` and
-          token resolution censuses nothing, so a token issued for a shared
-          service or pseudo identity (the reserved `axonflow.local` and
-          `axonflow.internal` addresses, the MCP client pseudo-identity
-          prefix, and the Community-SaaS evaluator
-          `evaluator@try.getaxonflow.com`; the authoritative census is
-          `IsSharedSyntheticIdentity` in `platform/shared/identity`)
-          validates while naming an identity many callers share.
-          Resolving segments for it would return zero memberships and read as
-          "this person is in no segment", so it is treated as no per-user
-          principal at all.
+          token, even when `AXONFLOW_TRUST_IDENTITY_HEADERS` is on.** Under
+          the organization's `require_user_token` posture, a caller without a
+          validated token is refused before the header can supply an
+          identity. The header
+          keeps its attribution role; the ADR-044 override writes answer
+          the freeze from v11.0.0 (#4252).
+        - **A shared synthetic identity never holds a per-user session
+          override.** ADR-044 overrides are scoped to (tenant, user, policy),
+          so an override created under an identity many callers share would
+          flip deny to allow for every one of them (#2896). `create_override`
+          refuses such a session for its identity first (every other session is
+          answered `LEGACY_POLICY_WRITE_FROZEN` from v11.0.0, #4252), and no
+          override is offered to it; its audit rows still carry the identity. The census is
+          `IsSharedSyntheticIdentity` in `platform/shared/identity`: the
+          reserved `axonflow.local` and `axonflow.internal` addresses, the MCP
+          client pseudo-identity prefix, and the Community-SaaS evaluator
+          `evaluator@try.getaxonflow.com`; in Community mode the local-dev
+          identity is exempt. Token minting validates only that
+          the subject contains `@`, so a token for such an identity
+          validates, and `check_policy` and `check_output` accept it like any
+          other validated token.
 
-        Tier rate limits (Community SaaS) are reported **inside** the
-        JSON-RPC result (`result.content[0].text`), not as an HTTP 429.
+        The Community SaaS per-minute limit and daily quota are answered
+        with HTTP 429, a `Retry-After` header, and the `RateLimitEnvelope` as JSON text in
+        `result.content[0].text`, with `result.isError: true` (#4261;
+        before it, the same result came with a 200). The per-minute limit
+        answers `limit_type: per_minute`, window `minute`, `resets_at` one
+        minute out and `Retry-After: 60`; the daily quota answers
+        `limit_type: daily_quota`, window `daily_utc`, resetting at
+        midnight UTC. A credential refused by the pre-credential
+        per-minute limiter gets the same per-minute answer, with an empty
+        `tier` because the tier is not resolved yet, instead of a 401.
+        The `tools/call` tier gates (`feature_pro_only`, `active_policies`,
+        `hitl_approvals_window`) answer the same result shape with a 200.
+
+        JSON-RPC error codes: `-32001` is the one application code, an
+        authentication failure, sent with HTTP 401 and a
+        `WWW-Authenticate: Basic` challenge. The rest are the JSON-RPC 2.0
+        standard codes: `-32700` (parse error) with HTTP 400, `-32600`
+        (invalid request) with HTTP 400, or 415 when the `Content-Type` is
+        not `application/json`, and `-32601` (method not found) and
+        `-32602` (invalid params) with a 200.
 
         The JSON-RPC `check_output` tool result DOES include
         `redacted_message` — unlike the standalone REST
@@ -2020,6 +2204,20 @@ paths:
                 additionalProperties: true
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: |
+            Community SaaS rate limit (#4261): the per-minute limit
+            (`limit_type: per_minute`), including a credential refused by
+            the pre-credential limiter, or the daily quota
+            (`limit_type: daily_quota`). The body is a JSON-RPC response
+            whose `result.content[0].text` is the `RateLimitEnvelope` as
+            JSON text, with `result.isError: true`. Sent with `Retry-After`,
+            `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL`.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
     get:
       tags:
         - MCP Server
@@ -2140,7 +2338,7 @@ paths:
                 $ref: '#/components/schemas/JSONError'
 
   # ==========================================================================
-  # Connector Cache Management (ADR-007)
+  # Connector Cache Management (ADR-006)
   # ==========================================================================
 
   /api/v1/connectors/refresh:
@@ -3769,7 +3967,7 @@ paths:
           description: Notification config not found
 
   # =============================================================================
-  # Static Policies API (ADR-018)
+  # Static Policies API (ADR-019)
   # =============================================================================
 
   /api/v1/static-policies:
@@ -3795,7 +3993,7 @@ paths:
 
         Legacy category names are still accepted and automatically mapped.
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: listStaticPolicies
       parameters:
         - name: Authorization
@@ -3868,9 +4066,15 @@ paths:
         **Tier restrictions:**
         - `system` tier: Cannot be created via API (managed by AxonFlow)
         - `organization` tier: Requires Enterprise license
-        - `tenant` tier: Default, limited to 30 policies in Community mode
+        - `tenant` tier: Default, limited to 20 policies in Community mode
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read,
+        whatever it contains, naming the typed authoring route. An
+        owner-role deployment still creates.
       operationId: createStaticPolicy
       parameters:
         - name: Authorization
@@ -3923,6 +4127,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/static-policies/effective:
     get:
@@ -3972,6 +4178,11 @@ paths:
 
         Useful for validating patterns before creating policies.
         Has a 5-second timeout to prevent ReDoS attacks.
+
+        The pattern is compiled as written. The engine compiles a stored
+        pattern in the SQL-injection and destructive-command categories
+        case-insensitively, so for those categories prefix `(?i)` to test
+        what the engine matches.
       operationId: testStaticPolicyPattern
       requestBody:
         required: true
@@ -4049,6 +4260,7 @@ paths:
 
   /api/v1/policy-overrides:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: List policy overrides (canonical alias)
@@ -4134,6 +4346,12 @@ paths:
         **Restrictions:**
         - System-tier policies cannot be modified (use overrides instead)
         - Pattern changes trigger version increment
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read and
+        before the policy is looked up, whatever it contains, naming the
+        typed authoring route. An owner-role deployment still updates.
       operationId: updateStaticPolicy
       parameters:
         - name: id
@@ -4180,6 +4398,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
     delete:
       deprecated: true
       tags:
@@ -4220,6 +4440,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
     patch:
       deprecated: true
       tags:
@@ -4230,6 +4452,12 @@ paths:
 
         **Restrictions:**
         - System-tier policies cannot be disabled via this endpoint (use overrides)
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read and
+        before the policy is looked up, whatever it contains, naming the
+        typed authoring route. An owner-role deployment still toggles.
       operationId: toggleStaticPolicy
       parameters:
         - name: id
@@ -4276,6 +4504,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/static-policies/{id}/versions:
     get:
@@ -4357,13 +4587,13 @@ paths:
         - Static Policies
       summary: Create policy override
       description: |
-        Creates an override for a system policy.
-
-        **Enterprise only.** Overrides allow modifying policy behavior
-        (action, enabled status) without changing the underlying pattern.
-
-        Overrides can be scoped to organization or tenant level and
-        can have an optional expiration date.
+        Retired in v11 (PRD v11 §1.5): a system control is enabled, disabled
+        or re-actioned in the organization's typed document, in its
+        `system_controls` section, through `/api/v1/typed-policies`. This
+        route writes nothing and does not read a body: it answers `409
+        LEGACY_POLICY_WRITE_FROZEN` to every authenticated caller, in every
+        edition. The ADR-044 session override writes answer the same refusal
+        since v11.0.0 (#4252); the override reads are unaffected.
       operationId: createStaticPolicyOverride
       parameters:
         - name: id
@@ -4404,46 +4634,23 @@ paths:
                   action_override: "warn"
                   override_reason: "Regulatory requirement to warn instead of block"
       responses:
-        '201':
-          description: |
-            Override created successfully. Returns `CreateOverrideResponse`
-            with the effective `ttl_seconds` (post server-side clamping)
-            and, when applicable, the `requested_ttl` / `clamped` /
-            `clamped_reason` metadata so callers can surface clamping
-            decisions in their UX. The at-rest `PolicyOverride` entity
-            is returned by `GET /api/v1/policy-overrides` /
-            `GET /api/v1/policy-overrides/{id}`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateOverrideResponse'
-        '400':
-          description: Invalid request body or missing required fields
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Enterprise license required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Policy not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PerPolicyOverrideRetired'
     delete:
       deprecated: true
       tags:
         - Static Policies
       summary: Delete policy override
       description: |
-        Deletes an override, restoring the original policy behavior.
-
-        **Enterprise only.**
+        Retired in v11 (PRD v11 §1.5): a system control is enabled, disabled
+        or re-actioned in the organization's typed document, in its
+        `system_controls` section, through `/api/v1/typed-policies`. This
+        route writes nothing and does not read a body: it answers `409
+        LEGACY_POLICY_WRITE_FROZEN` to every authenticated caller, in every
+        edition. The ADR-044 session override writes answer the same refusal
+        since v11.0.0 (#4252); the override reads are unaffected.
       operationId: deleteStaticPolicyOverride
       parameters:
         - name: id
@@ -4466,20 +4673,10 @@ paths:
           schema:
             type: string
       responses:
-        '204':
-          description: Override deleted successfully
-        '403':
-          description: Enterprise license required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Override not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PerPolicyOverrideRetired'
 
   # =============================================================================
   # System Policies API: the current spelling of the policy routes this API
@@ -4488,6 +4685,7 @@ paths:
 
   /api/v1/system-policies:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: List static policies
@@ -4508,7 +4706,7 @@ paths:
 
         Legacy category names are still accepted and automatically mapped.
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: listSystemPolicies
       parameters:
         - name: Authorization
@@ -4571,6 +4769,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
+      deprecated: true
       tags:
         - System Policies
       summary: Create static policy
@@ -4580,9 +4779,15 @@ paths:
         **Tier restrictions:**
         - `system` tier: Cannot be created via API (managed by AxonFlow)
         - `organization` tier: Requires Enterprise license
-        - `tenant` tier: Default, limited to 30 policies in Community mode
+        - `tenant` tier: Default, limited to 20 policies in Community mode
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read,
+        whatever it contains, naming the typed authoring route. An
+        owner-role deployment still creates.
       operationId: createSystemPolicy
       parameters:
         - name: Authorization
@@ -4635,9 +4840,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/system-policies/effective:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: Get effective policies
@@ -4674,6 +4882,7 @@ paths:
 
   /api/v1/system-policies/test:
     post:
+      deprecated: true
       tags:
         - System Policies
       summary: Test regex pattern
@@ -4719,6 +4928,7 @@ paths:
 
   /api/v1/system-policies/overrides:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: List policy overrides
@@ -4758,6 +4968,7 @@ paths:
 
   /api/v1/system-policies/{id}:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: Get static policy by ID
@@ -4801,6 +5012,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     put:
+      deprecated: true
       tags:
         - System Policies
       summary: Update static policy
@@ -4810,6 +5022,12 @@ paths:
         **Restrictions:**
         - System-tier policies cannot be modified (use overrides instead)
         - Pattern changes trigger version increment
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read and
+        before the policy is looked up, whatever it contains, naming the
+        typed authoring route. An owner-role deployment still updates.
       operationId: updateSystemPolicy
       parameters:
         - name: id
@@ -4856,7 +5074,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
     delete:
+      deprecated: true
       tags:
         - System Policies
       summary: Delete static policy
@@ -4895,7 +5116,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
     patch:
+      deprecated: true
       tags:
         - System Policies
       summary: Toggle policy enabled status
@@ -4904,6 +5128,12 @@ paths:
 
         **Restrictions:**
         - System-tier policies cannot be disabled via this endpoint (use overrides)
+
+        **v11:** on a deployment whose database connection cannot write
+        `static_policies` (`migrations/core/172`), this route answers
+        `409 LEGACY_POLICY_WRITE_FROZEN` before the request body is read and
+        before the policy is looked up, whatever it contains, naming the
+        typed authoring route. An owner-role deployment still toggles.
       operationId: toggleSystemPolicy
       parameters:
         - name: id
@@ -4950,9 +5180,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/system-policies/{id}/versions:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: Get policy version history
@@ -4993,6 +5226,7 @@ paths:
 
   /api/v1/system-policies/{id}/override:
     get:
+      deprecated: true
       tags:
         - System Policies
       summary: Get active override for a policy
@@ -5024,17 +5258,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/JSONError'
     post:
+      deprecated: true
       tags:
         - System Policies
       summary: Create policy override
       description: |
-        Creates an override for a system policy.
-
-        **Enterprise only.** Overrides allow modifying policy behavior
-        (action, enabled status) without changing the underlying pattern.
-
-        Overrides can be scoped to organization or tenant level and
-        can have an optional expiration date.
+        Retired in v11 (PRD v11 §1.5): a system control is enabled, disabled
+        or re-actioned in the organization's typed document, in its
+        `system_controls` section, through `/api/v1/typed-policies`. This
+        route writes nothing and does not read a body: it answers `409
+        LEGACY_POLICY_WRITE_FROZEN` to every authenticated caller, in every
+        edition. The ADR-044 session override writes answer the same refusal
+        since v11.0.0 (#4252); the override reads are unaffected.
       operationId: createSystemPolicyOverride
       parameters:
         - name: id
@@ -5075,45 +5310,23 @@ paths:
                   action_override: "warn"
                   override_reason: "Regulatory requirement to warn instead of block"
       responses:
-        '201':
-          description: |
-            Override created successfully. Returns `CreateOverrideResponse`
-            with the effective `ttl_seconds` (post server-side clamping)
-            and, when applicable, the `requested_ttl` / `clamped` /
-            `clamped_reason` metadata so callers can surface clamping
-            decisions in their UX. The at-rest `PolicyOverride` entity
-            is returned by `GET /api/v1/policy-overrides` /
-            `GET /api/v1/policy-overrides/{id}`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateOverrideResponse'
-        '400':
-          description: Invalid request body or missing required fields
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Enterprise license required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Policy not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PerPolicyOverrideRetired'
     delete:
+      deprecated: true
       tags:
         - System Policies
       summary: Delete policy override
       description: |
-        Deletes an override, restoring the original policy behavior.
-
-        **Enterprise only.**
+        Retired in v11 (PRD v11 §1.5): a system control is enabled, disabled
+        or re-actioned in the organization's typed document, in its
+        `system_controls` section, through `/api/v1/typed-policies`. This
+        route writes nothing and does not read a body: it answers `409
+        LEGACY_POLICY_WRITE_FROZEN` to every authenticated caller, in every
+        edition. The ADR-044 session override writes answer the same refusal
+        since v11.0.0 (#4252); the override reads are unaffected.
       operationId: deleteSystemPolicyOverride
       parameters:
         - name: id
@@ -5136,20 +5349,10 @@ paths:
           schema:
             type: string
       responses:
-        '204':
-          description: Override deleted successfully
-        '403':
-          description: Enterprise license required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Override not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PerPolicyOverrideRetired'
 
   # =============================================================================
   # Audit Verification API (#2722): non-repudiation of the signed decision chain
@@ -5427,13 +5630,16 @@ components:
         refused at AUTHENTICATION, before any policy is evaluated (`401`,
         audited `user_token_required`).
 
-        The posture exists because segment-scoped governance policy
-        (ADR-060) is only meaningful if a caller cannot CHOOSE to arrive
-        without an identity: with the posture off a segment-scoped policy
-        still enforces against everyone who presents a token, but a member
-        can decline to present one and be evaluated org-only. Two levers set
-        it, and an explicit per-organization row wins over the
-        deployment-wide default in EITHER direction:
+        The posture exists because a policy that names a PERSON - a
+        principal-scoped constraint or permission in the organization's typed
+        document (PRD v11 §1.6) - is only meaningful if a caller cannot CHOOSE
+        to arrive without an identity: with the posture off such a policy
+        still applies to everyone who presents a token, but a caller can
+        decline to present one and be decided as the credential
+        (`subject_type=Client`). Governance segments (ADR-060) decide on no
+        agent route since v11.0.0 (#4253). Two levers set it, and an explicit
+        per-organization row wins over the deployment-wide default in EITHER
+        direction:
 
         - `organizations.require_user_token`, per organization, default
           `false`.
@@ -5604,6 +5810,31 @@ components:
         type: string
 
   schemas:
+    OAuthDiscoveryNotSupported:
+      type: object
+      description: |
+        The body both `/.well-known/oauth-*` endpoints return. Shaped to RFC
+        6749 section 5.2 so a client that parses discovery failures as OAuth
+        errors renders it instead of choking on a plaintext 404.
+      properties:
+        error:
+          type: string
+          enum: [oauth_not_supported]
+          description: Always this value.
+        error_description:
+          type: string
+          description: |
+            Names the mechanism this server does use - HTTP Basic with
+            `base64(org_id:license_key)` - and links the setup documentation.
+      required:
+        - error
+        - error_description
+      example:
+        error: oauth_not_supported
+        error_description: >-
+          AxonFlow's MCP server uses HTTP Basic authentication
+          (base64(org_id:license_key)), not OAuth. Set AXONFLOW_ENDPOINT and
+          AXONFLOW_AUTH in the environment that launches your MCP client.
     HealthResponse:
       type: object
       properties:
@@ -5685,18 +5916,19 @@ components:
             type: string
           description: Per-language SDK version this platform was tested against.
           example:
-            python: "9.3.0"
-            typescript: "9.3.0"
-            go: "9.3.0"
-            java: "9.3.0"
-            rust: "0.10.0"
+            python: "9.4.0"
+            typescript: "9.4.0"
+            go: "9.4.0"
+            java: "9.4.0"
+            rust: "0.11.0"
 
     PluginCompatInfo:
       type: object
       description: |
         Plugin version compatibility information. Mirrors `SDKCompatInfo`
-        for the five AxonFlow clients (`openclaw`, `claude-code`,
-        `cursor`, `codex`, `claude-desktop`). Plugins read this from
+        for the seven AxonFlow clients (`openclaw`, `claude-code`,
+        `cursor`, `codex`, `claude-desktop`, `n8n`, `google-adk`). The first
+        four read this from
         `/health` and warn when their runtime version is below
         `min_plugin_version[<their id>]`. Keys match the canonical plugin
         IDs the agent tracks in
@@ -5719,20 +5951,24 @@ components:
             cursor: "1.4.0"
             codex: "1.4.0"
             claude-desktop: "0.2.0"
+            n8n: "1.2.0"
+            google-adk: "1.2.0"
         recommended_plugin_version:
           type: object
           additionalProperties:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.9.0"
-            claude-code: "1.12.0"
-            cursor: "1.8.0"
-            codex: "1.8.0"
+            openclaw: "2.9.1"
+            claude-code: "1.13.0"
+            cursor: "1.9.0"
+            codex: "1.9.0"
             claude-desktop: "0.4.0"
+            n8n: "1.2.1"
+            google-adk: "1.3.0"
 
     # =========================================================================
-    # Static Policies Schemas (ADR-018)
+    # Static Policies Schemas (ADR-019)
     # =========================================================================
 
     StaticPolicy:
@@ -5996,68 +6232,6 @@ components:
           format: date-time
           description: Optional expiration for the override
 
-    CreateOverrideResponse:
-      type: object
-      description: |
-        Response returned by `POST /api/v1/policies/{id}/overrides` on
-        successful create. Carries the create-time-only TTL clamping
-        metadata (`requested_ttl`, `clamped`, `clamped_reason`) that
-        is not present on the at-rest `PolicyOverride` entity returned
-        by `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`.
-        Source of truth: `platform/orchestrator/overrides_handler.go`
-        (`CreateOverrideResponse`). Mirrors the `CreateWorkflowResponse`
-        precedent (orchestrator-api.yaml) — create-time concerns split
-        from at-rest concerns rather than overloaded onto one schema.
-      required:
-        - id
-        - policy_id
-        - policy_type
-        - expires_at
-        - ttl_seconds
-        - created_at
-      properties:
-        id:
-          type: string
-          description: Unique override identifier
-        policy_id:
-          type: string
-          description: ID of the policy being overridden
-        policy_type:
-          type: string
-          enum: [static, dynamic]
-          description: Type of policy being overridden
-        expires_at:
-          type: string
-          format: date-time
-          description: Override expiration timestamp (clamped server-side per ADR-044)
-        ttl_seconds:
-          type: integer
-          format: int64
-          description: |
-            Effective time-to-live in seconds, after server-side clamping.
-            Default 60m, hard cap 24h, minimum 60s.
-        requested_ttl:
-          type: integer
-          format: int64
-          description: |
-            The TTL the caller originally requested, included only when it
-            differs from `ttl_seconds` (i.e. when `clamped: true`). Lets
-            callers detect and surface clamping in their UX.
-        clamped:
-          type: boolean
-          description: |
-            `true` if the requested TTL was adjusted by server-side
-            clamping. Omitted when no clamping occurred.
-        clamped_reason:
-          type: string
-          enum: [exceeds_hard_cap, below_minimum]
-          description: |
-            Why the TTL was clamped. Present only when `clamped: true`.
-        created_at:
-          type: string
-          format: date-time
-          description: When the override was created.
-
     TestPatternRequest:
       type: object
       description: Request body for testing a regex pattern
@@ -6116,6 +6290,14 @@ components:
           type: string
         organization_id:
           type: string
+          description: |
+            The organisation these effective policies were computed for,
+            alongside `tenant_id` and `computed_at`. It is metadata about the
+            resolution, not an owner of any one policy in the list.
+
+            This is the current wire field name and it is not deprecated: it is
+            unrelated to a database column of the same name that was retired in
+            an earlier release. The two share a name and nothing else.
         computed_at:
           type: string
           format: date-time
@@ -6302,6 +6484,43 @@ components:
             type: object
             additionalProperties: true
 
+    PolicyTestResponse:
+      type: object
+      description: |
+        `POST /api/policies/test`'s preview of `/api/request`'s verdict for
+        the authenticated credential (#4253).
+      required:
+        - blocked
+        - triggered_policies
+        - engine
+      properties:
+        blocked:
+          type: boolean
+        reason:
+          type: string
+          description: The refusal's reason; empty when the preview allows.
+        triggered_policies:
+          type: array
+          items:
+            type: string
+          description: |
+            The policies the verdict names, the deciding one first. Always an
+            array, empty when nothing triggered.
+        checks_performed:
+          type: array
+          items:
+            type: string
+        processing_time_ms:
+          type: integer
+        engine:
+          type: string
+          enum:
+            - anchored
+        subject_type:
+          type: string
+        policy_bundle:
+          type: string
+
     ClientResponse:
       type: object
       properties:
@@ -6328,24 +6547,6 @@ components:
         block_reason:
           type: string
           description: Reason for blocking
-        approval_request_id:
-          type: string
-          format: uuid
-          description: |
-            The human-approval queue entry raised for a request this response
-            is holding (#3509). Present only on a `require_approval` hold.
-
-            **An EMPTY value on a held response is meaningful, not merely
-            absent.** It means no reviewable entry exists: the organisation is
-            at its pending-approval limit, its tier has no approval queue, or
-            the write failed. The request is still held either way, but nobody
-            will see it, so a caller must treat that case as a refusal rather
-            than as something a reviewer is about to action.
-
-            It is a SEPARATE field rather than an addition to `block_reason`
-            because `block_reason` carries the literal `require_approval`
-            sentinel that shipped SDKs match to enter their HITL branch, and
-            that string is unchanged.
         policy_info:
           $ref: '#/components/schemas/PolicyEvaluationInfo'
         budget_info:
@@ -6363,15 +6564,107 @@ components:
             request carried a `media` payload. Shape mirrors
             `MediaAnalysisResponse`.
           additionalProperties: true
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: `anchored`, the
+            ADR-065 decision plane, which authors every verdict on this route
+            (PRD v11 §1.1). Since v11.0.0 (#4253) `legacy` is never written:
+            the tier engine that authored it after an anchored approval is
+            retired. Omitted on a refusal no engine decided.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on this route, each as `<pack id>@<digest of
+            the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
 
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Present on this envelope only for an MCP connector route's
+            response-pass refusal, and never on `/api/request`, whose request pass
+            runs no checksum validator. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
+        response_plane:
+          type: object
+          description: |
+            The orchestrator response plane's decision on the LLM response
+            `/api/request` forwarded (PRD v11 §1.1). It is a SEPARATE decision
+            from the top-level `engine`, `subject_type` and `policy_bundle`,
+            which name the request pass that let the request through: the
+            response is decided afterwards, on the orchestrator, for the client
+            credential the agent forwarded. Omitted on a response no
+            response-plane decision covers, including every refusal of the
+            request itself.
+          properties:
+            engine:
+              type: string
+              enum: [anchored]
+            subject_type:
+              type: string
+              description: "The principal type the response was decided for: `Client` on every edition."
+            policy_bundle:
+              type: string
+              description: The digest of the policy set that decided the response.
+            verdict:
+              type: string
+              enum: [allowed, redacted, blocked]
+              description: |
+                `allowed` (the response as the provider sent it), `redacted`
+                (`data` carries it masked) or `blocked` (withheld: `success` is
+                false, `blocked` is true, and the refusal is not counted against
+                the client's circuit breaker, because the caller did not cause it).
     PolicyEvaluationInfo:
       type: object
       properties:
+        matched_policies:
+          type: array
+          items:
+            type: string
+          description: |
+            The policies that matched the request, the deciding one first.
+            `policies_evaluated` carries the same list under its older name.
         policies_evaluated:
           type: array
           items:
             type: string
-          description: List of policies that were evaluated
+          description: The same list as `matched_policies`, kept under its older name for existing consumers.
         static_checks:
           type: array
           items:
@@ -6424,12 +6717,71 @@ components:
     PreCheckResponse:
       type: object
       properties:
-        context_id:
+        decision_id:
           type: string
-          description: Context ID to use in audit call (valid for 5 minutes)
+          description: |
+            The decision identifier, and the CANONICAL name for it. Every other
+            plane that mints a decision calls it `decision_id`:
+            `POST /api/v1/decide`, `POST /api/v1/mcp/check-input`,
+            `POST /api/v1/mcp/check-output`, and the AuthZEN adapter's
+            `context.decision_id`.
+
+            IT IS THE KEY TO ANOTHER ENDPOINT, and that linkage was
+            previously documented nowhere:
+
+              * `GET /api/v1/decisions/{decision_id}/explain` returns the full
+                policy explanation for this decision.
+
+            A caller that reads only `context_id` below still has the value, but
+            nothing told it that the value works on that endpoint, so
+            integrations built against this plane silently lost a capability
+            that integrations built against `/api/v1/decide` got for free.
+
+            `POST /api/v1/overrides` was the second such endpoint until
+            v11.0.0. It is keyed on a policy, never on `decision_id`, and from
+            v11.0.0 it writes nothing and answers
+            `409 LEGACY_POLICY_WRITE_FROZEN` (#4252).
+
+            Also valid for the subsequent `POST /api/audit/llm-call` for five
+            minutes, which is what `context_id` was originally named for.
+        verdict:
+          type: string
+          enum: [allow, deny]
+          description: |
+            The CANONICAL answer to "may I do this?", in the same vocabulary and
+            with the same values `POST /api/v1/decide` returns.
+
+            Read this rather than `approved` in new integrations. Across the
+            governed surface the same question was answered by five different
+            keys in two different types - `verdict` (string) on
+            `/api/v1/decide`, `approved` (bool) here, `allowed` (bool) on both
+            MCP check endpoints, `decision` (bool) on the AuthZEN adapter and
+            `decision` (string) on the decisions feed - so a client typed from
+            one plane could not deserialise another.
+
+            Since v11 the pre-check never holds a request: a `require_approval`
+            policy is a deny, because an anchored CHALLENGE is a refusal. So
+            `verdict` and `approved` never disagree.
+
+            The AuthZEN adapter (`POST /api/v1/access/evaluation`) keeps its
+            boolean `decision` and is not a divergence to be fixed: AuthZEN 1.0
+            mandates a boolean, and the four-valued state rides in that
+            endpoint's response context behind profile negotiation.
         approved:
           type: boolean
-          description: Whether the request is approved
+          description: |
+            Whether the request is allowed. RETAINED and not deprecated - every
+            shipped SDK reads it. Prefer `verdict`.
+        context_id:
+          type: string
+          deprecated: true
+          description: |
+            DEPRECATED ALIAS of `decision_id`, carrying the identical value.
+
+            Retained because every shipped SDK reads it and removing it would
+            break them all. New integrations should read `decision_id`; this
+            member will be removed no earlier than the release after the one
+            that introduced `decision_id`.
         approved_data:
           type: object
           additionalProperties: true
@@ -6441,38 +6793,12 @@ components:
           description: |
             Policies that were evaluated.
 
-            One reserved value can appear here that is not a policy id:
-            `segment_resolution_failed`, always paired with
-            `approved: false` (#3312). It records a fail-closed deny in which
-            the caller's governance-segment memberships could not be
-            resolved, so the request was refused rather than evaluated as
-            though the caller had no segments.
-
-            **This arrives as an HTTP `200` carrying a deny verdict, not as
-            an HTTP error status.** A client must therefore key on `approved`
-            and on the reserved identifier, never on the human-readable
-            `block_reason`: that text is not a stable interface, and the
-            punctuation separating its clauses differs between the planes
-            that emit this refusal, so a string match written against another
-            plane's wording silently misses this one.
-        approval_request_id:
-          type: string
-          format: uuid
-          description: |
-            The human-approval queue entry raised for a request this response
-            is holding (#3509). Present only on a `require_approval` hold.
-
-            **An EMPTY value on a held response is meaningful, not merely
-            absent.** It means no reviewable entry exists: the organisation is
-            at its pending-approval limit, its tier has no approval queue, or
-            the write failed. The request is still held either way, but nobody
-            will see it, so a caller must treat that case as a refusal rather
-            than as something a reviewer is about to action.
-
-            It is a SEPARATE field rather than an addition to `block_reason`
-            because `block_reason` carries the literal `require_approval`
-            sentinel that shipped SDKs match to enter their HITL branch, and
-            that string is unchanged.
+            `segment_resolution_failed` no longer appears here (it did from
+            #3312). No segment gate stands on the pre-check any more: it
+            resolved the caller's governance segments and refused the request
+            when that failed, on behalf of an organization's segment-scoped
+            static rows. Those rows no longer decide: the anchored engine
+            authors this verdict and reads no segments (PRD v11 §1.1, §1.2).
         rate_limit:
           $ref: '#/components/schemas/RateLimitInfo'
         expires_at:
@@ -6491,7 +6817,51 @@ components:
             Policy Enforcement Points propagate this id downstream so
             multi-gateway decisions stitch into one end-to-end trace.
           example: "b3a1f1f3a8c6e0d791bc3e7a8c2d5f4a"
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1). Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
 
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
     RateLimitInfo:
       type: object
       properties:
@@ -6773,12 +7143,11 @@ components:
       properties:
         verdict:
           type: string
-          enum: [allow, deny, needs_approval]
+          enum: [allow, deny]
           description: |
             The PEP MUST enforce this verdict. `allow` = forward;
-            `deny` = block; `needs_approval` = hold for human review
-            (enterprise-only -- community mode auto-allows on the
-            require_approval action).
+            `deny` = block. Since v11 `/api/v1/decide` never holds a request:
+            an anchored CHALLENGE is a refusal (PRD v11 §1.1).
         decision_id:
           type: string
           format: uuid
@@ -6805,7 +7174,18 @@ components:
             type: string
           description: |
             Human-readable reason strings backing the verdict. Empty on
-            verdict=allow with no obligations.
+            verdict=allow with no obligations. A deny with reason
+            `unknown_constraint` keeps that code as its first entry and
+            adds one entry per constraint that could not be evaluated,
+            the binding one first:
+            `<policy id> (<source>[, document version N]) could not be
+            evaluated: <why>`, where the reason names the attributes it
+            could not establish.
+            The version is `version N` for an installed pack's policy,
+            and a shipped control carries none. An id the activation did
+            not activate carries no parentheses, and a constraint whose
+            unknown attribute was not recorded says `an attribute it reads`
+            in place of the attribute.
         obligations:
           type: array
           items:
@@ -6820,9 +7200,14 @@ components:
             type: string
           description: |
             Policy IDs that MATCHED during evaluation (not the total
-            number of policies considered). Empty when no policy matched.
-            On `deny`, the first entry is the blocking policy; the rest
-            (if any) are non-blocking matches recorded for audit.
+            number of policies considered). Empty when no policy matched,
+            except on an indeterminate deny (below). On `deny`, the first
+            entry is the blocking policy; the rest (if any) are
+            non-blocking matches recorded for audit. On an
+            indeterminate deny (reason `unknown_constraint`), the
+            constraints that could not be evaluated are the policies that
+            decided it: they come first, the binding one first, then
+            what matched.
             On `allow` with obligations, the entries are the policies
             that produced the obligation. The full evaluation count
             will be surfaced separately when the explain endpoint
@@ -6833,7 +7218,109 @@ components:
           description: |
             When the decision expires. PEPs that cache decisions MUST
             re-call by this timestamp.
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1). Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on this route, each as `<pack id>@<digest of
+            the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
+        policy_identities:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyIdentity'
+          description: |
+            Each entry of `evaluated_policies`, in the same order, named (PRD
+            v11 §1.14): the policy's own display name where it has one, whose
+            it is, and for an organization's own policy or an installed pack's
+            the version it was published at. A shipped control carries no
+            version: `policy_bundle` identifies it. Additive:
+            `evaluated_policies` stays a list of ids. Omitted when
+            `evaluated_policies` is empty.
+        document_version:
+          type: integer
+          description: |
+            The published version of the organization's active typed
+            document (PRD v11 §1.14). Omitted while the organization has
+            published nothing: `policy_bundle` names that implicit bundle by
+            digest.
 
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
+    PolicyIdentity:
+      type: object
+      description: |
+        One policy a decision matched, as `policy_identities` names it (PRD
+        v11 §1.14). An identifier is never presented as a name.
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: The policy id, as `evaluated_policies` carries it.
+        name:
+          type: string
+          description: |
+            The policy's own display name. Omitted when it declares none.
+        source:
+          type: string
+          enum: [shipped, organization, pack]
+          description: |
+            Whose the policy is: a control the release ships (the system
+            corpus, the organization template, the deployment's baseline
+            permission pack, or a recorded override's replacement of a
+            shipped control), the organization's own published document, or
+            an installed policy pack. Omitted for an id the engine did not
+            activate - a checksum validator's (`legacy_validators`).
+        version:
+          type: integer
+          description: |
+            The version an organization's own policy (its document's) or a
+            pack's control (the pack's) was published at. Omitted for a
+            shipped control.
     AuthZENSubject:
       type: object
       description: |
@@ -7082,6 +7569,59 @@ components:
           type: object
           additionalProperties:
             type: string
+          description: |
+            The type's own parameters. Two obligations of the same type and
+            target with different params are INCOMPARABLE and deny rather than
+            being merged, so a PEP never receives a parameter set no policy
+            asked for.
+
+            The keys each family composes, and how:
+
+            * `approval_challenge` — `quorum` (integer), `eligible`
+              (comma-separated group identifiers), `separation_of_duties`
+              (`true`/`false`; any other spelling is REFUSED rather than read
+              as `false`), and the optional `expiry_seconds`. Where several
+              policies carry an expiry the SHORTEST wins, together with the
+              evaluator's own stamp: a conjunction is discharged only while all
+              of it is live, and timeout is always deny, so extending it is the
+              permissive direction. Only a **mandatory** obligation may shorten
+              the window — an advisory control that could expire a challenge
+              early would be deciding the request cannot proceed. Bounded to
+              60..604800 seconds, refused rather than clamped at either end.
+            * `route_restriction` — `allowed_destinations` (comma-separated),
+              intersected across policies; an empty intersection denies. Route
+              properties are namespaced `route.` (`route.tls`, `route.region`,
+              `route.method`); each value is the comma-separated set permitted
+              for that property, and they intersect per key under the same
+              rule. A parameter that is neither is REFUSED: without the
+              namespace an ordinary annotation on two policies intersects to an
+              empty set and denies a request neither said anything about
+              routing for.
+            * `step_up_authentication` — `assurance` (`aal1`, `aal2`, `aal3`;
+              the maximum wins) and the optional `methods` (comma-separated,
+              intersected). An ABSENT `methods` means unconstrained, so a
+              policy may require a higher assurance without enumerating how it
+              is reached; a carried-but-empty value is refused. No other key.
+            * `immutable_audit` and `notification` — `delivery`
+              (`best_effort`, `at_least_once`, `durable`; the strongest wins)
+              plus the sink's own keys, which form the merge identity: two
+              obligations agreeing on every key but `delivery` are ONE
+              instruction carrying the stronger guarantee.
+            * `quota_reservation` — `counter`, `window`, `unit`, a positive
+              `limit`, and `amount_from`. THE QUANTITY IS A REFERENCE, NOT A
+              VALUE: `amount_from` names the request attribute carrying it, and
+              the reservation service resolves it per request, because a budget
+              that reserved a number the policy carried would not be measuring
+              the request at all. All five are required — a reservation that
+              names no counter is not a reservation, and the caller would
+              proceed believing capacity was held. It follows that composition
+              does not sum: there is no per-policy quantity to add, and adding
+              the `limit`s would loosen the caps rather than tighten them. Two
+              policies stating the same constraint deduplicate into one
+              instruction naming both; two stating different caps on one
+              counter are two constraints the reservation must each satisfy, so
+              the tighter binds.
+            * disclosure transforms — the transform's own keys (`keep=last4`).
         mandatory:
           type: boolean
           description: A mandatory obligation that cannot be discharged denies.
@@ -7598,7 +8138,62 @@ components:
           description: JSON paths of fields that were redacted (e.g., "data.rows[0].ssn")
         policy_info:
           $ref: '#/components/schemas/PolicyInfo'
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1).
+            It rides this body and the 403 envelope of a refusal by the
+            same pass. Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
 
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on the response pass, each as `<pack id>@<digest
+            of the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
     PolicyInfo:
       type: object
       description: Policy evaluation information included in MCP responses
@@ -7625,8 +8220,6 @@ components:
           description: Policies that matched during evaluation
         exfiltration_check:
           $ref: '#/components/schemas/ExfiltrationCheckInfo'
-        dynamic_policy_info:
-          $ref: '#/components/schemas/DynamicPolicyInfo'
 
     ExplainPolicy:
       type: object
@@ -7736,10 +8329,10 @@ components:
           description: Highest risk level across all matches.
         override_available:
           type: boolean
-          description: Whether a session override is available for this decision.
+          description: False from v11.0.0; session overrides are retired (PRD v11 §1.5, #4252).
         override_existing_id:
           type: string
-          description: ID of an active override consumed by this decision (if any).
+          description: Not set from v11.0.0; no override is offered, and the step gate no longer reads a session override (#4252).
         historical_hit_count_session:
           type: integer
           description: |
@@ -7756,13 +8349,6 @@ components:
       type: object
       description: Information about exfiltration limit checks (v3.2.0+)
       properties:
-        exceeded:
-          type: boolean
-          description: Whether any exfiltration limit was exceeded
-        limit_type:
-          type: string
-          enum: [rows, bytes, none]
-          description: Type of limit that was exceeded (if any)
         rows_returned:
           type: integer
           description: Number of rows in the response
@@ -7775,49 +8361,9 @@ components:
         byte_limit:
           type: integer
           description: Configured byte limit (MCP_MAX_BYTES_PER_QUERY)
-
-    DynamicPolicyInfo:
-      type: object
-      description: |
-        Information about dynamic policy evaluation via Orchestrator (v3.2.0+).
-        Source of truth: `platform/shared/policy/types.go` (`DynamicPolicyInfo`).
-      properties:
-        policies_evaluated:
-          type: integer
-          description: Number of dynamic policies evaluated
-        matched_policies:
-          type: array
-          items:
-            $ref: '#/components/schemas/DynamicPolicyMatch'
-          description: Details of matched dynamic policies (omitted when empty)
-        orchestrator_reachable:
+        within_limits:
           type: boolean
-          description: Whether the Orchestrator was reachable for dynamic policy evaluation
-        processing_time_ms:
-          type: integer
-          format: int64
-          description: Time spent evaluating dynamic policies in milliseconds
-
-    DynamicPolicyMatch:
-      type: object
-      description: Information about a matched dynamic policy
-      properties:
-        policy_id:
-          type: string
-          description: Unique identifier of the matched policy
-        policy_name:
-          type: string
-          description: Human-readable policy name
-        policy_type:
-          type: string
-          description: Type of policy (e.g., rate-limit, budget, time-based, role-based)
-        action:
-          type: string
-          enum: [allow, deny, warn]
-          description: Action taken by the policy
-        message:
-          type: string
-          description: Optional message from the policy evaluation
+          description: True when the response stayed within every configured limit
 
     PolicyMatchInfo:
       type: object
@@ -7890,7 +8436,62 @@ components:
           description: JSON paths of fields that were redacted
         policy_info:
           $ref: '#/components/schemas/PolicyInfo'
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1).
+            It rides this body and the 403 envelope of a refusal by the
+            same pass. Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
 
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on the response pass, each as `<pack id>@<digest
+            of the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
     MCPCheckInputRequest:
       type: object
       required:
@@ -7908,10 +8509,10 @@ components:
           description: Tenant identifier (required in Enterprise mode, defaults to "default" in Community)
         user_id:
           type: string
-          description: Optional user identifier for dynamic policy evaluation
+          description: Optional end-user identifier. Honored only for internal-service callers, which may assert the end user; it attributes the decision's audit row
         user_role:
           type: string
-          description: Optional user role for role-based access policies (e.g., "admin", "analyst")
+          description: Optional end-user role (e.g., "admin", "analyst"). Honored only for internal-service callers; recorded on the decision's audit row
         connector_type:
           type: string
           description: MCP connector/server type (e.g., "postgres", "snowflake", "salesforce")
@@ -7936,7 +8537,7 @@ components:
           type: string
           enum: [query, execute]
           default: execute
-          description: Operation type — affects dynamic policy evaluation (rate limits may differ)
+          description: Operation type. Under the read-only posture it classifies the call as a read or a write (`classifyMCPCall` in `platform/agent/mcp_handler.go`)
         content_type:
           type: string
           description: |
@@ -7981,21 +8582,21 @@ components:
           items:
             $ref: '#/components/schemas/RicherPolicyMatch'
           description: |
-            Per-policy explainability records (ADR-043). Surfaced when
-            dynamic policy evaluation produces non-empty matches. Source
-            of truth: `platform/agent/mcp_handler.go` (RicherPolicyMatch).
+            Per-policy explainability records (ADR-043). Surfaced on a
+            refusal: the controls that determined the anchored engine's
+            verdict. Source of truth:
+            `platform/agent/mcp_request_enforcing_seam.go` (`anchoredPolicyMatches`).
         override_available:
           type: boolean
           description: |
-            Whether at least one matched policy permits a session override.
-            Used by plugins to render an "override via explain_decision"
-            hint when the block is overrideable.
+            Not set from v11.0.0: session overrides are retired (PRD v11
+            §1.5, #4252), so the block offers none and a plugin renders no
+            override hint.
         override_existing_id:
           type: string
           description: |
-            ID of an active override consumed by this decision (if any).
-            Distinguishes "you already have an override" from "you can
-            request one".
+            Not set from v11.0.0: no override is offered, and the step gate
+            no longer reads a session override (#4252).
         # Request-phase redaction (ADR-056 / #2563, since 8.6.0). When an
         # allowed statement carries PII under a redact (not block) policy, the
         # engine returns the masked statement here so a PEP can forward
@@ -8023,6 +8624,57 @@ components:
             fail closed when this is false — it means no detection config was
             enabled, so `redacted: false` is indistinguishable from "looked,
             found nothing" and the request must not be forwarded as clean.
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1). Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on this route, each as `<pack id>@<digest of
+            the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under the organization's recorded `pii=redact` detection
+            override, the Indonesia validator masked the statement ahead of
+            the decision plane. Omitted when none did.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
 
     MCPCheckOutputRequest:
       type: object
@@ -8115,7 +8767,62 @@ components:
             redactor did not run (detection disabled for the connector, or no
             policy engine), so absence of `redacted_data` cannot be trusted as
             "nothing to mask." Omitted (false) preserves the pre-#2865 shape.
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            Which policy engine authored this verdict: the ADR-065 decision
+            plane, the only author on this route (PRD v11 §1.1).
+            It rides this body and the 403 envelope of a refusal by the
+            same pass. Omitted
+            on a refusal no engine decided - an authentication failure, or a
+            request refused before the policy pass ran.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the verdict was decided for (PRD v11 §1.6):
+            `User` for a verified user token, `Client` when the request
+            presented no user identity and its client credential is the
+            principal. Omitted wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided: the system corpus's
+            restriction for this route and the organization root - the
+            organization's active typed document composed with the
+            deployment's baseline permission pack, or, while it has published
+            nothing, the implicit bundle of that pack and the organization
+            template. A rollback reinstates an earlier digest. Omitted wherever
+            `engine` is.
 
+        policy_packs:
+          type: array
+          items:
+            type: string
+          description: |
+            The add-on policy packs (PRD v11 §1.9) whose controls composed
+            into `policy_bundle` on the response pass, each as `<pack id>@<digest
+            of the pack document the deployment instantiated>`, sorted. Omitted
+            when the deployment installs no pack or none binds on this route.
+        legacy_validators:
+          type: array
+          description: |
+            A checksum validator that acted BEFORE the anchored engine decided
+            (#4122): under an organization's recorded `pii=block` or
+            `pii=redact` detection override, the Indonesia or India validator
+            blocked the request or masked the response ahead of the decision
+            plane. Omitted when none did, which is every request without
+            such an override.
+          items:
+            type: object
+            required: [validator, action]
+            properties:
+              validator:
+                type: string
+                enum: [indonesia_pii, india_pii]
+              action:
+                type: string
+                enum: [blocked, masked]
     ConnectorRefreshResponse:
       type: object
       description: |
@@ -8347,6 +9054,9 @@ components:
         Middleware-written error envelope (auth middleware 401s, static
         policy API errors). Source of truth:
         `platform/agent/static_policy_api_handlers.go` (writeJSONError).
+        One exception on the system-policy routes: the v11 legacy policy
+        freeze answers with the same two keys and a STRING code - see the
+        `LegacyPolicyWriteFrozen` response.
       properties:
         error:
           type: object
@@ -8362,9 +9072,11 @@ components:
       description: |
         Shared tier rate-limit envelope written by the Community SaaS
         limiter for daily-quota 429s (the same shape is used with 403 for
-        Pro-only feature limits). Per-minute 429s use a plain
-        `{"error": "..."}` body with only a Retry-After header — not this
-        envelope. Accompanied by the
+        Pro-only feature limits). On the REST routes, per-minute 429s use
+        a plain `{"error": "..."}` body with only a Retry-After header —
+        not this envelope. On `/api/v1/mcp-server` both limits use it
+        (`per_minute` and `daily_quota`), wrapped in a JSON-RPC result
+        (#4261). Accompanied by the
         `X-Axonflow-Tier-Limit`, `X-Axonflow-Upgrade-URL`, and
         `Retry-After` headers. Source of truth:
         `platform/agent/community_saas_ratelimit_response.go`
@@ -8374,7 +9086,10 @@ components:
           type: string
         limit_type:
           type: string
-          description: Which limiter fired (e.g. daily_quota)
+          description: |
+            Which limiter fired: `daily_quota`, `per_minute` (MCP server
+            only), `active_policies`, `hitl_approvals_window` or
+            `feature_pro_only`.
         tier:
           type: string
         limit:
@@ -9220,6 +9935,70 @@ components:
             success: false
             error: "Tenant mismatch"
 
+    LegacyPolicyWriteFrozen:
+      description: |
+        The legacy policy tables are read-only. `migrations/core/172` revoked
+        INSERT, UPDATE, DELETE and TRUNCATE on `static_policies` from the
+        application roles, and this endpoint writes it, so the write is
+        refused permanently rather than transiently. It is not an entitlement
+        fact: no licence, edition or upgrade changes it. Author policies
+        through the typed authoring route (`/api/v1/typed-policies`, in
+        `orchestrator-api.yaml`) instead. Reads are unaffected. A deployment
+        whose connection may still write the table (the database owner; a
+        property of the connection, not of `AXONFLOW_DB_USE_APP_ROLE` alone)
+        is not bound by the revoke and does not receive this response. The body
+        is the `JSONError` envelope with `code` as the string
+        `LEGACY_POLICY_WRITE_FROZEN` rather than the numeric status.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [LEGACY_POLICY_WRITE_FROZEN]
+                  message:
+                    type: string
+          example:
+            error:
+              code: LEGACY_POLICY_WRITE_FROZEN
+              message: "The legacy policy tables are read-only in v11: migrations/core/172 revoked write access from the application role, and this endpoint writes them. Author policies through the typed authoring route at /api/v1/typed-policies instead. Reads on this endpoint are unaffected."
+
+    PerPolicyOverrideRetired:
+      description: |
+        Per-policy overrides of system controls are retired in v11 (PRD v11
+        §1.5). A system control is enabled, disabled or re-actioned in the
+        organization's typed document, in its `system_controls` section,
+        through the typed authoring route (`/api/v1/typed-policies`, in
+        `orchestrator-api.yaml`). The route stays registered so a caller is
+        told where the write went. It writes nothing, and it answers this in
+        every edition and on every database role: `policy_overrides` is not
+        revoked by core/172, and no route writes it in v11 (the session
+        override writes answer the same refusal since #4252), so the refusal
+        is the handler's. The body is the
+        `LegacyPolicyWriteFrozen` envelope: `JSONError` with `code` the string
+        `LEGACY_POLICY_WRITE_FROZEN`.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [LEGACY_POLICY_WRITE_FROZEN]
+                  message:
+                    type: string
+          example:
+            error:
+              code: LEGACY_POLICY_WRITE_FROZEN
+              message: "Policy overrides are retired in v11: a policy is enabled, disabled or re-actioned in the organization's typed document (a shipped system control in its system_controls section) through the typed authoring route at /api/v1/typed-policies. Reads on this endpoint are unaffected."
+
     MCPPerUserTokenUnauthorized:
       description: |
         Missing or invalid authentication on an MCP REST route. FOUR distinct
@@ -9275,36 +10054,10 @@ components:
         Access denied. Causes on these routes:
 
         - **Tenant mismatch**, or a connector this tenant may not access.
-        - **`segment_resolution_failed`** (#3447, ADR-060 #2989) -- a NEW
-          refusal. These routes resolve the caller's governance-segment
-          memberships to decide which segment-scoped policies apply. When that
-          resolution genuinely FAILS for a caller who HAS a verified per-user
-          principal (the directory backing it is unavailable), the request is
-          denied fail-closed rather than evaluated as though the caller
-          belonged to no segments, which would let a segment-scoped
-          restriction lapse exactly when the directory is down. A canonical
-          blocked audit row is written carrying the reserved identifier
-          `segment_resolution_failed`, and the error message is prefixed
-          `Request blocked:`.
 
-        The segment refusal is deliberately NOT reported as `503`: a
-        policy-side deny must stay distinguishable from a policy-evaluator
-        outage in both the audit row and the operator dashboard.
-
-        **Key on the reserved identifier, never on the human-readable
-        message.** That text is not a stable interface, and the punctuation
-        separating its clauses differs between the planes that emit this
-        refusal, so a string match written against another plane's wording
-        silently misses this one.
-
-        A caller with NO verified per-user identity is a different case and is
-        NOT an error: resolution succeeds with an empty set, the request
-        proceeds org-only, and non-segment-scoped policies still enforce. A
-        verified caller who belongs to no segments, and a caller whose token
-        names a shared synthetic identity, resolve the same way. **Enforcement
-        on these routes is therefore conditional on the caller presenting a
-        per-user token**; `require_user_token` is what makes presenting one
-        non-optional.
+        `segment_resolution_failed` is no longer a cause (it was one from
+        #3447). No segment gate stands on these routes any more: the anchored
+        engine reads no segments, as on decide.
       content:
         application/json:
           schema:

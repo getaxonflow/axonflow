@@ -29,6 +29,17 @@ BEGIN;
 -- DELETE that matches zero rows because RLS filtered them, followed by an ADD
 -- CONSTRAINT that fails on the survivors it could not see — into a loud error
 -- at the DELETE itself. It is a no-op for a bypassing role.
+--
+-- axonflow:rls-census-exempt because the abort IS the intended behaviour here.
+-- The RLS census requires a BEGIN...EXCEPTION arm around a count under
+-- row_security=off, so that a role without BYPASSRLS degrades to "counts
+-- unavailable" instead of aborting the rollback. That is right where the count
+-- only feeds a NOTICE (enterprise/155, core/171). It is WRONG here: this count
+-- precedes a DELETE and an ADD CONSTRAINT, and a role that cannot see every row
+-- would delete a subset and then fail the constraint on survivors it never saw.
+-- Failing loudly at the count is the cheaper outcome, and is what the paragraph
+-- above chose deliberately. Handling the exception would convert a loud refusal
+-- into a silent partial delete.
 SET LOCAL row_security = off;
 
 -- Announce, then delete, the rows the re-tightened constraint cannot hold.

@@ -269,9 +269,9 @@ func TestUnrecognisedAnswersYes(t *testing.T) {
 	}
 	if !AppliesCategory("enfore", CategoryEnterprise) {
 		t.Fatal("an unrecognised mode must answer YES: the agent refuses to boot on one, " +
-			"and for the orchestrator answering NO would silently stop honouring records " +
-			"that may well exist, while YES restores the pre-#3602 behaviour — a read that " +
-			"fails, is counted, and falls back to the process mode")
+			"and for a caller that does not validate it answering NO would silently stop " +
+			"honouring records that may well exist, while YES restores the pre-#3602 " +
+			"behaviour: a read that fails and is counted")
 	}
 }
 
@@ -325,7 +325,7 @@ func TestCurrentReadsTheEnvironment(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "saas")
 	if !AppliesEnterpriseSchema() {
 		t.Fatal("AppliesEnterpriseSchema() = false under DEPLOYMENT_MODE=saas; " +
-			"production-us would stop honouring per-organization compat modes it has records for")
+			"production-us would stop honouring the per-organization Shared Signals opt-ins it has records for")
 	}
 }
 

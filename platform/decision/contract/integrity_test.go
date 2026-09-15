@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -376,7 +379,7 @@ func TestDisclosureWinnerInheritsMandatoryAcrossRanks(t *testing.T) {
 		Capabilities: []Capability{{Type: ObFieldAnnotate, Version: 1}}}
 
 	alone := ComposeObligations(ComposeInput{
-		Obligations: []Obligation{mandatoryAnnotate}, Leaves: leaves, PEP: annotateOnly})
+		Obligations: []Obligation{mandatoryAnnotate}, Payload: KnownPayloadLeaves(leaves...), PEP: annotateOnly})
 	if alone.Denied {
 		t.Fatalf("the requirement alone did not compose, so the comparison proves nothing: %s", alone.Detail)
 	}
@@ -392,7 +395,7 @@ func TestDisclosureWinnerInheritsMandatoryAcrossRanks(t *testing.T) {
 		"the advisory transform listed first":  {advisoryRemove, mandatoryAnnotate},
 		"the advisory transform listed second": {mandatoryAnnotate, advisoryRemove},
 	} {
-		got := ComposeObligations(ComposeInput{Obligations: order, Leaves: leaves, PEP: annotateOnly})
+		got := ComposeObligations(ComposeInput{Obligations: order, Payload: KnownPayloadLeaves(leaves...), PEP: annotateOnly})
 		if got.Denied {
 			t.Errorf("%s: an advisory transform produced a denial: %s", name, got.Detail)
 			continue
@@ -419,7 +422,7 @@ func TestDisclosureWinnerInheritsMandatoryAcrossRanks(t *testing.T) {
 	both := &PEPProfile{ID: "both", Capabilities: []Capability{
 		{Type: ObFieldAnnotate, Version: 1}, {Type: ObFieldRemove, Version: 1}}}
 	ok := ComposeObligations(ComposeInput{
-		Obligations: []Obligation{advisoryRemove, mandatoryAnnotate}, Leaves: leaves, PEP: both})
+		Obligations: []Obligation{advisoryRemove, mandatoryAnnotate}, Payload: KnownPayloadLeaves(leaves...), PEP: both})
 	if ok.Denied {
 		t.Fatalf("composition denied against a capable profile: %s", ok.Detail)
 	}
@@ -451,7 +454,7 @@ func TestAnUnplaceableMandatoryTransformIsReported(t *testing.T) {
 	pep := &PEPProfile{ID: "p", Capabilities: []Capability{{Type: ObFieldRedact, Version: 1}}}
 
 	placed := ComposeObligations(ComposeInput{
-		Obligations: []Obligation{redactSSN}, Leaves: []string{"response.ssn", "response.name"}, PEP: pep})
+		Obligations: []Obligation{redactSSN}, Payload: KnownPayloadLeaves("response.ssn", "response.name"), PEP: pep})
 	if placed.Denied || len(placed.Obligations) != 1 {
 		t.Fatalf("the transform did not compose against a schema that carries its target: %+v", placed)
 	}
@@ -460,7 +463,7 @@ func TestAnUnplaceableMandatoryTransformIsReported(t *testing.T) {
 	}
 
 	unplaced := ComposeObligations(ComposeInput{
-		Obligations: []Obligation{redactSSN}, Leaves: []string{"response.name"}, PEP: pep})
+		Obligations: []Obligation{redactSSN}, Payload: KnownPayloadLeaves("response.name"), PEP: pep})
 	if unplaced.Denied {
 		t.Errorf("a transform targeting a field this action does not return produced a denial: %s", unplaced.Detail)
 	}

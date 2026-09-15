@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package contract defines the canonical, versioned authorization contract for
 // the ADR-065 policy decision plane: the normalized request a Policy Decision
 // Point evaluates, the four-valued authorization outcome it returns, the

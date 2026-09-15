@@ -51,7 +51,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 # Each is a grep, a lint or a presence check with no toolchain set-up and no
 # container; measured 2026-09-01 at ~1 billable minute per run. The proxy
 # below re-verifies that on every run of this test.
-CHEAP="suite-gate.yml commit-lint.yml gitleaks.yml check-forbidden-files.yml partner-name-denylist.yml lint-workflow-telemetry.yml validate-version-alignment.yml definition-of-done.yml check-protected-changes.yml tests-hygiene.yml guardrail-stale-model-ids.yml"
+#
+# W3-J (2026-09-12) folded five of these - forbidden files, telemetry markers,
+# version alignment, tests hygiene, stale model ids - plus gitleaks' PR leg into
+# ONE job, repository-gates.yml, and gitleaks.yml kept only its push-to-main
+# leg, so it is no longer on the pull_request tier this census reads.
+# W3-J PR-B: the three runtime-e2e/ lints left definition-of-done.yml for
+# runtime-e2e-lints.yml (cheap), and repository-gates.yml took the regression
+# suite, which sets up Node - so it is on the gated side now, draft clause and all.
+CHEAP="suite-gate.yml commit-lint.yml runtime-e2e-lints.yml partner-name-denylist.yml definition-of-done.yml check-protected-changes.yml"
 
 out=$(python3 - "$CHEAP" <<'PY'
 import glob, io, re, sys, yaml
@@ -198,8 +206,12 @@ cheap_seen=$(printf '%s\n' "$out" | sed -n 2p)
 expensive_seen=$(printf '%s\n' "$out" | sed -n 3p)
 problems=$(printf '%s\n' "$out" | tail -n +4 | sed '/^$/d')
 
-if [ "${gated:-0}" -lt 12 ] || [ "${cheap_seen:-0}" -lt 8 ] || [ "${expensive_seen:-0}" -lt 25 ]; then
-  echo "FAIL: census saw ${gated:-0} gated workflows, ${cheap_seen:-0} cheap, ${expensive_seen:-0} expensive jobs (floors 12 / 8 / 25)"
+# The cheap floor was 8. W3-J (2026-09-12) folded five cheap workflows into one
+# (repository-gates.yml) and took gitleaks.yml off the pull_request tier, so 6
+# remain; measured on this tree at that change: 17 gated / 6 cheap / 52
+# expensive. 5 still catches a census that has stopped seeing the tree.
+if [ "${gated:-0}" -lt 12 ] || [ "${cheap_seen:-0}" -lt 5 ] || [ "${expensive_seen:-0}" -lt 25 ]; then
+  echo "FAIL: census saw ${gated:-0} gated workflows, ${cheap_seen:-0} cheap, ${expensive_seen:-0} expensive jobs (floors 12 / 5 / 25)"
   exit 1
 fi
 echo "ok: censused ${gated} draft-gated workflows (${expensive_seen} expensive jobs) and ${cheap_seen} cheap ones"

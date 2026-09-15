@@ -383,6 +383,14 @@ func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisio
 		// Normalize the raw policy_decision so a legacy/historical row surfaces
 		// the canonical verdict (audit.All()), matching the canonical-only filter
 		// allowlist and the documented wire shape.
+		//
+		// THE SIBLING DOES NOT DO THIS, and the asymmetry is deliberate rather
+		// than drift (#3901). GET /api/v1/decisions/{id}/explain echoes the same
+		// column verbatim because it is the FORENSIC endpoint and must report
+		// what was recorded; this is the verdict-centric FEED and must report one
+		// vocabulary. So one decision_id whose row carries a legacy spelling
+		// reads "allowed" here and "allow" there, and both are contractual - see
+		// the note on DecisionExplanation.Decision (explain_handler.go).
 		item.Decision = audit.Normalize(item.Decision)
 		// Drop the recognized non-verdict marker: an override grant/revoke
 		// lifecycle row is not a PEP decision and must never appear in the

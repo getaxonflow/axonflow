@@ -13,7 +13,10 @@ package agent
 // execution-class response scanners ran again on documentation — reintroducing
 // the #2802 documentation-FP class for the langgraph de-concat SDKs.
 //
-// These tests prove, deterministically:
+// Since v11 the execution-class response scan decides nothing: the response
+// pass's verdict is the anchored engine's. What tool identity changes is
+// whether that scan RUNS, which these tests read off the middleware's own scan
+// counter. They prove, deterministically:
 //   1. Tool present + text-document → the execution-class response SQLi scan is
 //      scoped OUT (capability relaxation keys off req.Tool).
 //   2. Tool absent → FULL (fail-closed) evaluation; the scan runs. No silent
@@ -24,10 +27,11 @@ package agent
 //      it PASSES only when the handler passes req.Tool (not req.ConnectorType).
 //   4. Both identity axes land on the canonical audit row as
 //      policy_details.tool_server / policy_details.tool_name.
+//   5. The scan's block decides nothing, even from a middleware configured to
+//      block.
 
 import (
 	"bytes"
-	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"net/http"
@@ -37,37 +41,46 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	"axonflow/platform/agent/sqli"
-	sharedpolicy "axonflow/platform/shared/policy"
 )
 
-// installBlockingSQLiResponseMiddleware swaps the global SQLi middleware for one
-// in response=basic + block mode, and restores the prior instance after the
-// test. The serving agent never wires block mode by default (the global
-// middleware is lazily DefaultConfig, BlockOnDetection=false), so the test
-// installs it explicitly to make the execution-class response scan an OBSERVABLE
-// allow/block signal — the only response-plane detector gated by tool identity.
-func installBlockingSQLiResponseMiddleware(t *testing.T) {
+// installSQLiResponseMiddleware swaps the global SQLi middleware for a fresh
+// one in response=basic mode, blocking or not as asked, and restores the prior
+// instance after the test. It returns the instance so a test can read whether
+// the execution-class response scan RAN. No production path builds a blocking
+// one (the global middleware is lazily DefaultConfig, BlockOnDetection=false);
+// block=true exists to prove that even such a middleware decides nothing.
+func installSQLiResponseMiddleware(t *testing.T, block bool) *sqli.ScanningMiddleware {
 	t.Helper()
 	old := sqli.GetGlobalMiddleware()
-	cfg := sqli.DefaultConfig().WithBlockOnDetection(true) // ResponseMode defaults to basic
-	if err := sqli.InitGlobalMiddleware(cfg); err != nil {
-		t.Fatalf("InitGlobalMiddleware: %v", err)
+	mw, err := sqli.NewScanningMiddleware(sqli.WithMiddlewareConfig(sqli.DefaultConfig().WithBlockOnDetection(block)))
+	if err != nil {
+		t.Fatalf("new SQLi middleware: %v", err)
 	}
+	sqli.SetGlobalMiddleware(mw)
 	t.Cleanup(func() { sqli.SetGlobalMiddleware(old) })
+	return mw
 }
+
+// scanRan reports whether call made mw run a response scan.
+func scanRan(mw *sqli.ScanningMiddleware, call func()) bool {
+	before := mw.GetMetrics().ScansTotal
+	call()
+	return mw.GetMetrics().ScansTotal > before
+}
+
+// sqliResponseMessage is a response the SQLi response scanner detects
+// (sqli/middleware_test.go).
+const sqliResponseMessage = "Error: syntax near ' UNION SELECT * FROM admin_passwords--"
 
 // checkOutputScan drives POST /api/v1/mcp/check-output with the given
 // (connector_type, tool) and a message the SQLi response scanner detects,
-// returning the HTTP status. A 403 => the execution-class scan RAN (full
-// evaluation); a 200 => it was scoped out (text-document relaxation).
+// returning the HTTP status.
 func checkOutputScan(t *testing.T, connectorType, tool string) int {
 	t.Helper()
-	// Proven-detected response SQLi artifact (sqli/middleware_test.go).
-	const sqliMessage = "Error: syntax near ' UNION SELECT * FROM admin_passwords--"
 	body, _ := json.Marshal(MCPCheckOutputRequest{
 		ConnectorType: connectorType,
 		Tool:          tool,
-		Message:       sqliMessage,
+		Message:       sqliResponseMessage,
 		TenantID:      "default",
 	})
 	req := httptest.NewRequest("POST", "/api/v1/mcp/check-output", bytes.NewBuffer(body))
@@ -80,41 +93,39 @@ func checkOutputScan(t *testing.T, connectorType, tool string) int {
 func TestCheckOutput_ToolIdentity_ScopesExecutionClassResponseScan(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-	// Isolate the SQLi-middleware discriminator: disable the MCP static/PII
-	// response pass so detectionGate is false and steps 2-3 of
-	// evaluateOutputPolicies never run. The execution-class SQLi scan (step 1)
-	// is independent of that gate and is the only detector tool identity scopes
-	// on the response plane.
-	t.Setenv("MCP_STATIC_POLICIES_ENABLED", "false")
-	// A non-nil global engine is required for IsTextDocumentTool classification
-	// (it consults the built-in text-document registry, no DB load). Reuse the
-	// proven engine installer; its request-phase policy is never loaded here
-	// because the response static pass is disabled above.
-	installSharedEngineWithPolicyRows(t)
-	installBlockingSQLiResponseMiddleware(t)
+	mw := installSQLiResponseMiddleware(t, false)
 	installUsageDBMock(t) // best-effort audit writes; unmatched inserts are logged + ignored
+
+	ran := func(connectorType, tool string) bool {
+		t.Helper()
+		return scanRan(mw, func() {
+			if code := checkOutputScan(t, connectorType, tool); code != http.StatusOK {
+				t.Fatalf("check-output (%q, %q) answered %d; the scan decides nothing, so the response is released", connectorType, tool, code)
+			}
+		})
+	}
 
 	// connector_type is a SERVER name that is NOT a text-document tool.
 	const server = "atlassian_remote"
 
 	// 1. Tool present + text-document: the execution-class scan is scoped out.
 	//    Under the pre-#2955 bug (connector_type duplicated into toolIdentity)
-	//    IsTextDocumentTool("atlassian_remote") is false and this would 403.
-	if code := checkOutputScan(t, server, "getConfluencePage"); code != http.StatusOK {
-		t.Errorf("text-document tool: expected 200 (execution-class scan scoped out), got %d — scoping is not keying off req.Tool", code)
+	//    IsTextDocumentTool("atlassian_remote") is false and the scan would run.
+	if ran(server, "getConfluencePage") {
+		t.Error("text-document tool: the execution-class scan ran; scoping is not keying off req.Tool")
 	}
 
-	// 2. Tool absent: FULL (fail-closed) evaluation; the scan runs and blocks.
-	if code := checkOutputScan(t, server, ""); code != http.StatusForbidden {
-		t.Errorf("absent tool: expected 403 (full fail-closed evaluation), got %d — a missing tool must NOT silently widen", code)
+	// 2. Tool absent: FULL (fail-closed) evaluation; the scan runs.
+	if !ran(server, "") {
+		t.Error("absent tool: the execution-class scan did not run; a missing tool must NOT silently widen")
 	}
 
 	// 3. SERVER axis must not relax scoping: a text-document-looking
 	//    connector_type with an empty tool still gets full evaluation. This is
-	//    the regression guard — it 200s (wrongly) only if the handler feeds
-	//    req.ConnectorType into toolIdentity (the pre-#2955 duplication bug).
-	if code := checkOutputScan(t, "getConfluencePage", ""); code != http.StatusForbidden {
-		t.Errorf("server axis relaxed scoping: expected 403 with a text-document-looking connector_type but empty tool, got %d — the server name must never classify a tool", code)
+	//    the regression guard: the scan is skipped (wrongly) only if the handler
+	//    feeds req.ConnectorType into toolIdentity (the pre-#2955 duplication).
+	if !ran("getConfluencePage", "") {
+		t.Error("server axis relaxed scoping: the scan did not run with a text-document-looking connector_type and an empty tool; the server name must never classify a tool")
 	}
 }
 
@@ -146,7 +157,6 @@ func (m toolIdentityDetails) Match(v driver.Value) bool {
 func TestCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-	disablePolicyEngines(t)
 	disableOutputCheckers(t)
 	mock := installUsageDBMock(t)
 
@@ -208,49 +218,59 @@ func TestCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 // plugin's PostToolUse hook actually calls over the wire.
 // ---------------------------------------------------------------------------
 
-func TestMcpToolCheckOutput_ToolIdentity_ScopesExecutionClassResponseScan(t *testing.T) {
-	// Same isolation as the REST scoping test: disable the static/PII pass so the
-	// SQLi middleware scan is the sole tool-identity-gated discriminator, and
-	// install a non-nil engine for IsTextDocumentTool classification.
-	t.Setenv("MCP_STATIC_POLICIES_ENABLED", "false")
-	installSharedEngineWithPolicyRows(t)
-	installBlockingSQLiResponseMiddleware(t)
-	installUsageDBMock(t) // best-effort block audit writes; unmatched inserts logged + ignored
+// toolSession is the stdio session the sibling-plane tests call as.
+func toolSession() *mcpSession {
+	return &mcpSession{tenantID: "t-1", orgID: "o-1", clientID: "c-1", userID: "u-1", userRole: "admin", userEmail: "u@e.com"}
+}
 
-	const sqliMessage = "Error: syntax near ' UNION SELECT * FROM admin_passwords--"
-	allowed := func(connectorType, tool string) bool {
+// checkOutputTool drives the stdio check_output tool and returns its response
+// map, failing the test on a transport error.
+func checkOutputTool(t *testing.T, args map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	session := toolSession()
+	resp, err := mcpToolCheckOutput(authenticatedToolContext(session), session, args, pepHandshakeResolution{})
+	if err != nil {
+		t.Fatalf("mcpToolCheckOutput(%v): %v", args, err)
+	}
+	m, _ := resp.(map[string]interface{})
+	return m
+}
+
+func TestMcpToolCheckOutput_ToolIdentity_ScopesExecutionClassResponseScan(t *testing.T) {
+	// Same discriminator as the REST scoping test: whether the scan ran.
+	mw := installSQLiResponseMiddleware(t, false)
+	installUsageDBMock(t) // best-effort audit writes; unmatched inserts logged + ignored
+
+	ran := func(connectorType, tool string) bool {
 		t.Helper()
-		resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
-			tenantID: "t-1", orgID: "o-1", clientID: "c-1", userID: "u-1", userRole: "admin", userEmail: "u@e.com",
-		}, map[string]interface{}{
-			"connector_type": connectorType,
-			"tool":           tool,
-			"message":        sqliMessage,
-		}, pepHandshakeResolution{})
-		if err != nil {
-			t.Fatalf("mcpToolCheckOutput(%q,%q, pepHandshakeResolution{}): %v", connectorType, tool, err)
-		}
-		m, _ := resp.(map[string]interface{})
-		v, _ := m["allowed"].(bool)
-		return v
+		return scanRan(mw, func() {
+			m := checkOutputTool(t, map[string]interface{}{
+				"connector_type": connectorType,
+				"tool":           tool,
+				"message":        sqliResponseMessage,
+			})
+			if m["allowed"] != true {
+				t.Fatalf("check_output (%q, %q) = %v; the scan decides nothing, so the response is released", connectorType, tool, m)
+			}
+		})
 	}
 
 	const server = "atlassian_remote" // a server name that is NOT a text-document tool
 
-	// Text-document tool → execution-class scan scoped out → allowed. Under the
-	// pre-#2955 bug (connector_type duplicated into toolIdentity) this would block.
-	if !allowed(server, "getConfluencePage") {
-		t.Error("text-document tool: expected allowed=true (execution-class scan scoped out) — stdio scoping is not keying off args[\"tool\"]")
+	// Text-document tool → execution-class scan scoped out. Under the pre-#2955
+	// bug (connector_type duplicated into toolIdentity) the scan would run.
+	if ran(server, "getConfluencePage") {
+		t.Error("text-document tool: the execution-class scan ran; stdio scoping is not keying off args[\"tool\"]")
 	}
-	// Absent tool → full (fail-closed) evaluation → the scan runs and blocks.
-	if allowed(server, "") {
-		t.Error("absent tool: expected allowed=false (full fail-closed evaluation) — a missing tool must NOT silently widen on the stdio plane")
+	// Absent tool → full (fail-closed) evaluation → the scan runs.
+	if !ran(server, "") {
+		t.Error("absent tool: the execution-class scan did not run; a missing tool must NOT silently widen on the stdio plane")
 	}
 	// Server axis must not relax scoping: a text-document-looking connector_type
 	// with an empty tool still gets full evaluation (regression guard for the
 	// pre-#2955 duplication).
-	if allowed("getConfluencePage", "") {
-		t.Error("server axis relaxed scoping: expected allowed=false with a text-document-looking connector_type but empty tool")
+	if !ran("getConfluencePage", "") {
+		t.Error("server axis relaxed scoping: the scan did not run with a text-document-looking connector_type but empty tool")
 	}
 }
 
@@ -264,23 +284,10 @@ func TestMcpToolCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	// SQLi block on the stdio plane routes through writeMCPDecisionAudit (the
-	// #2641 canonical "blocked" row). Nil the engine so only the SQLi scan runs,
-	// and install it in block mode.
-	origEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(origEngine)
-	origSQLi := sqli.GetGlobalMiddleware()
-	defer sqli.SetGlobalMiddleware(origSQLi)
-	mw, err := sqli.NewScanningMiddleware(sqli.WithMiddlewareConfig(sqli.DefaultConfig().WithBlockOnDetection(true)))
-	if err != nil {
-		t.Fatalf("new middleware: %v", err)
-	}
-	sqli.SetGlobalMiddleware(mw)
-
-	// policy_details is the 14th arg of the writeMCPDecisionAudit INSERT
-	// (mcp_richer_context.go:568-574). Pin it to the split identity; every other
-	// column is free.
+	// A redaction on the stdio plane writes the canonical "redacted" row through
+	// writeMCPDecisionAudit, which carries the split identity. policy_details is
+	// the 14th arg of that INSERT (mcp_richer_context.go). Pin it to the split
+	// identity; every other column is free.
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // id, request_id, timestamp, user_id
@@ -294,22 +301,57 @@ func TestMcpToolCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
-		tenantID: "t-1", orgID: "o-1", clientID: "c-1", userID: "u-1", userRole: "admin", userEmail: "u@e.com",
-	}, map[string]interface{}{
+	// An organization that recorded pii=redact: the NIK is masked and the
+	// response released, which writes the redacted row.
+	withMCPPIIAction(t, DetectionActionRedact)
+	m := checkOutputTool(t, map[string]interface{}{
 		"connector_type": "claude_code",
 		"tool":           "Bash",
-		"response_data": []interface{}{
-			map[string]interface{}{"id": 1, "data": "admin' UNION SELECT password FROM users--"},
-		},
-	}, pepHandshakeResolution{})
-	if err != nil {
-		t.Fatalf("mcpToolCheckOutput: %v", err)
-	}
-	if m, _ := resp.(map[string]interface{}); m["allowed"] != false {
-		t.Fatalf("expected allowed=false on SQLi block, got %v", resp)
+		"message":        validNIKResponse,
+	})
+	if m["allowed"] != true || m["redacted_message"] == nil {
+		t.Fatalf("expected the NIK redacted and the response released, got %v", m)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("stdio check_output block row did not persist policy_details.tool_server/tool_name: %v", err)
+		t.Errorf("stdio check_output redaction row did not persist policy_details.tool_server/tool_name: %v", err)
 	}
+}
+
+// TestMCPCheckOutput_TheSQLiResponseScanDecidesNothing: the response pass's
+// verdict is the anchored engine's. The execution-class SQLi scan still runs,
+// and the middleware logs and audits what it finds, but nothing honours its
+// block - even from a middleware configured to block, which no production path
+// builds. A branch that honoured it again turns this red.
+func TestMCPCheckOutput_TheSQLiResponseScanDecidesNothing(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+	mw := installSQLiResponseMiddleware(t, true)
+	installUsageDBMock(t)
+
+	released := func(t *testing.T, call func() bool) {
+		t.Helper()
+		var ok bool
+		if !scanRan(mw, func() { ok = call() }) {
+			t.Fatal("the SQLi response scan did not run, so this proves nothing about its block")
+		}
+		if !ok {
+			t.Fatal("a response the blocking middleware detects was refused; the scan decides nothing")
+		}
+	}
+	t.Run("stdio, rows", func(t *testing.T) {
+		released(t, func() bool {
+			return checkOutputTool(t, map[string]interface{}{
+				"connector_type": "postgres",
+				"response_data":  []interface{}{map[string]interface{}{"id": 1, "data": "admin' UNION SELECT password FROM users--"}},
+			})["allowed"] == true
+		})
+	})
+	t.Run("stdio, message", func(t *testing.T) {
+		released(t, func() bool {
+			return checkOutputTool(t, map[string]interface{}{"connector_type": "postgres", "message": sqliResponseMessage})["allowed"] == true
+		})
+	})
+	t.Run("REST check-output", func(t *testing.T) {
+		released(t, func() bool { return checkOutputScan(t, "postgres", "") == http.StatusOK })
+	})
 }

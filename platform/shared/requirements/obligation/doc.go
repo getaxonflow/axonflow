@@ -1,8 +1,32 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
 
-// Package obligation is the typed obligation registry, family composition
-// algebras and pre-permit planner from ADR-065 (issue #3559, epic #3551).
+// Package obligation is the STATEFUL obligation planner from ADR-065 (issue
+// #3559, epic #3551; consolidated under #3891): executor registration, the six
+// pre-permit proofs, completion evidence, the discharge-order DAG, and the
+// legacy row adapter.
+//
+// # What this package does not own
+//
+// It owns NO vocabulary and NO composition. The obligation types, families,
+// parameter keys, the fixed disclosure order, the reviewed subsumption rules,
+// the delivery guarantees and the assurance levels are declared once, in
+// platform/decision/contract, and composed once, by contract.ComposeObligations
+// - the same call the PDP makes on the live decision path. v10.2.0 shipped a
+// second algebra here with its own spellings (`field_redaction`,
+// `response_filtering`, `schema_constrained_transform`, `audit_notification`,
+// `at_least_once_durable`); the two had already drifted, and on the one input
+// #3891 reproduces they disagreed. This package now CONSUMES the canonical
+// outcome. Two BEHAVIOURAL tests hold that, because they read results rather
+// than source: composing one obligation of every family must retain all of
+// them, and this package's own tests assert the same literal composed results
+// the decision contract's golden table pins - driven by mutation, dropping a
+// family from the algebra fails both. TestEveryFamilyHasExactlyOneAlgebra
+// additionally refuses an enumerated set of family-dispatch shapes in this
+// package's source as a TRIPWIRE against accidental reintroduction; it is not
+// a gate, because an AST heuristic cannot prove the absence of a dispatch
+// someone is willing to spell differently, and it sleeps through the mutation
+// the two behavioural tests catch.
 //
 // # What an obligation is, and what it is not
 //
@@ -24,29 +48,26 @@
 // That is a fail-OPEN on the exact input where the system knows least. ADR-065
 // reverses it: a mandatory obligation whose APPLICABILITY is unknown denies,
 // even when the authorization half of the same policy resolved to nothing.
-// See Applicability and Planner.Plan; the shape is pinned by
+// See Applicability and Plan; the shape is pinned by
 // TestUnknownApplicabilityOfMandatoryObligationDenies and by the compiling
 // mutant in platform/shared/requirements/mutationgate.
 //
-// # Composition
+// # Absent is not unknown
 //
-// Obligations normalize to canonical atomic targets first, then compose
-// through exactly one algebra per FAMILY (see the table in ADR-065
-// "Obligations"). A schema validates its own parameters; it can never supply,
-// select or override its family's algebra, and it can never declare a pairwise
-// precedence exception. That is structural, not conventional: Schema has no
-// composition hook, familyAlgebras is an unexported closed map, and
-// TestSchemaCannotCarryACompositionHook fails if a func-typed field is ever
-// added to Schema beyond the single parameter validator.
+// The same tri-state applies one level down, to a disclosure transform's
+// TARGET. A target that names no leaf of a KNOWN payload schema is absent from
+// it: the instruction is vacuously satisfied, the algebra reports it as
+// Unplaced, and the planner excludes it from the completion-evidence proof so
+// that nothing waits forever on a receipt for a field that does not exist. A
+// target against an UNKNOWN schema cannot be resolved and denies. The two
+// shipped algebras collapsed these two facts in opposite directions; the
+// planner now hands the algebra an explicit contract.PayloadLeaves and reads
+// the answer.
 //
 // # Edition
 //
-// This package is community-visible, deliberately. The obligation SCHEMA
-// surface describes the same class of instruction the shipped redaction
-// surface already describes in platform/shared/policy, which is itself
-// community-visible; keeping the type vocabulary behind a build tag would mean
-// a community PEP could not even name the obligation it is being asked to
-// discharge. The stateful ENFORCEMENT components - approval authority, signed
+// This package is community-visible, deliberately, as is the contract it
+// consumes. The stateful ENFORCEMENT components - approval authority, signed
 // decision proofs and the reservation service - are Enterprise and live in
 // sibling packages under //go:build enterprise.
 package obligation

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -7,6 +10,7 @@ import (
 	"testing"
 
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
 )
 
@@ -145,6 +149,27 @@ func rejectionCases() []rejectionCase {
 			},
 		},
 		{
+			code: pdp.RuleAssuranceUnknown, detail: "\"strong\"",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "con.big").Assurance = pdp.AssuranceClass("strong")
+			},
+		},
+		{
+			code: pdp.RuleAssuranceOnPermission, detail: "a permission only widens",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "perm.refund").Assurance = pdp.AssuranceEnforcement
+			},
+		},
+		{
+			// con.big is a constraint over a caller argument: it denies when it
+			// cannot be evaluated, so declaring it advisory is the one wrong
+			// direction the ADR names.
+			code: pdp.RuleAssuranceMismatch, detail: "an advisory control cannot return deny",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "con.big").Assurance = pdp.AssuranceAdvisory
+			},
+		},
+		{
 			code: pdp.RulePoolNotInteractive, detail: groupBots,
 			edit: func(_ *Metadata, d *pdp.Document) {
 				p := policyByIDIn(d, "req.audit")
@@ -157,6 +182,35 @@ func rejectionCases() []rejectionCase {
 				// args.note is declared optional and the condition does not say
 				// what its absence means.
 				policyByIDIn(d, "perm.refund").Where = pdp.Compare("args.note", pdp.OpEq, "approved")
+			},
+		},
+		{
+			// The KIND half of the rule, which is a separate check from the
+			// vocabulary half below and needs its own case: this identifier is
+			// perfectly VALID - it is a well-formed resource id - and is wrong
+			// only because a scope names principals.
+			code: pdp.RuleIdentifierWrongKind, detail: "scope.principals names a",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "perm.refund").Scope = pdp.Scope{
+					Principals: []contract.ID{contract.MustParseID(contract.KindResource, "Ticket::jira:T-1")},
+				}
+			},
+		},
+		{
+			code: pdp.RuleMalformedIdentifier, detail: "Robot",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				// A principal type outside the closed vocabulary (#3711). It is
+				// built field by field rather than through ParseID, because
+				// ParseID now refuses it - which is the point: this is the
+				// shape a hand-written or machine-generated document takes, and
+				// the compiler reads Scope.Principals through ID.String() with
+				// no Kind check and no Validate at all.
+				policyByIDIn(d, "perm.refund").Scope = pdp.Scope{
+					Principals: []contract.ID{{
+						Kind: contract.KindPrincipal, Type: "Robot",
+						Qualifier: "acme", Local: "r1",
+					}},
+				}
 			},
 		},
 
@@ -258,6 +312,22 @@ func rejectionCases() []rejectionCase {
 			},
 		},
 		{
+			code: CodeBlanketPermission, detail: "every action registered after it",
+			edit: func(_ *Metadata, d *pdp.Document) {
+				// The shadow harness's baseline shape, verbatim: every action,
+				// the whole organization, no condition. The refusal is what
+				// makes "it must not survive cutover" a mechanism.
+				d.Policies = append(d.Policies, pdp.Policy{
+					ID:        "perm.everything",
+					Authority: contract.AuthorityPermission,
+					Root:      pdp.RootSystem,
+					Scope:     pdp.Scope{Organization: true},
+					Actions:   pdp.ActionSelector{Any: true},
+					Where:     pdp.True(),
+				})
+			},
+		},
+		{
 			code: CodeCatalogDisagreement, detail: "bots",
 			after: func(d *Document) {
 				// The registry says the bots realm is non-interactive. A
@@ -284,6 +354,126 @@ func rejectionCases() []rejectionCase {
 					t.Fatal("self-approved publication was accepted")
 				}
 				return findings
+			},
+		},
+		{
+			code: CodeSelfApprovalReasonRequired, detail: principalAlice,
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				_, priv := testKeys(t)
+				opts := publishOptions(t, priv)
+				// The author as their own approver under a GRANTED self-approval,
+				// stating no reason. The grant is what API.PublishAdmitting sets once
+				// the transport answers; it is set directly here because this case
+				// provokes the check, not the question.
+				opts.Approvers = []contract.ID{pid(t, principalAlice)}
+				opts.selfApprovalGranted = true
+				_, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts)
+				if err == nil {
+					t.Fatal("a granted self-approval with no reason was accepted")
+				}
+				return findings
+			},
+		},
+		{
+			code: CodeSelfApprovalReasonWithoutSelfApproval, detail: principalAlice,
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				_, priv := testKeys(t)
+				opts := publishOptions(t, priv)
+				// A second person approved, and the publication still states a
+				// self-approval reason.
+				opts.SelfApprovalReason = "sole administrator"
+				_, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts)
+				if err == nil {
+					t.Fatal("a self-approval reason on a two-person publication was accepted")
+				}
+				return findings
+			},
+		},
+
+		// system_controls (PRD v11 §1.5). The baseline is a system-root
+		// document, so the section is refused on it; the entry-level cases each
+		// name the value they refuse, which is what separates them from that.
+		{
+			code: CodeSystemControlsOutsideOrganization, detail: "only the organization root controls the shipped set",
+			after: func(d *Document) { d.SystemControls = []SystemControlEntry{sysDisabled(sysStaticControl)} },
+		},
+		{
+			code: CodeSystemControlUnknown, detail: "corpus:static_policies:sys__no__such__control",
+			after: func(d *Document) {
+				d.SystemControls = []SystemControlEntry{sysDisabled("corpus:static_policies:sys__no__such__control")}
+			},
+		},
+		{
+			code: CodeSystemControlDuplicate, detail: "names " + sysStaticControl + " again",
+			after: func(d *Document) {
+				d.SystemControls = []SystemControlEntry{sysDisabled(sysStaticControl), sysActioned(sysStaticControl, legacycompile.ActionBlock)}
+			},
+		},
+		{
+			code: CodeSystemControlMalformed, detail: "carries both or neither of enabled and action",
+			after: func(d *Document) {
+				both := sysDisabled(sysStaticControl)
+				both.Action = legacycompile.ActionBlock
+				d.SystemControls = []SystemControlEntry{both}
+			},
+		},
+		{
+			code: CodeSystemControlNotReactionable, detail: sysDynamicControl,
+			after: func(d *Document) {
+				d.SystemControls = []SystemControlEntry{sysActioned(sysDynamicControl, legacycompile.ActionWarn)}
+			},
+		},
+
+		// THE EDITION BOUNDARY (#3907). These four are the only cases in this
+		// table whose provoking edit is not to the DOCUMENT. The baseline is
+		// clean and stays clean; what changes is the edition publishing it,
+		// which is the fixture doctrine's "the good document with one thing
+		// different" applied to an entitlement rather than to a field.
+		//
+		// Two of them therefore need no edit at all: the baseline already
+		// scopes perm.refund to a group and already reads signal.pii_score, and
+		// those are precisely the constructs Community does not carry. A case
+		// that had to invent a document to provoke an edition boundary would be
+		// evidence about that document rather than about the boundary.
+		{
+			code: CodeGroupScopeNotInEdition, detail: groupFinance,
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				return publishAtEdition(t, EditionCommunity, nil)
+			},
+		},
+		{
+			code: CodeAttributeNamespaceNotInEdition, detail: "signal.pii_score",
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				return publishAtEdition(t, EditionCommunity, nil)
+			},
+		},
+		{
+			code: CodeObligationFamilyNotInEdition, detail: string(contract.FamilyBudget),
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				// Evaluation, not Community, so the case is about the BUDGET
+				// family rather than about whatever else Community lacks: at
+				// Evaluation the baseline's signal read is permitted, so the
+				// only namespace or family finding this document can produce is
+				// the one the edit introduces.
+				return publishAtEdition(t, EditionEvaluation, func(_ *Metadata, d *pdp.Document) {
+					p := policyByIDIn(d, "req.audit")
+					p.Obligations = append(p.Obligations, quotaObligation("req.audit"))
+				})
+			},
+		},
+		{
+			code: CodeConstructUnruled, detail: string(contract.FamilyStepUp),
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				return publishAtEdition(t, EditionEvaluation, func(_ *Metadata, d *pdp.Document) {
+					p := policyByIDIn(d, "req.audit")
+					p.Obligations = append(p.Obligations, stepUpObligation("req.audit"))
+				})
 			},
 		},
 	}

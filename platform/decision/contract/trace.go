@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -132,6 +135,13 @@ type Trace struct {
 	ResolvedAncestors map[string]string `json:"resolved_ancestors,omitempty"`
 	Snapshot          *Snapshot         `json:"snapshot,omitempty"`
 	Warnings          []string          `json:"warnings,omitempty"`
+	// Undischarged names the mandatory obligation an ADR-065 invariant-8
+	// refusal could not discharge, for the in-process adapter that renders the
+	// refusal: the agent names the enforcement point's capability gap from it.
+	// INTERNAL: never serialized and projected to no audience, so a trace's
+	// wire shape, its projections and a decision's digest are what they were
+	// without it.
+	Undischarged []Obligation `json:"-"`
 }
 
 // traceFieldAudience declares, per field of Trace, which audiences may receive
@@ -154,6 +164,8 @@ var traceFieldAudience = map[string][]Audience{
 	"ResolvedAncestors": {AudienceAuditor},
 	"Snapshot":          {AudiencePEP, AudienceOperator, AudienceAuditor},
 	"Warnings":          {AudienceOperator, AudienceAuditor},
+	// Undischarged is internal: no audience receives it (see Trace).
+	"Undischarged": {},
 }
 
 // TraceFieldAudiences exposes the table for the reflection test.

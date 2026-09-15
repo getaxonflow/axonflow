@@ -87,18 +87,41 @@ var validIdentifier = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 //
 //   - community_saas_registrations: the tombstone itself; sweep updates the row
 //     in place rather than deleting it
+//
 //   - tenants: canonical tenant tracking; we keep the row (analog tombstone)
+//
 //   - static_policies: rows are mostly tenant_id='global' system policies; only
 //     tenant-specific overrides should match `tenant_id = $terminated_id` and
 //     deleting those is correct, but they're tier-gated and Community-SaaS
 //     tenants don't create them, so skip
+//
+//   - dynamic_policies: the same reasoning, and after migrations/core/172 it is
+//     no longer optional. That migration makes both legacy policy tables
+//     SELECT-only to the application roles (v11 decision D1: the typed
+//     authoring model is the only write path), so this DELETE would be refused
+//     with `permission denied` on any deployment connecting as one - and
+//     because cascadeDeleteCommunitySaasTenantData returns on the first error
+//     inside the sweep's transaction, ONE refused table stops tenant
+//     termination entirely rather than skipping that table.
+//
+//     THIS SITE IS INVISIBLE TO A TEXT SEARCH FOR SQL VERBS. The statement is
+//     assembled at run time from a table name discovered through
+//     information_schema, so nothing in this file spells "DELETE FROM
+//     dynamic_policies" and the write-surface census in
+//     tests/regression-test-required cannot see it. It was found by running
+//     discoverCommunitySaasCascadeTables against a migrated database, and it
+//     is pinned that way - by the mechanism rather than by the text - in
+//     TestTheCommunitySaasSweepNeverCascadesIntoALegacyPolicyTable_RealPG.
+//
 //   - license_keys: Community-SaaS tenants don't have license keys
+//
 //   - schema_migrations / community_saas_daily_usage: rate-limit / migration
 //     metadata, retained per ops convention
 var communitySaasSweepNonCascadeTables = map[string]struct{}{
 	"community_saas_registrations": {},
 	"tenants":                      {},
 	"static_policies":              {},
+	"dynamic_policies":             {},
 	"license_keys":                 {},
 	"schema_migrations":            {},
 	"community_saas_daily_usage":   {},

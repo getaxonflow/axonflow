@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates AxonFlow Proxy Mode with Azure OpenAI.
 //
 // Proxy Mode is the simplest integration pattern:
@@ -7,9 +10,16 @@
 //
 // No need to manage Azure OpenAI credentials in your app - AxonFlow handles everything.
 //
+// Policy outcomes (v11): the stored policy action decides. With the shipped
+// actions and no organization override, SQL injection and PII are detected and
+// warned, not blocked (every sys_sqli_* policy and sys_pii_ssn store warn for the
+// request phase). To block them, record an org override (sqli=block, pii=block)
+// through the customer portal API (Enterprise) or change the policy's action.
+// PII_ACTION and SQLI_ACTION no longer set an action.
+//
 // Prerequisites:
 //
-//	PII_ACTION=block docker compose up -d
+//	docker compose up -d
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 package main
@@ -51,26 +61,26 @@ func main() {
 	fmt.Println("--- Example 1: Basic Azure OpenAI Query ---")
 	runQuery(client, "What are the key benefits of Azure OpenAI for enterprises?", map[string]interface{}{
 		"provider": "azure-openai", // Route to Azure OpenAI
-	}, false, "Basic Azure query")
+	}, false, "", "Basic Azure query")
 
 	// Example 2: Query with specific model
 	fmt.Println("\n--- Example 2: Query with Model Selection ---")
 	runQuery(client, "Explain Azure Private Link in 2 sentences.", map[string]interface{}{
 		"provider": "azure-openai",
 		"model":    "gpt-4o-mini",
-	}, false, "Model selection query")
+	}, false, "", "Model selection query")
 
-	// Example 3: SQL Injection - should be blocked by policy
-	fmt.Println("\n--- Example 3: SQL Injection (should be blocked) ---")
+	// Example 3: SQL Injection - detected and warned (sys_sqli_* stores warn)
+	fmt.Println("\n--- Example 3: SQL Injection (detected, warned - not blocked by default) ---")
 	runQuery(client, "SELECT * FROM users; DROP TABLE secrets;", map[string]interface{}{
 		"provider": "azure-openai",
-	}, true, "SQL injection blocked")
+	}, false, "sys_sqli_", "SQL injection warned")
 
-	// Example 4: PII - should be blocked (requires PII_ACTION=block)
-	fmt.Println("\n--- Example 4: PII Detection (should be blocked) ---")
+	// Example 4: PII - detected and warned (sys_pii_ssn stores warn for the request)
+	fmt.Println("\n--- Example 4: PII Detection (detected, warned - not blocked by default) ---")
 	runQuery(client, "Send invoice to john.doe@company.com with SSN 123-45-6789", map[string]interface{}{
 		"provider": "azure-openai",
-	}, true, "PII detection")
+	}, false, "sys_pii_", "PII detection warned")
 
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))
@@ -84,7 +94,9 @@ func main() {
 	fmt.Println("ALL ASSERTIONS PASSED - Azure OpenAI Proxy Mode verified!")
 }
 
-func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]interface{}, expectBlocked bool, testName string) {
+// runQuery sends query through Proxy Mode. expectPolicyPrefix, when set, must
+// prefix at least one id in PolicyInfo.PoliciesEvaluated of an approved response.
+func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]interface{}, expectBlocked bool, expectPolicyPrefix string, testName string) {
 	fmt.Printf("Query: %q\n", truncate(query, 50))
 
 	startTime := time.Now()
@@ -122,6 +134,9 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 		}
 		assertCheck(expectBlocked, testName+": blocked as expected")
 		assertCheck(response.BlockReason != "", testName+": block reason provided")
+		if !expectBlocked {
+			fmt.Println("  (not the shipped outcome: an org override or an edited policy action is in force)")
+		}
 	} else {
 		fmt.Printf("  Status: SUCCESS (latency: %v)\n", latency)
 		resultStr := fmt.Sprintf("%v", response.Result)
@@ -131,6 +146,18 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 		fmt.Printf("  Response: %s\n", truncate(resultStr, 200))
 		assertCheck(!expectBlocked, testName+": not blocked as expected")
 		assertCheck(response.Data != nil || response.Result != "", testName+": response has content")
+		if expectPolicyPrefix != "" {
+			detected := false
+			if response.PolicyInfo != nil {
+				fmt.Printf("  Policies: %v\n", response.PolicyInfo.PoliciesEvaluated)
+				for _, p := range response.PolicyInfo.PoliciesEvaluated {
+					if strings.HasPrefix(p, expectPolicyPrefix) {
+						detected = true
+					}
+				}
+			}
+			assertCheck(detected, testName+": "+expectPolicyPrefix+"* policy detected")
+		}
 	}
 }
 

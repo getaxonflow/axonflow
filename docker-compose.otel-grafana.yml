@@ -52,8 +52,10 @@ services:
       - "--web.enable-lifecycle"
     volumes:
       - ./config/prometheus-otel-grafana.yml:/etc/prometheus/prometheus.yml:ro
-    ports:
-      - "9090:9090"
+    # No `ports:` here. Compose CONCATENATES a service's ports across files, and
+    # docker-compose.yml already publishes this one on 127.0.0.1:9090 (localhost only,
+    # #3068), so a second entry for the same host port made the merged service
+    # bind it twice and the stack failed to start.
     depends_on:
       otel-collector:
         condition: service_started
@@ -74,8 +76,10 @@ services:
       - ./config/grafana/provisioning/datasources/otel-grafana-datasources.yml:/etc/grafana/provisioning/datasources/otel-grafana-datasources.yml:ro
       - ./config/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "3000:3000"
+    # No `ports:` here. Compose CONCATENATES a service's ports across files, and
+    # docker-compose.yml already publishes this one on 127.0.0.1:3000 (localhost only,
+    # #3068), so a second entry for the same host port made the merged service
+    # bind it twice and the stack failed to start.
     depends_on:
       prometheus:
         condition: service_started

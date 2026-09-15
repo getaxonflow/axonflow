@@ -8,59 +8,54 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/golang-jwt/jwt/v5"
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/decision/contract"
+	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
-	"axonflow/platform/shared/policy/policytest"
 )
 
 // #2867: a handler-level guard for the fetch site (gateway_handlers.go, the
 // shouldPrefetchApprovedData gate). The pure-predicate test does NOT protect the
 // wiring — reverting the gate to a bare `else` would leave it green. These tests
 // drive the REAL handlePolicyPreCheck end-to-end with a row-returning connector
-// registered and the user permitted for it, so if a blocked (or HITL-pending)
-// pre-check ever reaches fetchApprovedData again, approved_data is populated and
-// the assertion fails.
+// registered and the user permitted for it, so if a blocked pre-check ever
+// reaches fetchApprovedData again, approved_data is populated and the assertion
+// fails. A HITL-pending pre-check is not reachable on this plane: the gateway
+// pre-check has no approval hold, so the anchored engine's CHALLENGE is a deny
+// with approval_required here (mapAnchoredDecision, PRD v11 §1.13).
 
-// seedGlobalEngineWithMarkerPolicy installs a real policy engine over a sqlmock
-// that returns a single request-phase policy with the given action. Category is
-// compliance-rbi: it is in the pre-check Categories whitelist, has no semantic
-// validator (so a bare regex match fires), and — unlike security-sqli / pii /
-// sensitive-data / dangerous — is NOT rewritten by ModeDetectionConfig.Build-
-// ActionOverrides, so the seeded action ("block" / "require_approval") survives
-// the handler's detection-posture overrides regardless of env.
-func seedGlobalEngineWithMarkerPolicy(t *testing.T, actionRequest, pattern string) {
+// seedGlobalEngineWithMarkerControl installs the shared engine over the shipped
+// rows with the first constraint the gateway pre-check's organization template
+// binds on a row carrying no semantic validator matching pattern, and returns
+// that constraint's policy id: a request carrying pattern is denied by it, as a
+// shipped constraint denies what its detector matches while the organization
+// has published nothing. The template also binds requirements here, which allow
+// with an obligation rather than deny, and a validated row confirms its
+// pattern's match against the content it detects, so a bare marker would not
+// fire it.
+func seedGlobalEngineWithMarkerControl(t *testing.T, pattern string) string {
 	t.Helper()
-	mockDB, mockSQL, err := sqlmock.New()
+	controls, err := templateControls(gatewayRequestSeamScope)
 	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = mockDB.Close() })
-	mockSQL.MatchExpectationsInOrder(false)
-	cols := policytest.LoaderCols() // #3048: includes created_at
-	for i := 0; i < 8; i++ {        // headroom: two scoped passes per load (#3048)
-		mockSQL.ExpectQuery("SELECT").WillReturnRows(
-			sqlmock.NewRows(cols).AddRow(
-				"p1", "test_marker_policy", "Test Marker", "compliance-rbi", "system",
-				pattern, "critical", "test marker", "request", actionRequest, nil,
-				true, 100, "global", nil, []byte("{}"), time.Now().UTC(), time.Now().UTC(),
-			))
+	for _, c := range controls {
+		if c.policy.Authority == contract.AuthorityConstraint &&
+			sharedpolicy.ValidatorFor(c.row.PolicyID, sharedpolicy.PolicyCategory(c.row.Category)) == nil {
+			enfInstallDetectors(t, map[string]string{c.row.PolicyID: regexp.QuoteMeta(pattern)}, nil)
+			return c.policy.ID
+		}
 	}
-	policytest.ScopedTxPlumbing(mockSQL, 8)
-	cfg := sharedpolicy.DefaultEngineConfig()
-	cfg.RefreshInterval = 0
-	cfg.EnableMetrics = false
-	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, cfg, &sharedpolicy.NoOpAuditQueue{})
-	t.Cleanup(engine.Stop)
-	orig := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(orig) })
+	t.Fatal("the gateway pre-check's organization template binds no constraint on a row a bare marker fires")
+	return ""
 }
 
 // registerLeakConnector registers a row-returning connector named "leakdb" so a
@@ -106,11 +101,16 @@ func entPreCheck(t *testing.T, query string) PreCheckResponse {
 	t.Cleanup(func() { usageDB = origDB })
 
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":         sharedidentity.UserTokenIssuer,
+		"sub":         "user@example.com",
 		"user_id":     float64(7),
 		"tenant_id":   "ent-tenant",
+		"org_id":      "ent-org",
+		"jti":         "jti-ent-precheck",
 		"email":       "user@example.com",
 		"role":        "user",
 		"permissions": []string{"mcp_query"},
+		"exp":         time.Now().Add(time.Hour).Unix(),
 	}).SignedString([]byte(testJWTSecret))
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
@@ -146,7 +146,7 @@ func entPreCheck(t *testing.T, query string) PreCheckResponse {
 // return approved_data. Reverting the fetch gate to a bare `else` populates
 // approved_data on this denied response — this test catches that.
 func TestPreCheck_BlockedRequestReturnsNoApprovedData(t *testing.T) {
-	seedGlobalEngineWithMarkerPolicy(t, "block", "BLOCKME_MARKER_XYZ")
+	control := seedGlobalEngineWithMarkerControl(t, "BLOCKME_MARKER_XYZ")
 	registerLeakConnector(t)
 
 	resp := entPreCheck(t, "SELECT note FROM ledger WHERE note = 'BLOCKME_MARKER_XYZ'")
@@ -157,27 +157,11 @@ func TestPreCheck_BlockedRequestReturnsNoApprovedData(t *testing.T) {
 	if resp.BlockReason == "" {
 		t.Error("a blocked pre-check must carry a block reason")
 	}
+	if !slices.Contains(resp.Policies, control) {
+		t.Errorf("the deny must name the control that matched, %s; got policies %v", control, resp.Policies)
+	}
 	if resp.ApprovedData != nil {
 		t.Errorf("a BLOCKED pre-check must NOT return approved_data (connector was executed on a deny): %v", resp.ApprovedData)
-	}
-}
-
-// A HITL/needs_approval pre-check (enterprise) must be un-approved AND must not
-// prefetch connector data before a human approves. Same guard, HITL branch.
-func TestPreCheck_HITLPendingRequestReturnsNoApprovedData(t *testing.T) {
-	seedGlobalEngineWithMarkerPolicy(t, "require_approval", "APPROVEME_MARKER_XYZ")
-	registerLeakConnector(t)
-
-	resp := entPreCheck(t, "SELECT note FROM ledger WHERE note = 'APPROVEME_MARKER_XYZ'")
-
-	if resp.Approved {
-		t.Fatal("a needs-approval pre-check must not be approved (awaiting human approval)")
-	}
-	if resp.BlockReason != "require_approval" {
-		t.Errorf("HITL pre-check must carry the require_approval sentinel, got %q", resp.BlockReason)
-	}
-	if resp.ApprovedData != nil {
-		t.Errorf("a HITL-pending pre-check must NOT prefetch approved_data before approval: %v", resp.ApprovedData)
 	}
 }
 
@@ -185,7 +169,7 @@ func TestPreCheck_HITLPendingRequestReturnsNoApprovedData(t *testing.T) {
 // prefetch — proving the assertions above fail for the RIGHT reason (the gate),
 // not because the fetch never runs in this harness.
 func TestPreCheck_CleanApprovedRequestDoesPrefetch(t *testing.T) {
-	seedGlobalEngineWithMarkerPolicy(t, "block", "PATTERN_THAT_WONT_MATCH_ANYTHING_ZZZ")
+	seedGlobalEngineWithMarkerControl(t, "PATTERN_THAT_WONT_MATCH_ANYTHING_ZZZ")
 	registerLeakConnector(t)
 
 	resp := entPreCheck(t, "SELECT note FROM ledger WHERE note = 'totally benign'")

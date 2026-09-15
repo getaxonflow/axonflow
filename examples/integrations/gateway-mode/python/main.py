@@ -9,9 +9,11 @@ Demonstrates and VALIDATES Gateway Mode for lowest latency governance:
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 
-Gateway-specific policy config env vars (override defaults for gateway mode only):
-  GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
-  GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+Detection actions (v11): the stored action of each matched policy decides,
+on this plane as on every other; environment variables no longer set them.
+Out of the box the pre-check WARNS on PII and SQL injection: the request is
+approved and the matched policy ids are returned with it. An organization
+override (Enterprise customer portal) or a policy action change alters that.
 
 Run with: python main.py
 Prerequisites: docker compose up -d, OPENAI_API_KEY set
@@ -99,7 +101,7 @@ async def main() -> int:
             user_token=user_token,
             query="Process refund for customer with SSN 123-45-6789",
         )
-        assert_check(pii_result.approved is True, "PII query approved (redact mode)")
+        assert_check(pii_result.approved is True, "PII query approved (stored request action is warn)")
         assert_check(len(pii_result.policies) > 0, "PII policies detected")
         print(f"   Policies: {pii_result.policies}")
         print()
@@ -110,7 +112,7 @@ async def main() -> int:
             user_token=user_token,
             query="Verify PAN number ABCPD1234E for tax filing",
         )
-        assert_check(pan_result.approved is True, "India PAN approved (redact mode)")
+        assert_check(pan_result.approved is True, "India PAN approved (stored request action is warn)")
         assert_check(len(pan_result.policies) > 0, "India PII policies detected for PAN")
         print(f"   Policies: {pan_result.policies}")
 
@@ -119,29 +121,41 @@ async def main() -> int:
             user_token=user_token,
             query="Link Aadhaar 2345 6789 0123 to bank account",
         )
-        assert_check(aadhaar_result.approved is True, "India Aadhaar approved (redact mode)")
+        assert_check(aadhaar_result.approved is True, "India Aadhaar approved (stored request action is warn)")
         assert_check(len(aadhaar_result.policies) > 0, "India PII policies detected for Aadhaar")
         print(f"   Policies: {aadhaar_result.policies}")
         print()
 
-        # Test 1d: SQL Injection (BLOCKED)
+        # Test 1d: SQL Injection (WARNS: every sys_sqli_* row stores warn)
         print("1d. SQL Injection Detection (DROP TABLE)")
         sqli_result = await axonflow.get_policy_approved_context(
             user_token=user_token,
             query="SELECT * FROM users; DROP TABLE users;--",
         )
-        assert_check(sqli_result.approved is False, "SQLi query is BLOCKED")
-        assert_check(sqli_result.block_reason != "", "Block reason provided for SQLi")
-        print(f"   Block reason: {sqli_result.block_reason}")
+        assert_check(
+            sqli_result.approved is True,
+            "SQLi query approved with a warning (stored action is warn, not block)",
+        )
+        assert_check(
+            any(p.startswith("sys_sqli_") for p in (sqli_result.policies or [])),
+            "SQLi policy matched (sys_sqli_*)",
+        )
+        print(f"   Policies: {sqli_result.policies}")
 
         print("1d. SQL Injection Detection (UNION SELECT)")
         union_result = await axonflow.get_policy_approved_context(
             user_token=user_token,
             query="Get user where id = 1 UNION SELECT password FROM admin",
         )
-        assert_check(union_result.approved is False, "UNION SQLi query is BLOCKED")
-        assert_check(union_result.block_reason != "", "Block reason provided for UNION SQLi")
-        print(f"   Block reason: {union_result.block_reason}")
+        assert_check(
+            union_result.approved is True,
+            "UNION SQLi query approved with a warning (stored action is warn, not block)",
+        )
+        assert_check(
+            any(p.startswith("sys_sqli_") for p in (union_result.policies or [])),
+            "UNION SQLi policy matched (sys_sqli_*)",
+        )
+        print(f"   Policies: {union_result.policies}")
         print()
 
         # Test 2: LLM Call (OpenAI or mock)
@@ -219,7 +233,7 @@ async def main() -> int:
         print("Gateway Mode validated:")
         print("  - get_policy_approved_context() (pre-check)")
         print("  - PII detection: SSN, India PAN, India Aadhaar")
-        print("  - SQLi blocking: DROP TABLE, UNION SELECT")
+        print("  - SQLi detection (warn): DROP TABLE, UNION SELECT")
         print("  - Direct LLM call (OpenAI)")
         print("  - audit_llm_call() with TokenUsage")
         print("  - Low governance overhead (~5-10ms typical)")

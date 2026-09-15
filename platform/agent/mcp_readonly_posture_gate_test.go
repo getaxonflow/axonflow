@@ -12,18 +12,16 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// nilGlobalPolicyEngines disables both the dynamic and static engines for the
-// duration of a test so evaluateInputPolicies is a no-op (returns an empty
-// outcome → allowed). This lets the gate tests prove the read-only posture
-// decision happens BEFORE, and independently of, normal policy evaluation.
+// nilGlobalPolicyEngines removes the shared engine for the duration of a test.
+// With no detector facts the anchored engine cannot rule out a detector-backed
+// constraint and refuses whatever reaches it (unknown_constraint), so a gate
+// that still answers with its own reason is proven to answer BEFORE, and
+// independently of, policy evaluation.
 func nilGlobalPolicyEngines(t *testing.T) {
 	t.Helper()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
 	origEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 	sharedpolicy.SetGlobalEngine(nil)
 	t.Cleanup(func() {
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
 		sharedpolicy.SetGlobalEngine(origEngine)
 	})
 }
@@ -93,11 +91,10 @@ func TestReadOnlyPosture_WriteBlockedAtGate(t *testing.T) {
 }
 
 // TestReadOnlyPosture_ReadAllowedAtGate verifies a read-path call is NOT blocked
-// by the posture and falls through to normal evaluation (which, with engines
-// nil, allows it). No posture audit row is written for an allowed read.
+// by the posture and falls through to normal evaluation, which allows it. No
+// posture audit row is written for an allowed read.
 func TestReadOnlyPosture_ReadAllowedAtGate(t *testing.T) {
 	t.Setenv(EnvMCPReadOnly, "true")
-	nilGlobalPolicyEngines(t)
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -135,7 +132,6 @@ func TestReadOnlyPosture_ReadAllowedAtGate(t *testing.T) {
 // that does not opt in.
 func TestReadOnlyPosture_ToggleOffNoBlock(t *testing.T) {
 	t.Setenv(EnvMCPReadOnly, "false")
-	nilGlobalPolicyEngines(t)
 
 	db, mock, err := sqlmock.New()
 	if err != nil {

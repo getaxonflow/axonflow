@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -59,7 +51,7 @@ func TestPreCheckHandler_CommunityMode(t *testing.T) {
 
 	// Record response
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	// Check status code
@@ -112,7 +104,7 @@ func TestPreCheckHandler_CircuitBreakerAllowed(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -167,7 +159,7 @@ func TestPreCheckHandler_PolicyBlock(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -737,7 +729,7 @@ func TestPreCheckHandler_MissingQuery(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -769,7 +761,7 @@ func TestPreCheckHandler_MissingClientID(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
@@ -973,7 +965,7 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1005,7 +997,7 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	// Legacy engine removed — unified shared engine handles all policy evaluation
 	// Policy evaluation uses unified shared engine (legacy engine removed)
 
-	// Request with SSN (critical PII - flagged for redaction by default with PII_ACTION=redact)
+	// Request with SSN (critical PII - flagged for redaction under a redact action)
 	reqBody := PreCheckRequest{
 		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
 		ClientID:  "test-client",
@@ -1017,7 +1009,7 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1028,9 +1020,9 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	var resp PreCheckResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
-	// Critical PII (SSN) is now approved with redaction by default (PII_ACTION=redact)
+	// Critical PII (SSN) is approved with a redaction flag under a redact action
 	if !resp.Approved {
-		t.Error("Expected request to be approved (PII_ACTION=redact allows request with redaction flag)")
+		t.Error("Expected request to be approved (a redact action allows the request with a redaction flag)")
 	}
 
 	// Should require redaction for PII
@@ -1048,109 +1040,6 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	}
 	if !hasPIIPolicy {
 		t.Error("Expected SSN detection policy to be triggered")
-	}
-}
-
-// TestPreCheckHandler_PIIDetection_BlockMode tests that PII blocks when PII_ACTION=block
-func TestPreCheckHandler_PIIDetection_BlockMode(t *testing.T) {
-	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("ENVIRONMENT", "development")
-	os.Setenv("PII_ACTION", "block") // Enable PII blocking
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("ENVIRONMENT")
-	defer os.Unsetenv("PII_ACTION")
-
-	// Policy evaluation uses unified shared engine
-	// Legacy engine removed — unified shared engine handles all policy evaluation
-	// Policy evaluation uses unified shared engine (legacy engine removed)
-
-	// Request with SSN (should be blocked when PII_ACTION=block)
-	reqBody := PreCheckRequest{
-		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
-		ClientID:  "test-client",
-		Query:     "My SSN is 123-45-6789, what can you tell me?",
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rr.Code)
-		return
-	}
-
-	var resp PreCheckResponse
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-
-	// Critical PII (SSN) blocks when PII_ACTION=block
-	if resp.Approved {
-		t.Error("Expected request to be blocked (critical PII detected, PII_ACTION=block)")
-	}
-}
-
-// TestPreCheckHandler_PIIDetection_LogOnly tests PII in log-only mode (no block, no redact)
-func TestPreCheckHandler_PIIDetection_LogOnly(t *testing.T) {
-	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("ENVIRONMENT", "development")
-	os.Setenv("PII_ACTION", "log") // Log-only mode (no blocking or redaction)
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("ENVIRONMENT")
-	defer os.Unsetenv("PII_ACTION")
-
-	// Policy evaluation uses unified shared engine
-	// Legacy engine removed — unified shared engine handles all policy evaluation
-	// Policy evaluation uses unified shared engine (legacy engine removed)
-
-	// Request with SSN (should NOT be blocked when PII_ACTION=log)
-	reqBody := PreCheckRequest{
-		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
-		ClientID:  "test-client",
-		Query:     "My SSN is 123-45-6789, what can you tell me?",
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rr.Code)
-		return
-	}
-
-	var resp PreCheckResponse
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-
-	// With PII_ACTION=log, request should be approved without redaction
-	if !resp.Approved {
-		t.Errorf("Expected request to be approved when PII_ACTION=log, got blocked: %s", resp.BlockReason)
-	}
-
-	// Should NOT require redaction in log-only mode
-	if resp.RequiresRedaction {
-		t.Error("Expected RequiresRedaction=false when PII_ACTION=log")
-	}
-
-	// Should still have triggered PII policy (detection still happens)
-	hasPIIPolicy := false
-	for _, policy := range resp.Policies {
-		if policy == "ssn_detection" {
-			hasPIIPolicy = true
-			break
-		}
-	}
-	if !hasPIIPolicy {
-		t.Error("Expected SSN detection policy to be triggered even in log-only mode")
 	}
 }
 
@@ -1184,7 +1073,7 @@ func TestPreCheckHandler_DangerousQuery(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -2691,7 +2580,7 @@ func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -2794,111 +2683,21 @@ func TestGetRBIPIIDetector(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_RBIPIIIntegration tests that RBI PII detection is integrated into pre-check flow
-// Both Community and Enterprise editions detect critical India PII (Aadhaar, PAN, UPI, Bank Account).
-// Sets PII_ACTION=redact explicitly to test the redact path (the v6.2.0 default is warn).
-func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
-	if !isCommunityBuild {
-		t.Skip("tests community PII pattern detection; enterprise uses checksum validation with different detection results")
-	}
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("ENVIRONMENT", "development")
-	os.Setenv("PII_ACTION", "redact")
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("ENVIRONMENT")
-	defer os.Unsetenv("PII_ACTION")
-	ResetDetectionConfigCache()
-	defer ResetDetectionConfigCache()
-
-	// Policy evaluation uses unified shared engine (legacy engine removed)
-
-	tests := []struct {
-		name            string
-		query           string
-		expectApproved  bool // With PII_ACTION=redact (default), all approved but PII flagged
-		expectRedaction bool // Whether redaction is required
-	}{
-		{
-			name:            "Normal query without India PII",
-			query:           "What is the GDP of India?",
-			expectApproved:  true,
-			expectRedaction: false,
-		},
-		{
-			name:            "Query with Aadhaar number (approved with redaction)",
-			query:           "My Aadhaar is 2234 5678 9012",
-			expectApproved:  true, // Default PII_ACTION=redact approves with flag
-			expectRedaction: true,
-		},
-		{
-			name:            "Query with PAN number (approved with redaction)",
-			query:           "My PAN number is ABCDE1234F",
-			expectApproved:  true, // Default PII_ACTION=redact approves with flag
-			expectRedaction: true,
-		},
-		{
-			name:            "Query with UPI ID (approved with redaction)",
-			query:           "Send money to user@ybl",
-			expectApproved:  true, // Default PII_ACTION=redact approves with flag
-			expectRedaction: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			reqBody := PreCheckRequest{
-				UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
-				ClientID:  "test-client",
-				Query:     tt.query,
-			}
-			body, _ := json.Marshal(reqBody)
-
-			req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			rr := httptest.NewRecorder()
-			handler := http.HandlerFunc(handlePolicyPreCheck)
-			handler.ServeHTTP(rr, req)
-
-			if rr.Code != http.StatusOK {
-				t.Errorf("Expected status 200, got %d", rr.Code)
-				return
-			}
-
-			var resp PreCheckResponse
-			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("Failed to unmarshal response: %v", err)
-			}
-
-			if resp.Approved != tt.expectApproved {
-				t.Errorf("Expected Approved=%v, got %v. BlockReason: %s",
-					tt.expectApproved, resp.Approved, resp.BlockReason)
-			}
-
-			if resp.RequiresRedaction != tt.expectRedaction {
-				t.Errorf("Expected RequiresRedaction=%v, got %v",
-					tt.expectRedaction, resp.RequiresRedaction)
-			}
-		})
-	}
-}
-
 // TestConvertSharedResultToStatic tests the conversion from shared policy engine
 // results to StaticPolicyResult for backward compatibility.
 //
 // #2965: the mapping is now ACTION-AWARE. A non-blocking PII match produces a
 // redaction obligation ONLY when its resolved action is redact; warn/log
-// produce an advisory reason and NO redaction. The cases below were rewritten
+// produce NO redaction. The cases below were rewritten
 // from the pre-#2965 shape, where ANY non-blocking PII match (even warn) set
 // RequiresRedaction — that was the sibling bug (warn/log postures silently
-// redacted). expectAdvisory pins the new warn/log signal.
+// redacted).
 func TestConvertSharedResultToStatic(t *testing.T) {
 	tests := []struct {
 		name              string
 		input             *sharedpolicy.RequestResult
 		expectBlocked     bool
 		expectRedaction   bool
-		expectAdvisory    bool
 		expectPolicyCount int
 	}{
 		{
@@ -2946,7 +2745,6 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			},
 			expectBlocked:     false,
 			expectRedaction:   false,
-			expectAdvisory:    true,
 			expectPolicyCount: 1,
 		},
 		{
@@ -3120,7 +2918,6 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			},
 			expectBlocked:     false,
 			expectRedaction:   false,
-			expectAdvisory:    true,
 			expectPolicyCount: 2,
 		},
 	}
@@ -3135,10 +2932,6 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 
 			if result.RequiresRedaction != tt.expectRedaction {
 				t.Errorf("RequiresRedaction = %v, want %v", result.RequiresRedaction, tt.expectRedaction)
-			}
-
-			if gotAdvisory := len(result.AdvisoryReasons) > 0; gotAdvisory != tt.expectAdvisory {
-				t.Errorf("advisory reasons present = %v (%v), want %v", gotAdvisory, result.AdvisoryReasons, tt.expectAdvisory)
 			}
 
 			if len(result.TriggeredPolicies) != tt.expectPolicyCount {
@@ -3284,7 +3077,7 @@ func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
 
 	t.Run("budget under limit allows request", func(t *testing.T) {
 		// Update mock to return non-exceeded budget
-		mockRepo.usageSum["organization:community"] = 50.0 // Under budget
+		mockRepo.usageSum["organization:"+testOrgID] = 50.0 // Under budget
 
 		reqBody := PreCheckRequest{
 			UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
@@ -3300,7 +3093,7 @@ func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		rr := httptest.NewRecorder()
-		handler := http.HandlerFunc(handlePolicyPreCheck)
+		handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 		handler.ServeHTTP(rr, req)
 
 		// Should return 200 OK
@@ -3642,64 +3435,6 @@ func TestConvertSharedResultToStatic_NilInput(t *testing.T) {
 	}
 	if len(result.TriggeredPolicies) != 0 {
 		t.Error("Expected empty TriggeredPolicies for nil input")
-	}
-}
-
-// TestConvertSharedResultToStatic_RequireApproval tests HITL action conversion
-func TestConvertSharedResultToStatic_RequireApproval(t *testing.T) {
-	sharedResult := &sharedpolicy.RequestResult{
-		Blocked:           false,
-		BlockReason:       "",
-		PoliciesEvaluated: 1,
-		MatchedPolicies: []sharedpolicy.PolicyMatch{
-			{
-				PolicyID: "hitl_credit_scoring",
-				Action:   sharedpolicy.ActionRequireApproval,
-				Category: sharedpolicy.CategorySensitiveData,
-				Severity: sharedpolicy.SeverityCritical,
-			},
-		},
-	}
-
-	result := convertSharedResultToStatic(sharedResult)
-
-	if !result.RequiresApproval {
-		t.Error("Expected RequiresApproval=true for ActionRequireApproval")
-	}
-	if len(result.TriggeredPolicies) != 1 {
-		t.Errorf("Expected 1 triggered policy, got %d", len(result.TriggeredPolicies))
-	}
-	if result.TriggeredPolicies[0] != "hitl_credit_scoring" {
-		t.Errorf("Expected policy ID 'hitl_credit_scoring', got '%s'", result.TriggeredPolicies[0])
-	}
-}
-
-// TestConvertSharedResultToStatic_RequireApprovalWithBlocked tests that
-// RequiresApproval is set correctly even when the shared engine also sets
-// Blocked=true (the shared engine sets Blocked=true for require_approval
-// policies because the request IS blocked pending human approval).
-func TestConvertSharedResultToStatic_RequireApprovalWithBlocked(t *testing.T) {
-	sharedResult := &sharedpolicy.RequestResult{
-		Blocked:           true,
-		BlockReason:       "Policy description text",
-		PoliciesEvaluated: 1,
-		MatchedPolicies: []sharedpolicy.PolicyMatch{
-			{
-				PolicyID: "custom_hitl_policy",
-				Action:   sharedpolicy.ActionRequireApproval,
-				Category: sharedpolicy.CategorySensitiveData,
-				Severity: sharedpolicy.SeverityHigh,
-			},
-		},
-	}
-
-	result := convertSharedResultToStatic(sharedResult)
-
-	if !result.RequiresApproval {
-		t.Error("Expected RequiresApproval=true even when Blocked=true")
-	}
-	if !result.Blocked {
-		t.Error("Expected Blocked=true (request is blocked pending approval)")
 	}
 }
 

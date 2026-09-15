@@ -1,4 +1,6 @@
 # SDK Feature Coverage
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 **Last Updated:** 2026-08-24
 **Reference:** ADR-022 SDK Method Inclusion Criteria
@@ -101,7 +103,7 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 | Field | Description | Status |
 |-------|-------------|--------|
 | `policy_info.exfiltration_check` | Row/byte limits info | ✅ All SDKs |
-| `policy_info.dynamic_policy_info` | Tenant policy evaluation info | ✅ All SDKs |
+| `policy_info.dynamic_policy_info` | Removed from the platform response in v11: the agent no longer evaluates tenant dynamic policies on MCP requests (PRD v11 §1.2) | Absent since v11 |
 
 #### Singapore PII Detection (MAS FEAT, Platform v3.7.0+)
 | Pattern | Description | Status |
@@ -165,6 +167,8 @@ These APIs are intentionally NOT in SDKs. Use HTTP/curl for these operations.
 > **Note:** Tenant policies CRUD is available in all SDKs via `/api/v1/dynamic-policies` endpoints:
 > `listDynamicPolicies()`, `createDynamicPolicy()`, `getDynamicPolicy()`, `updateDynamicPolicy()`,
 > `deleteDynamicPolicy()`, `toggleDynamicPolicy()`, `getEffectiveDynamicPolicies()`
+>
+> **v11:** the create, update, delete and toggle methods reach routes that refuse the write, because `migrations/core/172` makes the legacy policy tables read-only to the application roles: the Orchestrator answers `409 LEGACY_POLICY_WRITE_FROZEN`. List, get and effective are unaffected. Policy is authored through `/api/v1/typed-policies`.
 
 ### Circuit Breaker
 | Endpoint | Reason for Exclusion |
@@ -216,15 +220,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.10.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, the Decision Mode PEP (`decide` / `fulfill_request` / `decide_and_fulfill`, engine-only fail-closed redaction), and the AuthZEN-native decide surface (generated wire types, typed refusals); feature parity is being filled in over subsequent releases - track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.11.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, the Decision Mode PEP (`decide` / `fulfill_request` / `decide_and_fulfill`, engine-only fail-closed redaction), and the AuthZEN-native decide surface (generated wire types, typed refusals); feature parity is being filled in over subsequent releases - track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v9.3.0 | ~45 | ✅ |
-| Python | v9.3.0 | ~45 | ✅ |
-| TypeScript | v9.3.0 | ~46 | ✅ (+protect) |
-| Java | v9.3.0 | ~45 | ✅ |
-| Rust _(preview)_ | v0.10.0 | ~21 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID` + Decision Mode PEP + AuthZEN-native decide surface) |
+| Go | v9.4.0 | ~45 | ✅ |
+| Python | v9.4.0 | ~45 | ✅ |
+| TypeScript | v9.4.0 | ~46 | ✅ (+protect) |
+| Java | v9.4.0 | ~45 | ✅ |
+| Rust _(preview)_ | v0.11.0 | ~21 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID` + Decision Mode PEP + AuthZEN-native decide surface) |
 
 ### Infrastructure (v4.1.0)
 

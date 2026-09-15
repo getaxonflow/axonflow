@@ -1,17 +1,9 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package agent provides the AxonFlow Agent service.
 //
-// This file implements the Static Policies REST API for ADR-018: Unified Policy Management.
+// This file implements the Static Policies REST API for ADR-019: Unified Policy Management.
 // Static policies are pattern-based enforcement rules (PII detection, SQL injection blocking)
 // that are stored in the static_policies table and evaluated by the Agent.
 //
@@ -52,7 +44,7 @@ import (
 )
 
 // Note: StaticPolicy, CreateStaticPolicyRequest, UpdateStaticPolicyRequest, and related types
-// are defined in policy_types.go with enhanced fields for tier hierarchy support (ADR-020).
+// are defined in policy_types.go with enhanced fields for tier hierarchy support (ADR-019).
 
 // StaticPolicyAPIHandler handles static policy API requests.
 // It uses StaticPolicyRepository and PolicyOverrideRepository for database operations.
@@ -139,11 +131,12 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	// Tenant identity is derived from OAuth2 client credentials (Basic auth),
 	// not from X-Tenant-ID header. Handlers read tenant via TenantIDFromContext().
 	//
-	// The legacy prefix additionally carries the deprecation stamp, mounted
-	// BEFORE apiAuthMiddleware so the signal rides an unauthenticated 401 as
-	// well as a 200: "this path is deprecated" is a property of the path, not
-	// of the caller's credentials, and a client discovering the API with a bad
-	// token should still learn it.
+	// BOTH prefixes carry the deprecation stamp: in v11 the whole family is the
+	// deprecated export surface (PRD §1.11), the #1431 successor included. It
+	// is mounted BEFORE apiAuthMiddleware so the signal rides an
+	// unauthenticated 401 as well as a 200: "this path is deprecated" is a
+	// property of the path, not of the caller's credentials, and a client
+	// discovering the API with a bad token should still learn it.
 	//
 	// The limit of that, stated because the sentence above overclaims if left
 	// alone: gorilla/mux runs subrouter middleware only on a MATCHED route. A
@@ -159,6 +152,7 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	legacy.Use(apiAuthMiddleware)
 
 	successor := router.PathPrefix(policypath.SystemPolicies).Subrouter()
+	successor.Use(policypath.DeprecateLegacy)
 	successor.Use(apiAuthMiddleware)
 
 	for _, sub := range []*mux.Router{legacy, successor} {
@@ -174,7 +168,8 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	// client looking for a tenant-wide override list) expects this path.
 	// Previously only /api/v1/static-policies/overrides was reachable, and
 	// the portal was hitting this path and getting 404s.
-	overridesAlias := router.PathPrefix("/api/v1/policy-overrides").Subrouter()
+	overridesAlias := router.PathPrefix(policypath.PolicyOverrides).Subrouter()
+	overridesAlias.Use(policypath.DeprecateLegacy)
 	overridesAlias.Use(apiAuthMiddleware)
 	overridesAlias.HandleFunc("", handler.HandleListOverrides).Methods("GET")
 	log.Println("✅ Canonical /api/v1/policy-overrides alias registered (GET, auth-protected)")
@@ -192,7 +187,8 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 //   - search: Search in name and description
 //
 // Headers:
-//   Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
+//
+//	Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
 func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := TenantIDFromContext(ctx)
@@ -259,8 +255,9 @@ func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter,
 // HandleCreateStaticPolicy handles POST /api/v1/static-policies
 // Request body: CreateStaticPolicyRequest
 // Headers:
-//   Auth: OAuth2 Client Credentials (Basic auth) — tenant and org derived from authenticated client
-//   - X-User-ID: User ID for audit trail
+//
+//	Auth: OAuth2 Client Credentials (Basic auth) — tenant and org derived from authenticated client
+//	- X-User-ID: User ID for audit trail
 func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := TenantIDFromContext(ctx)
@@ -269,6 +266,13 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 
 	if tenantID == "" {
 		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
+		return
+	}
+
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237): where core/172 has
+	// revoked the write no create can succeed, and a body that failed the
+	// required-field checks below was answered 400 rather than the freeze.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "CreateStaticPolicy", orgID, tenantID) {
 		return
 	}
 
@@ -346,6 +350,9 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 		case errors.Is(err, ErrInvalidTier):
 			writeJSONError(w, "Invalid policy tier", http.StatusBadRequest)
 		default:
+			if writeLegacyFreezeError(w, err, "CreateStaticPolicy", tenantID) {
+				return
+			}
 			writeJSONError(w, "Failed to create policy", http.StatusInternalServerError)
 		}
 		return
@@ -383,6 +390,16 @@ func (h *StaticPolicyAPIHandler) HandleUpdateStaticPolicy(w http.ResponseWriter,
 	vars := mux.Vars(r)
 	policyID := vars["id"]
 	userID := r.Header.Get("X-User-ID")
+	tenantID := TenantIDFromContext(ctx)
+	orgID := OrgIDFromContext(ctx)
+
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ AND BEFORE THE LOOKUP (#4237):
+	// where core/172 has revoked the write no update can succeed, and the
+	// repository answered its lookup, its tier and pattern checks and a body
+	// that changes nothing (a 200) before the write.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "UpdateStaticPolicy", orgID, tenantID) {
+		return
+	}
 
 	// Parse request body
 	var req UpdateStaticPolicyRequest
@@ -404,6 +421,9 @@ func (h *StaticPolicyAPIHandler) HandleUpdateStaticPolicy(w http.ResponseWriter,
 		case errors.Is(err, ErrInvalidPattern):
 			writeJSONError(w, "Invalid regex pattern: "+err.Error(), http.StatusBadRequest)
 		default:
+			if writeLegacyFreezeError(w, err, "UpdateStaticPolicy", TenantIDFromContext(ctx)) {
+				return
+			}
 			writeJSONError(w, "Failed to update policy", http.StatusInternalServerError)
 		}
 		return
@@ -431,6 +451,9 @@ func (h *StaticPolicyAPIHandler) HandleDeleteStaticPolicy(w http.ResponseWriter,
 		case errors.Is(err, ErrSystemPolicyDeletion):
 			writeJSONError(w, "System policies cannot be deleted", http.StatusForbidden)
 		default:
+			if writeLegacyFreezeError(w, err, "DeleteStaticPolicy", TenantIDFromContext(ctx)) {
+				return
+			}
 			writeJSONError(w, "Failed to delete policy", http.StatusInternalServerError)
 		}
 		return
@@ -449,6 +472,15 @@ func (h *StaticPolicyAPIHandler) HandleTogglePolicy(w http.ResponseWriter, r *ht
 	vars := mux.Vars(r)
 	policyID := vars["id"]
 	userID := r.Header.Get("X-User-ID")
+	tenantID := TenantIDFromContext(ctx)
+	orgID := OrgIDFromContext(ctx)
+
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ AND BEFORE THE LOOKUP (#4237):
+	// where core/172 has revoked the write no toggle can succeed, and invalid
+	// JSON, the lookup and the tier checks were all answered before the write.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "ToggleStaticPolicy", orgID, tenantID) {
+		return
+	}
 
 	// Parse request body
 	var req struct {
@@ -468,6 +500,9 @@ func (h *StaticPolicyAPIHandler) HandleTogglePolicy(w http.ResponseWriter, r *ht
 		case errors.Is(err, ErrSystemPolicyModification):
 			writeJSONError(w, "System policies cannot be disabled via API", http.StatusForbidden)
 		default:
+			if writeLegacyFreezeError(w, err, "ToggleStaticPolicy", TenantIDFromContext(ctx)) {
+				return
+			}
 			writeJSONError(w, "Failed to toggle policy", http.StatusInternalServerError)
 		}
 		return
@@ -539,7 +574,13 @@ type TestPatternAPIRequest struct {
 }
 
 // HandleTestPattern handles POST /api/v1/static-policies/test
-// Tests a regex pattern against input strings
+// Tests a regex pattern against input strings. The pattern is compiled AS
+// WRITTEN: the request names no category, so the case rule the engine applies
+// to stored SQL-injection and destructive-command patterns
+// (sharedpolicy.EffectivePattern, #4131) is not applied here, and for those
+// categories this tool can report no match where the engine matches. Test with
+// a leading (?i) to see what the engine sees. The route is deprecated for
+// removal in v11.1, so the request shape is left as it is.
 // Request body: {"pattern": "...", "inputs": ["input1", "input2"]}
 // or: {"pattern": "...", "input": "single input"} for backward compatibility
 func (h *StaticPolicyAPIHandler) HandleTestPattern(w http.ResponseWriter, r *http.Request) {
@@ -600,138 +641,34 @@ func (h *StaticPolicyAPIHandler) HandleGetVersionHistory(w http.ResponseWriter, 
 	writeJSONResponse(w, response, http.StatusOK)
 }
 
-// HandleCreateOverride handles POST /api/v1/static-policies/{id}/override
-// Creates an override for a system policy (Enterprise only)
-// Request body: CreateOverrideRequest
+// HandleCreateOverride handles POST /api/v1/static-policies/{id}/override.
+//
+// RETIRED IN v11 (PRD v11 §1.5). A system control is enabled, disabled or
+// re-actioned in the organization's typed document, in its system_controls
+// section, not by a per-policy override row. The route stays registered so a
+// caller is told where the write went, and it writes nothing. No route writes
+// the table in v11 (the session override routes answer the same refusal since
+// #4252), so this is the handler's refusal, not a classified database error.
 func (h *StaticPolicyAPIHandler) HandleCreateOverride(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	vars := mux.Vars(r)
-	policyID := vars["id"]
-	tenantID := TenantIDFromContext(ctx)
-	orgID := OrgIDFromContext(ctx)
-	userID := r.Header.Get("X-User-ID")
-
+	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
 		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
-
-	// Parse request body
-	var req CreateOverrideRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Build override
-	override := &PolicyOverride{
-		PolicyID:        policyID,
-		PolicyType:      TypeStatic,
-		ActionOverride:  req.ActionOverride,
-		EnabledOverride: req.EnabledOverride,
-		OverrideReason:  req.OverrideReason,
-		ExpiresAt:       req.ExpiresAt,
-		// v9 Phase 8 #2384 PR-C1: OrgID is the multi-tenant RLS scope key
-		// (post mig 110). Sourced from the X-Org-ID header set by the agent
-		// auth middleware; falls back to tenant for the OrgID==TenantID
-		// invariant of mig 100 / community-saas mode.
-		OrgID: func() string {
-			if orgID != "" {
-				return orgID
-			}
-			return tenantID
-		}(),
-	}
-
-	// Set scope based on headers.
-	//
-	// AxonFlow org ids are FREE-FORM STRINGS sourced from the signed license
-	// (e.g. "acme-eval") — they are NOT UUIDs. The multi-tenant scope key
-	// for policy_overrides is the varchar `org_id` column (added by v9 mig 110,
-	// carried here by override.OrgID) plus `tenant_id`. The legacy
-	// `organization_id` column is a `uuid` type; binding a non-uuid org id to it
-	// makes the INSERT fail with `invalid input syntax for type uuid: "<org>"`,
-	// which was a hard 500 on the portal "Create Override" flow for every
-	// deployment whose org id is not UUID-shaped. Do NOT write the string org id
-	// into the uuid column — org scope lives in org_id (set above via OrgID);
-	// tenant_id below satisfies the valid_override_scope CHECK and is the match
-	// key for both the existence check and the GetEffective apply-JOIN.
-	if tenantID != "" {
-		override.TenantID = &tenantID
-	}
-
-	// Create override using repository
-	if err := h.overrideRepo.Create(ctx, override, userID); err != nil {
-		log.Printf("[StaticPolicyAPI] Error creating override for policy %s: %v", policyID, err)
-
-		switch {
-		case errors.Is(err, ErrOverrideReasonRequired):
-			writeJSONError(w, "override_reason is required", http.StatusBadRequest)
-		case errors.Is(err, ErrOverrideRequiresEnterprise):
-			writeJSONError(w, "Policy overrides require Enterprise license", http.StatusForbidden)
-		case errors.Is(err, ErrOverrideAlreadyExists):
-			writeJSONError(w, "Override already exists for this policy", http.StatusConflict)
-		default:
-			writeJSONError(w, "Failed to create override: "+err.Error(), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	log.Printf("[StaticPolicyAPI] Created override for policy %s (tenant: %s)", policyID, tenantID)
-
-	writeJSONResponse(w, override, http.StatusCreated)
+	writeOverrideFreezeError(w, "create override", tenantID)
 }
 
-// HandleDeleteOverride handles DELETE /api/v1/static-policies/{id}/override
-// Deletes an override for a policy
+// HandleDeleteOverride handles DELETE /api/v1/static-policies/{id}/override.
+//
+// RETIRED IN v11, with HandleCreateOverride and for the same reason: it writes
+// nothing and says where per-policy control went.
 func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	vars := mux.Vars(r)
-	policyID := vars["id"]
-	tenantIDHeader := TenantIDFromContext(ctx)
-	orgIDHeader := OrgIDFromContext(ctx)
-	userID := r.Header.Get("X-User-ID")
-
-	if tenantIDHeader == "" {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
 		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
-
-	// Convert to pointers for repository call
-	var tenantID, orgID *string
-	if tenantIDHeader != "" {
-		tenantID = &tenantIDHeader
-	}
-	if orgIDHeader != "" {
-		orgID = &orgIDHeader
-	}
-
-	// Delete override using repository.
-	// v9 Phase 8 #2384 PR-C1: rlsOrgID is the auth'd request's OrgID (mig 110
-	// requires app.current_org_id pinned for policy_overrides DELETE).
-	// orgIDHeader (set by the agent auth middleware) is the V9 scope key;
-	// fall back to tenantIDHeader for community-saas / OrgID==TenantID
-	// invariant (mig 100). This mirrors HandleCreateOverride's fallback so
-	// the Create/Delete pair behaves symmetrically — without the fallback,
-	// internal-service callers (no X-Org-ID) get 500s on Delete while
-	// Create succeeds.
-	rlsOrgID := orgIDHeader
-	if rlsOrgID == "" {
-		rlsOrgID = tenantIDHeader
-	}
-	if err := h.overrideRepo.DeleteByPolicyID(ctx, rlsOrgID, policyID, tenantID, orgID, userID); err != nil {
-		if errors.Is(err, ErrOverrideNotFound) {
-			writeJSONError(w, "Override not found", http.StatusNotFound)
-			return
-		}
-		log.Printf("[StaticPolicyAPI] Error deleting override for policy %s: %v", policyID, err)
-		writeJSONError(w, "Failed to delete override", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("[StaticPolicyAPI] Deleted override for policy %s (tenant: %s)", policyID, tenantIDHeader)
-
-	w.WriteHeader(http.StatusNoContent)
+	writeOverrideFreezeError(w, "delete override", tenantID)
 }
 
 // HandleGetOverrideByPolicy handles GET /api/v1/static-policies/{id}/override.
@@ -780,7 +717,8 @@ func (h *StaticPolicyAPIHandler) HandleGetOverrideByPolicy(w http.ResponseWriter
 // HandleListOverrides handles GET /api/v1/static-policies/overrides
 // Lists all policy overrides for a tenant
 // Headers:
-//   Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
+//
+//	Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
 func (h *StaticPolicyAPIHandler) HandleListOverrides(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantIDHeader := TenantIDFromContext(ctx)

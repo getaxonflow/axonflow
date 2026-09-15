@@ -47,9 +47,31 @@ func getTestDBForCSAAS(t *testing.T) *sql.DB {
 	return db
 }
 
+// skipWithoutAdminAuditLog skips a test whose registration must succeed when
+// the schema has no admin_audit_log. A registration records its
+// DETECTION_POSTURE_SET audit in that table, which migrations/community-saas/088
+// or migrations/enterprise/113 creates. The community mirror strips both
+// migration sets while keeping community_saas_registrations (core/068), so its
+// schema registers a tenant and then fails the audit write with a 500. The
+// register route is mounted only under DEPLOYMENT_MODE=community-saas, where the
+// table exists, so the gap is the mirror's test schema, not a shipped path.
+func skipWithoutAdminAuditLog(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var exists bool
+	err := db.QueryRow(`SELECT EXISTS (
+		SELECT FROM information_schema.tables
+		WHERE table_name = 'admin_audit_log'
+	)`).Scan(&exists)
+	if err != nil || !exists {
+		t.Skip("Skipping: admin_audit_log table not found (migrations/community-saas/088 or enterprise/113 not applied); " +
+			"a registration records its DETECTION_POSTURE_SET audit there, and the community mirror strips both migration sets")
+	}
+}
+
 func TestHandleCommunityRegister_DB_Success(t *testing.T) {
 	db := getTestDBForCSAAS(t)
 	defer db.Close()
+	skipWithoutAdminAuditLog(t, db)
 
 	handler := handleCommunityRegister(db)
 	body := `{"label":"test-e2e"}`
@@ -100,14 +122,39 @@ func TestHandleCommunityRegister_DB_Success(t *testing.T) {
 		t.Errorf("expires_at should be ~1 year from now, diff: %v", diff)
 	}
 
+	// #4017: the organization it created blocks SQL injection by a recorded,
+	// audited override, on this job's real Postgres with the core and
+	// enterprise chains applied.
+	var action, updatedBy string
+	if err := db.QueryRow(`SELECT action, updated_by FROM detection_action_overrides WHERE org_id = $1 AND category = 'sqli'`,
+		resp.TenantID).Scan(&action, &updatedBy); err != nil {
+		t.Fatalf("the new organization has no sqli override: %v", err)
+	}
+	if action != "block" || updatedBy != registrationPostureActor {
+		t.Errorf("sqli override = %s by %s, want block by %s", action, updatedBy, registrationPostureActor)
+	}
+	var audited int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admin_audit_log
+		 WHERE org_id = $1 AND action = 'DETECTION_POSTURE_SET' AND admin_identifier = $2
+		   AND success AND ip_address = '10.0.0.99' AND details->>'category' = 'sqli' AND details->>'action' = 'block'`,
+		resp.TenantID, registrationPostureActor).Scan(&audited); err != nil {
+		t.Fatalf("count the organization's audit rows: %v", err)
+	}
+	if audited != 1 {
+		t.Errorf("the organization has %d DETECTION_POSTURE_SET row(s) for its sqli=block, want 1", audited)
+	}
+
 	// Clean up
 	db.Exec("DELETE FROM community_saas_registrations WHERE tenant_id = $1", resp.TenantID)
 	db.Exec("DELETE FROM tenants WHERE tenant_id = $1", resp.TenantID)
+	db.Exec("DELETE FROM detection_action_overrides WHERE org_id = $1", resp.TenantID)
+	db.Exec("DELETE FROM admin_audit_log WHERE org_id = $1", resp.TenantID)
 }
 
 func TestValidateCommunityRegistration_DB_FullLifecycle(t *testing.T) {
 	db := getTestDBForCSAAS(t)
 	defer db.Close()
+	skipWithoutAdminAuditLog(t, db)
 
 	// Register a tenant
 	handler := handleCommunityRegister(db)
@@ -203,6 +250,7 @@ func TestCheckDailyLimitDB_FullLifecycle(t *testing.T) {
 func TestHandleCommunityRegister_DB_ContentTypeVariants(t *testing.T) {
 	db := getTestDBForCSAAS(t)
 	defer db.Close()
+	skipWithoutAdminAuditLog(t, db)
 
 	tests := []struct {
 		name        string

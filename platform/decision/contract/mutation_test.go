@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -206,6 +209,47 @@ func sourceMutations() []sourceMutation {
 			New:      `	if merged.Subject == nil || merged.Subject.ID == "" {`,
 			Test:     "TestProjectRefusesAnIncompleteEvaluation",
 			Property: "the projection refuses an evaluation whose merged subject names no type",
+		},
+
+		// --- #3878: an identity compared as a rendered form ---
+		//
+		// FOUR MUTANTS, and the two aimed at IdentityKey point in OPPOSITE
+		// directions on purpose. Restoring the rendered key is the defect;
+		// dropping the type for EVERY kind is the correction overshooting into
+		// the registry's catalog, where the type names the entity class of a
+		// distinct entity. A single mutant would leave whichever direction it
+		// did not touch unproven.
+		{
+			Name:     "the actor-chain cycle check keys on the rendered form again",
+			File:     "request.go",
+			Old:      `		if _, dup := seen[a.ID.IdentityKey()]; dup {`,
+			New:      `		if _, dup := seen[a.ID.String()]; dup {`,
+			Test:     "TestTheActorChainCycleCheckIsBySubjectRatherThanByRenderedForm",
+			Property: "\"no principal repeats\" is a question about WHO, and ID.String() renders the principal type, so one subject delegating to itself was admitted as two principals on the live decision path",
+		},
+		{
+			Name:     "a principal's key carries its classification",
+			File:     "ids.go",
+			Old:      `	if id.Kind == KindPrincipal {`,
+			New:      `	if false && id.Kind == KindPrincipal {`,
+			Test:     "TestIdentityKeyDropsTheTypeForAPrincipalAndKeepsItForEverythingElse",
+			Property: "the type classifies a subject rather than identifying one, and comparing it is what let an author approve their own publication (#3876) and a requester answer their own escalation (#3878)",
+		},
+		{
+			Name:     "every kind loses its type, so two resources sharing a local segment become one entity",
+			File:     "ids.go",
+			Old:      `	return string(id.Kind) + identityKeySep + id.Type +`,
+			New:      `	return string(id.Kind) + identityKeySep + "" +`,
+			Test:     "TestIdentityKeyDropsTheTypeForAPrincipalAndKeepsItForEverythingElse",
+			Property: "for a non-principal the type names the entity CLASS, so JiraIssue::conn:ABC-1 and JiraProject::conn:ABC-1 are two resources and the registry keys its catalog on exactly that distinction",
+		},
+		{
+			Name:     "an absent identifier matches another absent identifier",
+			File:     "ids.go",
+			Old:      `	if a.IsZero() || b.IsZero() {`,
+			New:      `	if false && (a.IsZero() || b.IsZero()) {`,
+			Test:     "TestSameEntityRefusesTheZeroIdentifier",
+			Property: "\"no identifier\" is not an identity two values share; reading it as one is an undetermined fact becoming a determinate, permissive one",
 		},
 	}
 }

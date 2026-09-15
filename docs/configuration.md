@@ -1,19 +1,17 @@
 # Configuration Reference
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 AxonFlow is designed with secure-by-default settings that are fully configurable. This document covers all environment variables for controlling security detection and policy enforcement.
 
 ## Security Detection Configuration (Issue #891)
 
-AxonFlow uses a tiered default approach: **block high-confidence threats, warn on heuristics, redact PII**.
+**Changed in v11 (#3961): no environment variable sets a detection action.** A detection takes the action stored on the policy that matched it. The only thing that replaces a stored action is an organization's recorded detection-posture override. See [Policy Actions and Detection-Posture Overrides](governance/policy-action-authority.md) for the per-plane detail.
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `SQLI_ACTION` | `block`, `warn`, `log` | `block` | SQL injection detection action (high confidence) |
-| `PII_ACTION` | `block`, `warn`, `redact`, `log` | `redact` | PII detection action (preserves UX) |
-| `SENSITIVE_DATA_ACTION` | `block`, `warn`, `log` | `warn` | Credential/token detection action (may have false positives) |
-| `HIGH_RISK_ACTION` | `block`, `warn`, `log` | `warn` | High risk score (>0.8) action (needs tuning) |
-| `DANGEROUS_QUERY_ACTION` | `block`, `warn`, `log` | `block` | DROP/TRUNCATE detection action (destructive) |
-| `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | SQL injection scanning mode |
+| `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | SQL injection scanning mode (selects the scanner; it sets no action) |
+| `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` | seconds, `5` to `600` | `60` | How long an agent caches an organization's detection-posture overrides; an override change takes effect within this window |
 
 ### Action Types
 
@@ -24,50 +22,88 @@ AxonFlow uses a tiered default approach: **block high-confidence threats, warn o
 | `warn` | Log warning, allow request |
 | `log` | Log for audit only, allow request |
 
-### Deprecated Environment Variables
+### Changing an Action
 
-These environment variables are deprecated and will be removed in a future release:
+There are two supported ways, and neither is an environment variable.
 
-| Deprecated | Replacement | Notes |
-|------------|-------------|-------|
-| `SQLI_BLOCK_MODE` | `SQLI_ACTION` | `block` → `SQLI_ACTION=block`, `warn` → `SQLI_ACTION=warn` |
-| `PII_BLOCK_CRITICAL` | `PII_ACTION` | `true` → `PII_ACTION=block`, `false` → `PII_ACTION=log` |
+1. **Record an organization override** (Enterprise). The customer portal API writes the organization's row in `detection_action_overrides`. It uses session auth and requires the `sso:configure` permission; every write is audited to `admin_audit_log` and records `updated_by`.
 
-### Philosophy: Tiered Defaults
+   ```bash
+   # List the organization's overrides
+   curl -b "axonflow_session=$SESSION" http://localhost:8082/api/v1/detection-posture
 
-The default configuration is designed to minimize friction during evaluation while maintaining security:
+   # Block SQL injection for this organization
+   curl -b "axonflow_session=$SESSION" -X PUT -H 'Content-Type: application/json' \
+     -d '{"action":"block"}' http://localhost:8082/api/v1/detection-posture/sqli
 
-| Detection Type | Default | Rationale |
-|----------------|---------|-----------|
-| SQL Injection | `block` | High confidence, real attacks |
-| Dangerous Queries | `block` | Destructive operations |
-| PII | `redact` | Non-blocking, preserves user experience |
-| Sensitive Data | `warn` | May have false positives (e.g., "PRIMARY KEY") |
-| High Risk Score | `warn` | Composite score needs per-environment tuning |
+   # Remove the override; the stored policy action decides again
+   curl -b "axonflow_session=$SESSION" -X DELETE http://localhost:8082/api/v1/detection-posture/sqli
+   ```
+
+   | Category | Reaches |
+   |----------|---------|
+   | `pii` | every `pii-*` policy category |
+   | `sqli` | `security-sqli` |
+   | `dangerous_command` | `security-dangerous` |
+   | `dangerous_query` | no policy category |
+   | `obligation_fallback` | the action when a plane cannot fulfil a redact obligation (`block` or `log` only) |
+
+   Actions are `block`, `redact`, `warn` and `log`. `sensitive-data` has no override category, so its stored action always decides.
+
+2. **Change the policy's action.** Create a system-policy override (`POST /api/v1/system-policies/{id}/override`, Enterprise). Editing the tenant policy was the other way before v11; in v11 the legacy policy tables are read-only to the application roles (`migrations/core/172`), so that edit answers `409 LEGACY_POLICY_WRITE_FROZEN`.
+
+### Removed in v11: Detection Action Environment Variables
+
+These variables no longer set any action: `PII_ACTION`, `SQLI_ACTION`, `DANGEROUS_COMMAND_ACTION`, `SENSITIVE_DATA_ACTION`, `MCP_PII_ACTION`, `MCP_SQLI_ACTION`, `MCP_DANGEROUS_QUERY_ACTION`, `MCP_DANGEROUS_COMMAND_ACTION`, `GATEWAY_PII_ACTION`, `GATEWAY_SQLI_ACTION`, `GATEWAY_DANGEROUS_QUERY_ACTION`, `GATEWAY_DANGEROUS_COMMAND_ACTION`, `SQLI_BLOCK_MODE`, `PII_BLOCK_CRITICAL`, `DANGEROUS_QUERY_ACTION`, `HIGH_RISK_ACTION`, `AXONFLOW_PROFILE` and `AXONFLOW_ENFORCE`. The `AXONFLOW_PROFILE` presets (`dev`, `default`, `strict`, `compliance`) and the `AXONFLOW_ENFORCE` category list are gone with them.
+
+A deployment that still sets one keeps running with the stored actions. At boot the agent logs one line per variable that is set:
+
+```
+WARN [agent] detection posture env var ignored: <NAME>=<value> no longer sets an action (v11); the stored policy action decides - see release notes. ...
+```
+
+and increments `axonflow_ignored_posture_env_total{name="<NAME>"}` on `/prometheus`. Remove them from your environment and use one of the two ways under [Changing an Action](#changing-an-action) instead.
+
+These non-action variables are unchanged: `MCP_STATIC_POLICIES_ENABLED`, `GATEWAY_STATIC_POLICIES_ENABLED`, `MCP_STATIC_POLICIES_SKIP_CATEGORIES`, `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES`, `MCP_STATIC_POLICIES_CONNECTORS` and `SQLI_SCANNER_MODE`.
+
+### Shipped Stored Actions
+
+| Detection | Stored action (request / response) | Notes |
+|-----------|------------------------------------|-------|
+| SQL injection (every `sys_sqli_*`) | `warn` / `warn` | **SQL injection warns out of the box.** Record `sqli=block` or change the policy action to block it |
+| Dangerous commands (`security-dangerous` command rows) | `block` / none | |
+| Prompt injection | `block` / `redact` | |
+| PII: SSN, credit card (`sys_pii_ssn`, `sys_pii_credit_card`), Singapore NRIC | `warn` / `redact` | |
+| PII: passport, date of birth, email | `log` / `redact` | |
+| PII: Indonesia KTP (`sys_pii_indonesia_ktp`) | `block` / none | Request phase only |
+| Sensitive data (`sys_sensitive_*`) | `warn` / `warn` | No override category; only a policy edit changes it |
+
+The code-backed detectors that have no stored policy row (`indonesia_pii_protection` for checksum-validated NIK/NPWP, `rbi_pii_protection` for India PII) block only under an organization `pii=block` override and emit a redact obligation only under `pii=redact`. With no override they detect and record, and the stored static policy rows decide.
+
+Community SaaS (try.getaxonflow.com) warns on SQL injection until its provisioning writes an override (#4017).
 
 ### Progressive Enforcement
 
 A common adoption pattern:
 
-1. **Day 1: Out-of-the-box** - Start with defaults (PII redacted, SQLi blocked)
+1. **Day 1: Out-of-the-box** - Start with the shipped stored actions (SQL injection warns; PII warns or logs on requests and is redacted in responses)
 2. **Week 1: Review** - Check audit logs for detection accuracy
-3. **Week 2: Tune** - Adjust actions based on your risk tolerance
-4. **Ongoing: Enforce** - Enable stricter blocking as confidence grows
+3. **Week 2: Tune** - Record organization overrides or change policy actions based on your risk tolerance
+4. **Ongoing: Enforce** - Move categories to `block` (for example `sqli=block`) as confidence grows
 
-## Environment Variable Precedence
+## Action Resolution
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Priority 1: Per-tenant policy override (Enterprise API)         │
-│   Enterprise users can override any policy via API              │
+│ Priority 1: Organization detection-posture override (Enterprise)│
+│   pii / sqli / dangerous_command - recorded, audited            │
 ├─────────────────────────────────────────────────────────────────┤
-│ Priority 2: Environment variable (docker-compose)               │
-│   SQLI_ACTION=warn overrides all SQLi policies                  │
-├─────────────────────────────────────────────────────────────────┤
-│ Priority 3: Per-policy DB default (migration seed)              │
-│   static_policies.action from seed data                         │
+│ Priority 2: The matched policy's stored action                  │
+│   action_request / action_response - changed by a policy write  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+No environment variable takes part (v11).
 
 ## Deployment Mode
 
@@ -219,20 +255,9 @@ services:
       # SQLi Scanner: "off", "basic" (default), "advanced" (enterprise)
       SQLI_SCANNER_MODE: "basic"
 
-      # SQLI_ACTION: block|warn|log (default: block - high confidence attacks)
-      SQLI_ACTION: "block"
-
-      # PII_ACTION: block|warn|redact|log (default: redact - preserves UX)
-      PII_ACTION: "redact"
-
-      # SENSITIVE_DATA_ACTION: block|warn|log (default: warn - may have false positives)
-      SENSITIVE_DATA_ACTION: "warn"
-
-      # HIGH_RISK_ACTION: block|warn|log (default: warn - composite score needs tuning)
-      HIGH_RISK_ACTION: "warn"
-
-      # DANGEROUS_QUERY_ACTION: block|warn|log (default: block - DROP/TRUNCATE)
-      DANGEROUS_QUERY_ACTION: "block"
+      # Detection ACTIONS are not set here (v11, #3961): the stored policy
+      # action decides, and an organization's recorded detection-posture
+      # override is the only replacement. See "Changing an Action" above.
 
       # === Deployment Mode ===
       # REQUIRED. "community" = no auth required; every other value (and an
@@ -249,16 +274,9 @@ Set `DEPLOYMENT_MODE` on the **orchestrator** service too, with the same value.
 The agent and the orchestrator each read it independently, and a divergence
 shows up as empty audit/decisions/cost reads rather than as a startup error.
 
-## Legacy Configuration (Deprecated)
+## Legacy Configuration (Removed)
 
-For backwards compatibility, the old environment variables still work but will log deprecation warnings:
-
-```yaml
-# DEPRECATED - use new *_ACTION variables instead
-environment:
-  PII_BLOCK_CRITICAL: "true"  # Use PII_ACTION=block instead
-  SQLI_BLOCK_MODE: "warn"     # Use SQLI_ACTION=warn instead
-```
+`PII_BLOCK_CRITICAL` and `SQLI_BLOCK_MODE`, deprecated by Issue #891, were removed in v11 along with the `*_ACTION` variables that replaced them. They are ignored with the same boot WARN and counter; see [Removed in v11](#removed-in-v11-detection-action-environment-variables).
 
 ## Service Ports and Single Entry Point (ADR-024)
 
@@ -280,7 +298,8 @@ The Agent automatically proxies these routes:
 | `/api/v1/code-governance/*` | Portal | Code Governance API |
 | `/api/v1/portal/*` | Portal | Portal management |
 | `/api/v1/git-providers/*` | Portal | Git provider configuration |
-| `/api/v1/dynamic-policies/*` | Orchestrator | Dynamic policy CRUD |
+| `/api/v1/tenant-policies/*` (deprecated spelling `/api/v1/dynamic-policies/*`) | Orchestrator | Tenant policies; writes answer `409 LEGACY_POLICY_WRITE_FROZEN` in v11 |
+| `/api/v1/typed-policies/*` | Orchestrator | Typed policy authoring, the v11 policy write path |
 | `/api/v1/connectors/*` | Orchestrator | Connector management |
 | `/api/v1/cost/*` | Orchestrator | Cost controls |
 | `/api/v1/executions/*` | Orchestrator | Execution replay |

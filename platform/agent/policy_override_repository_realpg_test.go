@@ -7,8 +7,7 @@ package agent
 //
 // WHY THIS FILE EXISTS
 //
-// platform/agent/policy_override_repository_test.go is 693 lines and entirely
-// sqlmock. sqlmock matches SQL text against regexes and returns canned rows;
+// platform/agent/policy_override_repository_test.go is entirely sqlmock. sqlmock matches SQL text against regexes and returns canned rows;
 // no statement is ever executed. As static_policy_repository_segment_realpg_test.go
 // puts it for the sibling repository:
 //
@@ -23,11 +22,10 @@ package agent
 //     comes back either way, so the existing suite goes green on a repository
 //     that leaks across scopes.
 //  2. The CHECK constraint on the table.
-//  3. ROW-LEVEL SECURITY. Nothing in the sqlmock suite touches it, yet
-//     policy_override_repository.go:116-155 documents behaviour that only RLS
-//     produces - "under app_role without app.current_org_id pinned, the USING
-//     predicate masks rows" - and that documented behaviour is what makes
-//     Create wrap its existence check and its INSERT in ONE WithOrgScope txn.
+//  3. ROW-LEVEL SECURITY. Nothing in the sqlmock suite touches it, yet it is
+//     what keeps one organization's overrides out of another's reads: under
+//     app_role without app.current_org_id pinned, the USING predicate masks
+//     rows.
 //
 // WHY THE ASSERTIONS GO THROUGH THE REPOSITORY API RATHER THAN NAMING COLUMNS
 //
@@ -47,12 +45,9 @@ package agent
 //     the same value, which is what makes the org-selection assertions below
 //     pass under either predicate.
 //
-// The one case that is NOT expressible on both sides is CREATING an org-scoped
-// override through Create(): before the retirement Create writes the org key
-// into organization_id (from the field that is about to be deleted), after it
-// into org_id. Org-scoped rows are seeded directly instead, and org-scope
-// coverage here is therefore about SELECTION and ISOLATION, not about the
-// create path. See TestOverrideOrgScopeSelection_RealPG.
+// Every fixture row is seeded with raw SQL: the repository reads overrides and
+// writes none (PRD v11 §1.5, W3-I item 9 removed its per-policy writers with the
+// routes that called them), so coverage here is SELECTION and ISOLATION.
 //
 // Gated on Docker (testutil.SkipIfNoDocker) and building its own minimal
 // schema rather than applying the migration chain, per
@@ -71,9 +66,7 @@ import (
 )
 
 const (
-	// The seeded Enterprise client. Create() gates on an Enterprise licence
-	// and resolves the licence key from TenantID, so every tenant used by a
-	// Create() test needs a row in clients.
+	// Two tenants in two organizations, for the scoping and isolation cases.
 	overrideTestTenant  = "acme-tenant"
 	overrideTestTenantB = "globex-tenant"
 	overrideTestOrg     = "acme-org"
@@ -104,11 +97,6 @@ func newOverrideTestDB(t *testing.T) *testutil.PostgresContainer {
 
 	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
 	pc.RunMigration(t, `
-		CREATE TABLE clients (
-			tenant_id    varchar(255) PRIMARY KEY,
-			license_tier varchar(50),
-			enabled      boolean NOT NULL DEFAULT true
-		);
 		CREATE TABLE static_policies (
 			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 			policy_id   varchar(255) UNIQUE,
@@ -158,21 +146,12 @@ func newOverrideTestDB(t *testing.T) *testutil.PostgresContainer {
 			WITH CHECK (org_id = current_setting('app.current_org_id', true));
 	`)
 
-	pc.RunMigration(t, `
-		INSERT INTO clients (tenant_id, license_tier, enabled) VALUES
-			('`+overrideTestTenant+`',  'Enterprise', true),
-			('`+overrideTestTenantB+`', 'Enterprise', true),
-			('`+overrideTestOrg+`',     'Enterprise', true),
-			('`+overrideTestOrgB+`',    'Enterprise', true),
-			('community-tenant',        'Community',  true);
-	`)
-
 	return pc
 }
 
-// seedSystemPolicy inserts a tier='system' static policy (the only tier
-// Create() will override) and returns its UUID, which is what
-// policy_overrides.policy_id stores.
+// seedSystemPolicy inserts a tier='system' static policy (the tier a per-policy
+// override named) and returns its UUID, which is what policy_overrides.policy_id
+// stores.
 func seedSystemPolicy(t *testing.T, db *sql.DB, policyID string) string {
 	t.Helper()
 	var id string
@@ -188,29 +167,28 @@ func seedSystemPolicy(t *testing.T, db *sql.DB, policyID string) string {
 	return id
 }
 
-// seedTenantPolicy inserts a tier='tenant' policy, which Create() must refuse.
-func seedTenantPolicy(t *testing.T, db *sql.DB, policyID string) string {
+// seedTenantOverride inserts a TENANT-scoped override row, the shape the
+// retired per-policy override route wrote, and returns its id.
+func seedTenantOverride(t *testing.T, db *sql.DB, policyUUID, tenant, org string, expiresAt *time.Time) string {
 	t.Helper()
 	var id string
 	err := db.QueryRow(`
-		INSERT INTO static_policies
-			(policy_id, name, category, pattern, severity, action, tier, priority, enabled, tenant_id, org_id, version)
-		VALUES ($1, $1, 'pii-global', 'ssn', 'high', 'block', 'tenant', 50, true, $2, $3, 1)
+		INSERT INTO policy_overrides
+			(policy_id, policy_type, tenant_id, org_id,
+			 action_override, override_reason, expires_at, created_by, updated_by)
+		VALUES ($1, 'static', $2, $3, 'warn', 'approved by compliance, ticket AX-1', $4::timestamptz, 'seed', 'seed')
 		RETURNING id::text
-	`, policyID, overrideTestTenant, overrideTestOrg).Scan(&id)
+	`, policyUUID, tenant, org, expiresAt).Scan(&id)
 	if err != nil {
-		t.Fatalf("seed tenant policy %q: %v", policyID, err)
+		t.Fatalf("seed tenant override for %q: %v", tenant, err)
 	}
 	return id
 }
 
-// seedOrgScopedOverride inserts an ORG-scoped override row directly.
-//
-// Raw SQL rather than Create() on purpose: it writes BOTH organization_id and
-// org_id to the same value, so the row satisfies the org-scoped predicate
-// whether the repository filters on the legacy column or on org_id. See the
-// file header. Create() cannot do this without touching the struct field that
-// the #3334 retirement removes.
+// seedOrgScopedOverride inserts an ORG-scoped override row directly. It writes
+// BOTH organization_id and org_id to the same value, so the row satisfies the
+// org-scoped predicate whether the repository filters on the legacy column or
+// on org_id. See the file header.
 func seedOrgScopedOverride(t *testing.T, db *sql.DB, policyUUID, org string, expiresAt *time.Time) string {
 	t.Helper()
 	var id string
@@ -230,171 +208,10 @@ func seedOrgScopedOverride(t *testing.T, db *sql.DB, policyUUID, org string, exp
 // strptr is a local helper; the package has no shared one for *string literals.
 func strptr(s string) *string { return &s }
 
-// orgCtx returns a context carrying an authenticated caller org.
-//
-// This is not boilerplate. GetByID refuses outright when the context carries
-// no caller org - see policy_override_repository.go:336-353 (#3065 F7): an
-// unknown caller org "is now a denial before any SQL runs", because on a
-// legacy owner-pool deployment a bare by-id read bypasses RLS and would
-// resolve ANY org's row, and Delete() then wraps its DELETE in
-// WithOrgScope(existing.OrgID) - the victim's org. Tests that used a bare
-// context.Background() got ErrOverrideNotFound from a row that was demonstrably
-// present, which is the guard working, not a fixture bug.
+// orgCtx returns a context carrying an authenticated caller org, as an
+// authenticated request's does.
 func orgCtx(org string) context.Context {
 	return context.WithValue(context.Background(), ContextKeyOrgID, org)
-}
-
-// newTenantOverride builds a tenant-scoped override. It deliberately sets only
-// TenantID and OrgID - never OrganizationID, which #3334 removes.
-func newTenantOverride(policyUUID, tenant, org string) *PolicyOverride {
-	action := OverrideAction("warn")
-	return &PolicyOverride{
-		PolicyID:       policyUUID,
-		TenantID:       strptr(tenant),
-		OrgID:          org,
-		ActionOverride: &action,
-		OverrideReason: "approved by compliance, ticket AX-1",
-	}
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Create
-// ────────────────────────────────────────────────────────────────────────────
-
-// TestCreateOverride_RealPG covers the create path against a real database.
-// The duplicate case is the one sqlmock cannot express honestly: it depends on
-// overrideExistsTx running the real SELECT inside the same WithOrgScope txn as
-// the INSERT.
-func TestCreateOverride_RealPG(t *testing.T) {
-	pc := newOverrideTestDB(t)
-	db := pc.DB
-	ctx := orgCtx(overrideTestOrg)
-	repo := NewPolicyOverrideRepository(db)
-
-	t.Run("tenant-scoped create persists a real row", func(t *testing.T) {
-		pid := seedSystemPolicy(t, db, "sys_create_ok")
-		ov := newTenantOverride(pid, overrideTestTenant, overrideTestOrg)
-
-		if err := repo.Create(ctx, ov, "alice"); err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		if ov.ID == "" {
-			t.Fatal("Create did not populate the override ID")
-		}
-
-		// Read it back through the repository, not through a hand-written
-		// SELECT: a canned-row double would pass either way, a real row is
-		// what makes this meaningful.
-		got, err := repo.GetByID(ctx, ov.ID)
-		if err != nil {
-			t.Fatalf("GetByID after Create: %v", err)
-		}
-		if got.OverrideReason != ov.OverrideReason {
-			t.Errorf("override_reason: got %q want %q", got.OverrideReason, ov.OverrideReason)
-		}
-		if got.OrgID != overrideTestOrg {
-			t.Errorf("org_id: got %q want %q", got.OrgID, overrideTestOrg)
-		}
-		if got.TenantID == nil || *got.TenantID != overrideTestTenant {
-			t.Errorf("tenant_id: got %v want %q", got.TenantID, overrideTestTenant)
-		}
-	})
-
-	t.Run("empty OrgID is rejected before any write", func(t *testing.T) {
-		// This is the scope invariant that SURVIVES #3334. The database-level
-		// valid_override_scope CHECK is dropped along with the column it
-		// referenced (migrations/core/166 asserts its absence), so this
-		// application-level guard becomes the only thing preventing an
-		// unscoped override row. Worth its own assertion for that reason.
-		pid := seedSystemPolicy(t, db, "sys_create_no_org")
-		ov := newTenantOverride(pid, overrideTestTenant, "")
-
-		err := repo.Create(ctx, ov, "alice")
-		if err == nil {
-			t.Fatal("Create with empty OrgID succeeded; want an error")
-		}
-
-		var n int
-		if qErr := db.QueryRow(`SELECT count(*) FROM policy_overrides WHERE policy_id = $1`, pid).Scan(&n); qErr != nil {
-			t.Fatalf("count after rejected Create: %v", qErr)
-		}
-		if n != 0 {
-			t.Errorf("a rejected Create left %d row(s) behind; want 0", n)
-		}
-	})
-
-	t.Run("duplicate for the same scope tuple is rejected", func(t *testing.T) {
-		pid := seedSystemPolicy(t, db, "sys_create_dup")
-
-		if err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-			t.Fatalf("first Create: %v", err)
-		}
-		err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice")
-		if err == nil {
-			t.Fatal("duplicate Create succeeded; want ErrOverrideAlreadyExists")
-		}
-
-		// The count is the real assertion. #2384's R3 round 2 recorded that a
-		// duplicate check run OUTSIDE the WithOrgScope txn returns false even
-		// when a duplicate exists, persisting two rows. A canned-row double
-		// cannot tell those apart; a COUNT can.
-		var n int
-		if qErr := db.QueryRow(`SELECT count(*) FROM policy_overrides WHERE policy_id = $1`, pid).Scan(&n); qErr != nil {
-			t.Fatalf("count after duplicate Create: %v", qErr)
-		}
-		if n != 1 {
-			t.Errorf("duplicate Create left %d rows; want exactly 1", n)
-		}
-	})
-
-	t.Run("a non-system policy cannot be overridden", func(t *testing.T) {
-		pid := seedTenantPolicy(t, db, "tenant_tier_policy")
-		err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice")
-		if err != ErrOnlySystemPoliciesOverridable {
-			t.Errorf("got %v, want ErrOnlySystemPoliciesOverridable", err)
-		}
-	})
-
-	t.Run("a reason is mandatory", func(t *testing.T) {
-		pid := seedSystemPolicy(t, db, "sys_create_no_reason")
-		ov := newTenantOverride(pid, overrideTestTenant, overrideTestOrg)
-		ov.OverrideReason = ""
-		if err := repo.Create(ctx, ov, "alice"); err != ErrOverrideReasonRequired {
-			t.Errorf("got %v, want ErrOverrideReasonRequired", err)
-		}
-	})
-
-	t.Run("GetByID refuses when the context carries no caller org", func(t *testing.T) {
-		// The #3065 F7 denial, which the sqlmock suite cannot reach: it is a
-		// return before any SQL runs, so a canned-row double never exercises
-		// it. Proven against a row that demonstrably EXISTS - otherwise this
-		// assertion would be satisfied by the row simply being absent.
-		pid := seedSystemPolicy(t, db, "sys_no_caller_org")
-		ov := newTenantOverride(pid, overrideTestTenant, overrideTestOrg)
-		if err := repo.Create(ctx, ov, "alice"); err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		if _, err := repo.GetByID(orgCtx(overrideTestOrg), ov.ID); err != nil {
-			t.Fatalf("precondition: the row must be readable WITH a caller org: %v", err)
-		}
-
-		if _, err := repo.GetByID(context.Background(), ov.ID); err != ErrOverrideNotFound {
-			t.Errorf("GetByID with no caller org returned %v; want ErrOverrideNotFound", err)
-		}
-		// And a caller from a different org must not see it either.
-		if _, err := repo.GetByID(orgCtx(overrideTestOrgB), ov.ID); err != ErrOverrideNotFound {
-			t.Errorf("GetByID from a foreign org returned %v; want ErrOverrideNotFound", err)
-		}
-	})
-
-	t.Run("a Community tenant cannot create an override", func(t *testing.T) {
-		// Resolved from the real clients row, not a canned licence answer.
-		pid := seedSystemPolicy(t, db, "sys_create_community")
-		ov := newTenantOverride(pid, "community-tenant", overrideTestOrg)
-		if err := repo.Create(ctx, ov, "alice"); err != ErrOverrideRequiresEnterprise {
-			t.Errorf("got %v, want ErrOverrideRequiresEnterprise", err)
-		}
-	})
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -411,9 +228,7 @@ func TestGetOverrideForPolicy_RealPG(t *testing.T) {
 	repo := NewPolicyOverrideRepository(db)
 
 	pid := seedSystemPolicy(t, db, "sys_get_scope")
-	if err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-		t.Fatalf("seed override: %v", err)
-	}
+	seedTenantOverride(t, db, pid, overrideTestTenant, overrideTestOrg, nil)
 
 	t.Run("found for its own tenant", func(t *testing.T) {
 		got, err := repo.GetOverrideForPolicy(ctx, pid, strptr(overrideTestTenant), nil)
@@ -479,12 +294,8 @@ func TestListOverridesForTenant_RealPG(t *testing.T) {
 
 	pidA := seedSystemPolicy(t, db, "sys_list_a")
 	pidB := seedSystemPolicy(t, db, "sys_list_b")
-	if err := repo.Create(ctx, newTenantOverride(pidA, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-		t.Fatalf("seed A: %v", err)
-	}
-	if err := repo.Create(ctx, newTenantOverride(pidB, overrideTestTenantB, overrideTestOrgB), "bob"); err != nil {
-		t.Fatalf("seed B: %v", err)
-	}
+	seedTenantOverride(t, db, pidA, overrideTestTenant, overrideTestOrg, nil)
+	seedTenantOverride(t, db, pidB, overrideTestTenantB, overrideTestOrgB, nil)
 
 	t.Run("one tenant's overrides do not bleed into another's", func(t *testing.T) {
 		got, err := repo.ListOverridesForTenant(ctx, overrideTestTenant, nil, true)
@@ -500,20 +311,15 @@ func TestListOverridesForTenant_RealPG(t *testing.T) {
 	})
 
 	t.Run("expiry is evaluated by the database, not a canned row", func(t *testing.T) {
-		pidExp := seedSystemPolicy(t, db, "sys_list_expired")
-		ov := newTenantOverride(pidExp, overrideTestTenant, overrideTestOrg)
 		past := time.Now().UTC().Add(-1 * time.Hour)
-		ov.ExpiresAt = &past
-		if err := repo.Create(ctx, ov, "alice"); err != nil {
-			t.Fatalf("seed expired: %v", err)
-		}
+		expired := seedTenantOverride(t, db, seedSystemPolicy(t, db, "sys_list_expired"), overrideTestTenant, overrideTestOrg, &past)
 
 		active, err := repo.ListOverridesForTenant(ctx, overrideTestTenant, nil, false)
 		if err != nil {
 			t.Fatalf("list active: %v", err)
 		}
 		for _, o := range active {
-			if o.ID == ov.ID {
+			if o.ID == expired {
 				t.Error("an expired override was returned with includeExpired=false")
 			}
 		}
@@ -524,7 +330,7 @@ func TestListOverridesForTenant_RealPG(t *testing.T) {
 		}
 		var seen bool
 		for _, o := range all {
-			if o.ID == ov.ID {
+			if o.ID == expired {
 				seen = true
 			}
 		}
@@ -532,149 +338,6 @@ func TestListOverridesForTenant_RealPG(t *testing.T) {
 			t.Error("the expired override was missing with includeExpired=true")
 		}
 	})
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Delete paths
-// ────────────────────────────────────────────────────────────────────────────
-
-func TestDeleteOverrideAndGetByID_RealPG(t *testing.T) {
-	pc := newOverrideTestDB(t)
-	db := pc.DB
-	ctx := orgCtx(overrideTestOrg)
-	repo := NewPolicyOverrideRepository(db)
-
-	pid := seedSystemPolicy(t, db, "sys_delete_roundtrip")
-	ov := newTenantOverride(pid, overrideTestTenant, overrideTestOrg)
-	if err := repo.Create(ctx, ov, "alice"); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	if _, err := repo.GetByID(ctx, ov.ID); err != nil {
-		t.Fatalf("GetByID before Delete: %v", err)
-	}
-	if err := repo.Delete(ctx, ov.ID, "alice"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	// The row is really gone, not merely reported as gone.
-	if _, err := repo.GetByID(ctx, ov.ID); err != ErrOverrideNotFound {
-		t.Errorf("GetByID after Delete returned %v; want ErrOverrideNotFound", err)
-	}
-}
-
-// TestDeleteByPolicyID_RealPG proves the delete predicate is scoped: deleting
-// in one tenant leaves the other tenant's row intact. Under sqlmock this is a
-// canned RowsAffected value and a repository that deleted everything would
-// still pass.
-func TestDeleteByPolicyID_RealPG(t *testing.T) {
-	pc := newOverrideTestDB(t)
-	db := pc.DB
-	ctx := orgCtx(overrideTestOrg)
-	repo := NewPolicyOverrideRepository(db)
-
-	pid := seedSystemPolicy(t, db, "sys_delete_scoped")
-	if err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-		t.Fatalf("seed A: %v", err)
-	}
-	if err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenantB, overrideTestOrgB), "bob"); err != nil {
-		t.Fatalf("seed B: %v", err)
-	}
-
-	if err := repo.DeleteByPolicyID(ctx, overrideTestOrg, pid, strptr(overrideTestTenant), nil, "alice"); err != nil {
-		t.Fatalf("DeleteByPolicyID: %v", err)
-	}
-
-	var remaining int
-	if err := db.QueryRow(
-		`SELECT count(*) FROM policy_overrides WHERE policy_id = $1 AND tenant_id = $2`,
-		pid, overrideTestTenantB,
-	).Scan(&remaining); err != nil {
-		t.Fatalf("count survivor: %v", err)
-	}
-	if remaining != 1 {
-		t.Errorf("the other tenant's override was collateral damage: %d rows remain, want 1", remaining)
-	}
-
-	var deleted int
-	if err := db.QueryRow(
-		`SELECT count(*) FROM policy_overrides WHERE policy_id = $1 AND tenant_id = $2`,
-		pid, overrideTestTenant,
-	).Scan(&deleted); err != nil {
-		t.Fatalf("count deleted: %v", err)
-	}
-	if deleted != 0 {
-		t.Errorf("the targeted override survived: %d rows remain, want 0", deleted)
-	}
-
-	t.Run("nothing to delete reports ErrOverrideNotFound", func(t *testing.T) {
-		err := repo.DeleteByPolicyID(ctx, overrideTestOrg, pid, strptr("no-such-tenant"), nil, "alice")
-		if err != ErrOverrideNotFound {
-			t.Errorf("got %v, want ErrOverrideNotFound", err)
-		}
-	})
-
-	t.Run("an empty rlsOrgID is refused", func(t *testing.T) {
-		if err := repo.DeleteByPolicyID(ctx, "", pid, strptr(overrideTestTenantB), nil, "alice"); err == nil {
-			t.Error("DeleteByPolicyID accepted an empty rlsOrgID; want an error")
-		}
-	})
-}
-
-// TestCleanupExpiredOverrides_RealPG exercises the real NOW() boundary.
-func TestCleanupExpiredOverrides_RealPG(t *testing.T) {
-	pc := newOverrideTestDB(t)
-	db := pc.DB
-	ctx := orgCtx(overrideTestOrg)
-	repo := NewPolicyOverrideRepository(db)
-
-	pidExpired := seedSystemPolicy(t, db, "sys_cleanup_expired")
-	pidFuture := seedSystemPolicy(t, db, "sys_cleanup_future")
-	pidNever := seedSystemPolicy(t, db, "sys_cleanup_never")
-
-	past := time.Now().UTC().Add(-2 * time.Hour)
-	future := time.Now().UTC().Add(2 * time.Hour)
-
-	expired := newTenantOverride(pidExpired, overrideTestTenant, overrideTestOrg)
-	expired.ExpiresAt = &past
-	if err := repo.Create(ctx, expired, "alice"); err != nil {
-		t.Fatalf("seed expired: %v", err)
-	}
-	notYet := newTenantOverride(pidFuture, overrideTestTenant, overrideTestOrg)
-	notYet.ExpiresAt = &future
-	if err := repo.Create(ctx, notYet, "alice"); err != nil {
-		t.Fatalf("seed future: %v", err)
-	}
-	if err := repo.Create(ctx, newTenantOverride(pidNever, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-		t.Fatalf("seed never-expiring: %v", err)
-	}
-
-	n, err := repo.CleanupExpiredOverrides(ctx)
-	if err != nil {
-		t.Fatalf("CleanupExpiredOverrides: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("CleanupExpiredOverrides removed %d rows, want 1", n)
-	}
-
-	// Assert on the surviving set, not only the returned count: a count is
-	// consistent with having deleted the wrong row.
-	for _, tc := range []struct {
-		name string
-		pid  string
-		want int
-	}{
-		{"expired row is gone", pidExpired, 0},
-		{"not-yet-expired row is kept", pidFuture, 1},
-		{"never-expiring row is kept", pidNever, 1},
-	} {
-		var got int
-		if qErr := db.QueryRow(`SELECT count(*) FROM policy_overrides WHERE policy_id = $1`, tc.pid).Scan(&got); qErr != nil {
-			t.Fatalf("%s: count: %v", tc.name, qErr)
-		}
-		if got != tc.want {
-			t.Errorf("%s: %d rows, want %d", tc.name, got, tc.want)
-		}
-	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -700,7 +363,7 @@ func appRoleDB(t *testing.T, pc *testutil.PostgresContainer) *sql.DB {
 		DROP ROLE IF EXISTS axonflow_app_role_test;
 		CREATE ROLE axonflow_app_role_test LOGIN PASSWORD '`+overrideAppRolePassword+`';
 		GRANT SELECT, INSERT, UPDATE, DELETE ON policy_overrides TO axonflow_app_role_test;
-		GRANT SELECT ON static_policies, clients TO axonflow_app_role_test;
+		GRANT SELECT ON static_policies TO axonflow_app_role_test;
 	`)
 
 	u, err := url.Parse(pc.URL)
@@ -733,26 +396,21 @@ func appRoleDB(t *testing.T, pc *testutil.PostgresContainer) *sql.DB {
 	return db
 }
 
-// TestPolicyOverridesRLS_RealPG covers behaviour documented at
-// policy_override_repository.go:116-155 that nothing currently tests.
+// TestPolicyOverridesRLS_RealPG covers the table's org isolation under the
+// application role.
 func TestPolicyOverridesRLS_RealPG(t *testing.T) {
 	pc := newOverrideTestDB(t)
 	ctx := orgCtx(overrideTestOrg)
 	owner := pc.DB
-	repo := NewPolicyOverrideRepository(owner)
 
 	pid := seedSystemPolicy(t, owner, "sys_rls")
-	if err := repo.Create(ctx, newTenantOverride(pid, overrideTestTenant, overrideTestOrg), "alice"); err != nil {
-		t.Fatalf("seed override: %v", err)
-	}
+	seedTenantOverride(t, owner, pid, overrideTestTenant, overrideTestOrg, nil)
 
 	appDB := appRoleDB(t, pc)
 
 	t.Run("an unpinned read is masked to zero rows, not leaked", func(t *testing.T) {
-		// The exact behaviour the repository comment relies on: "under
-		// app_role without app.current_org_id pinned, the USING predicate
-		// masks rows". This is why Create must run its existence check inside
-		// the same txn as its INSERT.
+		// Under app_role without app.current_org_id pinned, the USING
+		// predicate masks rows.
 		var n int
 		if err := appDB.QueryRowContext(ctx,
 			`SELECT count(*) FROM policy_overrides WHERE policy_id = $1`, pid).Scan(&n); err != nil {

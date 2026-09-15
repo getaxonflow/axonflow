@@ -59,11 +59,11 @@ STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 if [ "$STATUS" = "403" ]; then
     assert_status "PII in message blocked (403)" "$STATUS" "403"
-    echo "  (PII_ACTION=block: SSN detected and blocked at input)"
+    echo "  (blocked: an organization override or policy edit set block)"
 else
     assert_status "PII in message returns 200" "$STATUS" "200"
     assert_contains "Policies evaluated" "$BODY" "policies_evaluated"
-    echo "  (PII_ACTION=warn/redact: SSN detected but not blocked at input)"
+    echo "  (allowed: stored request action for SSN is warn)"
 fi
 
 # Test 3: Clean output from MCP tool

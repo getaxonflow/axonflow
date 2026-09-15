@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // LLM Provider Routing Example
 //
 // This example demonstrates and VALIDATES how AxonFlow routes requests to LLM providers.

@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package plugincompat is the single source of truth for the plugin version
 // floors and recommendations both planes advertise on /health.
@@ -62,12 +54,29 @@ package plugincompat
 // 0.2.0 rather than 1.4.0/2.4.0 because the desktop proxy's version line started
 // at 0.x, and 0.2.0 is the first release whose response redaction goes through
 // the authoritative engine.
+// n8n and google-adk joined both maps on the 11.0.0 train, and their floor is
+// 1.2.0 for a reason worth stating: 1.2.0 is the first release of each that puts
+// its own id on the wire (`n8n-plugin/<version>` set once on the n8n credential;
+// `google-adk-plugin/<version>` from the ADK MCP helper). A floor below that
+// would name versions the platform cannot tell apart from any other caller,
+// because they identified themselves as nothing.
+//
+// What these two entries do NOT do, said plainly so nobody reads more into them:
+// neither client reads `/health` back. The claude-code, cursor, codex and
+// openclaw plugins compare their own version against these maps and warn; n8n,
+// google-adk, litellm and the desktop proxy do not, so for them the entry is an
+// advertisement to operators and to the published API documents, not a hint the
+// client will act on. That is the same position claude-desktop has held since it
+// was added. litellm gets no entry at all: it sends no id of its own, and every
+// call it makes reaches the platform as the Python SDK.
 var minVersion = map[string]string{
 	"openclaw":       "2.4.0",
 	"claude-code":    "1.4.0",
 	"cursor":         "1.4.0",
 	"codex":          "1.4.0",
 	"claude-desktop": "0.2.0",
+	"n8n":            "1.2.0",
+	"google-adk":     "1.2.0",
 }
 
 // recommendedVersion is the newest release of each client that is live on its
@@ -127,11 +136,13 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.9.0",
-	"claude-code":    "1.12.0",
-	"cursor":         "1.8.0",
-	"codex":          "1.8.0",
+	"openclaw":       "2.9.1",
+	"claude-code":    "1.13.0",
+	"cursor":         "1.9.0",
+	"codex":          "1.9.0",
 	"claude-desktop": "0.4.0",
+	"n8n":            "1.2.1",
+	"google-adk":     "1.3.0",
 }
 
 // MinVersions returns the floor map.

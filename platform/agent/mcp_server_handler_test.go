@@ -1,4 +1,5 @@
 // Copyright 2025-2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
 package agent
 
 import (
@@ -203,11 +204,11 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 		// V1.1 decision-list (#1982):
 		"list_recent_decisions": false,
 		// V1 Plugin Pro umbrella #1958 PR2:
-		"axonflow_get_tenant_id":       false,
-		"axonflow_request_approval":    false,
+		"axonflow_get_tenant_id":        false,
+		"axonflow_request_approval":     false,
 		"axonflow_create_tenant_policy": false,
-		"axonflow_get_cost_estimate":   false,
-		"axonflow_list_pro_features":   false,
+		"axonflow_get_cost_estimate":    false,
+		"axonflow_list_pro_features":    false,
 	}
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]interface{})
@@ -1306,7 +1307,10 @@ func TestMCPServer_ProxyToAgent_NilBody(t *testing.T) {
 }
 
 func TestMCPServer_ProxyToLocal_InvalidURL(t *testing.T) {
-	session := &mcpSession{tenantID: "default", clientID: "test"}
+	// orgID and a generator, or the #4265 guards return before the transport
+	// this test is named for is ever reached.
+	session := &mcpSession{tenantID: "default", orgID: "default-org", clientID: "test"}
+	defer lpWithTokenGenerator(t)()
 	_, err := mcpProxyToLocal(session, "GET", "http://localhost:99999/nonexistent")
 	if err == nil {
 		t.Error("Expected error for invalid URL/port")
@@ -1427,49 +1431,6 @@ func TestMCPListRecentDecisions_HappyPath(t *testing.T) {
 	}
 }
 
-func TestMCPServer_DangerousCommandConfig(t *testing.T) {
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("DANGEROUS_COMMAND_ACTION", "warn")
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("DANGEROUS_COMMAND_ACTION")
-
-	cfg := DetectionConfigFromEnv()
-	if cfg.DangerousCommandAction != DetectionActionWarn {
-		t.Errorf("Expected DangerousCommandAction=warn, got %s", cfg.DangerousCommandAction)
-	}
-	if cfg.DangerousQueryAction != DetectionActionBlock {
-		t.Errorf("Expected DangerousQueryAction=block (default), got %s", cfg.DangerousQueryAction)
-	}
-}
-
-func TestMCPServer_DangerousCommandConfig_MCP_Override(t *testing.T) {
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("DANGEROUS_COMMAND_ACTION", "block")
-	os.Setenv("MCP_DANGEROUS_COMMAND_ACTION", "log")
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("DANGEROUS_COMMAND_ACTION")
-	defer os.Unsetenv("MCP_DANGEROUS_COMMAND_ACTION")
-
-	cfg := MCPDetectionConfigFromEnv()
-	if cfg.DangerousCommandAction != DetectionActionLog {
-		t.Errorf("Expected MCP DangerousCommandAction=log (override), got %s", cfg.DangerousCommandAction)
-	}
-}
-
-func TestMCPServer_DangerousCommandConfig_Gateway_Override(t *testing.T) {
-	os.Setenv("DEPLOYMENT_MODE", "community")
-	os.Setenv("DANGEROUS_COMMAND_ACTION", "block")
-	os.Setenv("GATEWAY_DANGEROUS_COMMAND_ACTION", "warn")
-	defer os.Unsetenv("DEPLOYMENT_MODE")
-	defer os.Unsetenv("DANGEROUS_COMMAND_ACTION")
-	defer os.Unsetenv("GATEWAY_DANGEROUS_COMMAND_ACTION")
-
-	cfg := GatewayDetectionConfigFromEnv()
-	if cfg.DangerousCommandAction != DetectionActionWarn {
-		t.Errorf("Expected Gateway DangerousCommandAction=warn (override), got %s", cfg.DangerousCommandAction)
-	}
-}
-
 func TestMCPServer_DangerousCommandConfig_BuildOverrides(t *testing.T) {
 	cfg := ModeDetectionConfig{
 		Enabled:                true,
@@ -1515,7 +1476,9 @@ func TestMCPServer_ProxyToAgent_MarshalError(t *testing.T) {
 }
 
 func TestMCPServer_ProxyToLocal_NilSession(t *testing.T) {
-	session := &mcpSession{tenantID: "default", clientID: "community"}
+	// As above: the guards must not stand in for the URL parse under test.
+	session := &mcpSession{tenantID: "default", orgID: "default-org", clientID: "community"}
+	defer lpWithTokenGenerator(t)()
 	_, err := mcpProxyToLocal(session, "GET", "://invalid-url")
 	if err == nil {
 		t.Error("Expected error for invalid URL")
@@ -1910,9 +1873,9 @@ func TestMCPServer_WriteJSONRPCError_MethodNotFound_200(t *testing.T) {
 	}
 }
 
-func TestMCPServer_CheckPolicy_EvalUnavailable(t *testing.T) {
-	// This tests the EvalUnavailable path by calling with a connector
-	// that the dynamic evaluator might reject
+func TestMCPServer_CheckPolicy_WithParameters(t *testing.T) {
+	// check_policy through the JSON-RPC router, carrying parameters, is decided
+	// without a protocol error.
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 

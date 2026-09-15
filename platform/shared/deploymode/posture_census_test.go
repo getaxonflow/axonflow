@@ -23,8 +23,8 @@ import (
 // This lives in a _test.go file, so go/parser and a tree walk never reach a
 // shipped binary. It is split into a SCAN half (scanPosturereadings, which
 // reads the real tree) and a pure DECISION half (classifyreadings, below the
-// guard), for the reason platform/shared/identity/compat_env_reader_test.go
-// gives: a census that reads source FROM DISK cannot be killed by a
+// guard), for the reason every disk-reading census in this tree shares: a
+// census that reads source FROM DISK cannot be killed by a
 // `go test -overlay` mutant, because the overlay changes what the COMPILER
 // sees and never what os.ReadFile returns. A guard with no demonstrated
 // failing input is indistinguishable from one whose extraction silently
@@ -438,7 +438,7 @@ type analyser struct {
 	imports map[string][]string
 	// inDeploymode is true for this package's own files, where an unqualified
 	// Current() is the env read. Elsewhere Current() belongs to somebody else -
-	// planeshadow and identity both have one - and treating it as a seed put
+	// identity has one - and treating it as a seed put
 	// four unrelated packages in the first report.
 	inDeploymode bool
 	collect      bool

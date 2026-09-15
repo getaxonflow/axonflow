@@ -7,6 +7,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"axonflow/platform/decision/contract"
 )
 
 func strp(s string) *string { return &s }
@@ -14,11 +17,22 @@ func strp(s string) *string { return &s }
 func adaptedTypes(res AdaptResult) []string {
 	out := make([]string, 0, len(res.Obligations))
 	for _, o := range res.Obligations {
-		out = append(out, string(o.Type))
+		out = append(out, string(o.Type)+"/"+string(o.Phase))
 	}
 	sort.Strings(out)
 	return out
 }
+
+func mustGroup(t *testing.T, raw string) contract.ID {
+	t.Helper()
+	id, err := contract.ParseID(contract.KindGroup, raw)
+	if err != nil {
+		t.Fatalf("group id %q: %v", raw, err)
+	}
+	return id
+}
+
+var durableSink = []NotifyTarget{{Channel: "siem", Address: "s1", Delivery: contract.DeliveryDurable}}
 
 // TestAdapterDistinguishesNullFromEmptyActionColumn is the core of the
 // three-column mapping.
@@ -40,8 +54,8 @@ func TestAdapterDistinguishesNullFromEmptyActionColumn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("adapt: %v", err)
 		}
-		if got := adaptedTypes(res); len(got) != 1 || got[0] != string(TypeFieldRedaction) {
-			t.Fatalf("types = %v, want one field_redaction", got)
+		if got := adaptedTypes(res); len(got) != 1 || got[0] != "field_redact/request" {
+			t.Fatalf("types = %v, want one request-phase field_redact", got)
 		}
 	})
 
@@ -63,23 +77,30 @@ func TestAdapterDistinguishesNullFromEmptyActionColumn(t *testing.T) {
 	})
 }
 
-// TestRedactInTheResponsePhaseIsADifferentType: the legacy column says the
-// same word, but a response-phase redaction has a different owner and a
-// different completion evidence. Mapping both to field_redaction would send
-// the response filter's receipt to the request redactor's evidence slot.
-func TestRedactInTheResponsePhaseIsADifferentType(t *testing.T) {
+// TestRedactInTheResponsePhaseIsTheSameTypeInAnotherPhase: the legacy column
+// says the same word in both phases and the canonical vocabulary has ONE type
+// for it. The phase is the instance's, the target names which payload the
+// field belongs to, and the executor registry declares field_redact in both
+// phases - exactly as the PDP's legacy compiler emits it. Two instances, one
+// per phase, not two types.
+func TestRedactInTheResponsePhaseIsTheSameTypeInAnotherPhase(t *testing.T) {
 	res, err := AdaptRow(LegacyPolicyRow{
 		PolicyID: "p1", Action: "log", ActionResponse: strp("redact"),
 		Applicability: Applicable, RedactPaths: []string{"user.ssn"},
-		NotifyTargets: []AuditNotifyTarget{{Channel: "audit", Address: "main", Delivery: DeliveryAtLeastOnceDurable}},
+		NotifyTargets: []NotifyTarget{{Channel: "audit", Address: "main", Delivery: contract.DeliveryDurable}},
 	})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
 	}
 	got := adaptedTypes(res)
-	want := []string{string(TypeImmutableAudit), string(TypeResponseFiltering)}
-	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	want := []string{"field_redact/response", "immutable_audit/out_of_band"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("types = %v, want %v", got, want)
+	}
+	for _, o := range res.Obligations {
+		if _, err := contract.FamilyOf(o.Type); err != nil {
+			t.Errorf("%s is not in the canonical vocabulary: %v", o.Type, err)
+		}
 	}
 }
 
@@ -87,10 +108,7 @@ func TestRedactInTheResponsePhaseIsADifferentType(t *testing.T) {
 // Emitting two would double every audit record and double-charge every
 // reservation.
 func TestBothColumnsNullEmitsOneObligationNotTwo(t *testing.T) {
-	res, err := AdaptRow(LegacyPolicyRow{
-		PolicyID: "p1", Action: "alert", Applicability: Applicable,
-		NotifyTargets: []AuditNotifyTarget{{Channel: "siem", Address: "s1", Delivery: DeliveryAtLeastOnceDurable}},
-	})
+	res, err := AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: "alert", Applicability: Applicable, NotifyTargets: durableSink})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
 	}
@@ -159,8 +177,9 @@ func TestUnknownLegacyActionIsUnmappedNotDropped(t *testing.T) {
 func TestAdapterCarriesTheApplicabilityTriStateThrough(t *testing.T) {
 	res, err := AdaptRow(LegacyPolicyRow{
 		PolicyID: "p1", Action: "redact",
-		Applicability: Unknown, ApplicabilityReason: "unevaluable_condition: attribute user.clearance unresolved",
-		RedactPaths: []string{"user.ssn"},
+		Applicability: Unknown, ApplicabilityReason: contract.ReasonResolutionFailed,
+		ApplicabilityDetail: "attribute user.clearance unresolved",
+		RedactPaths:         []string{"user.ssn"},
 	})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
@@ -172,14 +191,14 @@ func TestAdapterCarriesTheApplicabilityTriStateThrough(t *testing.T) {
 	if o.Applicability != Unknown {
 		t.Fatalf("applicability = %q, want %q; the adapter must not resolve the tri-state", o.Applicability, Unknown)
 	}
-	if !strings.Contains(o.ApplicabilityReason, "user.clearance") {
-		t.Errorf("the named reason was lost: %q", o.ApplicabilityReason)
+	if o.ApplicabilityReason != contract.ReasonResolutionFailed || !strings.Contains(o.ApplicabilityDetail, "user.clearance") {
+		t.Errorf("the named reason was lost: %q / %q", o.ApplicabilityReason, o.ApplicabilityDetail)
 	}
 	if o.Params != nil {
 		t.Errorf("an unknown-applicability obligation must carry no params; got %v", o.Params)
 	}
-	if o.Enforcement != Mandatory {
-		t.Errorf("enforcement = %q; a legacy redact is mandatory", o.Enforcement)
+	if !o.Mandatory {
+		t.Errorf("a legacy redact is mandatory")
 	}
 }
 
@@ -190,7 +209,11 @@ func TestAdapterRefusesARowWithNoApplicability(t *testing.T) {
 	}
 	_, err = AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: "redact", Applicability: Unknown, RedactPaths: []string{"a"}})
 	if err == nil {
-		t.Fatal("unknown applicability with no named reason must be refused")
+		t.Fatal("unknown applicability with no declared reason must be refused")
+	}
+	_, err = AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: "redact", Applicability: Unknown, ApplicabilityReason: "because", RedactPaths: []string{"a"}})
+	if err == nil {
+		t.Fatal("unknown applicability with an UNDECLARED reason must be refused; the reason vocabulary is the attribute plane's")
 	}
 }
 
@@ -213,40 +236,45 @@ func TestAdapterRefusesARedactionWithNoTarget(t *testing.T) {
 	}
 }
 
-// TestLegacyRedactMapsToConstantRedactNotRemove. The shipped redactor replaces
-// with a marker; mapping to `remove` would claim a STRONGER guarantee than the
-// engine provides, and the disclosure algebra would then let that false claim
-// beat a real one.
-func TestLegacyRedactMapsToConstantRedactNotRemove(t *testing.T) {
-	res, err := AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: "redact", Applicability: Applicable, RedactPaths: []string{"user.ssn"}})
+// TestLegacyRedactMapsToFieldRedactNotFieldRemove. The shipped redactor
+// replaces with a marker; mapping to `field_remove` would claim a STRONGER
+// guarantee than the engine provides, and the disclosure order would then let
+// that false claim beat a real one. One obligation per path, each targeted.
+func TestLegacyRedactMapsToFieldRedactNotFieldRemove(t *testing.T) {
+	res, err := AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: "redact", Applicability: Applicable, RedactPaths: []string{"user.ssn", "user.dob", "user.ssn"}})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
 	}
-	dp, ok := res.Obligations[0].Params.(DisclosureParams)
-	if !ok {
-		t.Fatalf("params = %T, want DisclosureParams", res.Obligations[0].Params)
+	if len(res.Obligations) != 2 {
+		t.Fatalf("got %d obligations, want one per DISTINCT path: %+v", len(res.Obligations), res.Obligations)
 	}
-	if dp.Transform.Kind != TransformConstantRedact {
-		t.Fatalf("transform = %s, want %s: claiming `remove` would assert a stronger guarantee than the engine delivers",
-			dp.Transform.Kind, TransformConstantRedact)
+	for _, o := range res.Obligations {
+		if o.Type != contract.ObFieldRedact {
+			t.Fatalf("type = %s, want %s: claiming remove would assert a stronger guarantee than the engine delivers", o.Type, contract.ObFieldRedact)
+		}
+		if o.Target != "user.dob" && o.Target != "user.ssn" {
+			t.Fatalf("target = %q", o.Target)
+		}
 	}
 }
 
 // TestWarnIsAdvisoryAndAlertIsMandatory pins the distinction a numeric
 // severity scale cannot make: the same type and the same family at different
-// enforcement levels.
+// bindings.
 func TestWarnIsAdvisoryAndAlertIsMandatory(t *testing.T) {
-	targets := []AuditNotifyTarget{{Channel: "siem", Address: "s1", Delivery: DeliveryAtLeastOnceDurable}}
-	for action, want := range map[string]Enforcement{"warn": Advisory, "alert": Mandatory, "log": Advisory} {
-		res, err := AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: action, Applicability: Applicable, NotifyTargets: targets})
+	for action, want := range map[string]bool{"warn": false, "alert": true, "log": false} {
+		res, err := AdaptRow(LegacyPolicyRow{PolicyID: "p1", Action: action, Applicability: Applicable, NotifyTargets: durableSink})
 		if err != nil {
 			t.Fatalf("%s: adapt: %v", action, err)
 		}
 		if len(res.Obligations) != 1 {
 			t.Fatalf("%s: got %d obligations", action, len(res.Obligations))
 		}
-		if got := res.Obligations[0].Enforcement; got != want {
-			t.Errorf("%s: enforcement = %q, want %q", action, got, want)
+		if got := res.Obligations[0].Mandatory; got != want {
+			t.Errorf("%s: mandatory = %v, want %v", action, got, want)
+		}
+		if got := res.Obligations[0].Params["delivery"]; got != string(contract.DeliveryDurable) {
+			t.Errorf("%s: delivery param = %q, want the canonical spelling %q", action, got, contract.DeliveryDurable)
 		}
 	}
 }
@@ -259,7 +287,7 @@ func TestRouteIsNotLegalInTheResponsePhase(t *testing.T) {
 	res, err := AdaptRow(LegacyPolicyRow{
 		PolicyID: "p1", Action: "log", ActionResponse: strp("route"),
 		Applicability: Applicable, RouteDestinations: []string{"eu"},
-		NotifyTargets: []AuditNotifyTarget{{Channel: "audit", Address: "m", Delivery: DeliveryAtLeastOnceDurable}},
+		NotifyTargets: []NotifyTarget{{Channel: "audit", Address: "m", Delivery: contract.DeliveryDurable}},
 	})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
@@ -274,14 +302,12 @@ func TestRouteIsNotLegalInTheResponsePhase(t *testing.T) {
 // does not require attribution), and losing it entirely would make the
 // resulting deny unattributable.
 func TestAdapterAttributionSurvivesAMissingPolicyID(t *testing.T) {
-	res, err := AdaptRow(LegacyPolicyRow{
-		PolicyName: "unknown", Action: "redact", Applicability: Applicable, RedactPaths: []string{"a"},
-	})
+	res, err := AdaptRow(LegacyPolicyRow{PolicyName: "unknown", Action: "redact", Applicability: Applicable, RedactPaths: []string{"a"}})
 	if err != nil {
 		t.Fatalf("adapt: %v", err)
 	}
-	if res.Obligations[0].SourcePolicyID != "unknown" {
-		t.Fatalf("attribution = %q, want the policy name", res.Obligations[0].SourcePolicyID)
+	if res.Obligations[0].SourcePolicy != "unknown" {
+		t.Fatalf("attribution = %q, want the policy name", res.Obligations[0].SourcePolicy)
 	}
 }
 
@@ -307,18 +333,19 @@ func TestAdaptRowsAccumulatesAcrossRows(t *testing.T) {
 
 // TestAdaptedObligationsValidateAgainstTheInitialRegistry closes the loop: an
 // adapter that produced something the registry rejects would turn every legacy
-// row into a planner ERROR.
+// row into a planner ERROR, and one that spelled a parameter in a vocabulary
+// the algebra does not read would compose to nothing.
 func TestAdaptedObligationsValidateAgainstTheInitialRegistry(t *testing.T) {
 	reg := testRegistry(t)
 	rows := []LegacyPolicyRow{
 		{PolicyID: "p1", Action: "redact", Applicability: Applicable, RedactPaths: []string{"user.ssn"}},
 		{PolicyID: "p2", Action: "require_approval", Applicability: Applicable,
-			ApprovalClauses: []ApprovalClause{{Quorum: 1, Eligible: []string{"Group::realm_okta:security"}}}},
+			ApprovalClauses:    []contract.ApprovalClause{{Quorum: 1, Eligible: []contract.ID{mustGroup(t, "Group::realm_okta:security")}}},
+			SeparationOfDuties: true},
 		{PolicyID: "p3", Action: "route", Applicability: Applicable, RouteDestinations: []string{"eu"}},
-		{PolicyID: "p4", Action: "alert", Applicability: Applicable,
-			NotifyTargets: []AuditNotifyTarget{{Channel: "siem", Address: "s1", Delivery: DeliveryAtLeastOnceDurable}}},
+		{PolicyID: "p4", Action: "alert", Applicability: Applicable, NotifyTargets: durableSink},
 		{PolicyID: "p5", Action: "log", Applicability: Applicable,
-			NotifyTargets: []AuditNotifyTarget{{Channel: "audit", Address: "main", Delivery: DeliveryAtLeastOnceDurable}}},
+			NotifyTargets: []NotifyTarget{{Channel: "audit", Address: "main", Delivery: contract.DeliveryDurable}}},
 	}
 	res, err := AdaptRows(rows)
 	if err != nil {
@@ -334,21 +361,27 @@ func TestAdaptedObligationsValidateAgainstTheInitialRegistry(t *testing.T) {
 	}
 
 	// And the whole set plans to a CHALLENGE (the approval has no evidence
-	// yet), not to an ERROR or a DENY.
+	// yet), not to an ERROR or a DENY - through the one algebra, with the
+	// approval's expiry and separation of duties reaching the composed
+	// requirement.
 	out := Plan(PlanInput{
 		Registry:    reg,
-		Leaves:      StaticLeafResolver{Universe: []string{"user.ssn", "user.name"}},
+		Payload:     contract.KnownPayloadLeaves("user.ssn", "user.name"),
 		Obligations: res.Obligations,
 		PEP:         fullPEP(t, reg),
-		Evidence: map[Capability]EvidenceState{
-			{Type: TypeFieldRedaction, Version: 1}:   EvidenceSatisfied,
-			{Type: TypeRouteRestriction, Version: 1}: EvidenceSatisfied,
+		Evidence: map[contract.Capability]EvidenceState{
+			{Type: contract.ObFieldRedact, Version: 1}:      EvidenceSatisfied,
+			{Type: contract.ObRouteRestriction, Version: 1}: EvidenceSatisfied,
 		},
+		ApprovalExpiry: testNow.Add(48 * time.Hour), Now: testNow,
 	})
 	if out.Outcome != OutcomeChallenge {
 		t.Fatalf("outcome = %q, want CHALLENGE. reasons=%v details=%v", out.Outcome, out.Reasons, out.Details)
 	}
-	if len(out.AwaitingEvidence) != 1 || out.AwaitingEvidence[0].Type != TypeApprovalChallenge {
+	if len(out.AwaitingEvidence) != 1 || out.AwaitingEvidence[0].Type != contract.ObApprovalChallenge {
 		t.Fatalf("awaiting = %v, want the approval challenge", out.AwaitingEvidence)
+	}
+	if out.Plan.Approval == nil || !out.Plan.Approval.SeparationOfDuties || !out.Plan.Approval.ExpiresAt.Equal(testNow.Add(24*time.Hour)) {
+		t.Fatalf("approval = %+v, want SoD on and the adapter's 24h default expiry (shorter than the evaluator's 48h)", out.Plan.Approval)
 	}
 }

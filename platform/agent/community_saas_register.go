@@ -23,6 +23,8 @@ import (
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
+	"axonflow/platform/agent/rls"
+	"axonflow/platform/shared/detectionposture"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -340,10 +342,21 @@ func enqueueActivityUpdate(db *sql.DB, tenantID string) {
 }
 
 // RegisterCommunityRegistrationHandler wires POST /api/v1/register onto the router.
-// This endpoint is only active when DEPLOYMENT_MODE=community-saas.
 // It is intentionally NOT protected by apiAuthMiddleware — it is the bootstrap
 // endpoint that creates the credentials needed for all other endpoints.
+//
+// It mounts ONLY under DEPLOYMENT_MODE=community-saas, and refuses by itself
+// rather than relying on its caller's gate. A registration records its new
+// organization's detection posture in admin_audit_log, a table the
+// community-saas schema carries (migrations/community-saas/088) and a Community
+// deployment (core only) does not, so no other mode may reach that write.
+// TestRegistrationMountsOnlyInCommunitySaasMode holds it for every mode
+// deploymode recognises.
 func RegisterCommunityRegistrationHandler(router *mux.Router, db *sql.DB) {
+	if !isCommunitySaasMode() {
+		log.Println("[CSAAS-REGISTER] POST /api/v1/register not mounted: the deployment is not community-saas")
+		return
+	}
 	// Start the bounded activity update worker
 	startActivityUpdateWorker()
 
@@ -577,6 +590,16 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 		// drift between the cohort backfilled by 094 and the cohort minted post-Phase-6.
 		registerTenantAndOrg(db, tenantID, tenantID, csaasOrgTier, csaasOrgMaxNodes)
 
+		// #4017: the organization blocks SQL injection by a recorded, audited
+		// override before its credentials leave this handler. On failure the
+		// secret is never disclosed; see recordRegistrationDetectionPosture.
+		if err := recordRegistrationDetectionPosture(ctx, db, tenantID, clientIP, r.UserAgent()); err != nil {
+			log.Printf("[CSAAS-REGISTER] Failed to record the detection posture for tenant %s: %v",
+				logutil.Sanitize(tenantID), err)
+			writeJSONError(w, "Failed to create registration", http.StatusInternalServerError)
+			return
+		}
+
 		log.Printf("[CSAAS-REGISTER] New tenant registered: %s (label: %s, expires: %s)",
 			logutil.Sanitize(tenantID), logutil.Sanitize(req.Label), expiresAt.Format(time.RFC3339))
 
@@ -596,6 +619,37 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 			log.Printf("[CSAAS-REGISTER] Failed to encode response: %v", err)
 		}
 	}
+}
+
+// registrationPostureActor is the audited actor of the detection posture a
+// Community SaaS registration records: the override's updated_by and the
+// admin_audit_log row's admin_identifier.
+const registrationPostureActor = "system:community-saas-registration"
+
+// recordRegistrationDetectionPosture records sqli=block for the organization a
+// registration just created, with its DETECTION_POSTURE_SET admin_audit_log
+// row, in one transaction scoped to that organization (#4017).
+//
+// Since v11 no environment variable sets a detection action (#3961), and
+// Community SaaS runs no customer portal, so without this record a new
+// organization would keep the shipped SQL-injection actions, which warn rather
+// than block. The record is the organization's own posture, written through
+// detectionposture.Set - the function the portal's detection-posture API
+// writes through - so it is attributable like any operator's override.
+//
+// It FAILS CLOSED. The caller answers 500 before the secret is disclosed, so no
+// organization receives credentials without its override and its audit row.
+// The registration row left behind is unusable from creation, because nobody
+// holds its secret. It never authenticates, so its last_seen_at stays NULL and
+// the inactivity sweep passes it over; the 1-year hard-cap sweep terminates it.
+func recordRegistrationDetectionPosture(ctx context.Context, db *sql.DB, org, clientIP, userAgent string) error {
+	return rls.WithOrgScope(ctx, db, org, func(tx *sql.Tx) error {
+		return detectionposture.Set(ctx, tx, org, detectionposture.CategorySQLI, detectionposture.ActionBlock, detectionposture.Actor{
+			Identifier: registrationPostureActor,
+			IPAddress:  clientIP,
+			UserAgent:  userAgent,
+		})
+	})
 }
 
 // validateCommunityRegistration validates Basic auth credentials against the

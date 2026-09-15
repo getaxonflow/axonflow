@@ -60,8 +60,8 @@ func withInternalServiceAuth(t *testing.T) func(*http.Request) {
 
 	gen := serviceauth.NewTokenGenerator(aliasTestSecret, serviceauth.RealClock{})
 	return func(r *http.Request) {
-		r.Header.Set("X-Internal-Service-ID", serviceauth.ClientID)
-		r.Header.Set("X-Internal-Service-Token", gen.GenerateToken())
+		r.Header.Set(internalServiceIDHeader, serviceauth.ClientID)
+		r.Header.Set(internalServiceTokenHeader, gen.GenerateToken())
 		r.Header.Set("X-Tenant-ID", "test-tenant")
 		r.Header.Set("X-Org-ID", "test-org")
 	}
@@ -305,7 +305,8 @@ func serveAlias(t *testing.T, p aliasProbe, prefix string, stamp func(*http.Requ
 
 // TestSystemPolicyAliasResponsesAreIdentical is the paired-request half: the
 // same request on both prefixes must produce the same status, the same body
-// and the same headers, with the deprecation signal as the ONLY difference.
+// and the same headers - the deprecation signal included, because in v11 both
+// spellings are the deprecated export surface (PRD §1.11).
 func TestSystemPolicyAliasResponsesAreIdentical(t *testing.T) {
 	stamp := withInternalServiceAuth(t)
 
@@ -340,7 +341,7 @@ func TestSystemPolicyAliasResponsesAreIdentical(t *testing.T) {
 					p.mustContain, legacyRR.Body.String())
 			}
 
-			compareHeadersIgnoringDeprecation(t, legacyRR.Header(), successorRR.Header())
+			compareHeaders(t, legacyRR.Header(), successorRR.Header())
 		})
 	}
 }
@@ -361,14 +362,9 @@ func normalizeVolatile(body string) string {
 	return volatileFieldRE.ReplaceAllString(body, `"$1":"<normalized>"`)
 }
 
-// compareHeadersIgnoringDeprecation asserts the two header maps agree on
-// everything except the deprecation signal.
-func compareHeadersIgnoringDeprecation(t *testing.T, legacy, successor http.Header) {
+// compareHeaders asserts the two header maps agree on every header.
+func compareHeaders(t *testing.T, legacy, successor http.Header) {
 	t.Helper()
-	skip := map[string]bool{
-		http.CanonicalHeaderKey(policypath.HeaderDeprecation): true,
-		http.CanonicalHeaderKey(policypath.HeaderLink):        true,
-	}
 	keys := map[string]bool{}
 	for k := range legacy {
 		keys[k] = true
@@ -377,9 +373,6 @@ func compareHeadersIgnoringDeprecation(t *testing.T, legacy, successor http.Head
 		keys[k] = true
 	}
 	for k := range keys {
-		if skip[k] {
-			continue
-		}
 		a, b := legacy.Values(k), successor.Values(k)
 		if fmt.Sprint(a) != fmt.Sprint(b) {
 			t.Errorf("header %q differs: legacy %v, successor %v", k, a, b)
@@ -387,48 +380,105 @@ func compareHeadersIgnoringDeprecation(t *testing.T, legacy, successor http.Head
 	}
 }
 
-// TestDeprecationSignalIsOnLegacyPathsOnly checks the signal itself, in both
-// directions. An alias rollout gets this wrong in one of two ways: the header
-// is missing on the old name (nobody is told to migrate) or it is present on
-// the new one (everybody is told the new name is already dying).
-func TestDeprecationSignalIsOnLegacyPathsOnly(t *testing.T) {
+// TestDeprecationSignalIsOnBothSpellings checks the signal itself, on every
+// route of both prefixes. In v11 the whole system family is the deprecated
+// export surface (PRD §1.11), the #1431 successor included, so both spellings
+// name the typed authoring route as their successor and v11.1 as the release
+// that removes them. Before v11 the successor carried nothing; that invariant
+// is retired with the model it belonged to.
+func TestDeprecationSignalIsOnBothSpellings(t *testing.T) {
 	stamp := withInternalServiceAuth(t)
 
 	for _, p := range aliasProbes() {
 		t.Run(p.name, func(t *testing.T) {
-			legacyRR := serveAlias(t, p, policypath.LegacySystemPolicies, stamp)
-			successorRR := serveAlias(t, p, policypath.SystemPolicies, stamp)
-
-			if legacyRR.Code != p.wantCode {
-				t.Fatalf("legacy request did not reach the handler (%d); header assertions would be vacuous", legacyRR.Code)
-			}
-
-			if got := legacyRR.Header().Get(policypath.HeaderDeprecation); got != policypath.DeprecationValue {
-				t.Errorf("legacy %s%s: Deprecation = %q, want %q",
-					policypath.LegacySystemPolicies, p.suffix, got, policypath.DeprecationValue)
-			}
-			wantLink := policypath.LinkSuccessor(policypath.SystemPolicies + p.suffix)
-			if got := legacyRR.Header().Get(policypath.HeaderLink); got != wantLink {
-				t.Errorf("legacy %s%s: Link = %q, want %q",
-					policypath.LegacySystemPolicies, p.suffix, got, wantLink)
-			}
-
-			if got := successorRR.Header().Get(policypath.HeaderDeprecation); got != "" {
-				t.Errorf("successor %s%s carries Deprecation = %q - the new name must not "+
-					"announce its own deprecation", policypath.SystemPolicies, p.suffix, got)
-			}
-			if got := successorRR.Header().Get(policypath.HeaderLink); got != "" {
-				t.Errorf("successor %s%s carries Link = %q", policypath.SystemPolicies, p.suffix, got)
-			}
-
-			// No Sunset, on either path. A Sunset date is a removal promise,
-			// and whether these paths are ever removed is undecided.
-			for _, rr := range []*httptest.ResponseRecorder{legacyRR, successorRR} {
-				if got := rr.Header().Get("Sunset"); got != "" {
-					t.Errorf("Sunset = %q - this change promises no removal date", got)
+			for _, prefix := range []string{policypath.LegacySystemPolicies, policypath.SystemPolicies} {
+				rr := serveAlias(t, p, prefix, stamp)
+				if rr.Code != p.wantCode {
+					t.Fatalf("%s%s: got %d, want %d - the request did not reach the handler, so the "+
+						"header assertions would be vacuous", prefix, p.suffix, rr.Code, p.wantCode)
 				}
+				assertDeprecationSignal(t, prefix+p.suffix, rr.Header())
 			}
 		})
+	}
+}
+
+// TestEverySystemPolicyRouteCarriesTheDeprecationSignal walks the router
+// RegisterStaticPolicyHandlers builds and drives every (method, path) it
+// carries - both prefixes and the /policy-overrides alias - WITHOUT
+// credentials. The population is the router's, so the table-driven suffixes the
+// registrar census cannot resolve are covered here; and an unauthenticated
+// request proves the stamp is mounted ahead of apiAuthMiddleware, so it rides
+// the 401 as well as a 200.
+func TestEverySystemPolicyRouteCarriesTheDeprecationSignal(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	r, _ := aliasRouter(t)
+
+	n := 0
+	err := r.Walk(func(route *mux.Route, _ *mux.Router, _ []*mux.Route) error {
+		if route.GetHandler() == nil {
+			return nil // a subrouter mount
+		}
+		tpl, err := route.GetPathTemplate()
+		if err != nil {
+			return nil
+		}
+		methods, err := route.GetMethods()
+		if err != nil {
+			t.Errorf("%s registers no method set", tpl)
+			return nil
+		}
+		for _, m := range methods {
+			n++
+			path := strings.NewReplacer("{id}", "probe-id").Replace(tpl)
+			req := httptest.NewRequest(m, path, strings.NewReader(`{}`))
+			var match mux.RouteMatch
+			if !r.Match(req, &match) || match.Route != route {
+				t.Errorf("%s %s does not match its own registered route; the probe is vacuous", m, path)
+				continue
+			}
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			assertDeprecationSignal(t, m+" "+path+fmt.Sprintf(" (answered %d)", rr.Code), rr.Header())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// 13 routes on each prefix plus the GET alias. A lower count is a walk gone
+	// blind; a higher one is a route this test now covers, and the count moves
+	// with it.
+	if n != 27 {
+		t.Errorf("walked %d (method, path) pairs, want 27", n)
+	}
+}
+
+// assertDeprecationSignal asserts h carries the v11 deprecation signal once.
+// The Link and release values are written out rather than read from
+// policypath: an expectation computed by the code under test agrees with it
+// whatever it does.
+func assertDeprecationSignal(t *testing.T, what string, h http.Header) {
+	t.Helper()
+	if got, want := h.Get(policypath.HeaderLink), `</api/v1/typed-policies>; rel="successor-version"`; got != want {
+		t.Errorf("%s: Link = %q, want %q", what, got, want)
+	}
+	if got := h.Get(policypath.HeaderRemovedIn); got != "v11.1" {
+		t.Errorf("%s: %s = %q, want v11.1", what, policypath.HeaderRemovedIn, got)
+	}
+	// Dated only once release prep sets DeprecatedSince; policypath's own
+	// tests pin the RFC 9745 format against a fixed date.
+	want, dated := policypath.DeprecationValue(policypath.DeprecatedSince)
+	if got, present := h[policypath.HeaderDeprecation]; present != dated || (dated && got[0] != want) {
+		t.Errorf("%s: Deprecation = %v (present=%v), want present=%v value %q", what, got, present, dated, want)
+	}
+	for _, k := range policypath.DeprecationHeaders() {
+		if n := len(h.Values(k)); n > 1 {
+			t.Errorf("%s: %s appears %d times - stamped on more than one hop", what, k, n)
+		}
+	}
+	if got := h.Get("Sunset"); got != "" {
+		t.Errorf("%s: Sunset = %q - v11.1 has no agreed date", what, got)
 	}
 }
 
@@ -523,14 +573,18 @@ func TestPolicyPathHelpersRejectNearMisses(t *testing.T) {
 		}
 	}
 
-	// StampDeprecation must be a no-op on a non-legacy path, so a caller
-	// cannot stamp a successor by handing it the wrong string.
-	h := http.Header{}
-	if policypath.StampDeprecation(h, policypath.SystemPolicies) {
-		t.Error("StampDeprecation reported success on a successor path")
-	}
-	if len(h) != 0 {
-		t.Errorf("StampDeprecation wrote headers on a successor path: %v", h)
+	// StampDeprecation must be a no-op off the deprecated surface. In v11 both
+	// #1431 spellings ARE that surface (PRD §1.11), so the negatives are the
+	// route the Link sends a client to - stamping it would loop - and a path
+	// that only shares the family's bytes.
+	for _, path := range []string{policypath.Successor, "/api/v1/system-policies-archive"} {
+		h := http.Header{}
+		if policypath.StampDeprecation(h, path) {
+			t.Errorf("StampDeprecation reported success on %s, which is not in the deprecated surface", path)
+		}
+		if len(h) != 0 {
+			t.Errorf("StampDeprecation wrote headers on %s: %v", path, h)
+		}
 	}
 }
 
@@ -544,8 +598,8 @@ func TestPolicyPathHelpersRejectNearMisses(t *testing.T) {
 // ARE edition-gated.
 //
 // Nothing here is gated at REGISTRATION - none of the three files involved
-// carries a build tag, and the Enterprise gate on the /override endpoints is a
-// runtime ErrOverrideRequiresEnterprise inside the shared handler. That is the
+// carries a build tag, and the /override endpoints answer the retirement of the
+// per-policy override inside the shared handler, in every edition. That is the
 // whole reason the alias inherits edition behaviour for free. This test exists
 // so that if somebody later gates one prefix at registration, or wraps one in
 // an edition check, CI says so in both lanes instead of only the one they ran.
@@ -618,7 +672,7 @@ func TestDeprecationHeadersAreCORSExposed(t *testing.T) {
 		t.Fatal("resolveCORSOptions exposes NO response headers - the assertions below would be " +
 			"checking an empty set")
 	}
-	for _, want := range []string{policypath.HeaderDeprecation, policypath.HeaderLink} {
+	for _, want := range policypath.DeprecationHeaders() {
 		if !exposed[http.CanonicalHeaderKey(want)] {
 			t.Errorf("%q is not in ExposedHeaders %v - a browser client gets null from "+
 				"response.headers.get(%q), so the deprecation signal is invisible to it",

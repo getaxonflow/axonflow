@@ -244,7 +244,7 @@ failed sign-ins from anyone locks out everyone for a minute. Never set it above
 the real number of proxies: a larger value counts on a header segment the
 caller can choose. The resolved value is printed at startup.
 - `POST /api/v1/auth/reset-password` -- completes password reset
-- `POST /api/v1/auth/change-password` -- changes password (authenticated)
+- `POST /api/v1/auth/change-password` -- changes the password of the signed-in organization. It needs a portal session and the current password, and the organization is always the session's - the request cannot name another one. A wrong current password, an organization with no password and an inactive organization all answer the same `401`. Attempts are limited to 5 a minute per client address and 5 a minute per organization, and every refused attempt is a failed `PASSWORD_CHANGED` row in `admin_audit_log`.
 
 ### Sending password-reset email
 

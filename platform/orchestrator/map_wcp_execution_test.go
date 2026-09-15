@@ -6,6 +6,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"axonflow/platform/orchestrator/planning"
@@ -58,25 +60,59 @@ func TestIntPtr(t *testing.T) {
 	})
 }
 
+// TestMapStepTypeToWCP is the multi-agent gate map's contract: every step type
+// it names, and a refusal for every type it does not.
+//
+// #4254 replaced the default arm the last four rows used to assert. This
+// function defaulted EVERY unnamed type to tool_call, so a multi-agent step
+// type nobody had mapped reached the workflow control plane's gate wearing one
+// and was governed as a tool call. "tool-call" is among the refusals on
+// purpose: the multi-agent plane has no such step type and the workflow engine
+// registers no processor for it, so under exact-token matching it names
+// nothing.
 func TestMapStepTypeToWCP(t *testing.T) {
-	tests := []struct {
+	named := []struct {
 		name     string
 		input    string
 		expected workflow_control.StepType
 	}{
 		{"llm_call", "llm-call", workflow_control.StepTypeLLMCall},
 		{"connector_call", "connector-call", workflow_control.StepTypeConnectorCall},
-		{"empty_string_defaults_to_tool_call", "", workflow_control.StepTypeToolCall},
-		{"unknown_defaults_to_tool_call", "unknown", workflow_control.StepTypeToolCall},
-		{"arbitrary_string_defaults_to_tool_call", "some-random-type", workflow_control.StepTypeToolCall},
-		{"tool_call_literal_defaults_to_tool_call", "tool-call", workflow_control.StepTypeToolCall},
+		{"function_call_gates_as_tool_call", "function-call", workflow_control.StepTypeToolCall},
+		{"api_call_gates_as_tool_call", "api-call", workflow_control.StepTypeToolCall},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range named {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapStepTypeToWCP(tt.input)
+			got, err := mapStepTypeToWCP(tt.input)
+			if err != nil {
+				t.Fatalf("mapStepTypeToWCP(%q) refused a named type: %v", tt.input, err)
+			}
 			if got != tt.expected {
 				t.Errorf("mapStepTypeToWCP(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+
+	refused := []struct{ name, input string }{
+		{"empty_string_is_refused", ""},
+		{"unknown_is_refused_naming_it", "unknown"},
+		{"arbitrary_string_is_refused_naming_it", "some-random-type"},
+		{"tool_call_literal_is_refused_naming_it", "tool-call"},
+		{"the_conditional_is_refused", "conditional"},
+	}
+
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mapStepTypeToWCP(tt.input)
+			if err == nil {
+				t.Fatalf("mapStepTypeToWCP(%q) = %q with no error; want a refusal, because gating it under a borrowed type is what this change removed", tt.input, got)
+			}
+			if got != "" {
+				t.Errorf("mapStepTypeToWCP(%q) refused and still returned %q", tt.input, got)
+			}
+			if !strings.Contains(err.Error(), strconv.Quote(tt.input)) {
+				t.Errorf("the refusal of %q does not name it, so an operator cannot tell which step stopped the plan: %v", tt.input, err)
 			}
 		})
 	}
@@ -300,7 +336,7 @@ func TestMAPWCPExecutor_ExecuteWithConfirm_SingleStep(t *testing.T) {
 	workflow := &Workflow{
 		Spec: WorkflowSpec{
 			Steps: []WorkflowStep{
-				{Name: "only-step", Type: "tool-call"},
+				{Name: "only-step", Type: "llm-call"},
 			},
 		},
 	}
@@ -315,6 +351,43 @@ func TestMAPWCPExecutor_ExecuteWithConfirm_SingleStep(t *testing.T) {
 	}
 	if result.StepName != "only-step" {
 		t.Errorf("StepName = %q, want %q", result.StepName, "only-step")
+	}
+}
+
+// #4254: confirm mode gates the first step, so a step type the multi-agent map
+// does not name stops the plan there, naming the token, rather than being gated
+// as a tool call. "tool-call" is such a type: the multi-agent plane has none,
+// and the workflow engine registers no processor for it.
+func TestExecuteWithConfirmRefusesAStepTypeTheMapDoesNotName(t *testing.T) {
+	mockRepo := workflow_control.NewMockRepository()
+	wcpSvc := workflow_control.NewService(mockRepo, nil, nil)
+	executor := NewMAPWCPExecutor(wcpSvc, nil)
+
+	plan := &planning.Plan{
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "confirm-unmapped-1",
+		Domain:   "test",
+		Query:    "a step this plane cannot present",
+	}
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "only-step", Type: "tool-call"},
+			},
+		},
+	}
+
+	result, err := executor.ExecuteWithConfirm(context.Background(), plan, workflow, "t1", "o1", "u1", "c1")
+	if err == nil {
+		t.Fatalf("confirm mode admitted a step of an unmapped type: %+v", result)
+	}
+	if !strings.Contains(err.Error(), strconv.Quote("tool-call")) {
+		t.Errorf("the refusal does not name the step type, so an operator cannot tell which step stopped the plan: %v", err)
+	}
+	if result != nil {
+		t.Errorf("a refused plan still returned an execution result: %+v", result)
 	}
 }
 

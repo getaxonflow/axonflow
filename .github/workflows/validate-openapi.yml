@@ -6,6 +6,7 @@ on:
     paths:
       - 'docs/api/**/*.yaml'
       - 'docs/api/**/*.yml'
+      - 'ee/docs/api/**/*.yaml'
       - '.github/workflows/validate-openapi.yml'
       - '.spectral.yaml'
 
@@ -82,7 +83,7 @@ jobs:
           # (#1759), and masfeat-api.yaml was orphaned from the gate until
           # #2881. With all four covered, swagger-cli fails the gate on
           # any new broken $ref, duplicate schema, or unparseable YAML.
-          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml; do
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml ee/docs/api/portal-api.yaml; do
             echo "  → $spec"
             swagger-cli validate "$spec"
           done
@@ -93,7 +94,7 @@ jobs:
           set -e
           echo "Linting OpenAPI specification..."
           # Fail on errors, allow warnings.
-          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml; do
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml ee/docs/api/portal-api.yaml; do
             echo "  → $spec"
             spectral lint "$spec" --ruleset .spectral.yaml --fail-severity error
           done

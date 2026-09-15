@@ -89,15 +89,14 @@ var xUserTokenMentionOnlyAllowlist = map[string]string{
 	// combined with a second envelope - so the #2941 collision rule has nothing
 	// to bite on: this route family accepts exactly one envelope.
 	"platform/agent/audit_verification_authority.go": "#2914 authority gate - names the header in a doc comment and in the 403 remedy; the read goes through extractPerUserToken, no second ingest",
-	// #3456: the shared human-actor segment gate's header documents, for every
-	// plane that calls it, WHICH envelope carries the per-user token on that
-	// plane — MCP REST and /decide both read it from the JSON BODY, and
-	// neither reads the header. Naming the header is the point of the note:
-	// #2941's promotion trigger is "any single endpoint starts accepting both
-	// spellings", so the reason a new caller must NOT reach for it belongs
-	// next to the contract a new caller reads. Prose only — the census's
-	// read-marker assertion below is what keeps that true.
-	"platform/agent/human_actor_segment_gate.go": "#3456 gate doc — records that this plane's token rides the body envelope, never the header; no read, no ingest",
+	// The MCP REST principal's doc records WHICH envelope carries the per-user
+	// token on that plane: the JSON BODY, never the header. Naming the header
+	// is the point of the note: #2941's promotion trigger is "any single
+	// endpoint starts accepting both spellings", so the reason a new caller
+	// must NOT reach for it belongs next to the contract a new caller reads.
+	// Prose only — the census's read-marker assertion below is what keeps
+	// that true.
+	"platform/agent/mcp_rest_principal.go": "MCP REST principal doc — records that this plane's token rides the body envelope, never the header; no read, no ingest",
 }
 
 // userTokenBodyFieldAllowlist is the exact set of production files whose

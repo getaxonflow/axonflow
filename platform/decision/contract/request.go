@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -11,10 +14,36 @@ import (
 // changes, never when a value changes.
 const SchemaVersion = "2026-08-29"
 
-// Snapshot pins every version a decision is computed against. It is what makes
-// a decision replayable offline: the same normalized input plus the same
-// snapshot must reproduce the same decision and the same safe reason codes,
-// with no network access.
+// Snapshot pins every VERSIONED INPUT a decision is computed against - the
+// registry epochs, the policy bundle, the schema. It is most of what makes a
+// decision replayable offline: the same normalized input plus the same
+// snapshot, evaluated by the same enforcement profile, reproduces the same
+// decision and the same safe reason codes with no network access.
+//
+// THE PROFILE IS NOT IN HERE, AND SINCE #3706 THAT IS OBSERVABLE. An
+// enforcement point's advertised capabilities are a property of the CALLER,
+// supplied per request (pdp.DecideOptions), not of the request. A mandatory
+// obligation the caller cannot discharge is a deny and one it can is a permit,
+// so two evaluations sharing this Snapshot can differ. Replay stays sound
+// because replay.Environment carries the profile and Record.EnvironmentDigest
+// hashes it, so a record cannot be replayed against a different one without
+// CheckPins refusing - the guarantee lives there rather than here.
+//
+// SOUND, AND NARROWER THAN IT SOUNDS. What the environment pins is the
+// ENGINE-WIDE profile; replay reproduces through Decide, which uses it. A
+// record captured from a DecideWith call - a per-request profile that differs
+// from the engine's - therefore replays cleanly and can produce a different
+// verdict, because nothing in the record says which profile the sample was
+// actually taken under. Closing it means adding the effective profile to the record schema, which is
+// a schema version and belongs with whatever begins writing records.
+//
+// REVISIT WHEN anything outside a _test.go file constructs a replay.Record.
+// Nothing does today - `git grep 'replay.Record{'` outside tests returns
+// nothing - so no record in existence was taken under a per-request profile,
+// and the gap is a TRIGGER rather than a defect. The observable is that grep,
+// not a component: an earlier version of this sentence named "the sampler",
+// and there is no sampler, so it named nothing anybody could watch and its
+// trailing clause read as "nothing to do here".
 type Snapshot struct {
 	// IdentityEpoch is the REALM REGISTRY epoch: it moves when a trust realm
 	// is registered, re-registered or removed.
@@ -186,10 +215,25 @@ func (r *Request) Validate() error {
 	if len(r.Context.ActorChain) == 0 {
 		return fmt.Errorf("request: actor_chain must contain at least the principal")
 	}
+	// EXACT EQUALITY HERE, AND DELIBERATELY NOT IdentityKey. This asks whether
+	// ONE producer built ONE request consistently - the same value should have
+	// been written to both fields - so the strict comparison is the correct
+	// one and widening it would let a request declare a principal its own
+	// chain root classifies differently. The check two lines below asks a
+	// different question and gets a different answer; see there.
 	if r.Context.ActorChain[0].ID != r.Principal {
 		return fmt.Errorf("request: actor_chain must be root first and begin with the principal %q, got %q",
 			r.Principal, r.Context.ActorChain[0].ID)
 	}
+	// KEYED ON THE IDENTITY, NOT ON THE RENDERED FORM (#3878's class, third
+	// instance). "Does this chain revisit a subject" is a question about WHO,
+	// and ID.String() renders the principal TYPE, which classifies a subject
+	// rather than identifying one. Keyed on the rendering,
+	// [User::acme:alice, Service::acme:alice] was not a cycle: one subject
+	// delegating to itself, admitted because two spellings of one person
+	// hashed apart. identity.AdmitChain had the identical defect one module
+	// over, on the same rule, and both are fixed together so the two cannot
+	// disagree about what a repeat is.
 	seen := make(map[string]struct{}, len(r.Context.ActorChain))
 	for i, a := range r.Context.ActorChain {
 		if a.ID.Kind != KindPrincipal {
@@ -198,10 +242,10 @@ func (r *Request) Validate() error {
 		if err := a.ID.Validate(); err != nil {
 			return fmt.Errorf("request: actor_chain[%d]: %w", i, err)
 		}
-		if _, dup := seen[a.ID.String()]; dup {
-			return fmt.Errorf("request: actor_chain contains a cycle at %q", a.ID)
+		if _, dup := seen[a.ID.IdentityKey()]; dup {
+			return fmt.Errorf("request: actor_chain contains a cycle at %q; a subject that appears twice is a repeat whatever principal type each hop declares", a.ID)
 		}
-		seen[a.ID.String()] = struct{}{}
+		seen[a.ID.IdentityKey()] = struct{}{}
 		if err := a.Attributes.Validate(); err != nil {
 			return fmt.Errorf("request: actor_chain[%d] %q: %w", i, a.ID, err)
 		}

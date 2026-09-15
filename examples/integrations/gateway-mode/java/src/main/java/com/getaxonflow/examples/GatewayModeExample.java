@@ -47,9 +47,11 @@ import java.util.Map;
  * This gives you full control over LLM parameters while maintaining
  * complete audit trails with ~3-5ms governance overhead.
  *
- * Gateway-specific policy config env vars (override defaults for gateway mode only):
- *   GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
- *   GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+ * Detection actions (v11): the stored action of each matched policy decides,
+ * on this plane as on every other; environment variables no longer set them.
+ * Out of the box the pre-check WARNS on PII and SQL injection: the request is
+ * approved and the matched policy ids are returned with it. An organization
+ * override (Enterprise customer portal) or a policy action change alters that.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -149,7 +151,7 @@ public class GatewayModeExample {
         System.out.println();
 
         // =========================================================================
-        // STEP 1b: PII Detection - SSN triggers redaction flag
+        // STEP 1b: PII Detection - SSN is detected (stored request action: warn)
         // =========================================================================
         System.out.println("Step 1b: PII Detection (SSN)...");
         try {
@@ -159,13 +161,13 @@ public class GatewayModeExample {
                     .userToken(userToken)
                     .build()
             );
-            assertCheck(piiResult.isApproved(), "PII query approved (redact mode, not blocked)");
+            assertCheck(piiResult.isApproved(), "PII query approved (stored request action is warn)");
             assertCheck(piiResult.getPolicies() != null && !piiResult.getPolicies().isEmpty(), "PII policies detected");
             if (piiResult.getPolicies() != null) {
                 System.out.printf("   Policies: %s%n", String.join(", ", piiResult.getPolicies()));
             }
         } catch (PolicyViolationException e) {
-            assertCheck(false, "PII query should be approved in redact mode, got blocked: " + e.getMessage());
+            assertCheck(false, "PII query should be approved (stored request action is warn), got blocked: " + e.getMessage());
         } catch (AxonFlowException e) {
             assertCheck(false, "PII pre-check failed: " + e.getMessage());
         }
@@ -182,7 +184,7 @@ public class GatewayModeExample {
                     .userToken(userToken)
                     .build()
             );
-            assertCheck(panResult.isApproved(), "India PAN approved (redact mode)");
+            assertCheck(panResult.isApproved(), "India PAN approved (stored request action is warn)");
             assertCheck(panResult.getPolicies() != null && !panResult.getPolicies().isEmpty(), "India PII policies detected for PAN");
             if (panResult.getPolicies() != null) {
                 System.out.printf("   Policies: %s%n", String.join(", ", panResult.getPolicies()));
@@ -199,7 +201,7 @@ public class GatewayModeExample {
                     .userToken(userToken)
                     .build()
             );
-            assertCheck(aadhaarResult.isApproved(), "India Aadhaar approved (redact mode)");
+            assertCheck(aadhaarResult.isApproved(), "India Aadhaar approved (stored request action is warn)");
             assertCheck(aadhaarResult.getPolicies() != null && !aadhaarResult.getPolicies().isEmpty(), "India PII policies detected for Aadhaar");
             if (aadhaarResult.getPolicies() != null) {
                 System.out.printf("   Policies: %s%n", String.join(", ", aadhaarResult.getPolicies()));
@@ -210,7 +212,7 @@ public class GatewayModeExample {
         System.out.println();
 
         // =========================================================================
-        // STEP 1d: SQL Injection Detection - should be BLOCKED
+        // STEP 1d: SQL Injection Detection - WARNS (every sys_sqli_* row stores warn)
         // =========================================================================
         System.out.println("Step 1d: SQL Injection Detection (DROP TABLE)...");
         try {
@@ -220,13 +222,12 @@ public class GatewayModeExample {
                     .userToken(userToken)
                     .build()
             );
-            assertCheck(!sqliResult.isApproved(), "SQLi query is BLOCKED");
-            assertCheck(sqliResult.getBlockReason() != null && !sqliResult.getBlockReason().isEmpty(), "Block reason provided for SQLi");
-            System.out.printf("   Block reason: %s%n", sqliResult.getBlockReason());
+            assertCheck(sqliResult.isApproved(), "SQLi query approved with a warning (stored action is warn, not block)");
+            assertCheck(sqliResult.getPolicies() != null && sqliResult.getPolicies().stream().anyMatch(p -> p.startsWith("sys_sqli_")),
+                "SQLi policy matched (sys_sqli_*)");
+            System.out.printf("   Policies: %s%n", sqliResult.getPolicies());
         } catch (PolicyViolationException e) {
-            assertCheck(true, "SQLi query is BLOCKED");
-            assertCheck(true, "Block reason provided for SQLi");
-            System.out.printf("   Block reason: %s%n", e.getMessage());
+            assertCheck(false, "SQLi query should be approved with a warning (stored action is warn), got blocked: " + e.getMessage());
         } catch (AxonFlowException e) {
             assertCheck(false, "SQLi pre-check failed unexpectedly: " + e.getMessage());
         }
@@ -239,13 +240,12 @@ public class GatewayModeExample {
                     .userToken(userToken)
                     .build()
             );
-            assertCheck(!unionResult.isApproved(), "UNION SQLi query is BLOCKED");
-            assertCheck(unionResult.getBlockReason() != null && !unionResult.getBlockReason().isEmpty(), "Block reason provided for UNION SQLi");
-            System.out.printf("   Block reason: %s%n", unionResult.getBlockReason());
+            assertCheck(unionResult.isApproved(), "UNION SQLi query approved with a warning (stored action is warn, not block)");
+            assertCheck(unionResult.getPolicies() != null && unionResult.getPolicies().stream().anyMatch(p -> p.startsWith("sys_sqli_")),
+                "UNION SQLi policy matched (sys_sqli_*)");
+            System.out.printf("   Policies: %s%n", unionResult.getPolicies());
         } catch (PolicyViolationException e) {
-            assertCheck(true, "UNION SQLi query is BLOCKED");
-            assertCheck(true, "Block reason provided for UNION SQLi");
-            System.out.printf("   Block reason: %s%n", e.getMessage());
+            assertCheck(false, "UNION SQLi query should be approved with a warning (stored action is warn), got blocked: " + e.getMessage());
         } catch (AxonFlowException e) {
             assertCheck(false, "UNION SQLi pre-check failed unexpectedly: " + e.getMessage());
         }

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package conformance is the executable specification for ADR-065 Phase 0.
 //
 // It carries three things that have to stay in step with each other: the
@@ -657,6 +660,18 @@ var actionSpend = map[string]registry.Declaration{
 	"T6": registry.DeclarationNo,
 }
 
+// actionDisplayName is each fixture action's operator-facing name (#3789). It
+// is a side map for the reason actionSpend is one: pdp.ActionEntry carries
+// only what admission decides on.
+var actionDisplayName = map[string]string{
+	"T1": "Create a Stripe refund",
+	"T2": "Export CRM contacts",
+	"T3": "Search documents",
+	"T4": "Read a CRM contact",
+	"T5": "Transition a Jira issue",
+	"T6": "Export a Confluence page",
+}
+
 // actionResourceType binds a fixture action to the resource type it operates
 // on. An action absent from this map declares none, which is what a tool with
 // no resource mapping gets.
@@ -726,8 +741,13 @@ func Catalog() (*registry.Catalog, error) {
 		if !ok {
 			return nil, fmt.Errorf("conformance: fixture action %q declares no spend risk class", key)
 		}
+		name, ok := actionDisplayName[key]
+		if !ok {
+			return nil, fmt.Errorf("conformance: fixture action %q declares no display name", key)
+		}
 		if err := c.RegisterAction(registry.ActionRecord{
 			ID:                 a.ID,
+			DisplayName:        name,
 			Tags:               a.Tags,
 			Posture:            registry.FailClosedPosture(),
 			MaxDelegationDepth: a.MaxDelegationDepth,
@@ -862,14 +882,18 @@ func NewWorld(ctx context.Context, opts ...WorldOption) (*World, error) {
 		bundles = append(bundles, b)
 	}
 	engine, err := pdp.NewEngine(ctx, pdp.EngineConfig{
-		Bundles:     bundles,
-		Documents:   []*pdp.Document{cfg.system, cfg.org},
-		TrustStore:  ts,
-		ApprovalTTL: 15 * time.Minute,
-		PEP:         cfg.pep,
-		Registry:    cfg.registry,
-		Compat:      cfg.compat,
-		BreakGlass:  cfg.breakGlass,
+		Bundles:    bundles,
+		Documents:  []*pdp.Document{cfg.system, cfg.org},
+		TrustStore: ts,
+		// UNANCHORED, with the reason. The conformance world is a fixture
+		// corpus built to exercise the decision algebra; it is not the shipped
+		// corpus and must not be confused for it.
+		SystemCorpus: pdp.Unanchored("the conformance world is a fixture corpus exercising the decision algebra, not the shipped system corpus"),
+		ApprovalTTL:  15 * time.Minute,
+		PEP:          cfg.pep,
+		Registry:     cfg.registry,
+		Compat:       cfg.compat,
+		BreakGlass:   cfg.breakGlass,
 	})
 	if err != nil {
 		return nil, err

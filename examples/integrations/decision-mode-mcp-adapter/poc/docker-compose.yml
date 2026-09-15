@@ -41,9 +41,6 @@ services:
       DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
       AXONFLOW_EDITION: community
       AXONFLOW_DB_USE_APP_ROLE: "false"
-      AXONFLOW_PROFILE: strict
-      SQLI_ACTION: block
-      PII_ACTION: block
       PORT: "8080"
       LOG_LEVEL: info
     ports:

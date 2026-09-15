@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -93,10 +96,32 @@ var (
 	// is the OTHER way a table is legitimately reachable, and it is why the
 	// census cannot simply demand a direct grant everywhere.
 	fnGrantRe = regexp.MustCompile(`(?is)GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+([a-z_][a-z0-9_]*)\s*\([^)]*\)\s+TO\s+(?:axonflow_app_role|axonflow_platform_admin)`)
-	// A count over a named table.
-	countOverTableRe = regexp.MustCompile(`(?is)count\s*\(\s*\*\s*\)\s+INTO\s+\w+\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	// A count over a named table, in EITHER spelling.
+	//
+	// The plain form is `count(*) INTO x FROM t`. The EXECUTE form is
+	// `EXECUTE 'SELECT COUNT(*) FROM t' INTO x` - the shape a migration is
+	// forced into when the table may not exist, since plpgsql resolves a static
+	// query's relations at compile time and a plain SELECT would raise before
+	// the `IF to_regclass(...) IS NOT NULL` guard could run.
+	//
+	// Only the first was matched, so every down migration using the guarded
+	// form was invisible to this census - which is how enterprise/155 shipped a
+	// rollback that aborted for any owner without BYPASSRLS. The `checked == 0`
+	// floor did not help: other files matched, so the census reported that it
+	// had checked things while never having looked at the one that was wrong.
+	countOverTableRe        = regexp.MustCompile(`(?is)count\s*\(\s*\*\s*\)\s+INTO\s+\w+\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	countOverTableExecuteRe = regexp.MustCompile(`(?is)EXECUTE\s+'\s*SELECT\s+COUNT\s*\(\s*\*\s*\)\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)\s*'\s+INTO\s+\w+`)
 	// Row security disabled for the transaction.
 	rowSecurityOffRe = regexp.MustCompile(`(?is)SET\s+LOCAL\s+row_security\s*=\s*off`)
+	// ...AND THE HANDLER AROUND IT, which is the half that makes it work.
+	//
+	// `SET LOCAL row_security = off` does not bypass RLS: for a role without
+	// BYPASSRLS it turns the count into a hard 42501. So the setting has to sit
+	// inside a BEGIN...EXCEPTION block with a flag, or the rollback aborts for
+	// exactly the population FORCE RLS exists to bind. This census PRESCRIBED
+	// that arm in its error message and enforced only the bare SET - three
+	// properties named, one checked, which is the shape it exists to catch.
+	rowSecurityHandlerRe = regexp.MustCompile(`(?is)EXCEPTION\s+WHEN\s+`)
 	// The exemption marker. A migration may opt out of either census, and the
 	// marker requires the WORD "because" after it, so an exemption cannot be a
 	// bare token: a reviewer reading the diff sees an argument or sees nothing.
@@ -358,17 +383,43 @@ func TestEveryDownMigrationCountingAFORCERLSTableDisablesRowSecurity(t *testing.
 			continue
 		}
 		var offenders []string
-		for _, m := range countOverTableRe.FindAllStringSubmatch(text, -1) {
+		var unhandled []string
+		counts := countOverTableRe.FindAllStringSubmatch(text, -1)
+		counts = append(counts, countOverTableExecuteRe.FindAllStringSubmatch(text, -1)...)
+		for _, m := range counts {
 			table := strings.ToLower(m[1])
 			declaredIn, isForced := forced[table]
 			if !isForced {
 				continue
 			}
 			checked++
+			// BOTH properties, not just the first. A bare SET turns the count
+			// into a 42501 for any role without BYPASSRLS and aborts the
+			// rollback; the handler is what makes it degrade to "unavailable".
+			if rowSecurityOffRe.MatchString(text) && rowSecurityHandlerRe.MatchString(text) {
+				continue
+			}
 			if rowSecurityOffRe.MatchString(text) {
+				unhandled = append(unhandled, table+" (FORCE RLS set by "+declaredIn+")")
 				continue
 			}
 			offenders = append(offenders, table+" (FORCE RLS set by "+declaredIn+")")
+		}
+		// The two failures are reported separately because the remedies differ,
+		// and a file in the second state has already read the rule once.
+		if len(unhandled) > 0 {
+			t.Errorf("%s disables row security to count %s, but has no BEGIN...EXCEPTION arm around it.\n\n"+
+				"`SET LOCAL row_security = off` does NOT bypass RLS. For a role without BYPASSRLS it converts the "+
+				"count into a hard 42501 (`query would be affected by row-level security policy`), which aborts the "+
+				"whole rollback - unconditionally, on an empty table as much as a populated one. It succeeds only for "+
+				"a superuser, so it is invisible on a developer box and fatal on a deployment whose migration role is "+
+				"merely the table owner.\n\n"+
+				"Move the SET inside a BEGIN...EXCEPTION block with a `counted` flag, as "+
+				"migrations/core/171_principal_admissions_down.sql does, so the counts report as UNAVAILABLE rather "+
+				"than aborting. If the abort is DELIBERATE - the count gates a destructive statement and a partial "+
+				"view of the rows would corrupt the outcome, as in core/144 - opt out with a comment containing "+
+				"`axonflow:rls-census-exempt because <reason>`.",
+				rel, strings.Join(dedupeStrings(unhandled), ", "))
 		}
 		if len(offenders) > 0 {
 			t.Errorf("%s counts rows on %s without disabling row security.\n\n"+
@@ -376,7 +427,7 @@ func TestEveryDownMigrationCountingAFORCERLSTableDisablesRowSecurity(t *testing.
 				"however many rows there are - and the NOTICE prints a reassuring zero while the rollback discards "+
 				"them. The table is normally dropped in the same transaction, so there is nothing left to re-count.\n\n"+
 				"Copy the `SET LOCAL row_security = off` block from "+
-				"migrations/enterprise/150_identity_org_settings_decision_shadow_down.sql, including its "+
+				"enterprise migration 150's down file, including its "+
 				"BEGIN...EXCEPTION arm and its `counted` flag, so a role without BYPASSRLS reports the counts as "+
 				"UNAVAILABLE rather than inventing a zero. Or opt out with a comment containing "+
 				"`axonflow:rls-census-exempt because <reason>`.",

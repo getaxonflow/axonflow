@@ -51,7 +51,8 @@
 # instead of carrying a literal.
 #
 # AND WHY THE MIRROR ARM IS ALSO CHECKED FROM HERE. This suite is executed by
-# `run-regression-suite` in regression-test-required.yml, which carries
+# `run-regression-suite` in repository-gates.yml (regression-test-required.yml
+# until W3-J), which carries
 # `if: github.repository == '...-enterprise'`. The file SYNCS to the mirror and
 # the job that would run it does not, so the mirror branch below never executes
 # in any CI. The whole justification for the github.repository expression is

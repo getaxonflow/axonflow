@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -98,7 +90,7 @@ var proxyDailyLimitChecker = checkCommunityDailyLimit
 // Why this lives in proxy.go and not auth.go: the apiAuthMiddleware in
 // auth.go has its own inline copy of the same logic. Plugins and SDKs
 // reach the agent via proxy routes (/api/v1/process, /api/v1/audit/*,
-// /api/v1/mcp/evaluate-policies, /api/v1/connectors); without this
+// /api/v1/connectors); without this
 // mirror the daily cap was effectively un-enforced for the routes that
 // matter most to the V1 product story (#1921, surfaced by #1920 E2E
 // harness).
@@ -156,20 +148,41 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 // the cap entirely — the SaaS Plugin daily-cap framework only applies
 // to community-saas tenants. Same semantics as the proxy variant.
 func enforceMCPSessionDailyCap(w http.ResponseWriter, req *jsonRPCRequest, session *mcpSession) bool {
+	return enforceMCPSessionLimits(w, req, session) != ""
+}
+
+// enforceMCPSessionLimits is enforceMCPSessionDailyCap naming the limit that
+// refused the call: LimitTypePerMinute, LimitTypeDailyQuota, or "" when the
+// call may proceed. The tools/call deny audit records which (#4261).
+func enforceMCPSessionLimits(w http.ResponseWriter, req *jsonRPCRequest, session *mcpSession) string {
 	if session == nil || session.tier == "" {
-		return false
+		return ""
 	}
 
-	// Per-minute burst with INCREMENT. Cached MCP sessions skip
-	// Authenticate() so the pre-bcrypt checkRateLimitRedis never
-	// fires for tools/call traffic. This call both increments the
-	// counter AND checks the tier-specific threshold.
+	// Per-minute burst (#4261). A session built for this request (the
+	// plugin hooks send no Mcp-Session-Id, so every call builds one) has
+	// already been counted by Authenticate's pre-credential limiter, on the
+	// key a Community SaaS tenant shares with its client id. So the count
+	// is read, as the REST path reads it, not taken a second time: before
+	// #4261 every such call counted twice and a Free tenant (25/min) was
+	// refused at about its 13th call. A cached MCP-protocol session skips
+	// Authenticate, so for it this check both counts the call and checks
+	// the tier's limit.
 	perMinute := minuteLimitForTier(session.tier)
-	if err := checkRateLimitRedis(context.Background(), session.tenantID, perMinute); err != nil {
-		log.Printf("[CSAAS-RL] per_minute_tier tenant=%s tier=%s limit=%d/min",
-			logutil.Sanitize(session.tenantID), session.tier, perMinute)
-		writeRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, perMinute)
-		return true
+	var overMinute bool
+	countField := "n/a" // the counting path reads no count
+	if session.authenticatedThisRequest {
+		count := rateLimitCount(session.tenantID)
+		countField = fmt.Sprint(count)
+		overMinute = count > perMinute
+	} else {
+		overMinute = checkRateLimitRedis(context.Background(), session.tenantID, perMinute) != nil
+	}
+	if overMinute {
+		log.Printf("[CSAAS-RL] per_minute_tier tenant=%s tier=%s count=%s limit=%d/min",
+			logutil.Sanitize(session.tenantID), session.tier, countField, perMinute)
+		writeMinuteRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, perMinute, 60)
+		return LimitTypePerMinute
 	}
 
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -177,9 +190,9 @@ func enforceMCPSessionDailyCap(w http.ResponseWriter, req *jsonRPCRequest, sessi
 	dailyLimit := dailyLimitForTier(session.tier)
 	if err := proxyDailyLimitChecker(dailyCtx, session.tenantID, dailyLimit, authDB); err != nil {
 		writeRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, dailyLimit)
-		return true
+		return LimitTypeDailyQuota
 	}
-	return false
+	return ""
 }
 
 // ProxyConfig holds configuration for the reverse proxy
@@ -321,12 +334,12 @@ var backendCORSHeaders = []string{
 // executions, the compliance modules) was broken - silently, because a
 // server-side client never runs a CORS check and neither does curl.
 //
-// Stripping rather than de-duplicating is the right rule: ADR-026 makes the
+// Stripping rather than de-duplicating is the right rule: ADR-024 makes the
 // agent the single entry point, so the edge owns the CORS contract. An
 // internal service's opinion about which origins may call it is not the
-// answer the browser should be given. It also means the orchestrator's five
+// answer the browser should be given. It also means the orchestrator's four
 // hardcoded `Access-Control-Allow-Origin: *` writes
-// (template_api_handlers.go:229, mcp_dynamic_policy_handler.go:914,
+// (template_api_handlers.go:229,
 // unified_execution_handler.go:613 and :662, map_hitl_adapter.go:527) no
 // longer reach a browser through this path at all.
 //
@@ -409,7 +422,8 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 // WS1b enumerated (/overrides + /workflows) — notably the MAP plan-resume and
 // checkpoint-resume planes (/api/v1/plan, workflow checkpoints), where a
 // forged X-User-ID is persisted into a resumable checkpoint's actor identity
-// and later drives ApplyOverrideToResult (a deny→allow flip). A per-prefix
+// and is read back as the actor identity (it keyed the ADR-044 deny→allow
+// flip until v11 deleted it, #4252). A per-prefix
 // allowlist has now missed a plane twice; gating every proxied route closes
 // the class and honors the invariant "gate off ⇒ these headers are ignored
 // everywhere" (identity_trust.go).
@@ -654,12 +668,14 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				// #2932: surface a presented-token-but-no-validator misconfig
 				// (fail-safe — the token is ignored → least-privilege).
 				warnIfTokenWithoutValidator(perUserToken)
-				// #3602: ContextWithSyntheticProbe before ResolveToken (see
-				// mcp_server_handler.go's copy for why the tag travels on the
-				// context here).
-				if vid, resolveErr := sharedidentity.ResolveToken(
-					sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
-					auth.OrgID, perUserToken); resolveErr != nil {
+				if vid, resolveErr := resolveTokenAdmitted(r.Context(), auth.OrgID, perUserToken); resolveErr != nil {
+					// A tier-limit refusal (#3593) is a 402 with its own
+					// code, not the 401 an invalid token gets: the token
+					// verified and the principal was refused by the ceiling.
+					if ref, ok := asTierLimitRefusal(resolveErr); ok {
+						writeTierLimitRefusal(w, ref)
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					errBody, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("invalid user token: %v", resolveErr)})
@@ -724,7 +740,7 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // RegisterProxyRoutes registers all proxy routes on the provided router
-// This enables Single Entry Point Architecture (ADR-026)
+// This enables Single Entry Point Architecture (ADR-024)
 func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Auth-wrapped proxy handlers
 	orchAuth := proxyAuthMiddleware(h.ProxyToOrchestrator)
@@ -749,11 +765,20 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	r.PathPrefix(policypath.LegacyTenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 	r.PathPrefix(policypath.TenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
+	// Typed policy authoring (#3907, ADR-065). The community write path.
+	//
+	// IT HAS TO BE HERE OR THE ROUTE IS UNREACHABLE, which is not obvious from
+	// the orchestrator side: the handler takes the organisation from X-Org-ID
+	// and refuses a request without it, and X-Org-ID is stamped HERE, from the
+	// cryptographically validated licence. So the orchestrator route and this
+	// registration are one surface - without it a caller reaching 8081 directly
+	// is refused for want of an organisation, and a caller reaching the gateway
+	// gets a 404. It was missing in the first draft of #3907 and the runtime-e2e
+	// gate is what asked for the proof that found it.
+	r.PathPrefix("/api/v1/typed-policies").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
+
 	// MCP Process (query processing via orchestrator)
 	r.PathPrefix("/api/v1/process").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
-
-	// MCP Policy Evaluation
-	r.PathPrefix("/api/v1/mcp/evaluate-policies").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
 
 	// Connectors
 	r.PathPrefix("/api/v1/connectors").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
@@ -853,7 +878,7 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Git Providers
 	r.PathPrefix("/api/v1/git-providers").HandlerFunc(portalAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
-	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-026)")
+	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-024)")
 }
 
 // GetProxyConfig returns proxy configuration for internal service communication.
@@ -895,7 +920,6 @@ func GetProxyConfig() ProxyConfig {
 func IsProxiedPath(path string) bool {
 	// Orchestrator paths
 	if strings.HasPrefix(path, "/api/v1/process") ||
-		strings.HasPrefix(path, "/api/v1/mcp/evaluate-policies") ||
 		strings.HasPrefix(path, policypath.LegacyTenantPolicies) ||
 		strings.HasPrefix(path, policypath.TenantPolicies) ||
 		strings.HasPrefix(path, "/api/v1/connectors") ||

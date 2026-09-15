@@ -13,6 +13,8 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/golang-jwt/jwt/v5"
+
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // =============================================================================
@@ -60,10 +62,13 @@ func (m decideAttributionMatcher) Match(v driver.Value) bool {
 func decideInvariantToken(t *testing.T, email, tenant string) string {
 	t.Helper()
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":       sharedidentity.UserTokenIssuer,
+		"sub":       email,
 		"user_id":   float64(11),
 		"tenant_id": tenant,
 		"org_id":    tenant,
 		"email":     email,
+		"jti":       "jti-" + tenant + "-" + email,
 		"role":      "developer",
 		"exp":       time.Now().Add(time.Hour).Unix(),
 	}).SignedString([]byte(testJWTSecret))

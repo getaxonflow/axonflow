@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -19,10 +22,12 @@ type ApprovalPool struct {
 
 // Options configure a compilation run.
 type Options struct {
-	// Posture is the deployment detection posture in force. An empty Posture
-	// means no lever is configured, which is NOT the same as a lever set to
-	// the stored action.
-	Posture Posture
+	// CategoryActions are the actions EvalOptions.ActionOverrides assigns per
+	// policy category on the planes that pass that map
+	// (PlaneSpec.PassesOrgOverrides): an organization's recorded detection
+	// overrides, or a posture an importer authors. Empty means none is
+	// assigned, which is NOT the same as one assigned the stored action.
+	CategoryActions CategoryActions
 	// ApprovalPools maps an org id (or tenant id, or "*") to the approver pool
 	// a require_approval row compiles against. Absent means such a row is
 	// uncompilable, and saying so is the point.
@@ -51,7 +56,25 @@ const DefaultRealm = "legacy_segment"
 // target was whatever span the detector matched at runtime - so it has to come
 // from configuration, and BOTH sides of the shadow diff must be given the same
 // one.
-const DefaultContentTarget = "response.content"
+//
+// IT IS THE EVALUATED CONTENT, NOT A PHASE'S CONTENT (#4046). A static
+// redaction masks what its detector matched, and the detector reads whatever
+// content the evaluation was handed - the statement on a request pass, the
+// released content on a response pass. `args.query` is where every anchored
+// request carries that content on every plane, so it is the leaf the matched
+// span lives in, exactly as the detector signal the policy reads
+// (signal.detector.<id>) is phase-neutral. It used to be `response.content`,
+// which was right only on a response pass: on request-phase decide a caller
+// that could discharge the redaction was told to mask the RESPONSE while the
+// legacy engine masks the request, and a request pass could not ask for the
+// statement masking at all.
+//
+// Which content that leaf is on a given scope is the scope's fact, not the
+// policy's: EnforcementScope.ContentPhase. Keeping execution location out of
+// the target is what lets one shipped control serve every plane - a phase in
+// the target would have to be restricted per scope, and the anchor refuses a
+// restriction that edits a control (pdp.checkSystemRestriction).
+const DefaultContentTarget = "args.query"
 
 // Normalized returns the options with every empty field replaced by the
 // default Compile would have applied.
@@ -121,12 +144,39 @@ func (o Options) ApprovalPool(orgID, tenantID string) (ApprovalPool, bool) {
 // user.* fields map into `principal` because #3152 bound them to
 // authentication-derived headers; mapping them anywhere else would restate the
 // vulnerability in the new model.
+//
+// # NO LEGACY FIELD MAY LAND ON A PATH THE PDP COMPILER OWNS (#3936)
+//
+// Namespace is not the only thing that matters here. Five paths - the ones
+// pdp.CompilerOwnedPaths() returns - are not ordinary attributes: the PDP
+// compiler decides their CURRENCY, because it renders a policy's own
+// identifiers into the literal side of the comparison. `principal.id` holds a
+// canonical rendered principal (`User::realm:alice`) because pdp.compileScope
+// emits `principal.id == "User::realm:alice"`.
+//
+// `user.id` and `user_id` were mapped onto `principal.id`, and the consequence
+// was not theoretical. shadow.Case.Request writes the canonical principal onto
+// `principal.id` and then applies the legacy condition fields over the top, so
+// a tenant dynamic policy carrying a `user.id` condition made the actor's
+// `principal.id` the legacy integer - MEASURED at 4711 for a `user_id` row,
+// while req.Principal still read `User::legacy_segment:alice@acme.example`.
+// One attribute, two currencies, inside one request. deriveSchema's `note`
+// widens a type collision to TypeAny, so the first policy to scope a principal
+// beside a `user.id` condition would have got no diagnostic at all.
+//
+// They therefore map onto `principal.legacy_user_id`: still the `principal`
+// namespace, because #3152's binding to authentication-derived headers is
+// unchanged and moving it would restate that vulnerability, but a path of this
+// compiler's own. The compiled CONDITION and the attribute the shadow supplies
+// both resolve through AttributePathFor, so they move together and the legacy
+// comparison is unaffected - the verdict is identical and only the attribute's
+// name changes.
 var defaultFieldPaths = map[string]string{
 	"query":            "args.query",
 	"request_type":     "args.request_type",
 	"request_id":       "args.request_id",
-	"user.id":          "principal.id",
-	"user_id":          "principal.id",
+	"user.id":          "principal.legacy_user_id",
+	"user_id":          "principal.legacy_user_id",
 	"user.email":       "principal.email",
 	"user_email":       "principal.email",
 	"user.role":        "principal.role",
@@ -146,6 +196,27 @@ var defaultFieldPaths = map[string]string{
 	"env":              "env.environment",
 	"risk_score":       "signal.risk_score",
 	"cost_estimate":    "signal.cost_estimate",
+}
+
+// LegacyConditionFields returns every legacy condition field this package maps
+// explicitly, in a stable order.
+//
+// It is DERIVED from defaultFieldPaths rather than written beside it, so a
+// guard over the mapping cannot be a guard over the fields somebody remembered
+// to list. A field added to the map is in the population on the next run; a
+// second hand-kept list would be one entry short exactly when it mattered.
+//
+// The prefix families (`media.`, `context.`) and the unmapped default arm are
+// deliberately NOT here: they are rules rather than members, they resolve into
+// `signal.media.*` and `args.context.*` by construction, and a caller that
+// wants to assert something about them has to enumerate its own inputs.
+func LegacyConditionFields() []string {
+	out := make([]string, 0, len(defaultFieldPaths))
+	for f := range defaultFieldPaths {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // AttributePathFor maps a legacy condition field onto an ADR-065 attribute
@@ -199,8 +270,8 @@ func knownLimitations() []Limitation {
 			Issue: "#3401", Scope: "action_override and enabled_override on every dynamic_policies row",
 			Detail: "an override's ACTION is never resolved for a dynamic policy: EffectiveOverride has one production call site and it builds an " +
 				"EffectiveStaticPolicy, so action_override and enabled_override are inert on the dynamic planes. " +
-				"The ADR-044 break-glass allow-flip is a DIFFERENT mechanism and it IS enforced there - FindActiveOverride carries no policy_type " +
-				"predicate and ApplyOverrideToResult flips a deny to allow for any row with an active session override. " +
+				"The ADR-044 break-glass allow-flip was a DIFFERENT mechanism; it was enforced on the WCP step gate until v11 deleted that read (#4252), " +
+				"and the last deciding reader, the agent's tier pass, goes with #4281. " +
 				"Neither mechanism is captured or modelled here, so a shadow run says nothing about a request an operator has broken glass on.",
 		},
 		{
@@ -220,11 +291,10 @@ func knownLimitations() []Limitation {
 			Detail: "0 means both \"just loaded\" and \"never loaded\", so freshness of the captured policy set cannot be established from that metric alone.",
 		},
 		{
-			Issue: "#3563", Scope: "static_policies rows on planes with no posture lever entry",
-			Detail: "categories outside " + strings.Join(PostureLeverCategories(), ", ") +
-				" have no lever, so their resolved action is the stored one on every plane. " +
-				"HighRiskAction and DangerousQueryAction are populated from the environment and read by no ENFORCEMENT path " +
-				"(both reach the profile banner, and DangerousQueryAction is a ModeDetectionConfig field, but neither is mapped into an override).",
+			Issue: "#3961", Scope: "static_policies rows no organization override reaches",
+			Detail: "an organization's recorded detection override reaches the pii-*, security-sqli and security-dangerous categories only; " +
+				"every other category - sensitive-data included - resolves to its stored action on every plane. " +
+				"No environment variable or profile assigns an action (#3961), so a deployment's category actions are exactly its recorded overrides.",
 		},
 	}
 }
@@ -282,7 +352,7 @@ func Compile(rows []RawRow, opts Options) (*Report, error) {
 func compileOne(raw RawRow, opts Options) Record {
 	base := Record{Source: SourceRef{
 		Table: raw.Table, OrgScope: raw.OrgScope,
-		ID: raw.stringOr("id", ""), PolicyID: raw.stringOr("policy_id", ""),
+		ID: raw.stringOr("id", ""), PolicyID: raw.stringOr("policy_id", ""), Name: raw.stringOr("name", ""),
 		RowDigest: digestRow(raw),
 	}}
 

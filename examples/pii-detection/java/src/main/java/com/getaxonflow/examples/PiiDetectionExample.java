@@ -39,18 +39,16 @@ import java.util.List;
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
- * Default Behavior (Issue #891):
- *   PII detection defaults to "redact" mode - requests are APPROVED but flagged
- *   with isRequiresRedaction()=true for downstream redaction by the Orchestrator.
- *   Set PII_ACTION=block to restore blocking behavior.
+ * Default Behavior (v11):
  *
- * Policy Configuration (env vars):
- *   PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
- *   GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
- *
- *   When PII_ACTION=block: requests with critical PII are blocked (isApproved()=false)
- *   When PII_ACTION=log:   PII is detected and logged but passes through unmodified
- *   When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+ *   The stored action of each matched PII policy decides. On the request side
+ *   (this pre-check) the shipped SSN, credit card, PAN and Aadhaar policies store
+ *   action_request=warn: the request is APPROVED and the matched policy ids are
+ *   returned with it. Their stored response action is redact, so redaction
+ *   happens on the response side. Environment variables no longer set detection
+ *   actions. To change an outcome, record an organization override (Enterprise
+ *   customer portal: PUT /api/v1/detection-posture/pii {"action":"block"}) or
+ *   change the policy's action.
  *
  * Run with: mvn compile exec:java
  * Prerequisites: docker compose up -d
@@ -77,7 +75,7 @@ public class PiiDetectionExample {
         System.out.println("AxonFlow PII Detection - Java SDK");
         System.out.println("==================================");
         System.out.println();
-        System.out.println("Default Mode: redact (PII flagged for redaction, not blocked)");
+        System.out.println("Stored policy actions decide: request-side PII warns (approved, policy recorded)");
         System.out.println();
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
@@ -88,8 +86,8 @@ public class PiiDetectionExample {
             .build());
 
         // PII test cases
-        // expectRedact: true = critical PII (isRequiresRedaction()=true)
-        // expectRedact: false = non-critical or no PII (logged but not flagged)
+        // expectDetect: true = critical PII (a policy matches; stored request action is warn)
+        // expectDetect: false = non-critical or no PII (approved, no redaction flag)
         List<TestCase> testCases = Arrays.asList(
             new TestCase("Safe Query (No PII)",
                 "What is the capital of France?", false),
@@ -134,16 +132,10 @@ public class PiiDetectionExample {
             }
 
             if (wasBlocked) {
-                // Request was blocked by policy
+                // Blocked only when an organization override or a policy edit sets block
                 System.out.println("   Status: BLOCKED");
                 System.out.printf("   Reason: %s%n", blockReason);
-
-                // Verify expected behavior for blocked requests
-                if (test.expectRedact) {
-                    assertCheck(true, "Critical PII detected and flagged for redaction");
-                } else {
-                    assertCheck(false, "No critical PII detected, request approved");
-                }
+                assertCheck(false, "Request approved (stored request action is warn, not block)");
             } else {
                 // Validate context ID (UUID format)
                 assertCheck(
@@ -159,74 +151,28 @@ public class PiiDetectionExample {
                         System.out.println("   Status: APPROVED");
                     }
                 } else {
-                    // Request was blocked (only if PII_ACTION=block)
+                    // Blocked only when an organization override or a policy edit sets block
                     System.out.println("   Status: BLOCKED");
                     System.out.printf("   Reason: %s%n", result.getBlockReason());
                 }
+                List<String> policies = result.getPolicies();
+                boolean detected = policies != null && !policies.isEmpty();
+                if (detected) {
+                    System.out.printf("   Policies: %s%n", String.join(", ", policies));
+                }
 
-                // Get actual redaction status (blocked also counts as "requires handling")
-                boolean actualRequiresRedaction = result.isRequiresRedaction() || !result.isApproved();
-
-                // Verify expected behavior
-                if (test.expectRedact) {
-                    assertCheck(actualRequiresRedaction, "Critical PII detected and flagged for redaction");
+                // Verify expected behavior against the shipped stored actions
+                if (test.expectDetect) {
+                    assertCheck(result.isApproved(), "Request approved (stored request action is warn, not block)");
+                    assertCheck(detected, "Critical PII detected (policy matched)");
                 } else {
                     assertCheck(
-                        !actualRequiresRedaction && result.isApproved(),
+                        !result.isRequiresRedaction() && result.isApproved(),
                         "No critical PII detected, request approved"
                     );
                 }
             }
 
-            System.out.println();
-        }
-
-        // ========================================
-        // Policy Configuration Tests (PII_ACTION)
-        // ========================================
-        String piiAction = getEnv("PII_ACTION", "redact");
-        System.out.printf("Policy Config: PII_ACTION=%s%n", piiAction);
-        System.out.println();
-
-        if ("block".equals(piiAction)) {
-            System.out.println("Test (config): PII_ACTION=block - SSN should be BLOCKED");
-            PolicyApprovalResult configResult = null;
-            boolean configBlocked = false;
-            try {
-                configResult = client.getPolicyApprovedContext(
-                    PolicyApprovalRequest.builder()
-                        .query("Customer SSN is 999-88-7777")
-                        .userToken("pii-config-test-user")
-                        .build()
-                );
-            } catch (PolicyViolationException e) {
-                configBlocked = true;
-            } catch (Exception e) {
-                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
-                System.exit(1);
-                return;
-            }
-            boolean wasBlocked2 = configBlocked || (configResult != null && !configResult.isApproved());
-            assertCheck(wasBlocked2, "PII_ACTION=block: SSN query is blocked (not approved)");
-            System.out.println();
-        } else if ("log".equals(piiAction)) {
-            System.out.println("Test (config): PII_ACTION=log - SSN should pass through unmodified");
-            try {
-                PolicyApprovalResult configResult = client.getPolicyApprovedContext(
-                    PolicyApprovalRequest.builder()
-                        .query("Customer SSN is 999-88-7777")
-                        .userToken("pii-config-test-user")
-                        .build()
-                );
-                assertCheck(configResult.isApproved(), "PII_ACTION=log: SSN query is approved (pass-through)");
-                assertCheck(!configResult.isRequiresRedaction(), "PII_ACTION=log: no redaction required (log only)");
-            } catch (PolicyViolationException e) {
-                assertCheck(false, "PII_ACTION=log: SSN query should NOT be blocked");
-            } catch (Exception e) {
-                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
-                System.exit(1);
-                return;
-            }
             System.out.println();
         }
 
@@ -261,12 +207,12 @@ public class PiiDetectionExample {
     private static class TestCase {
         final String name;
         final String query;
-        final boolean expectRedact;
+        final boolean expectDetect;
 
-        TestCase(String name, String query, boolean expectRedact) {
+        TestCase(String name, String query, boolean expectDetect) {
             this.name = name;
             this.query = query;
-            this.expectRedact = expectRedact;
+            this.expectDetect = expectDetect;
         }
     }
 }

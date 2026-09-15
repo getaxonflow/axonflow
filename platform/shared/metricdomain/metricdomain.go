@@ -56,7 +56,7 @@
 //
 //   - a CLOSED enum, mapped through a helper whose fall-through is a named
 //     constant (classifyDecisionOrigin -> OriginUnknown; capabilityRefusalStatusLabel
-//     -> "undeclared"; metricPathLabel -> "invalid"; planeLabel -> "unattributed")
+//     -> "undeclared"; planeLabel -> "unattributed")
 //   - a closed enum with no helper, where the values are compile-time literals
 //   - an admission SET with a cap and an overflow bucket (identity.BoundedOrgLabel:
 //     first 100 org ids admitted verbatim, everything after -> "__over_cap__")

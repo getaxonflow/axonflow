@@ -11,10 +11,14 @@ name: Suite Gate
 # PR check green, because a required context must also report on
 # `pull_request`.
 #
-# This job squares that circle. It runs on BOTH events, so it is legal to
+# This job squares that circle. It reports on BOTH events, so it is legal to
 # require:
-#   * on `pull_request` it passes immediately - by design nothing stack-booting
-#     runs on a PR, so there is nothing to check and nothing to wait for;
+#   * on `pull_request` the JOB IS SKIPPED - by design nothing stack-booting
+#     runs on a PR, so there is nothing to check and nothing to wait for. It
+#     used to run a step that printed exactly that, which billed a hosted
+#     minute on every push of every PR (514 runs over 2026-09-08..11) to
+#     verify nothing. A skipped check run is not billed and satisfies a
+#     required context exactly as that immediate pass did (W3-J);
 #   * on `merge_group` it waits for every suite run at this SHA and FAILS if
 #     any of them failed, was cancelled or timed out.
 #
@@ -78,20 +82,12 @@ jobs:
     # capacity or a ruleset change - not a bigger number here, which would
     # simply be killed by the queue instead of by the runner.
     timeout-minutes: 115
+    # Skipped on pull_request: see the header. The stack-booting suites have no
+    # pull_request trigger (2026-09-04), so a PR run has nothing to wait for.
+    if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: On a pull request there is nothing to gate
-        if: github.event_name == 'pull_request'
-        run: |
-          set -euo pipefail
-          echo "The stack-booting suites have no pull_request trigger (2026-09-04):"
-          echo "two opt-in gates cut zero (129 billable minutes per push before,"
-          echo "133 after), so the trigger was removed outright. They run in the"
-          echo "merge queue, and this gate enforces them there."
-          echo ""
-          echo "Nothing to wait for on a PR. Passing."
 
       - name: Wait for the suites and fail on any red
         if: github.event_name == 'merge_group'

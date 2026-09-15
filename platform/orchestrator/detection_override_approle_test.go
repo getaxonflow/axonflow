@@ -17,16 +17,17 @@ import (
 )
 
 // TestOrchestratorPerOrgDetectionOverrides_RealPostgres proves the #2612 per-org
-// posture resolution on the ORCHESTRATOR plane against a REAL Postgres with the
+// override resolution on the ORCHESTRATOR plane against a REAL Postgres with the
 // REAL migration 120 applied and RLS ENABLEd+FORCEd, under axonflow_app_role:
 //
 //   - the override table is org-isolated by RLS (a bare read under app_role with
 //     no org scope sees nothing; the scoped repo read sees only its org's rows);
 //   - reads work under app_role ON (RLS enforced, WithOrgScope sets the GUC) AND
 //     OFF (owner/superuser bypass + the explicit WHERE org_id still scopes);
-//   - the SAME orchestrator process resolves DIFFERENT gateway postures for two
-//     orgs (org-redact → redact while the global config is block; org-default →
-//     global block), through the orchestrator's OWN cache instance + DB handle.
+//   - the SAME orchestrator process resolves DIFFERENT gateway actions for two
+//     orgs (org-redact → its recorded redact; org-default → no action, so the
+//     stored policy actions decide, even with PII_ACTION=block set), through the
+//     orchestrator's OWN cache instance + DB handle.
 //
 // This is the orchestrator sibling of the agent's
 // TestPerOrgDetectionOverrides_RealPostgres — same table, same RLS contract, but
@@ -124,8 +125,8 @@ func TestOrchestratorPerOrgDetectionOverrides_RealPostgres(t *testing.T) {
 		t.Fatalf("off-mode read = %v, want exactly org-redact's 2 rows (WHERE-scoped)", gotOff)
 	}
 
-	// --- SAME orchestrator process, two orgs, different gateway posture ------
-	// Pin the deployment-global gateway posture to block via env, wire the
+	// --- SAME orchestrator process, two orgs, different gateway actions -----
+	// Set the removed PII_ACTION variable (it must set nothing, #3961), wire the
 	// ORCHESTRATOR cache to the real app_role DB, and resolve both orgs through
 	// the response plane's resolver.
 	t.Setenv("PII_ACTION", "block")
@@ -138,11 +139,11 @@ func TestOrchestratorPerOrgDetectionOverrides_RealPostgres(t *testing.T) {
 	if got := ResolveGatewayDetectionConfig(ctx, orgRedact).PIIAction; got != agent.DetectionActionRedact {
 		t.Errorf("orchestrator org-redact gateway PIIAction = %q, want redact", got)
 	}
-	if got := ResolveGatewayDetectionConfig(ctx, orgDefault).PIIAction; got != agent.DetectionActionBlock {
-		t.Errorf("orchestrator org-default gateway PIIAction = %q, want block (global)", got)
+	if got := ResolveGatewayDetectionConfig(ctx, orgDefault).PIIAction; got != "" {
+		t.Errorf("orchestrator org-default gateway PIIAction = %q, want none: PII_ACTION=block must not set an action", got)
 	}
 	// The skipRedaction signal: org-redact reports an explicit PII override;
-	// org-default does not (so it follows the deployment-global baseline).
+	// org-default does not (so the stored response actions decide).
 	if a, ok := ResolveGatewayPIIActionOverride(ctx, orgRedact); !ok || a != agent.DetectionActionRedact {
 		t.Errorf("org-redact PII override = (%q,%v), want (redact,true)", a, ok)
 	}

@@ -1,7 +1,7 @@
 -- Migration 030: Policy Tier and Category Architecture
 -- Date: 2025-12-24
 -- Purpose: Add tier hierarchy and category classification to policies
--- Related: ADR-020 - Unified Policy Architecture, Issue #724
+-- Related: ADR-019 - Unified Policy Architecture, Issue #724
 
 -- =============================================================================
 -- PHASE 1: Add tier and organization_id columns to static_policies
@@ -51,7 +51,7 @@ ALTER TABLE dynamic_policies
     ADD COLUMN IF NOT EXISTS organization_id UUID;
 
 -- Add category column for dynamic policy classification
--- Uses 'dynamic-*' categories defined in ADR-020
+-- Uses 'dynamic-*' categories defined in ADR-019
 ALTER TABLE dynamic_policies
     ADD COLUMN IF NOT EXISTS category VARCHAR(50);
 

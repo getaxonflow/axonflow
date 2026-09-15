@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -104,6 +107,70 @@ func ValidateQualifier(s string) error {
 	return nil
 }
 
+// PrincipalType is the closed vocabulary of principal types - the type segment
+// of a KindPrincipal identifier.
+//
+// THIS IS THE ONE DEFINITION (#3711). Until v11 the same `Type::realm:subject`
+// form had two: platform/shared/identity's closed set of six, which is what
+// every decision proof binds through identity.CanonicalFormVersion, and this
+// package's open type-segment regex, which is what the PDP consulted. So
+// `Robot::okta-prod:00u1` was a hard error to one and a valid, decided request
+// to the other, and the versioned guarantee ("a change to the canonical form
+// invalidates outstanding proofs loudly") covered only the half the PDP did not
+// read. The vocabulary lives HERE because of the module direction:
+// axonflow/platform requires axonflow/platform/decision and identity already
+// imports this package, so this is the only place both can read.
+// identity.SubjectType is an alias of this type and identity.SubjectTypes()
+// returns exactly PrincipalTypes(); a test in identity reads both and pins them
+// equal, so a seventh type is added in one place or the build says otherwise.
+//
+// It is closed on purpose. An unknown type is an error, never a permissive
+// default: a plane that accepted an unrecognised type would be accepting a
+// subject whose semantics no policy author has ever seen.
+type PrincipalType string
+
+const (
+	// PrincipalUser is a human identity.
+	PrincipalUser PrincipalType = "User"
+	// PrincipalService is a non-human service account in a directory.
+	PrincipalService PrincipalType = "Service"
+	// PrincipalWorkload is a cryptographically attested workload (SPIFFE and
+	// comparable schemes).
+	PrincipalWorkload PrincipalType = "Workload"
+	// PrincipalAgent is an AxonFlow-registered autonomous agent.
+	PrincipalAgent PrincipalType = "Agent"
+	// PrincipalClient is an authenticated calling application. It is
+	// ATTRIBUTION, not authority: ADR-065 invariant 2. A Client principal may
+	// appear in an actor chain and may be audited; it must never be the
+	// authority a grant is scoped to.
+	PrincipalClient PrincipalType = "Client"
+	// PrincipalGroup is a realm-qualified directory group.
+	PrincipalGroup PrincipalType = "Group"
+)
+
+// principalTypes is the admissible set, in a stable order for diagnostics.
+var principalTypes = []PrincipalType{
+	PrincipalUser, PrincipalService, PrincipalWorkload, PrincipalAgent, PrincipalClient, PrincipalGroup,
+}
+
+// IsValid reports whether t is a member of the closed vocabulary.
+func (t PrincipalType) IsValid() bool {
+	for _, known := range principalTypes {
+		if t == known {
+			return true
+		}
+	}
+	return false
+}
+
+// PrincipalTypes returns a copy of the admissible principal types, in a stable
+// order. Callers get a copy so a consumer cannot mutate the vocabulary.
+func PrincipalTypes() []PrincipalType {
+	out := make([]PrincipalType, len(principalTypes))
+	copy(out, principalTypes)
+	return out
+}
+
 // ID is a canonical identifier. Display names, emails, token claims, connector
 // names and aliases are never identifiers (ADR-065 invariant 3).
 type ID struct {
@@ -112,58 +179,40 @@ type ID struct {
 	Kind Kind `json:"kind"`
 	// Type is the entity type, for example "User", "Agent", "JiraIssue".
 	//
-	// FOR KindPrincipal THIS IS DELIBERATELY OPEN, AND THE CLOSED CHECK LIVES
-	// SOMEWHERE ELSE (#3711). identity.SubjectType in
-	// platform/shared/identity/principal.go is the closed vocabulary of six -
-	// User, Service, Workload, Agent, Client, Group - and it is the VERSIONED
-	// definition: identity.CanonicalFormVersion is bound into every decision
-	// proof as proof.Binding.IdentityCanonicalFormVersion, so a change to the
-	// canonical principal form invalidates outstanding proofs loudly instead of
-	// two spellings of one principal silently comparing unequal. This regex is
-	// not that vocabulary and must never be read as it: `Robot::okta-prod:00u1`
-	// is a valid identifier here and a hard error there.
-	//
-	// THE OPENNESS IS A MODULE FACT, NOT A PREFERENCE. axonflow/platform/decision
-	// is a separate Go module with a deliberately minimal dependency set, and
-	// axonflow/platform depends on IT (platform/shared/planeshadow imports this
-	// package). Importing identity from here would invert that, so the
-	// vocabulary cannot be shared as code and the two grammars are held
-	// together by a test that can see both instead:
-	// platform/shared/identity/principal_contract_lockstep_test.go sweeps them
-	// over one corpus in both directions and requires every disagreement to
-	// match a DECLARED class carrying a reason and a disposition. The type
-	// vocabulary is one of four; the other three (component length, realm
-	// charset, subject charset) are filed on #3709.
-	//
-	// THE CENSUS BEHIND THE v11.0.0 DISPOSITION, STATED PRECISELY. No Go
-	// CONSTRUCTOR in this tree emits a principal type outside the six: the only
-	// live producers are legacycompile/shadow (a literal "User") and the
-	// conformance fixtures. A DECODED principal is a different matter, and the
-	// reason is THIS REGEX rather than a missing check.
-	//
-	// An earlier version of this comment said the decode paths reach the engine
-	// "without calling Validate". That is false and was caught in review:
-	// Engine.Decide calls req.Validate, which calls ID.Validate on the
-	// principal. What Validate does NOT do is consult a vocabulary - it matches
-	// the open regex above - so a request naming `Robot::okta-prod:00u1` is
-	// VALID today and is decided. The distinction matters because a maintainer
-	// who believed the first version would "fix" it by adding a Validate call
-	// and close nothing.
-	//
-	// The paths that carry a decoded principal are replay records
-	// (replay.LoadRecord -> Replay -> Engine.Decide; Record.Validate does not
-	// reach the embedded Request, and Engine.Decide's own Validate is the open
-	// check above), compiled policy scopes (pdp.compileScope reads
-	// ID.String() with no Kind and no Validate at all), and authoring documents
-	// (which check Kind only). The published schema
+	// For KindPrincipal it is a member of PrincipalTypes() and nothing else;
+	// Validate enforces that and the published schema
 	// (contract/schema/contract-2026-08-29.schema.json, $defs/identifier)
-	// carries this regex verbatim and no enum of six. So closing this set would
-	// REJECT artifacts every one of those paths accepts today, which is why it
-	// is a wire break and not a tidy-up.
+	// carries the same six as an enum conditioned on kind. For every other
+	// kind it is an open CamelCase-ish segment: resource types are named by
+	// connectors, and the registry, not this package, decides which exist.
 	//
-	// If you close it here, that lockstep test fails and you must reconcile the
-	// two definitions there rather than growing a second vocabulary in this
-	// package.
+	// BREAKING IN v11 (#3711). Before this the principal type was open here
+	// and closed only in platform/shared/identity, so `Robot::okta-prod:00u1`
+	// was accepted by the PDP and refused by every identity path. Closing it
+	// rejects artifacts the wire accepted, which no shipped constructor ever
+	// produced (the census is in the #3711 PR body: every non-test constructor
+	// passes one of the six).
+	//
+	// FIVE SURFACES CARRY THE CLOSURE, and they are named because a claim
+	// about "everywhere" is the kind that turns out to be false - as this
+	// comment demonstrated by saying FOUR while a fifth was being added in the
+	// same change:
+	//   - a REQUEST, through Engine.Decide -> req.Validate -> ID.Validate;
+	//   - a REPLAY RECORD, by the same path;
+	//   - a POLICY SCOPE, through pdp.Document.Validate, which validates every
+	//     identifier a policy names and its kind (the compiler reads
+	//     Scope.Principals through ID.String() with no Kind and no Validate,
+	//     so nothing else could catch it);
+	//   - an AUTHORING DOCUMENT, through authoring-v1.schema.json's
+	//     $defs/principal_type, enforced at NewDocument and at Parse;
+	//   - a PUBLICATION'S APPROVERS, through authoring.Publish. The fifth, the
+	//     one nobody named, and the only one whose value is SIGNED: it goes
+	//     into PublicationProvenance and survives LoadArtifact, so an
+	//     out-of-vocabulary approver was a signed statement rather than a
+	//     rejected input.
+	// identity.CanonicalFormVersion does NOT move for this: the canonical FORM
+	// identity mints is unchanged, identity already refused these types, so no
+	// outstanding proof binds a principal this closes out.
 	Type string `json:"type"`
 	// Qualifier is the realm or connector identifier for qualified kinds and
 	// is empty for unqualified kinds.
@@ -195,6 +244,9 @@ func (id ID) Validate() error {
 	}
 	if !typeSegmentRe.MatchString(id.Type) {
 		return fmt.Errorf("contract: %s identifier has invalid type segment %q", id.Kind, id.Type)
+	}
+	if id.Kind == KindPrincipal && !PrincipalType(id.Type).IsValid() {
+		return fmt.Errorf("contract: principal identifier declares type %q, which is not one of %v (#3711: the principal vocabulary is closed and shared with platform/shared/identity)", id.Type, principalTypes)
 	}
 	if id.Local == "" {
 		return fmt.Errorf("contract: %s identifier %q has an empty local segment", id.Kind, id.Type)
@@ -262,4 +314,114 @@ func MustParseID(kind Kind, s string) ID {
 		panic(err)
 	}
 	return id
+}
+
+// CanonicalLocal folds an identifier's local segment to the form the identity
+// actually resolves under.
+//
+// THE DIRECTORY IS CASE-INSENSITIVE AND A SIGNATURE IS NOT, WHICH IS THE WHOLE
+// PROBLEM. The roles store matches an assignment on `lower(btrim(user_email))`,
+// so `Alice@acme.example` and `alice@acme.example` are one person to it, while
+// every byte comparison downstream sees two. An SSO deployment carries whatever
+// spelling the identity provider asserted, and a provenance record keeps the
+// string as typed.
+//
+// IT LIVES HERE, IN THE MODULE BOTH SIDES IMPORT, and that placement is the
+// point rather than an accident. The rule previously existed once as
+// identity.CanonicalEmail, applied by the customer portal to its own inputs -
+// a fix at ONE CALLER of a control rather than at the control. That closes the
+// hole for the caller that remembers and leaves it open for every other one,
+// and it is why separation of duties was still defeatable on this axis after
+// the casing bug had been diagnosed, written up and fixed. A second folding
+// rule elsewhere would be a second answer to "are these the same person", and
+// the two would disagree the day either changed; identity.CanonicalEmail now
+// delegates here, with a lockstep test.
+//
+// LOCAL ONLY. Kind and qualifier are NOT folded: the case-insensitivity
+// established by the roles store is a property of an email local part, and
+// nothing establishes it for a realm identifier, where two spellings could
+// legitimately be two realms. Folding a field because folding another one
+// helped is how a fix becomes a defect.
+func CanonicalLocal(local string) string {
+	return strings.ToLower(strings.TrimSpace(local))
+}
+
+// identityKeySep separates the fields of an identity key.
+//
+// It is a record separator rather than a colon or a slash because those occur
+// in real local segments (a SPIFFE id carries both). Validate does not reject
+// \x1e inside a local segment, so a caller CAN put one there - and it still
+// cannot forge a key, because the local segment is LAST and the three fields
+// ahead of it draw from grammars that admit no \x1e (Kind is a closed
+// vocabulary, Type matches typeSegmentRe, Qualifier matches the qualifier
+// grammar). The first three splits are therefore unambiguous whatever the
+// local segment contains. TestAnIdentityKeyCannotBeForgedThroughTheLocalSegment
+// drives that rather than leaving it as an argument.
+const identityKeySep = "\x1e"
+
+// IdentityKey returns the key two identifiers share exactly when they denote
+// the SAME ENTITY.
+//
+// # WHY THE TYPE IS DROPPED FOR A PRINCIPAL AND KEPT FOR EVERYTHING ELSE
+//
+// For KindPrincipal, Type is the subject's CLASSIFICATION - User, Service,
+// Agent - asserted by whatever minted the identifier. It is a fact ABOUT a
+// person, not a component of who they are, and the same person reaches two
+// different surfaces classified two different ways: a token says Service where
+// a directory says User. Comparing the rendered form therefore turns one person
+// into two, which is #3876 (an author approved their own policy publication)
+// and #3878 (a requester stayed eligible to approve their own escalation).
+//
+// For every other kind, Type names the entity CLASS of a distinct entity: a
+// JiraIssue "ABC-1" and a JiraProject "ABC-1" are two resources that happen to
+// share a local segment, and the registry keys its catalog on the rendered form
+// precisely because the rendered form IS the identifier there. Dropping the type
+// for those would merge two entities, which is the same defect pointing the
+// other way.
+//
+// So the rule is one rule with one branch, stated once here, rather than a
+// judgement made again at each call site - which is how instances 1 to 5 of
+// this class arrived. The same reasoning governs the local fold: CanonicalLocal
+// exists because the roles store resolves an email case-insensitively, and that
+// is a property of a principal's local segment. It is NOT applied to a resource
+// or action local segment, where nothing establishes case-insensitivity and two
+// spellings may be two entities.
+//
+// THE BRANCH IS ON KIND, NOT ON TYPE, so a KindGroup identifier keeps its type
+// while a KindPrincipal whose type happens to be "Group" does not. That is not
+// an inconsistency: a group named as its own KIND is a different entity class
+// from a principal, and a principal typed Group is a principal the caller has
+// classified. The second fold only ever makes an identity control STRICTER -
+// one more candidate recognised as the author, one fewer counted as a distinct
+// approver - which is the direction a control must fail in. The site where
+// merging a group with a subject WOULD be wrong is the normalized directory
+// graph, and that keys on the whole identifier rather than on this.
+//
+// The key is stable across processes and is safe to use as a map key. It is NOT
+// a wire form and must not be persisted or compared against a stored String().
+func (id ID) IdentityKey() string {
+	if id.Kind == KindPrincipal {
+		return string(id.Kind) + identityKeySep +
+			identityKeySep + id.Qualifier +
+			identityKeySep + CanonicalLocal(id.Local)
+	}
+	return string(id.Kind) + identityKeySep + id.Type +
+		identityKeySep + id.Qualifier +
+		identityKeySep + id.Local
+}
+
+// SameEntity reports whether two identifiers denote the same entity.
+//
+// A ZERO IDENTIFIER MATCHES NOTHING, INCLUDING ANOTHER ZERO. "No identifier" is
+// not an identity two values can share; reading it as one is the shape in which
+// an absent value becomes a determinate, permissive fact. Every current caller
+// validates its inputs before reaching here, so the guard is a floor rather
+// than a live branch - TestSameEntityRefusesTheZeroIdentifier drives it, and
+// the authoring control's own suite pins that a zero approver is refused
+// upstream with its own reason code.
+func SameEntity(a, b ID) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return a.IdentityKey() == b.IdentityKey()
 }

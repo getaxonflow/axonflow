@@ -218,6 +218,12 @@ type HITLWorkflowExecution struct {
 
 	// ResumedAt is when execution was resumed after approval.
 	ResumedAt *time.Time `json:"resumed_at,omitempty"`
+
+	// approvalExpiresAt is when the approval holding this execution stops being
+	// grantable, as the approval service answered it (#4254); zero when none was
+	// declared. Unexported, so it is never marshalled. The approve path refuses
+	// after it, because a timed-out approval is a deny.
+	approvalExpiresAt time.Time
 }
 
 // HITLStepExecution extends StepExecution with HITL support.
@@ -239,6 +245,13 @@ type PolicyCheckResult struct {
 	PolicyName string
 	Reason     string
 	Severity   string
+	// hold is the typed approval a challenge held the step with (#4254), carried
+	// to the pause that records the approval request. Unexported, so it is
+	// never marshalled.
+	hold *stepGateHold
+	// decided is the anchored decision the step's audit row records (PRD v11
+	// §5.7). Unexported, so it is never marshalled.
+	decided *anchoredDecision
 }
 
 // HITLPolicyChecker is the interface for checking policies before step execution.
@@ -266,6 +279,10 @@ type HITLApprovalRequest struct {
 	TriggerReason  string
 	Severity       string
 	RequestContext map[string]interface{}
+	// ExpiresAt is when the approval this request queues stops being grantable,
+	// from the typed approval requirement (#4254). Zero means none was declared,
+	// and the queue's default expiry applies.
+	ExpiresAt time.Time
 }
 
 // HITLApprovalResponse contains the approval details.
@@ -340,17 +357,27 @@ func (e *HITLWorkflowEngine) auditStepGate(ctx context.Context, exec *HITLWorkfl
 	if e.auditLogger == nil || pr == nil {
 		return
 	}
+	var decided anchoredDecision
+	if pr.decided != nil {
+		decided = *pr.decided
+	}
 	e.auditLogger.LogWorkflowOperation(ctx, &WorkflowAuditEntry{
 		WorkflowID:   exec.ID,
 		WorkflowName: workflowName,
 		StepName:     step.Name,
 		Operation:    "step_gate",
-		Decision:     pr.Action, // "block" | "require_approval" → canonical via workflowAuditDecision
-		Reason:       pr.Reason,
-		TenantID:     user.TenantID,
-		OrgID:        user.OrgID,
-		UserEmail:    user.Email,
-		UserRole:     user.Role,
+		Decision:     pr.Action, // "allow" | "block" | "require_approval" → canonical via workflowAuditDecision
+		// The anchored decision, under plane "map" (PRD v11 §5.7).
+		Plane:            decided.Plane,
+		Engine:           decided.Engine,
+		SubjectType:      decided.SubjectType,
+		PolicyBundle:     decided.PolicyBundle,
+		EngineDecisionID: decided.DecisionID,
+		Reason:           pr.Reason,
+		TenantID:         user.TenantID,
+		OrgID:            user.OrgID,
+		UserEmail:        user.Email,
+		UserRole:         user.Role,
 		Metadata: map[string]interface{}{
 			"policy_id":   pr.PolicyID,
 			"policy_name": pr.PolicyName,
@@ -403,6 +430,11 @@ func (e *HITLWorkflowEngine) ExecuteWithHITL(ctx context.Context, workflow Workf
 	}
 
 	for i, step := range workflow.Spec.Steps {
+		// #4254 (R3 B-H1): a conditional carrying no branch steps invokes
+		// nothing and is not presented: no decision, no row, and nothing runs.
+		if mapStepNotPresented(step) {
+			continue
+		}
 		if e.policyChecker != nil {
 			policyResult, err := e.policyChecker.CheckPolicy(ctx, step, baseExec)
 			if err != nil {
@@ -430,6 +462,11 @@ func (e *HITLWorkflowEngine) ExecuteWithHITL(ctx context.Context, workflow Workf
 					// Audit the gate decision before pausing for approval (#2693).
 					e.auditStepGate(ctx, hitlExec, workflow.Metadata.Name, step, policyResult, user)
 					return e.pauseForApproval(ctx, hitlExec, i, step, policyResult, user)
+
+				case "allow":
+					// One row per decision, an allow included (PRD v11 §5.7): the
+					// step runs once its decision is recorded.
+					e.auditStepGate(ctx, hitlExec, workflow.Metadata.Name, step, policyResult, user)
 
 				case "warn":
 					log.Printf("[HITL] Warning for step %s: Policy %s triggered - %s",
@@ -489,6 +526,15 @@ func (e *HITLWorkflowEngine) pauseForApproval(
 			TriggerReason: policyResult.Reason,
 			Severity:      policyResult.Severity,
 		}
+		// #4254: a typed challenge pauses the step with its approval requirement,
+		// recorded exactly as the workflow step gate's queue row records it, under
+		// this plane's name.
+		if hold := policyResult.hold; hold != nil {
+			req.RequestContext = hold.requestContext(mapSeamScope.String())
+			if hold.approval != nil {
+				req.ExpiresAt = hold.approval.ExpiresAt
+			}
+		}
 
 		resp, err := e.approvalService.CreateApproval(ctx, req)
 		if err != nil {
@@ -499,6 +545,7 @@ func (e *HITLWorkflowEngine) pauseForApproval(
 
 		exec.ApprovalID = resp.ApprovalID
 		exec.ApprovalStatus = resp.Status
+		exec.approvalExpiresAt = resp.ExpiresAt
 	}
 
 	log.Printf("[HITL] Execution %s paused at step %d (%s) - awaiting approval %s",

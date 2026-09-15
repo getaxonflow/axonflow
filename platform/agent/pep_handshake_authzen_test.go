@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -18,12 +21,13 @@ func newAuthZENRequest(t *testing.T, body string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest("POST", authzenHandlerPath, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	presentTestClientCredential(t, req)
 	return req
 }
 
 func serveAuthZEN(req *http.Request) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
-	handleAuthZENEvaluation(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleAuthZENEvaluation)).ServeHTTP(rr, req)
 	return rr
 }
 

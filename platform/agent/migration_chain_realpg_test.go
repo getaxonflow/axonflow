@@ -78,6 +78,9 @@ func TestMigrationChainAppliesCleanly_RealPostgres(t *testing.T) {
 		t.Fatalf("migrations directory not found at %s: %v", migrationsPath, err)
 	}
 
+	// Each mode's seeded policy ids, held to the shipped census once every mode
+	// has run (migration_seeded_policy_ids_realpg_test.go, #4126 D4b).
+	seeded := map[string]map[string]bool{}
 	for _, mode := range migrationChainModes() {
 		label := mode
 		if label == "" {
@@ -92,8 +95,10 @@ func TestMigrationChainAppliesCleanly_RealPostgres(t *testing.T) {
 			t.Setenv("DEPLOYMENT_MODE", mode)
 
 			applyChain(t, pc.DB, migrationsPath)
+			seeded[mode] = seededPolicyIDs(t, pc.DB)
 		})
 	}
+	assertSeededPolicyIDsAreShipped(t, seeded)
 }
 
 // TestMigrationChainAppliesOnSeededLegacyData_RealPostgres is the SEEDED-DATA
@@ -1518,8 +1523,10 @@ func TestMigration149EmitsItsRLSCanary_RealPostgres(t *testing.T) {
 // migration diagnostic went silent again. Verified — that exact one-line revert
 // produced 0 failures.
 //
-// A behavioural test cannot see this: run.go's migration block is inline in a
-// 200-line boot function with no seam to drive. So assert the source, which is
+// A behavioural test cannot see this: the migration connection is opened inline
+// in a 200-line boot function with no seam to drive (since #3894 the runner that
+// uses it is RunMigrations, but the connection is still opened in run.go and
+// handed to it). So assert the source, which is
 // the only thing that distinguishes "the opener exists" from "the runner uses
 // it". Scoped to the migration connection's own region so an unrelated
 // sql.Open elsewhere in the file cannot satisfy or break it.
@@ -1531,7 +1538,7 @@ func TestMigrationRunnerUsesTheNoticeHandlingOpener(t *testing.T) {
 	body := string(src)
 
 	const startMark = "var migrationDB *sql.DB"
-	const endMark = "setMigrationSessionVars(migrationDB"
+	const endMark = "RunMigrations(migrationDB"
 	i := strings.Index(body, startMark)
 	j := strings.Index(body, endMark)
 	if i < 0 || j < 0 || j <= i {

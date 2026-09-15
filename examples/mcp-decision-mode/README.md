@@ -92,9 +92,18 @@ durable locally), printing a `PASS` line per scenario.
 ## Quickstart
 
 ```bash
-# 1. Start AxonFlow (enterprise mode, PII blocking on) and load its credentials:
-PII_ACTION=block ./scripts/setup-e2e-testing.sh enterprise   # from repo root
+# 1. Start AxonFlow (enterprise mode) and load its credentials:
+./scripts/setup-e2e-testing.sh enterprise   # from repo root
 source /tmp/axonflow-e2e-env.sh
+
+# 1b. Turn PII blocking on for your organization. Since v11 the organization's
+#     recorded override is the only replacement for a stored action; environment
+#     variables no longer set it. Needs a customer-portal session for a user with
+#     sso:configure. Agents pick the change up within 60s by default.
+curl -X PUT http://localhost:8082/api/v1/detection-posture/pii \
+  -H "Content-Type: application/json" \
+  -b "axonflow_session=$PORTAL_SESSION" \
+  -d '{"action":"block"}'
 
 # 2. Configure + install this example:
 cd examples/mcp-decision-mode
@@ -151,9 +160,10 @@ availability-first paths (the synthetic allow is tagged in the audit row's
   in enterprise mode; `AXONFLOW_CLIENT_ID` / `AXONFLOW_TENANT_ID` are your
   AxonFlow org identifier. In enterprise mode `caller_identity.tenant_id` must
   match the authenticated identity or the PDP returns 403.
-- **Deny verdicts for Indonesian PII require `PII_ACTION=block`.** With the
-  default `redact`, NIK/NPWP yield an allow-with-redaction obligation instead
-  of a deny.
+- **Deny verdicts for Indonesian PII require the organization override
+  `pii=block`** (Quickstart step 1b). The checksum NIK/NPWP detector has no
+  stored policy row: with no override it detects and records and the call is
+  allowed; under `pii=redact` it adds a redaction obligation instead of a deny.
 - **The stdio MCP client is the test harness, not the demo target.** In
   production, Claude Code is the client; `e2e_harness.py` stands in for it so
   the example is testable without a live Claude session.

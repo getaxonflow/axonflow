@@ -1,19 +1,10 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -31,7 +22,6 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	"axonflow/platform/agent/circuitbreaker"
-	"axonflow/platform/decision/legacycompile"
 	sharedidentity "axonflow/platform/shared/identity"
 )
 
@@ -50,7 +40,17 @@ func generateTestJWT(userID interface{}, tenantID string, permissions []string, 
 	}
 
 	now := time.Now().Unix()
+	// THE PER-USER MINT'S CLAIM SET (#4311). A token stamped with the mint's
+	// issuer is admitted on a verifying deployment only when it also carries
+	// email, jti and org_id, the organization it was minted for, which is the
+	// tenant this helper is given. Before #4311 this fixture stamped the issuer
+	// without them, the very shape the request path wrongly admitted.
 	claims := map[string]interface{}{
+		"iss":         sharedidentity.UserTokenIssuer,
+		"sub":         fmt.Sprint(userID),
+		"email":       fmt.Sprintf("user-%v@%s.test", userID, tenantID),
+		"jti":         fmt.Sprintf("test-jti-%v-%s", userID, tenantID),
+		"org_id":      tenantID,
 		"user_id":     userID,
 		"tenant_id":   tenantID,
 		"permissions": strings.Join(permissions, ","),
@@ -823,397 +823,6 @@ func TestCreateClientHandler(t *testing.T) {
 	}
 }
 
-// TestPolicyTestHandler tests the policy test endpoint
-func TestPolicyTestHandler(t *testing.T) {
-	// Initialize static policy engine
-	// Policy evaluation uses unified shared engine
-
-	tests := []struct {
-		name           string
-		requestBody    interface{}
-		expectedStatus int
-	}{
-		{
-			name: "valid policy test",
-			requestBody: map[string]string{
-				"query":        "SELECT * FROM users",
-				"user_email":   "test@example.com",
-				"request_type": "query",
-			},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "invalid json",
-			requestBody:    "{invalid",
-			expectedStatus: http.StatusBadRequest,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var body []byte
-			var err error
-
-			if str, ok := tt.requestBody.(string); ok {
-				body = []byte(str)
-			} else {
-				body, err = json.Marshal(tt.requestBody)
-				if err != nil {
-					t.Fatalf("failed to marshal request: %v", err)
-				}
-			}
-
-			req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-
-			policyTestHandler(w, req)
-
-			if w.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
-			}
-
-			if tt.expectedStatus == http.StatusOK {
-				var response map[string]interface{}
-				if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-					t.Fatalf("failed to decode response: %v", err)
-				}
-
-				// Check that response has expected fields
-				if _, ok := response["blocked"]; !ok {
-					t.Error("expected 'blocked' field in response")
-				}
-			}
-		})
-	}
-}
-
-// TestPolicyTestHandlerWithTierAwareEngine tests policy handler with tier-aware engine
-func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
-	// Save original global state
-	originalEngine := tierAwarePolicyEngine
-	defer func() {
-		tierAwarePolicyEngine = originalEngine
-	}()
-
-	t.Run("policy blocked by tier-aware engine", func(t *testing.T) {
-		// Create fresh mock database for this test
-		db, mock, err := sqlmock.New()
-		if err != nil {
-			t.Fatalf("failed to create mock db: %v", err)
-		}
-		defer db.Close()
-
-		// Create fresh tier-aware engine
-		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
-
-		// Mock returning a tenant policy that blocks "blocked_pattern".
-		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
-		// rows + overrides; 'global' scope: system rows).
-		effCols := []string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"tenant_id", "org_id", "segment_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-		}
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs("test-tenant").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
-				"policy-uuid", "custom_test123", "Block Pattern", "security-admin",
-				"blocked_pattern", "high",
-				"Blocks blocked_pattern", "block", "tenant", 50, true,
-				"tenant_1", "test-tenant", nil,
-				"[]", "{}", 1,
-				time.Now(), time.Now(), "admin", "admin",
-			))
-		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-			WillReturnRows(sqlmock.NewRows([]string{
-				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
-			}))
-		mock.ExpectCommit()
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs(GlobalOrgSentinel).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs(sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols))
-		mock.ExpectCommit()
-
-		body, _ := json.Marshal(map[string]string{
-			"query":        "this has blocked_pattern in it",
-			"user_email":   "test@example.com",
-			"request_type": "chat",
-		})
-
-		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		// Inject tenant via context (apiAuthMiddleware sets this in production)
-		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
-		req = req.WithContext(ctx)
-		w := httptest.NewRecorder()
-
-		policyTestHandler(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Errorf("expected status 200, got %d", w.Code)
-		}
-
-		var response map[string]interface{}
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
-
-		// Should be blocked by the tier-aware engine
-		blocked, ok := response["blocked"].(bool)
-		if !ok || !blocked {
-			t.Error("expected request to be blocked by tier-aware policy")
-		}
-	})
-
-	t.Run("policy matches but action is warn (not block)", func(t *testing.T) {
-		// Create fresh mock database for this test
-		db, mock, err := sqlmock.New()
-		if err != nil {
-			t.Fatalf("failed to create mock db: %v", err)
-		}
-		defer db.Close()
-
-		// Create fresh tier-aware engine
-		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
-
-		// Mock returning a tenant policy with "warn" action
-		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
-		// rows + overrides; 'global' scope: system rows).
-		effCols := []string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"tenant_id", "org_id", "segment_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-		}
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs("test-tenant").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
-				"policy-uuid", "custom_test456", "Warn Pattern", "security-admin",
-				"warn_pattern", "medium",
-				"Warns on pattern", "warn", "tenant", 50, true, // action is "warn" not "block"
-				"tenant_1", "test-tenant", nil,
-				"[]", "{}", 1,
-				time.Now(), time.Now(), "admin", "admin",
-			))
-		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-			WillReturnRows(sqlmock.NewRows([]string{
-				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
-			}))
-		mock.ExpectCommit()
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs(GlobalOrgSentinel).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs(sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols))
-		mock.ExpectCommit()
-
-		body, _ := json.Marshal(map[string]string{
-			"query":        "this has warn_pattern in it",
-			"user_email":   "test@example.com",
-			"request_type": "chat",
-		})
-
-		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
-		req = req.WithContext(ctx)
-		w := httptest.NewRecorder()
-
-		policyTestHandler(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Errorf("expected status 200, got %d", w.Code)
-		}
-
-		var response map[string]interface{}
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
-
-		// Should NOT be blocked (action is warn, not block)
-		blocked, ok := response["blocked"].(bool)
-		if ok && blocked {
-			t.Error("expected request to NOT be blocked (action is warn)")
-		}
-
-		// But policy should have been triggered
-		triggered, ok := response["triggered_policies"].([]interface{})
-		if !ok || len(triggered) == 0 {
-			t.Error("expected triggered_policies to include the warn policy")
-		}
-	})
-}
-
-// TestPolicyTestHandler_SegmentScopedPolicy_Blocks is the #3051 fix's core
-// proof: policyTestHandler now resolves governance segments for the
-// caller-supplied testReq.UserEmail, so a segment-scoped block policy is
-// correctly simulated as blocking — matching what a real /api/request call
-// from a genuine member of that segment would do. Before the fix this always
-// came back blocked=false (a false negative), since segmentIDs was hardcoded
-// to nil regardless of the resolved segment.
-func TestPolicyTestHandler_SegmentScopedPolicy_Blocks(t *testing.T) {
-	originalEngine := tierAwarePolicyEngine
-	defer func() { tierAwarePolicyEngine = originalEngine }()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create mock db: %v", err)
-	}
-	defer db.Close()
-
-	tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
-
-	// testReq.UserEmail resolves to segment "finance", which has a
-	// segment-scoped block policy on "confidential_ledger". No tier-level
-	// (segment_id IS NULL) policy matches at all — a pre-fix simulation
-	// would report blocked=false.
-	fake := &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
-		Segments: []sharedidentity.Segment{{ID: "finance", DisplayName: "Finance"}},
-	}}
-	withFleetSegmentResolver(t, fake)
-
-	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
-		"seg-policy-1", "finance_ledger_block", "Finance Ledger Block", "sensitive-data",
-		"confidential_ledger", "critical",
-		"Segment-scoped block on the finance ledger keyword", "block", "tenant", 50, true,
-		"test-tenant", nil, "finance",
-		"[]", "{}", 1,
-		time.Now(), time.Now(), "admin", "admin",
-	)
-	globalRows := sqlmock.NewRows(effectiveCols())
-	// #3051 regression proof: the query must actually be bound to the
-	// resolved "finance" segment — WithArgs inside expectEffectiveTwoPass
-	// fails this test if policyTestHandler ever passes nil/empty segments
-	// to GetEffective instead of the resolver's result.
-	expectEffectiveTwoPass(mock, "test-tenant", tenantRows, emptyOverrideRows(), globalRows, []string{"finance"})
-
-	body, _ := json.Marshal(map[string]string{
-		"query":        "please read the confidential_ledger for Q3",
-		"user_email":   "alice@corp.example",
-		"request_type": "chat",
-	})
-
-	req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	policyTestHandler(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var response map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if blocked, _ := response["blocked"].(bool); !blocked {
-		t.Errorf("expected blocked=true (segment-scoped policy simulated for a real segment member), got response=%+v", response)
-	}
-	if fake.callCount() != 1 {
-		t.Errorf("expected segment resolver to be called exactly once, got %d", fake.callCount())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet mock expectations: %v", err)
-	}
-}
-
-// TestPolicyTestHandler_SegmentResolutionFailure_SimulatesFailClosedDeny
-// proves the #3293 convergence (superseding the old #3051 fail-open
-// carve-out this test used to pin): a genuine segment-resolution ERROR must
-// now simulate the SAME fail-closed deny a real /api/request call would
-// produce. This is still a dry-run — nothing real is blocked — so the
-// simulated verdict comes back as a normal 200 (not a 403/5xx), but with
-// blocked=true and a fail-closed reason in the body. Critically, the
-// #3293 invariant requires this to short-circuit BEFORE either engine
-// runs: the mock has ZERO registered expectations, so if policyTestHandler
-// regressed to calling GetEffective (Phase 2) with a nil-on-failure segment
-// set, this test would fail on the unmet/unexpected-query check below.
-func TestPolicyTestHandler_SegmentResolutionFailure_SimulatesFailClosedDeny(t *testing.T) {
-	originalEngine := tierAwarePolicyEngine
-	defer func() { tierAwarePolicyEngine = originalEngine }()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create mock db: %v", err)
-	}
-	defer db.Close()
-
-	tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
-
-	fake := &fakeSegmentResolver{err: errAssertSegmentResolutionFailed}
-	withFleetSegmentResolver(t, fake)
-
-	// Deliberately NO mock.Expect* calls registered — Phase 2's GetEffective
-	// must never be queried when segment resolution fails.
-
-	body, _ := json.Marshal(map[string]string{
-		"query":        "just a normal query",
-		"user_email":   "bob@corp.example",
-		"request_type": "chat",
-	})
-
-	req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	policyTestHandler(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200 (simulated verdict, not a real HTTP error), got %d: %s", w.Code, w.Body.String())
-	}
-
-	var response map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	const wantReason = "segment resolution unavailable — a real request would be denied (fail-closed, ADR-060 #2989)"
-	if blocked, _ := response["blocked"].(bool); !blocked {
-		t.Errorf("#3293: expected blocked=true (simulated fail-closed deny), got response=%+v", response)
-	}
-	// Exact-string check, not merely non-empty: if Phase 2 ran instead (a
-	// regression of the short-circuit), it would either error on the
-	// unexpected query and leave blocked=false (failing the check above), or
-	// — were it somehow to match a real policy — report a DIFFERENT reason
-	// ("Blocked by ... policy: ..."), so this pins the deny to the
-	// resolution-site simulation specifically.
-	if reason, _ := response["reason"].(string); reason != wantReason {
-		t.Errorf("#3293: reason = %q, want %q", reason, wantReason)
-	}
-	if fake.callCount() != 1 {
-		t.Errorf("expected segment resolver to be called exactly once, got %d", fake.callCount())
-	}
-	// No tier-aware engine query should have been issued at all — the
-	// fail-closed branch returns before ever calling EvaluatePolicy.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("#3293: GetEffective must NOT have been queried on a fail-closed simulated deny (Phase 2 must never run with a possibly-failed segment set): %v", err)
-	}
-}
-
 // TestMetricsHandler tests the metrics endpoint
 func TestMetricsHandler(t *testing.T) {
 	tests := []struct {
@@ -1596,7 +1205,10 @@ func TestClientRequestHandler_TenantMismatch(t *testing.T) {
 	defer delete(knownClients, "test-client-tenant")
 
 	// Generate a valid JWT for a user in "trip_planner_tenant" - different from client's "different_tenant"
-	userToken := generateTestJWT(2, "trip_planner_tenant", []string{"query", "basic_pii"}, "agent")
+	// A valid per-user token for the CREDENTIAL's organization (the licence's
+	// tenant-test) naming another tenant, so the 403 below is the tenant binding
+	// and not the per-user claim rule's org match (#4311).
+	userToken := generateTestJWTWithOrgEmail(2, "trip_planner_tenant", "tenant-test", "user-2@trip.test", []string{"query", "basic_pii"}, "agent")
 
 	reqBody := ClientRequest{
 		ClientID:    "test-client-tenant",
@@ -1904,7 +1516,7 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 	}
 
 	if len(response.Steps) != 2 {
-		t.Errorf("expected 2 steps, got %d", len(response.Steps))
+		t.Fatalf("expected 2 steps, got %d", len(response.Steps))
 	}
 
 	// Verify first step structure
@@ -2867,140 +2479,6 @@ func TestAgentMetrics_EdgeCases(t *testing.T) {
 	if len(metrics.connectorMetrics) != len(connectors) {
 		t.Errorf("Expected %d connector metrics, got %d", len(connectors), len(metrics.connectorMetrics))
 	}
-}
-
-// TestTierAwarePolicyIntegration tests that tenant-specific policies are evaluated
-func TestTierAwarePolicyIntegration(t *testing.T) {
-	// Create mock database
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create mock db: %v", err)
-	}
-	defer db.Close()
-
-	// Save and restore global state
-	originalEngine := tierAwarePolicyEngine
-	defer func() { tierAwarePolicyEngine = originalEngine }()
-
-	// Initialize tier-aware engine with mock db
-	tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
-
-	t.Run("tenant policy blocks matching pattern", func(t *testing.T) {
-		// Mock the GetEffective query to return a tenant policy that blocks "secret_pattern"
-		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
-		// rows + overrides; 'global' scope: system rows).
-		effCols := []string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"tenant_id", "org_id", "segment_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-		}
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs("test-tenant").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		// Decision 5 (#3490): pass A binds (scopeOrg, segments). The row it
-		// returns carries org_id = "test-tenant" for the same reason the GUC
-		// does - the org == tenant identity this fixture models.
-		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
-				"policy-uuid", "custom_tenant123", "Block Secret Pattern", "security-admin",
-				"secret_pattern", "high",
-				"Block secret patterns", "block", "tenant", 50, true,
-				"test-tenant", "test-tenant", nil,
-				"[]", "{}", 1,
-				time.Now(), time.Now(), "admin", "admin",
-			))
-		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-			WillReturnRows(sqlmock.NewRows([]string{
-				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
-			}))
-		mock.ExpectCommit()
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs(GlobalOrgSentinel).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs(sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols))
-		mock.ExpectCommit()
-
-		// Test user
-		user := &User{
-			Email:    "test@example.com",
-			TenantID: "test-tenant",
-		}
-
-		// Evaluate policy with input that matches the pattern
-		ctx := context.Background()
-		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, nil, "this contains secret_pattern in it", TierShadowContext{Plane: legacycompile.PlaneProxyTier})
-		if err != nil {
-			t.Fatalf("EvaluatePolicy failed: %v", err)
-		}
-
-		if !result.Matched {
-			t.Error("expected policy to match")
-		}
-		if result.Action != "block" {
-			t.Errorf("expected action 'block', got '%s'", result.Action)
-		}
-		if result.Tier != TierTenant {
-			t.Errorf("expected tier 'tenant', got '%s'", result.Tier)
-		}
-	})
-
-	t.Run("no match when pattern not in input", func(t *testing.T) {
-		// Mock the GetEffective query
-		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
-		// rows + overrides; 'global' scope: system rows).
-		effCols := []string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"tenant_id", "org_id", "segment_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-		}
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs("test-tenant").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
-				"policy-uuid", "custom_tenant456", "Block Secret Pattern", "security-admin",
-				"secret_pattern", "high",
-				"Block secret patterns", "block", "tenant", 50, true,
-				"test-tenant", "test-tenant", nil,
-				"[]", "{}", 1,
-				time.Now(), time.Now(), "admin", "admin",
-			))
-		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-			WillReturnRows(sqlmock.NewRows([]string{
-				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
-			}))
-		mock.ExpectCommit()
-		mock.ExpectBegin()
-		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-			WithArgs(GlobalOrgSentinel).
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery(`SELECT`).
-			WithArgs(sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows(effCols))
-		mock.ExpectCommit()
-
-		// Evaluate with input that does NOT match
-		ctx := context.Background()
-		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, "test-tenant", nil, nil, "this is a normal query", TierShadowContext{Plane: legacycompile.PlaneProxyTier})
-		if err != nil {
-			t.Fatalf("EvaluatePolicy failed: %v", err)
-		}
-
-		if result.Matched {
-			t.Error("expected no match for normal query")
-		}
-	})
 }
 
 func TestGetOrchestratorURL(t *testing.T) {

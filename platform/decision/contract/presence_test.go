@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -229,7 +232,7 @@ func TestComposingAnObligationDecodedWithoutMandatoryDenies(t *testing.T) {
 	complete := decodeObligation(t, aValidObligationDocument)
 	if out := ComposeObligations(ComposeInput{
 		Obligations: []Obligation{complete},
-		Leaves:      []string{"args.query"},
+		Payload:     KnownPayloadLeaves("args.query"),
 		PEP:         &PEPProfile{ID: "pep", Capabilities: []Capability{{Type: ObFieldRedact, Version: 1}}},
 	}); out.Denied {
 		t.Fatalf("composition denied a complete obligation: %s", out.Detail)
@@ -238,7 +241,7 @@ func TestComposingAnObligationDecodedWithoutMandatoryDenies(t *testing.T) {
 	incomplete := decodeObligation(t, `{"type":"field_redact","target":"args.query","source_policy":"p-1","schema_version":1}`)
 	out := ComposeObligations(ComposeInput{
 		Obligations: []Obligation{incomplete},
-		Leaves:      []string{"args.query"},
+		Payload:     KnownPayloadLeaves("args.query"),
 		PEP:         &PEPProfile{ID: "pep", Capabilities: []Capability{{Type: ObFieldRedact, Version: 1}}},
 	})
 	if !out.Denied {
@@ -274,7 +277,7 @@ func TestComposingAnObligationDecodedWithoutMandatoryDenies(t *testing.T) {
 	}
 	dropped := ComposeObligations(ComposeInput{
 		Obligations: []Obligation{complete, otherwiseInvalid},
-		Leaves:      []string{"args.query"},
+		Payload:     KnownPayloadLeaves("args.query"),
 		PEP:         &PEPProfile{ID: "pep", Capabilities: []Capability{{Type: ObFieldRedact, Version: 1}}},
 	})
 	if dropped.Denied {
@@ -686,7 +689,13 @@ func assertRuling(t *testing.T, shapes map[Schema]sweptShape, shape Schema, memb
 func TestACarriedSeparationOfDutiesParameterMustBeADeclaredSpelling(t *testing.T) {
 	approval := func(sod string) Obligation {
 		o := Obligation{
-			Type: ObApprovalChallenge, SourcePolicy: "p-1", SchemaVersion: 1,
+			// MANDATORY, because CONTROL 2 below reads the composed
+			// requirement and only a mandatory approval contributes one: an
+			// advisory obligation may not create a hold, add a clause or
+			// tighten separation of duties (#3891). An advisory fixture here
+			// would assert the spelling against a requirement that no longer
+			// exists.
+			Type: ObApprovalChallenge, SourcePolicy: "p-1", SchemaVersion: 1, Mandatory: true,
 			Params: map[string]string{"quorum": "1", "eligible": "Group::realm:reviewers"},
 		}
 		if sod != "" {

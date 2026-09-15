@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -19,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gorilla/mux"
 
@@ -56,15 +47,6 @@ func TestRegisterMCPHandlers_CheckEndpoints(t *testing.T) {
 func TestMCPCheckInputHandler_CommunityMode_Allowed(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-
-	// No policy engines → everything passes
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
@@ -105,14 +87,6 @@ func TestMCPCheckInputHandler_AllowEmitsDecisionID(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
 		Statement:     "SELECT id, email FROM users LIMIT 10",
@@ -146,10 +120,6 @@ func TestMCPCheckInputHandler_AllowEmitsDecisionID(t *testing.T) {
 func TestMCPCheckOutputHandler_AllowEmitsDecisionID(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	body, _ := json.Marshal(MCPCheckOutputRequest{
 		ConnectorType: "postgres",
@@ -215,65 +185,12 @@ func TestMCPCheckInputHandler_MissingStatement(t *testing.T) {
 	}
 }
 
-func TestMCPCheckInputHandler_DynamicPolicyBlocks(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
-	// Orchestrator denies the request
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:           false,
-		BlockReason:       "Rate limit exceeded",
-		PoliciesEvaluated: 1,
-	})
-	defer server.Close()
-
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"postgres"},
-	})
-
-	body, _ := json.Marshal(MCPCheckInputRequest{
-		ConnectorType: "postgres",
-		Statement:     "SELECT * FROM users",
-		TenantID:      "default",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	mcpCheckInputHandler(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp MCPCheckInputResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
-	if resp.Allowed {
-		t.Error("expected allowed=false")
-	}
-	if resp.BlockReason == "" {
-		t.Error("expected non-empty block_reason")
-	}
-}
-
 func TestMCPCheckInputHandler_WithEngineNoPolicies_Allowed(t *testing.T) {
 	// Verifies the handler doesn't crash and returns allowed=true when a policy engine
 	// is configured but has no policies loaded (nil DB → empty cache).
 	// Static policy blocking with live policies is exercised by shared/policy engine_test.go.
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 
 	// Engine with nil DB has an empty policy cache → all requests pass
 	// #2820: use a DB-backed engine that LOADS successfully with an empty
@@ -312,9 +229,6 @@ func TestMCPCheckInputHandler_DefaultOperation(t *testing.T) {
 	defer cleanup()
 
 	// No policy engines
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
 
 	// No operation field → should default to "query" without error
 	body, _ := json.Marshal(MCPCheckInputRequest{
@@ -341,11 +255,6 @@ func TestMCPCheckInputHandler_DefaultOperation(t *testing.T) {
 func TestMCPCheckOutputHandler_CommunityMode_Allowed(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-
-	// No policy engines
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
@@ -462,11 +371,6 @@ func TestMCPCheckOutputHandler_MessageAccepted(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	// No policy engines
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
@@ -485,49 +389,6 @@ func TestMCPCheckOutputHandler_MessageAccepted(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestMCPCheckOutputHandler_WithEngineNoPolicies_Allowed(t *testing.T) {
-	// Verifies the handler doesn't crash and returns allowed=true when a policy engine
-	// is configured but has no policies loaded (nil DB → empty cache).
-	// Static policy blocking with live policies is exercised by shared/policy engine_test.go.
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-
-	// #2820: use a DB-backed engine that LOADS successfully with an empty
-	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
-	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
-	// it can no longer stand in for "engine present, no policies → allow".
-	installSharedEngineWithMockDB(t)
-
-	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalExfiltrationChecker(nil)
-	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
-
-	t.Setenv("MCP_DETECTION_ENABLED", "true")
-
-	body, _ := json.Marshal(MCPCheckOutputRequest{
-		ConnectorType: "postgres",
-		ResponseData:  []map[string]interface{}{{"id": 1}},
-		RowCount:      1,
-		TenantID:      "default",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/mcp/check-output", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	mcpCheckOutputHandler(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp MCPCheckOutputResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
-	if !resp.Allowed {
-		t.Errorf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
 	}
 }
 
@@ -704,10 +565,6 @@ func TestMCPCheckInputHandler_ExplicitExecuteOperation(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
 		Statement:     "INSERT INTO users VALUES (1, 'Alice')",
@@ -734,10 +591,6 @@ func TestMCPCheckOutputHandler_MessageOnly_NoExfiltration(t *testing.T) {
 	// because exfiltration checking is disabled for execute-style outputs.
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
-
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
@@ -781,10 +634,6 @@ func TestMCPCheckOutputHandler_WithMetadata(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
@@ -810,127 +659,23 @@ func TestMCPCheckOutputHandler_WithMetadata(t *testing.T) {
 // evaluateInputPolicies — direct helper tests
 // =============================================================================
 
-func TestEvaluateInputPolicies_NilEvaluator_NilEngine(t *testing.T) {
-	// When both dynamic evaluator and static engine are nil, outcome is clean
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
+func TestEvaluateInputPolicies_NilEngine(t *testing.T) {
+	// With no engine installed there is no detector pass: the outcome is empty.
 	originalEngine := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(nil)
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "postgres", "", "SELECT 1", nil, mcpCfg)
 
-	if out.EvalUnavailable {
-		t.Error("expected EvalUnavailable=false")
-	}
-	if out.DynamicBlocked {
-		t.Error("expected DynamicBlocked=false")
-	}
 	if out.StaticResult != nil {
 		t.Error("expected StaticResult=nil")
 	}
 }
 
-func TestEvaluateInputPolicies_DynamicAllowed(t *testing.T) {
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:           true,
-		PoliciesEvaluated: 3,
-	})
-	defer server.Close()
-
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"postgres"},
-	})
-
-	ctx := context.Background()
-	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
-
-	if out.EvalUnavailable {
-		t.Error("expected EvalUnavailable=false")
-	}
-	if out.DynamicBlocked {
-		t.Error("expected DynamicBlocked=false")
-	}
-	if out.DynamicInfo == nil {
-		t.Error("expected DynamicInfo to be populated")
-	}
-}
-
-func TestEvaluateInputPolicies_DynamicBlocked(t *testing.T) {
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:     false,
-		BlockReason: "Budget exceeded",
-	})
-	defer server.Close()
-
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"postgres"},
-	})
-
-	ctx := context.Background()
-	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
-
-	if !out.DynamicBlocked {
-		t.Error("expected DynamicBlocked=true")
-	}
-	if out.DynamicBlockReason != "Budget exceeded" {
-		t.Errorf("expected block reason 'Budget exceeded', got %q", out.DynamicBlockReason)
-	}
-}
-
-func TestEvaluateInputPolicies_ConnectorNotEnabled(t *testing.T) {
-	// Dynamic evaluator is configured but connector is not in the enabled list
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:     false,
-		BlockReason: "Should not reach",
-	})
-	defer server.Close()
-
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"mysql"}, // NOT postgres
-	})
-
-	ctx := context.Background()
-	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
-
-	if out.DynamicBlocked {
-		t.Error("expected DynamicBlocked=false when connector not enabled")
-	}
-}
-
 func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 	// Static engine with no loaded policies should return a result with PoliciesEvaluated=0
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
 
 	// #2820: use a DB-backed engine that LOADS successfully with an empty
 	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
@@ -942,7 +687,7 @@ func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "postgres", "", "SELECT 1", nil, mcpCfg)
 
 	if out.StaticResult == nil {
 		t.Fatal("expected StaticResult to be non-nil when engine is active")
@@ -956,48 +701,24 @@ func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 // evaluateOutputPolicies — direct helper tests
 // =============================================================================
 
-func TestEvaluateOutputPolicies_NilEngine_NilChecker(t *testing.T) {
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalExfiltrationChecker(nil)
-	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
-
-	ctx := context.Background()
-	rows := []map[string]interface{}{{"id": 1}}
-	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 1, true, false /* isGateway */, nil)
-
-	if out.SQLiBlocked {
-		t.Error("expected SQLiBlocked=false")
-	}
-	if out.StaticResult != nil {
-		t.Error("expected StaticResult=nil")
-	}
-	if out.ExfilResult != nil {
-		t.Error("expected ExfilResult=nil")
-	}
+// responseRouteContext is the context a response route hands
+// evaluateOutputPolicies once its request authenticated to orgID: the enforcing
+// seam installed with the request's subject - the client credential, no user
+// token presented - as mcpQueryHandler installs it before the response pass.
+func responseRouteContext(orgID string) context.Context {
+	auth := &AuthResult{Kind: AuthKindEnterprise, OrgID: orgID, TenantID: "route-tenant", ClientID: "route-client"}
+	return withMCPResponseSeam(context.Background(), "route-request", requestSubject(orgID, auth, nil, userAbsent), pepHandshakeResolution{})
 }
 
 func TestEvaluateOutputPolicies_MessageOnly(t *testing.T) {
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
+	out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "postgres", "", nil, "3 rows affected", nil, 3, false, false /* isGateway */)
 
-	ctx := context.Background()
-	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", nil, "3 rows affected", nil, 3, false, false /* isGateway */, nil)
-
-	if out.SQLiBlocked {
-		t.Error("expected SQLiBlocked=false")
+	if out.StaticResult == nil || out.StaticResult.Blocked {
+		t.Errorf("a message-only response was not decided and released: %+v", out.StaticResult)
 	}
 }
 
 func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
 
@@ -1007,9 +728,8 @@ func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
 		Enabled:          true,
 	})
 
-	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 3, true, false /* isGateway */, nil)
+	out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "postgres", "", rows, "", nil, 3, true, false /* isGateway */)
 
 	if out.ExfilResult == nil {
 		t.Fatal("expected ExfilResult to be non-nil")
@@ -1024,10 +744,6 @@ func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
 
 func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 	// When checkExfiltration=false, even with strict limits, exfiltration is skipped
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
 
@@ -1037,45 +753,11 @@ func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 		Enabled:          true,
 	})
 
-	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 3, false, false /* isGateway */, nil)
+	out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "postgres", "", rows, "", nil, 3, false, false /* isGateway */)
 
 	if out.ExfilResult != nil {
 		t.Error("expected ExfilResult=nil when checkExfiltration=false")
-	}
-}
-
-func TestEvaluateOutputPolicies_WithStaticEngine(t *testing.T) {
-	// Static engine with empty cache should evaluate but not block
-	// #2820: use a DB-backed engine that LOADS successfully with an empty
-	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
-	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
-	// it can no longer stand in for "engine present, no policies → allow".
-	installSharedEngineWithMockDB(t)
-
-	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalExfiltrationChecker(nil)
-	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
-
-	t.Setenv("MCP_DETECTION_ENABLED", "true")
-
-	ctx := context.Background()
-	rows := []map[string]interface{}{{"name": "Alice"}}
-	// isGateway=true forces the detection gate open, so the empty-set guard is the
-	// ONLY thing that can keep the static pass from running. With no enabled
-	// PII-category policies (empty cache), EnabledPIICategories returns nil and the
-	// guard MUST skip EvaluateResponse → StaticResult stays nil. If the guard were
-	// removed, empty Categories would evaluate ALL policies (the whitelist
-	// "empty == all" footgun) and StaticResult would be non-nil — so this is a
-	// non-vacuous regression lock on the guard, not just a "not blocked" check.
-	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 1, false, true /* isGateway */, nil)
-
-	if out.StaticResult != nil {
-		t.Errorf("empty-set guard must skip the static pass when no PII policies are enabled; got StaticResult=%+v (the empty-Categories-evaluates-all footgun)", out.StaticResult)
-	}
-	if out.SQLiBlocked {
-		t.Error("clean rows must not be SQLi-blocked")
 	}
 }
 
@@ -1142,15 +824,6 @@ func TestMCPCheckInputHandler_WithParameters_Allowed(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	// No policy engines → everything passes
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
 		Statement:     "SELECT * FROM users WHERE id = $1",
@@ -1179,15 +852,6 @@ func TestMCPCheckInputHandler_EmptyParameters(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	// No policy engines → everything passes
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
 		Statement:     "SELECT 1",
@@ -1213,10 +877,7 @@ func TestMCPCheckInputHandler_EmptyParameters(t *testing.T) {
 }
 
 func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
-	// When both dynamic evaluator and static engine are nil, params don't cause issues
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
+	// With no engine installed, parameters do not cause issues
 
 	originalEngine := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(nil)
@@ -1228,14 +889,8 @@ func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
 		"2": "normal-value",
 	}
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT * FROM users WHERE id = $1", params, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "postgres", "", "SELECT * FROM users WHERE id = $1", params, mcpCfg)
 
-	if out.EvalUnavailable {
-		t.Error("expected EvalUnavailable=false")
-	}
-	if out.DynamicBlocked {
-		t.Error("expected DynamicBlocked=false")
-	}
 	if out.StaticResult != nil {
 		t.Error("expected StaticResult=nil")
 	}

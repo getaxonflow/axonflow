@@ -84,7 +84,7 @@ module.
 
 ## The check set
 
-Twenty-seven declared checks. Thirteen are relayed from `pdp`'s own authoring
+Twenty-nine declared checks. Fifteen are relayed from `pdp`'s own authoring
 validator and are not reimplemented here; `TestRelayCoversEveryPDPRule` holds the
 relay table to `pdp.AllRules`, so a rule added there cannot reach a portal as a
 refusal whose explanation is missing. Fourteen are owned here because they need

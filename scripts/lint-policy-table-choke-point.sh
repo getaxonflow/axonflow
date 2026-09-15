@@ -72,11 +72,10 @@
 #     loaders → #3055". They read the table, but they never PRODUCE A
 #     VERDICT (block/redact/deny) — the invariant this lint guards is about
 #     verdict paths.
-#   - platform/agent/mcp_richer_context.go is the ADR-044 session
-#     break-glass path: it resolves policy metadata (risk_level,
-#     allow_override, version) and active-override state for the audit
-#     trail and the override-eligibility UI, never a block/allow verdict
-#     itself.
+#   - platform/agent/mcp_richer_context.go resolves policy metadata
+#     (risk_level, allow_override, version) for the check-input audit trail,
+#     never a block/allow verdict itself (its active-override read went with
+#     the retired session-override offer, #4252).
 #   - platform/orchestrator/ojk/readiness.go is a readiness PROBE (a COUNT
 #     for a health-check endpoint), not a request-evaluation path.
 #
@@ -111,10 +110,10 @@
 # discovered, same discipline as scripts/lint-deployment-mode.sh:
 #   - Table names built via string formatting, e.g.
 #     `fmt.Sprintf("... FROM %s ...", table)` where `table` is set to
-#     "static_policies" / "dynamic_policies" a few lines earlier. This
-#     shape exists TODAY at platform/orchestrator/overrides_handler.go's
-#     policyRiskAndOverride (an admin override-eligibility lookup, the same
-#     justified class as the other overrides_handler.go entries) and this
+#     "static_policies" / "dynamic_policies" a few lines earlier. No
+#     instance remains in the tree: the last one was overrides_handler.go's
+#     policyRiskAndOverride, an admin override-eligibility lookup deleted
+#     with the session-override write (#4252). The class stays open and this
 #     lint cannot see it. A grep-based lint has no general defense against
 #     an indirected table name; closing this gap needs either an AST-aware
 #     checker or a lint-comment marker convention at each interpolation
@@ -161,12 +160,13 @@ LOADER_FILE="platform/shared/policy/loader.go"
 # #3293's Accounting section for the disposition of each class.
 # ════════════════════════════════════════════════════════════════════════════
 ALLOW_LIST_TABLE='
-platform/shared/policy/loader.go|8|THE sanctioned choke point (epic #3293/#3296), not an exception to the invariant. Counted like every other entry so a NEW query added here also trips CI until a human bumps this number in a reviewed diff -- and so does DELETING one, which is why this number moved DOWN. Was 5 when this lint was written, grew to 10, and is 8 since #3490 (Decision 5) deleted the two initQueries templates queryRequestPhase and queryResponsePhase: both carried the retired tenant_id predicate and neither was ever executed (set in initQueries, read nowhere), so they were removed rather than re-keyed -- rewriting a query no caller runs would leave a second, untested definition of the selection rule. The 8 that remain: the loadFromDatabase per-scope query, LoadSystemPolicies, effectivePolicyQueryTemplate (GetEffective pass A/B via ScanEffectivePolicyRows), CountActive (dynamic_policies), GetPolicyByID, dynamicPoliciesQueryWithSegment + dynamicPoliciesQueryWithoutSegment (RefreshDynamicPolicies) and CountAllDynamicPolicies.
-platform/agent/mcp_richer_context.go|3|ADR-044 session break-glass: lookupPolicyMeta (audit risk_level/allow_override/version), lookupPolicyVersionsByID (audit policy_version stamping), lookupActiveOverride (slug->UUID resolve before reading policy_overrides) — metadata for the audit trail, never a block/allow verdict itself.
+platform/shared/policy/loader.go|9|THE sanctioned choke point (epic #3293/#3296), not an exception to the invariant. Counted like every other entry so a NEW query added here also trips CI until a human bumps this number in a reviewed diff -- and so does DELETING one, which is why this number once moved DOWN. Was 5 when this lint was written, grew to 10, fell to 8 when #3490 (Decision 5) deleted the two initQueries templates queryRequestPhase and queryResponsePhase (both carried the retired tenant_id predicate and neither was ever executed -- set in initQueries, read nowhere -- so they were removed rather than re-keyed, because rewriting a query no caller runs would leave a second, untested definition of the selection rule), and is 9 since #4026 added PresentPolicyIDs. That ninth is the lint working as intended rather than an exception to it: the orchestrator boot path needed to check that migrations/core/173 had seeded the five sys_media_* controls, carried its own SELECT over dynamic_policies to do it, and this lint refused -- so the read moved here instead of a tenth bespoke reader existing. The 9: the loadFromDatabase per-scope query, LoadSystemPolicies, effectivePolicyQueryTemplate (GetEffective pass A/B via ScanEffectivePolicyRows), CountActive (dynamic_policies), GetPolicyByID, dynamicPoliciesQueryWithSegment + dynamicPoliciesQueryWithoutSegment (RefreshDynamicPolicies), CountAllDynamicPolicies and PresentPolicyIDs.
+platform/agent/mcp_richer_context.go|2|Check-input audit metadata: lookupPolicyMeta (audit risk_level/allow_override/version) and lookupPolicyVersionsByID (audit policy_version stamping) — metadata for the audit trail, never a block/allow verdict itself. Was 3 until #4252 deleted lookupActiveOverride with the retired session-override offer.
 platform/agent/static_policy_repository.go|5|Agent static-policy CRUD (epic #3293 Accounting "#23/#37/#38 CRUD/metadata/override-create loaders -> #3055"): GetByID, List (scopedList + scopedListBare), GetVersions (parent-ownership EXISTS subquery), countTenantPolicies (Community tenant-policy quota). No verdict produced.
-platform/orchestrator/overrides_handler.go|4|Orchestrator override-create admin lookups (#3293 Accounting, same #23/#37/#38 -> #3055 disposition): resolvePolicyUUID (static then dynamic) + invalidateCachedDeniedDecisions (static then dynamic) — override-CREATE-time admin reads, not verdict paths.
+platform/orchestrator/overrides_handler.go|2|Orchestrator override list filter (#3293 Accounting, same #23/#37/#38 -> #3055 disposition): resolvePolicyUUID (static then dynamic) resolves a slug for the list filter — an admin read, not a verdict path. Was 4 until #4252 retired the session override write and deleted invalidateCachedDeniedDecisions with it.
 platform/orchestrator/ojk/readiness.go|1|OJK readiness probe: a health-check COUNT (countIndonesiaPIIPolicies), not a request-evaluation path.
-platform/orchestrator/ussecurities/repository.go|2|US securities examination package (#3532, ADR-064 section 4a): readPolicyInventory renders the configured supervisory controls INTO AN ARTIFACT and readFinCrimeControlCount counts fincrime-category rows to answer whether the Fraud and Risk Add-on is installed. Both are metadata reads for a rendered document -- the same class as the OJK readiness probe above and the #3293 Accounting disposition of the portal effective-policy viewer (#28) -- and neither can produce a verdict: nothing downstream of this module evaluates a request. ScanEffectivePolicyRows was the reuse candidate and does not fit: it selects sp.action and NOT sp.action_request, which is the column this package classifies on. They are separate columns and action_request is NULLABLE WITH NO DEFAULT (core/039), so every seed that does not name it carries action_request NULL beside a set action, which is most of the core seed set; operator-authored rows can diverge outright. Reading sp.action would therefore render the general action where the artifact states the REQUEST-PHASE authority. NOTE FOR ANYONE LIFTING THIS SENTENCE: an earlier revision claimed the shipped FinCrime pack row fincrime_payment_execution_stepup carries action=block with action_request=require_approval. That is FALSE; the row carries require_approval in BOTH columns and no row in that pack diverges. The disposition never rested on it. Widening the shared column list for a metadata consumer would change a verdict-path reader positional scan, which #3334 records the cost of. TWO occurrences, one per organization scope pass: the table is RLS-gated on org_id, so a single IN-list read silently drops every deployment-wide row.
+platform/orchestrator/sebi/sebi_readiness_measurements.go|1|SEBI readiness probe (#3874, merged as #3924): countEnforcedPolicies renders a COUNT into the SEBI AI/ML readiness artifact -- the same class as the OJK readiness probe directly above, and the same #3293 Accounting disposition. It cannot produce a verdict: nothing downstream of this package evaluates a request. ScanEffectivePolicyRows was the reuse candidate and does not fit -- this reads COUNT(*) with a caller-supplied extra predicate to answer how many enforced policies of a class exist, never a policy row, so there is nothing for the shared scanner to scan. The predicate itself IS reused: sebiEnforcedPolicyPredicate is byte-identical to the enforcer WHERE body in platform/shared/policy/loader.go, so the pillar structurally cannot report a posture the gateway does not apply. ONE occurrence, called twice by its caller (org scope then the global sentinel) inside rls.WithOrgScope, mirroring the loader -- static_policies is RLS-gated on org_id via core/018 DO block, so a single unscoped read returns zero rows under the app role.
+platform/orchestrator/ussecurities/repository.go|1|US securities examination package (#3532, ADR-064 section 4a): readPolicyInventory renders the configured supervisory controls INTO AN ARTIFACT. It is a metadata read for a rendered document -- the same class as the OJK readiness probe above and the #3293 Accounting disposition of the portal effective-policy viewer (#28) -- and it cannot produce a verdict: nothing downstream of this module evaluates a request. ScanEffectivePolicyRows was the reuse candidate and does not fit: it selects sp.action and NOT sp.action_request, which is the column this package classifies on. They are separate columns and action_request is NULLABLE WITH NO DEFAULT (core/039), so every seed that does not name it carries action_request NULL beside a set action, which is most of the core seed set; operator-authored rows can diverge outright. Reading sp.action would therefore render the general action where the artifact states the REQUEST-PHASE authority. Widening the shared column list for a metadata consumer would change a verdict-path reader positional scan, which #3334 records the cost of. ONE occurrence, run once per organization scope pass: the table is RLS-gated on org_id, so a single IN-list read silently drops every deployment-wide row. Was 2 until #4126 removed readFinCrimeControlCount: the FinCrime pack is an installed typed document with no rows, so whether it was in force is read from the policy_packs each audit row records.
 platform/orchestrator/policy_api_repository.go|8|Orchestrator dynamic-policy CRUD (#3293 Accounting "#23/#37/#38" -> #3055): Create, GetByID, List, Delete, GetVersions, findByNameTx, findByName, CountByTenant/CountOrgPolicies. Admin policy-management API, not a verdict path.
 '
 
@@ -290,7 +290,7 @@ fi
 while IFS='|' read -r alfile alcount _just; do
   [ -n "$alfile" ] || continue
   [ -f "$alfile" ] || continue
-  if ! printf '%s\n' "$SEEN_FILES" | grep -qx "$alfile"; then
+  if ! grep -qxF -- "$alfile" <<<"$SEEN_FILES"; then
     MISCOUNT="${MISCOUNT}  ${alfile}: expected ${alcount}, found 0 (entry is stale — lower it or the reads moved)"$'\n'
     FAIL=1
   fi

@@ -48,7 +48,7 @@ func TestEvaluateOutputPolicies_FailsClosedOnLoadError(t *testing.T) {
 	installLoadErroringEngine(t)
 	rows := []map[string]interface{}{{"email": "andi@example.com", "note": "customer record"}}
 	out := evaluateOutputPolicies(context.Background(), "unseeded-tenant", "", "u1",
-		"gw.test", "gw.test", rows, "", nil, len(rows), false, true /* isGateway (check-output) */, nil)
+		"gw.test", "gw.test", rows, "", nil, len(rows), false, true /* isGateway (check-output) */)
 
 	if out.StaticResult == nil || !out.StaticResult.Blocked {
 		t.Fatal("load error must fail closed (blocked/withheld), not forward the rows")
@@ -58,19 +58,5 @@ func TestEvaluateOutputPolicies_FailsClosedOnLoadError(t *testing.T) {
 	}
 	if out.RedactedRows != nil {
 		t.Error("no rows should be forwarded on a couldn't-scan")
-	}
-}
-
-// Plane: request-phase redact-obligation fulfillment (redactInputStatement).
-// A load error must report evaluated=false so the PEP fails closed (#2563 B1),
-// not evaluated=true/redacted=false ("ran, nothing to mask") which forwards raw.
-func TestRedactInputStatement_FailsClosedOnLoadError(t *testing.T) {
-	installLoadErroringEngine(t)
-	masked, redacted, evaluated := redactInputStatement(context.Background(), "unseeded-tenant", "u1", "gw.test", "ping andi@example.com")
-	if evaluated {
-		t.Error("load error must report evaluated=false so the PEP fails closed")
-	}
-	if redacted || masked != "" {
-		t.Errorf("no masking can be claimed on a couldn't-scan; got masked=%q redacted=%v", masked, redacted)
 	}
 }

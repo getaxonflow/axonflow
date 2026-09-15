@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow v9 Identity Forwarding Example - Go
 //
 // This example demonstrates the v9 identity model end-to-end (ADR-052 §5,

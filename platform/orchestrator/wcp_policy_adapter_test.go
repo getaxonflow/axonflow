@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"testing"
 
+	"axonflow/platform/decision/authoringcatalog"
+	"axonflow/platform/decision/contract"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
 	sharedaudit "axonflow/platform/shared/audit"
@@ -46,16 +48,17 @@ func (m *mockPolicyEngineForWCP) IsHealthy() bool {
 	return true
 }
 
-func TestWCPPolicyAdapter_EvaluateStepGate_Allow(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{"pii-detection"},
-			RiskScore:       0.1,
-		},
-	}
+// #4254: the step gate decides on the anchored engine. These tests pin what the
+// adapter does with each verdict; the engine is a double (withStepGateEngine),
+// and what the seam presents to it is pinned in wcp_enforcing_seam_test.go.
+// Every read of an approval the double-driven path may not have created is
+// guarded, so a missing approval fails its test instead of killing the binary.
 
-	adapter := NewWCPPolicyAdapter(mockEngine)
+func TestWCPPolicyAdapter_EvaluateStepGate_Allow(t *testing.T) {
+	withStepGateEngine(t, stepGateVerdict(contract.StateAllow, contract.ReasonPermitted,
+		contract.Determining{MatchedPermissions: []string{"pii-detection"}}))
+
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID:   "wf_123",
@@ -70,7 +73,7 @@ func TestWCPPolicyAdapter_EvaluateStepGate_Allow(t *testing.T) {
 		OrgID:        "org_1",
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	if result.Decision != workflow_control.GateDecisionAllow {
 		t.Errorf("Expected decision=allow, got %s", result.Decision)
@@ -80,26 +83,22 @@ func TestWCPPolicyAdapter_EvaluateStepGate_Allow(t *testing.T) {
 		t.Errorf("Expected PolicyIDs=[pii-detection], got %v", result.PolicyIDs)
 	}
 
-	// Verify the request was converted correctly
-	if mockEngine.lastReq.RequestType != "workflow_step_gate" {
-		t.Errorf("Expected RequestType=workflow_step_gate, got %s", mockEngine.lastReq.RequestType)
+	// The request the plane's facts are produced from.
+	req := adapter.convertToOrchestratorRequest(stepCtx)
+	if req.RequestType != "workflow_step_gate" {
+		t.Errorf("Expected RequestType=workflow_step_gate, got %s", req.RequestType)
 	}
 
-	if mockEngine.lastReq.Client.TenantID != "tenant_1" {
-		t.Errorf("Expected TenantID=tenant_1, got %s", mockEngine.lastReq.Client.TenantID)
+	if req.Client.TenantID != "tenant_1" {
+		t.Errorf("Expected TenantID=tenant_1, got %s", req.Client.TenantID)
 	}
 }
 
 func TestWCPPolicyAdapter_EvaluateStepGate_Block(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"sqli-prevention", "code-injection-block"},
-			RiskScore:       0.95,
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateDeny, contract.ReasonExplicitConstraint,
+		contract.Determining{MatchedConstraints: []string{"sqli-prevention", "code-injection-block"}}))
 
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID:   "wf_456",
@@ -112,7 +111,7 @@ func TestWCPPolicyAdapter_EvaluateStepGate_Block(t *testing.T) {
 		},
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	if result.Decision != workflow_control.GateDecisionBlock {
 		t.Errorf("Expected decision=block, got %s", result.Decision)
@@ -125,19 +124,18 @@ func TestWCPPolicyAdapter_EvaluateStepGate_Block(t *testing.T) {
 	if len(result.PoliciesMatched) != 2 {
 		t.Errorf("Expected 2 policies matched, got %d", len(result.PoliciesMatched))
 	}
+
+	// The blocking constraint is named first.
+	if len(result.PolicyIDs) == 0 || result.PolicyIDs[0] != "sqli-prevention" {
+		t.Errorf("Expected the blocking constraint sqli-prevention first, got %v", result.PolicyIDs)
+	}
 }
 
 func TestWCPPolicyAdapter_EvaluateStepGate_RequireApproval(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"high-risk-approval"},
-			RequiredActions: []string{"require_approval"},
-			RiskScore:       0.8,
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"high-risk-approval"}}))
 
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID: "wf_789",
@@ -146,7 +144,7 @@ func TestWCPPolicyAdapter_EvaluateStepGate_RequireApproval(t *testing.T) {
 		StepType:   workflow_control.StepTypeConnectorCall,
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	if result.Decision != workflow_control.GateDecisionRequireApproval {
 		t.Errorf("Expected decision=require_approval, got %s", result.Decision)
@@ -157,36 +155,8 @@ func TestWCPPolicyAdapter_EvaluateStepGate_RequireApproval(t *testing.T) {
 	}
 }
 
-func TestWCPPolicyAdapter_EvaluateStepGate_NilEngine(t *testing.T) {
-	adapter := NewWCPPolicyAdapter(nil)
-
-	stepCtx := &workflow_control.StepGateContext{
-		WorkflowID: "wf_nil",
-		StepID:     "step_nil",
-		StepName:   "test_step",
-		StepType:   workflow_control.StepTypeLLMCall,
-	}
-
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	if result.Decision != workflow_control.GateDecisionAllow {
-		t.Errorf("Expected decision=allow when engine is nil, got %s", result.Decision)
-	}
-
-	if result.Reason != "No policy engine configured" {
-		t.Errorf("Expected reason='No policy engine configured', got %s", result.Reason)
-	}
-}
-
 func TestWCPPolicyAdapter_ConvertStepInput(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{},
-		},
-	}
-
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID:   "wf_input_test",
@@ -202,10 +172,9 @@ func TestWCPPolicyAdapter_ConvertStepInput(t *testing.T) {
 		},
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	// Verify step input was merged into context
-	ctx := mockEngine.lastReq.Context
+	// Verify step input was merged into the request context the facts are
+	// produced from.
+	ctx := adapter.convertToOrchestratorRequest(stepCtx).Context
 	if ctx["step_input.query"] != "What is PII?" {
 		t.Errorf("Expected step_input.query='What is PII?', got %v", ctx["step_input.query"])
 	}
@@ -219,28 +188,31 @@ func TestWCPPolicyAdapter_ConvertStepInput(t *testing.T) {
 	}
 }
 
-func TestWCPPolicyAdapter_HumanReviewAction(t *testing.T) {
-	// Test that "human_review" action also triggers require_approval
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"sensitive-data-review"},
-			RequiredActions: []string{"human_review"},
-		},
-	}
+// A human_task step is presented to the engine as agent.invoke, and a challenge
+// holds it. It replaces a test of the dynamic row's "human_review" action, a
+// legacy vocabulary the anchored engine does not have: its challenge IS the
+// hold.
+func TestWCPPolicyAdapter_HumanTaskStepIsPresentedAsAgentInvokeAndHeld(t *testing.T) {
+	d := withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"sensitive-data-review"}}))
 
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID: "wf_review",
 		StepID:     "step_review",
 		StepType:   workflow_control.StepTypeHumanTask,
+		OrgID:      "org_review",
+		ClientID:   "client_review",
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
+	if action := d.lastCall(t).Action; action != authoringcatalog.ActionAgentInvoke {
+		t.Errorf("Expected a human_task step presented as %s, got %q", authoringcatalog.ActionAgentInvoke, action)
+	}
 	if result.Decision != workflow_control.GateDecisionRequireApproval {
-		t.Errorf("Expected decision=require_approval for human_review action, got %s", result.Decision)
+		t.Errorf("Expected decision=require_approval for a challenged human_task step, got %s", result.Decision)
 	}
 }
 
@@ -261,7 +233,7 @@ func (m *mockHITLApprovalCreator) CreateApproval(ctx context.Context, req *HITLA
 }
 
 func TestSetHITLApproval(t *testing.T) {
-	adapter := NewWCPPolicyAdapter(nil)
+	adapter := NewWCPPolicyAdapter()
 
 	// Initially nil
 	if adapter.hitlApproval != nil {
@@ -293,16 +265,10 @@ func TestCreateHITLApproval_Success(t *testing.T) {
 		},
 	}
 
-	engine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"high-risk-approval"},
-			RequiredActions: []string{"require_approval"},
-			RiskScore:       0.9,
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"high-risk-approval"}}))
 
-	adapter := NewWCPPolicyAdapter(engine)
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(mock)
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -320,7 +286,7 @@ func TestCreateHITLApproval_Success(t *testing.T) {
 		UserID:       "user_hitl",
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	// Should have require_approval decision
 	if result.Decision != workflow_control.GateDecisionRequireApproval {
@@ -333,7 +299,7 @@ func TestCreateHITLApproval_Success(t *testing.T) {
 	}
 
 	// Verify the HITL request was built correctly
-	if mock.callCount != 1 {
+	if mock.callCount != 1 || mock.lastReq == nil {
 		t.Fatalf("Expected 1 call to CreateApproval, got %d", mock.callCount)
 	}
 	if mock.lastReq.OrgID != "org_hitl" {
@@ -360,33 +326,32 @@ func TestCreateHITLApproval_Success(t *testing.T) {
 	if mock.lastReq.PolicyName != "high-risk-approval" {
 		t.Errorf("Expected PolicyName=high-risk-approval, got %s", mock.lastReq.PolicyName)
 	}
-	// RiskScore=0.9 → severity derived as "critical" (≥0.8 threshold)
-	if mock.lastReq.Severity != "critical" {
-		t.Errorf("Expected Severity=critical (risk_score=0.9), got %s", mock.lastReq.Severity)
+	// A typed approval carries no severity, so the queue row's severity
+	// derives from the platform's risk floor for this step (#4254).
+	want := deriveSeverityFromResult(&PolicyEvaluationResult{
+		RiskScore: dbRiskCalculator.CalculateRiskScore(adapter.convertToOrchestratorRequest(stepCtx)),
+	})
+	if mock.lastReq.Severity != want {
+		t.Errorf("Expected Severity=%s (the risk floor's derivation), got %s", want, mock.lastReq.Severity)
 	}
 }
 
-func TestCreateHITLApproval_ExplicitSeverityFromPolicy(t *testing.T) {
-	approvalID := uuid.New()
+// #4254: the HITL queue row's severity derives from the risk floor. The dynamic
+// row this replaces could set a severity explicitly in its require_approval
+// config; a typed approval carries no severity, so a policy can no longer
+// choose one. That capability is a v11.1.0 row.
+func TestCreateHITLApproval_SeverityDerivesFromTheRiskFloor(t *testing.T) {
 	mock := &mockHITLApprovalCreator{
 		resp: &HITLApprovalResponse{
-			ApprovalID: approvalID,
+			ApprovalID: uuid.New(),
 			Status:     "pending",
 		},
 	}
 
-	// Policy explicitly sets severity="low" even with high risk score
-	engine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"low-risk-review"},
-			RequiredActions: []string{"require_approval"},
-			RiskScore:       0.9,
-			Severity:        "low", // Explicit from policy config
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"low-risk-review"}}))
 
-	adapter := NewWCPPolicyAdapter(engine)
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(mock)
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -397,60 +362,16 @@ func TestCreateHITLApproval_ExplicitSeverityFromPolicy(t *testing.T) {
 		OrgID:      "org-1",
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
+	adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
-	// Explicit severity from policy should override risk score
-	if mock.lastReq.Severity != "low" {
-		t.Errorf("Expected explicit Severity=low, got %s", mock.lastReq.Severity)
+	if mock.lastReq == nil {
+		t.Fatal("no approval was created for a held step")
 	}
-}
-
-func TestCreateHITLApproval_RiskScoreSeverityMapping(t *testing.T) {
-	tests := []struct {
-		name     string
-		risk     float64
-		expected string
-	}{
-		{"low risk", 0.1, "low"},
-		{"medium risk", 0.4, "medium"},
-		{"high risk", 0.6, "high"},
-		{"critical risk", 0.9, "critical"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			approvalID := uuid.New()
-			mock := &mockHITLApprovalCreator{
-				resp: &HITLApprovalResponse{ApprovalID: approvalID, Status: "pending"},
-			}
-
-			engine := &mockPolicyEngineForWCP{
-				result: &PolicyEvaluationResult{
-					Allowed:         false,
-					AppliedPolicies: []string{"test-policy"},
-					RequiredActions: []string{"require_approval"},
-					RiskScore:       tt.risk,
-					// No explicit Severity — use risk score fallback
-				},
-			}
-
-			adapter := NewWCPPolicyAdapter(engine)
-			adapter.SetHITLApproval(mock)
-
-			stepCtx := &workflow_control.StepGateContext{
-				WorkflowID: "wf_risk_1",
-				StepID:     "step_risk_1",
-				StepType:   workflow_control.StepTypeToolCall,
-				TenantID:   "tenant-1",
-				OrgID:      "org-1",
-			}
-
-			adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-			if mock.lastReq.Severity != tt.expected {
-				t.Errorf("risk=%.1f: expected severity=%s, got %s", tt.risk, tt.expected, mock.lastReq.Severity)
-			}
-		})
+	want := deriveSeverityFromResult(&PolicyEvaluationResult{
+		RiskScore: dbRiskCalculator.CalculateRiskScore(adapter.convertToOrchestratorRequest(stepCtx)),
+	})
+	if mock.lastReq.Severity != want {
+		t.Errorf("Expected Severity=%s (the risk floor's derivation), got %s", want, mock.lastReq.Severity)
 	}
 }
 
@@ -460,15 +381,10 @@ func TestCreateHITLApproval_Error(t *testing.T) {
 		err:  fmt.Errorf("approval service unavailable"),
 	}
 
-	engine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"high-risk-approval"},
-			RequiredActions: []string{"require_approval"},
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"high-risk-approval"}}))
 
-	adapter := NewWCPPolicyAdapter(engine)
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(mock)
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -478,7 +394,7 @@ func TestCreateHITLApproval_Error(t *testing.T) {
 		StepType:   workflow_control.StepTypeConnectorCall,
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	// Decision should still be require_approval even if HITL creation fails
 	if result.Decision != workflow_control.GateDecisionRequireApproval {
@@ -496,7 +412,7 @@ func TestCreateHITLApproval_Error(t *testing.T) {
 }
 
 func TestCreateHITLApproval_NilApprovalService(t *testing.T) {
-	adapter := NewWCPPolicyAdapter(nil)
+	adapter := NewWCPPolicyAdapter()
 	// hitlApproval is nil, so createHITLApproval should return uuid.Nil
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -531,7 +447,7 @@ func TestCreateHITLApproval_NoPolicies(t *testing.T) {
 		},
 	}
 
-	adapter := NewWCPPolicyAdapter(nil)
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(mock)
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -566,14 +482,7 @@ func TestCreateHITLApproval_NoPolicies(t *testing.T) {
 // --- Tests for ToolContext propagation (#1243) ---
 
 func TestWCPPolicyAdapter_ToolContext_Propagation(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{},
-		},
-	}
-
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID:   "wf_tool_1",
@@ -595,9 +504,7 @@ func TestWCPPolicyAdapter_ToolContext_Propagation(t *testing.T) {
 		},
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	ctx := mockEngine.lastReq.Context
+	ctx := adapter.convertToOrchestratorRequest(stepCtx).Context
 	if ctx["tool_name"] != "web_search" {
 		t.Errorf("Expected tool_name='web_search', got %v", ctx["tool_name"])
 	}
@@ -613,14 +520,7 @@ func TestWCPPolicyAdapter_ToolContext_Propagation(t *testing.T) {
 }
 
 func TestWCPPolicyAdapter_ToolContext_NilDoesNotInjectKeys(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{},
-		},
-	}
-
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID: "wf_tool_nil",
@@ -630,9 +530,7 @@ func TestWCPPolicyAdapter_ToolContext_NilDoesNotInjectKeys(t *testing.T) {
 		// ToolContext is nil
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	ctx := mockEngine.lastReq.Context
+	ctx := adapter.convertToOrchestratorRequest(stepCtx).Context
 	if _, exists := ctx["tool_name"]; exists {
 		t.Error("Expected tool_name to NOT exist when ToolContext is nil")
 	}
@@ -642,14 +540,7 @@ func TestWCPPolicyAdapter_ToolContext_NilDoesNotInjectKeys(t *testing.T) {
 }
 
 func TestWCPPolicyAdapter_ToolContext_EmptyToolType(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{},
-		},
-	}
-
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID: "wf_tool_notype",
@@ -658,13 +549,11 @@ func TestWCPPolicyAdapter_ToolContext_EmptyToolType(t *testing.T) {
 		StepType:   workflow_control.StepTypeToolCall,
 		ToolContext: &workflow_control.ToolContext{
 			ToolName: "sql_query",
-			// ToolType is empty — should NOT inject tool_type key
+			// ToolType is empty - should NOT inject tool_type key
 		},
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	ctx := mockEngine.lastReq.Context
+	ctx := adapter.convertToOrchestratorRequest(stepCtx).Context
 	if ctx["tool_name"] != "sql_query" {
 		t.Errorf("Expected tool_name='sql_query', got %v", ctx["tool_name"])
 	}
@@ -674,14 +563,7 @@ func TestWCPPolicyAdapter_ToolContext_EmptyToolType(t *testing.T) {
 }
 
 func TestWCPPolicyAdapter_ToolContext_MCP(t *testing.T) {
-	mockEngine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         true,
-			AppliedPolicies: []string{"mcp-tool-policy"},
-		},
-	}
-
-	adapter := NewWCPPolicyAdapter(mockEngine)
+	adapter := NewWCPPolicyAdapter()
 
 	stepCtx := &workflow_control.StepGateContext{
 		WorkflowID: "wf_tool_mcp",
@@ -697,9 +579,7 @@ func TestWCPPolicyAdapter_ToolContext_MCP(t *testing.T) {
 		},
 	}
 
-	adapter.EvaluateStepGate(context.Background(), stepCtx)
-
-	ctx := mockEngine.lastReq.Context
+	ctx := adapter.convertToOrchestratorRequest(stepCtx).Context
 	if ctx["tool_name"] != "database_query" {
 		t.Errorf("Expected tool_name='database_query', got %v", ctx["tool_name"])
 	}
@@ -720,15 +600,10 @@ func TestCreateHITLApproval_WithToolContext(t *testing.T) {
 		},
 	}
 
-	engine := &mockPolicyEngineForWCP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"tool-restriction"},
-			RequiredActions: []string{"require_approval"},
-		},
-	}
+	withStepGateEngine(t, stepGateVerdict(contract.StateChallenge, contract.ReasonApprovalRequired,
+		contract.Determining{MatchedRequirement: []string{"tool-restriction"}}))
 
-	adapter := NewWCPPolicyAdapter(engine)
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(mock)
 
 	stepCtx := &workflow_control.StepGateContext{
@@ -745,18 +620,67 @@ func TestCreateHITLApproval_WithToolContext(t *testing.T) {
 		},
 	}
 
-	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+	result := adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
 
 	if result.Decision != workflow_control.GateDecisionRequireApproval {
 		t.Errorf("Expected decision=require_approval, got %s", result.Decision)
 	}
 
 	// Verify tool context was included in HITL request context
+	if mock.lastReq == nil {
+		t.Fatal("no approval was created for a held step")
+	}
 	if mock.lastReq.RequestContext["tool_name"] != "code_executor" {
 		t.Errorf("Expected HITL request tool_name='code_executor', got %v", mock.lastReq.RequestContext["tool_name"])
 	}
 	if mock.lastReq.RequestContext["tool_type"] != "function" {
 		t.Errorf("Expected HITL request tool_type='function', got %v", mock.lastReq.RequestContext["tool_type"])
+	}
+}
+
+// #4254: every held step-gate approval is queued with severity "low" in v11.0.0,
+// BECAUSE the step gate presents no query. The risk score a held step's severity
+// derives from is computed from the request's query alone
+// (RiskCalculator.CalculateRiskScore), and the gate sends none.
+//
+// This test is meant to fail the day the gate presents content (the v11.1.0
+// content row on #4249). That is when severity on this plane needs revisiting,
+// and when the risk floor the seam carries onto a held step becomes observable.
+func TestAHeldStepGateApprovalIsQueuedLowBecauseTheGatePresentsNoQuery(t *testing.T) {
+	mock := &mockHITLApprovalCreator{
+		resp: &HITLApprovalResponse{ApprovalID: uuid.New(), Status: "pending"},
+	}
+	withStepGateEngine(t, heldStepVerdict())
+	adapter := NewWCPPolicyAdapter()
+	adapter.SetHITLApproval(mock)
+
+	const riskyText = "SELECT * FROM users WHERE password = 'x' OR 1=1"
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID: "wf_low",
+		StepID:     "step_low",
+		StepName:   "export_users",
+		StepType:   workflow_control.StepTypeToolCall,
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
+		StepInput:  map[string]interface{}{"query": riskyText},
+	}
+
+	if q := adapter.convertToOrchestratorRequest(stepCtx).Query; q != "" {
+		t.Fatalf("the step gate now presents a query (%q): held-step severity on this plane needs revisiting, and the risk floor the seam carries is now observable", q)
+	}
+	// PREMISE: the same text, presented as a query, scores well above "low", so
+	// the "low" below is the absence of content and not a harmless input.
+	if floor := dbRiskCalculator.CalculateRiskScore(OrchestratorRequest{Query: riskyText}); floor < 0.3 {
+		t.Fatalf("PREMISE: %q scores %v as a query; this test needs text that would not derive low", riskyText, floor)
+	}
+
+	adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
+
+	if mock.lastReq == nil {
+		t.Fatal("no approval was created for a held step")
+	}
+	if mock.lastReq.Severity != "low" {
+		t.Errorf("a held step-gate approval was queued with severity %q; with no query presented it can only be low", mock.lastReq.Severity)
 	}
 }
 

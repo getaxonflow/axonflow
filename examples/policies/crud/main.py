@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 """
 AxonFlow Policy Management - CRUD Operations
 

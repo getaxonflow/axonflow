@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -7,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"sync"
 
 	"axonflow/platform/decision/contract"
 )
@@ -99,6 +103,73 @@ func BuildBundle(d *Document) (*Bundle, error) {
 	return b, nil
 }
 
+// digestMismatch is the ONE refusal a digest disagreement produces (#3700).
+//
+// It is a function rather than three copies of a format string because the
+// refusal is the same fact wherever it is discovered, and because a caller
+// that matches on the text must not have to know which site produced it.
+func digestMismatch(advertised, content string) error {
+	return fmt.Errorf("bundle: advertised digest %s does not match content digest %s", advertised, content)
+}
+
+// ContentDigest recomputes the digest from the bundle's signed content.
+//
+// It is the answer to "what does this bundle actually hash to", as opposed to
+// the Digest field, which is what the bundle CLAIMS to hash to.
+func (b *Bundle) ContentDigest() (string, error) {
+	if b == nil {
+		return "", fmt.Errorf("bundle: is nil")
+	}
+	digest, err := contract.ExactDigest(b.view())
+	if err != nil {
+		return "", fmt.Errorf("bundle: content digest: %w", err)
+	}
+	return digest, nil
+}
+
+// VerifiedDigest returns the digest RECOMPUTED from content, refusing a bundle
+// whose advertised digest does not describe it.
+//
+// WHY EVERY CONSUMER CALLS THIS RATHER THAN READING .Digest (#3700). Digest is
+// NOT inside view(), so it is not covered by the signature: view() is
+// {Root, Module, Manifest, Provenance} and deliberately excludes the digest,
+// because the digest is derived from the view and a signature over a value
+// derived from itself is not well defined. A bundle whose content is genuine
+// and whose advertised digest is wrong therefore carries a perfectly valid
+// signature.
+//
+// That was safe only as long as every reader happened to sit behind
+// TrustStore.Verify, which recomputes once at activation. "Happened to" is the
+// problem: the property was held by an ORDERING rather than by the artifact,
+// and the sharpest consequence is on the proof surface, where ADR-065 binds
+// PolicyBundleDigest into a decision proof precisely so a decision can be
+// attributed to the bundle that produced it. A proof carrying an advertised
+// digest attributes the decision to content only because some other process
+// checked it earlier.
+//
+// So the recomputation is now an invariant of USE. Reading .Digest directly is
+// legitimate in exactly three places, each declared and asserted by
+// TestEveryBundleDigestReaderIsDeclared: where it is minted, where it is
+// recomputed, and in diagnostic text that carries no authority.
+//
+// WHAT THIS IS NOT. VerifiedDigest is not verification. It answers "the
+// advertised digest describes this content" and NOTHING else: it does not
+// check the signature, the key, the root authority or the provenance, and a
+// bundle nobody signed passes it happily. TrustStore.Verify remains the only
+// verification, and a caller that needs to know a bundle is trustworthy still
+// has to go through it. The name says "verified" because the digest has been
+// checked against the bytes, not because the bundle has been.
+func (b *Bundle) VerifiedDigest() (string, error) {
+	digest, err := b.ContentDigest()
+	if err != nil {
+		return "", err
+	}
+	if digest != b.Digest {
+		return "", digestMismatch(b.Digest, digest)
+	}
+	return digest, nil
+}
+
 func (b *Bundle) view() signedView {
 	m := append([]PolicyDeclaration(nil), b.Manifest...)
 	sort.Slice(m, func(i, j int) bool { return m[i].ID < m[j].ID })
@@ -123,7 +194,22 @@ func (b *Bundle) Sign(keyID string, priv ed25519.PrivateKey) error {
 // organization permission cannot modify a system constraint: the two are
 // different signed artifacts verified against different keys, and there is no
 // operation anywhere that lets one bundle edit the other.
+// IT IS SAFE FOR CONCURRENT USE, AND THAT BECAME LOAD BEARING IN #3895.
+//
+// Until then Authorize ran only while a store was being constructed, before
+// anything shared it, and Verify's reads were effectively read-only afterwards.
+// The production activation path changed that: it authorizes the deployment's
+// system-corpus key on the caller's store on EVERY activation, and a transport
+// holds one store per organization that concurrent requests share. Go answers a
+// concurrent map write with `fatal error: concurrent map writes`, which is an
+// unrecoverable process abort - the whole orchestrator, not the one request
+// that raced. Driven under -race before this mutex existed: two goroutines
+// activating for one organization reported a write/write race in Authorize.
+//
+// An RWMutex rather than a Mutex because Verify is on the activation path and
+// PublicKey is called per artifact load, while Authorize is rare.
 type TrustStore struct {
+	mu   sync.RWMutex
 	keys map[Root]map[string]ed25519.PublicKey
 }
 
@@ -134,6 +220,8 @@ func NewTrustStore() *TrustStore {
 
 // Authorize registers a signing key for a root.
 func (t *TrustStore) Authorize(root Root, keyID string, pub ed25519.PublicKey) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.keys[root] == nil {
 		t.keys[root] = map[string]ed25519.PublicKey{}
 	}
@@ -151,6 +239,8 @@ func (t *TrustStore) PublicKey(root Root, keyID string) (ed25519.PublicKey, bool
 	if t == nil {
 		return nil, false
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	byRoot, ok := t.keys[root]
 	if !ok {
 		return nil, false
@@ -171,6 +261,8 @@ func (t *TrustStore) Verify(b *Bundle) error {
 	if b == nil {
 		return fmt.Errorf("bundle: is nil")
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	byRoot, ok := t.keys[b.Root]
 	if !ok || len(byRoot) == 0 {
 		return fmt.Errorf("bundle: no signing key is authorized for root %q", b.Root)
@@ -191,7 +283,7 @@ func (t *TrustStore) Verify(b *Bundle) error {
 		return fmt.Errorf("bundle: verify digest: %w", err)
 	}
 	if digest != b.Digest {
-		return fmt.Errorf("bundle: advertised digest %s does not match content digest %s", b.Digest, digest)
+		return digestMismatch(b.Digest, digest)
 	}
 	if b.Provenance.HelperDigest != HelperDigest() {
 		return fmt.Errorf("bundle: was validated against helper module %s, this evaluator carries %s", b.Provenance.HelperDigest, HelperDigest())

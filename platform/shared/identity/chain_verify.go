@@ -57,6 +57,19 @@ func VerifyChain(
 	now time.Time,
 	revocations RevocationOracle,
 ) (ActorChain, []VerifiedSubject, Admission) {
+	return verifyChain(reg, authenticatedOrgID, creds, maxDepth, now, revocations, rootNeverClient)
+}
+
+// verifyChain is VerifyChain with the chain's root rule stated; see chainRoot.
+func verifyChain(
+	reg *RealmRegistry,
+	authenticatedOrgID string,
+	creds []Credential,
+	maxDepth int,
+	now time.Time,
+	revocations RevocationOracle,
+	root chainRoot,
+) (ActorChain, []VerifiedSubject, Admission) {
 	if len(creds) == 0 {
 		return nil, nil, DenyAdmission(ReasonChainEmpty,
 			"no credentials were presented; an empty chain has no authority to intersect and is never unconstrained")
@@ -94,12 +107,11 @@ func VerifyChain(
 		subjects = append(subjects, verified)
 	}
 
-	if adm := AdmitChain(reg, authenticatedOrgID, chain, maxDepth); !adm.State.IsAdmitted() {
+	if adm := admitChain(reg, authenticatedOrgID, chain, maxDepth, root); !adm.State.IsAdmitted() {
 		return nil, nil, adm
 	}
 
-	root := chain[0]
-	return chain, subjects, AcceptAdmission(root)
+	return chain, subjects, AcceptAdmission(chain[0])
 }
 
 // atHop re-labels a per-credential admission with the hop it came from,

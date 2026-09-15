@@ -171,7 +171,7 @@ async function testPiiInToolInput(client: AxonFlow): Promise<void> {
     console.log(`   Direct check: Input blocked (${direct.block_reason})`);
   } else {
     piiDetected = direct.policies_evaluated > 0;
-    console.log(`   Direct check: ${direct.policies_evaluated} policies evaluated (PII_ACTION may be warn/log)`);
+    console.log(`   Direct check: ${direct.policies_evaluated} policies evaluated (allowed: stored request action for SSN is warn)`);
   }
 
   assertCheck(piiDetected, "PII in tool input was detected by policy engine");
@@ -236,7 +236,7 @@ async function testPiiInToolOutput(client: AxonFlow): Promise<void> {
     } else if (resultStr.includes("***") || resultStr.includes("REDACTED")) {
       console.log(`   GovernedTool: Output redacted`);
     } else {
-      console.log(`   GovernedTool: Output returned (PII_ACTION may be warn/log)`);
+      console.log(`   GovernedTool: Output returned without redaction`);
     }
     console.log(`   Result: ${resultStr.substring(0, 200)}`);
   } catch (e) {

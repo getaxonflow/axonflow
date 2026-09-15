@@ -188,34 +188,10 @@ func (s *Service) CreateApprovalRequest(_ context.Context, _ CreateApprovalInput
 	return nil, ErrHITLApprovalDisabledByTier
 }
 
-// GetApprovalRequest mirrors the enterprise read path for symbol parity
-// (used by the agent's HITLBridge adapter, #3329). Community build always
+// GetApprovalRequest mirrors the enterprise read path, which the approval
+// handler uses (handler.go), for symbol parity. Its agent caller, the
+// HITLBridge adapter (#3329), went with #4253. Community build always
 // rejects: there is no queue to read.
 func (s *Service) GetApprovalRequest(_ context.Context, _ uuid.UUID) (*ApprovalRequest, error) {
 	return nil, ErrHITLApprovalDisabledByTier
-}
-
-// RequestTypePolicyStepUp mirrors the enterprise constant for symbol parity so
-// callers in agent/ compile under both builds.
-const RequestTypePolicyStepUp = "policy_step_up"
-
-// ConsumeApprovalGrant mirrors the enterprise signature for symbol parity.
-// Community build always rejects: there is no queue, so there is no approval
-// to spend and every held request stays held.
-func (s *Service) ConsumeApprovalGrant(_ context.Context, _ GrantSubject, _, _ string, _ time.Duration) (string, error) {
-	return "", ErrHITLApprovalDisabledByTier
-}
-
-// GrantSubject mirrors the enterprise struct for symbol parity.
-type GrantSubject struct {
-	OrgID    string
-	TenantID string
-	ClientID string
-	UserID   string
-}
-
-// FindOpenPolicyStepUp mirrors the enterprise signature for symbol parity.
-// Community build has no queue, so there is never an open entry.
-func (s *Service) FindOpenPolicyStepUp(_ context.Context, _ GrantSubject, _, _, _ string) (string, error) {
-	return "", ErrHITLApprovalDisabledByTier
 }

@@ -1,75 +1,56 @@
 # Gateway-Specific Policy Configuration Examples
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 
-Demonstrates how to configure AxonFlow's static policy behavior for Gateway mode using environment variables. Gateway mode uses `getPolicyApprovedContext` for pre-checks and `proxyLLMCall` for governed LLM calls, and policy configuration affects both request validation and orchestrator response processing (MAP).
 
-## What Are Gateway Policy Configurations?
+Demonstrates how AxonFlow's static policy actions are decided and changed for Gateway mode. Gateway mode uses `getPolicyApprovedContext` for pre-checks and `proxyLLMCall` for governed LLM calls, and policy actions affect both request validation and orchestrator response processing (MAP).
 
-AxonFlow ships with built-in static policies for common security threats: PII detection, SQL injection prevention, and dangerous query blocking. These policies apply across all modes, but can be configured **per-mode** using environment variables on the AxonFlow Agent.
+## How Gateway Policy Actions Are Decided (v11)
 
-**Gateway mode** is unique because policy enforcement happens at two stages:
-1. **Pre-check** (`getPolicyApprovedContext`): Validates the request against policies BEFORE the LLM call. PII/SQLi in the user query is caught here.
-2. **Response processing** (orchestrator + MAP): When using `proxyLLMCall`, the orchestrator also applies policies to the LLM response. This means GATEWAY_PII_ACTION affects both input and output scanning.
+AxonFlow ships with built-in static policies for common security threats: PII detection, SQL injection detection, and dangerous command blocking. These policies apply across all modes. **The stored policy action decides** what happens when one matches, and a policy can store a different action for the request and the response phase.
 
-**Key concept:** Policy configuration is set on the **Agent side** via environment variables. Changing behavior requires restarting the AxonFlow Agent with different env vars. Each run of this example validates behavior for the **current** configuration.
+**Gateway mode** applies policies at two stages:
+1. **Pre-check** (`getPolicyApprovedContext`): Validates the request against policies BEFORE the LLM call, using each policy's request-phase action.
+2. **Response processing** (orchestrator + MAP): When using `proxyLLMCall`, the orchestrator also applies policies to the LLM response, using each policy's response-phase action.
 
-## Environment Variable Precedence
+The shipped actions exercised by this example:
 
-AxonFlow resolves policy actions using this precedence (highest to lowest):
+| Policy | Request phase | Response phase |
+|--------|---------------|----------------|
+| `sys_pii_ssn` | `warn` | `redact` |
+| every `sys_sqli_*` | `warn` | `warn` |
 
-1. **Mode-specific env var** (e.g., `GATEWAY_PII_ACTION=block`) -- applies only to Gateway mode
-2. **Global env var** (e.g., `PII_ACTION=block`) -- applies to all modes
-3. **Built-in defaults** -- `pii=redact`, `sqli=block`, `dangerous_query=block`
+So out of the box an SSN in the user query is approved with a warning at pre-check and redacted if it appears in the LLM response, and SQL injection is approved with a warning (the matched policy id is returned in `policies`); neither is blocked.
 
-## Gateway-Specific Environment Variables
+## Changing an Action
+
+**The only replacement for a stored action is an organization's recorded override.** It applies to both the request and the response phase. Record one through the customer portal API (Enterprise, session auth, `sso:configure` permission):
+
+```bash
+# Block PII for your organization (pre-check and response processing)
+curl -X PUT http://localhost:8082/api/v1/detection-posture/pii \
+  -H "Content-Type: application/json" \
+  -b "axonflow_session=$SESSION" \
+  -d '{"action":"block"}'
+
+# List overrides, or delete one to return to the stored action
+curl -b "axonflow_session=$SESSION" http://localhost:8082/api/v1/detection-posture
+curl -X DELETE -b "axonflow_session=$SESSION" http://localhost:8082/api/v1/detection-posture/pii
+```
+
+Categories: `pii` (every `pii-*` policy category), `sqli` (`security-sqli`), `dangerous_command` (`security-dangerous`), `dangerous_query`, `obligation_fallback`. Actions: `block`, `redact`, `warn`, `log`. Every write is audited, and agents pick up a change within `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` (default 60).
+
+The other supported way is to **change the policy's action**: edit a tenant policy, or create a system-policy override where your edition allows it (`POST /api/v1/static-policies/{id}/override`).
+
+> **Removed in v11:** `GATEWAY_PII_ACTION`, `GATEWAY_SQLI_ACTION`, `GATEWAY_DANGEROUS_QUERY_ACTION`, `GATEWAY_DANGEROUS_COMMAND_ACTION`, `PII_ACTION`, `SQLI_ACTION` and the other detection-action variables no longer set an action. A deployment that still sets one keeps running; the agent logs a boot `WARN` per variable and increments `axonflow_ignored_posture_env_total{name="..."}`.
+
+## Gateway Environment Variables That Still Apply
+
+These are not action variables and are unchanged:
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `GATEWAY_STATIC_POLICIES_ENABLED` | `true` / `false` | `true` | Enable/disable all static policies for Gateway mode |
-| `GATEWAY_PII_ACTION` | `block` / `redact` / `log` | `redact` | Action when PII is detected in Gateway queries/responses |
-| `GATEWAY_SQLI_ACTION` | `block` / `warn` / `log` | `block` | Action when SQL injection patterns are detected |
 | `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES` | comma-separated | (none) | Categories to skip (e.g., `pii-email,pii-phone`) |
-
-## How Gateway Config Affects Orchestrator Response Processing and MAP
-
-When `proxyLLMCall` is used, the orchestrator processes both the request and the LLM response through the policy engine:
-
-- **Request side:** `getPolicyApprovedContext` applies `GATEWAY_PII_ACTION` and `GATEWAY_SQLI_ACTION` to the user query.
-- **Response side:** The orchestrator applies `GATEWAY_PII_ACTION` to the LLM response before returning it. If the LLM response contains PII, it will be blocked/redacted/logged according to the same configuration.
-- **MAP (Model-Aware Policies):** MAP rules that reference gateway-specific policies inherit the configured actions. For example, a MAP rule that triggers on PII detection will use `GATEWAY_PII_ACTION` to determine the enforcement action.
-
-This means a single `GATEWAY_PII_ACTION=block` setting will block both PII in user queries AND PII in LLM responses.
-
-## Docker Compose Configuration Examples
-
-### Default behavior (PII redacted, SQLi blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      # Defaults apply -- no overrides needed
-      AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY}
-```
-
-### Strict mode (all threats blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      GATEWAY_PII_ACTION: block
-      GATEWAY_SQLI_ACTION: block
-```
-
-### Permissive mode (log only, nothing blocked):
-```yaml
-services:
-  axonflow-agent:
-    image: getaxonflow/agent:latest
-    environment:
-      GATEWAY_PII_ACTION: log
-      GATEWAY_SQLI_ACTION: log
-```
 
 ### Disable all static policies for gateway:
 ```yaml
@@ -93,17 +74,17 @@ services:
 
 | Config | PII Query (SSN) | SQLi Query (UNION) | Safe Query |
 |--------|------------------|--------------------|------------|
-| **Default** | APPROVED (redacted) | BLOCKED | APPROVED |
-| `GATEWAY_PII_ACTION=block` | BLOCKED | BLOCKED | APPROVED |
-| `GATEWAY_PII_ACTION=log` | APPROVED (logged only) | BLOCKED | APPROVED |
-| `GATEWAY_SQLI_ACTION=warn` | APPROVED (redacted) | APPROVED (warned) | APPROVED |
-| `GATEWAY_SQLI_ACTION=log` | APPROVED (redacted) | APPROVED (logged) | APPROVED |
+| **Shipped actions, no override** | APPROVED (warned) | APPROVED (warned) | APPROVED |
+| Org override `pii=block` | BLOCKED | APPROVED (warned) | APPROVED |
+| Org override `sqli=block` | APPROVED (warned) | BLOCKED | APPROVED |
 | Policies disabled | APPROVED | APPROVED | APPROVED |
+
+This example validates the first row (and the last, when `GATEWAY_STATIC_POLICIES_ENABLED=false`). With an override recorded it fails by design.
 
 ## Prerequisites
 
 ```bash
-# Start AxonFlow (with desired env vars)
+# Start AxonFlow
 cd /path/to/axonflow
 docker compose up -d
 
@@ -143,11 +124,11 @@ mvn compile exec:java
 
 1. The example uses `getPolicyApprovedContext()` to pre-check queries against gateway policies
 2. Each query targets a specific policy category (PII, SQLi, safe)
-3. The pre-check response is validated against the **expected** behavior for the current Agent config
+3. The pre-check response is validated against the shipped stored actions: approved, with the matched `sys_pii_*` / `sys_sqli_*` policy id in `policies`
 4. A `proxyLLMCall()` is also tested to verify end-to-end governed LLM calls work with the current policy configuration
 5. Pass/fail results are reported with exit code 1 on any failure
 
-**Important:** This example reads `GATEWAY_PII_ACTION` and `GATEWAY_SQLI_ACTION` from the **client-side** environment to determine expected behavior. These must match what the Agent is configured with. If they differ, tests will report false failures.
+**Important:** The only action-related client-side input is `GATEWAY_STATIC_POLICIES_ENABLED`, which must match the Agent's config.
 
 ## Environment Variables (Client-Side)
 
@@ -156,12 +137,11 @@ mvn compile exec:java
 | `AXONFLOW_ENDPOINT` | `http://localhost:8080` | AxonFlow Agent endpoint |
 | `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
 | `AXONFLOW_CLIENT_SECRET` | (empty) | Client secret for authentication |
-| `GATEWAY_PII_ACTION` | `redact` | Expected PII action (must match Agent config) |
-| `GATEWAY_SQLI_ACTION` | `block` | Expected SQLi action (must match Agent config) |
+| `GATEWAY_STATIC_POLICIES_ENABLED` | `true` | Expected static-policies flag (must match Agent config) |
 
 ## Related
 
-- [Policy Configuration Example](../policy-configuration/) - MCP-mode policy configuration
+- [Policy Configuration Example](../policy-configuration/) - MCP-mode policy actions
 - [Gateway Mode Example](../integrations/gateway-mode/) - Gateway Mode basics
 - [PII Detection Example](../pii-detection/) - PII detection patterns
 - [SQLi Detection Example](../sqli-detection/) - SQL injection detection

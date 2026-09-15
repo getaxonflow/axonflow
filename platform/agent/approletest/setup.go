@@ -364,3 +364,13 @@ func runMigrations(t *testing.T, db *sql.DB, migrationsDir string, lo, hi int) {
 		}
 	}
 }
+
+// StartPostgres starts the labelled, tmpfs-backed postgres:15 container Setup
+// uses, with no migration applied, and returns its superuser DSN and the
+// cleanup that removes it together with its anonymous volume. It is for a
+// test that applies its own migration chain: the #3894 upgrade test starts
+// from v10.2.0's set.
+func StartPostgres(t *testing.T) (string, func()) {
+	t.Helper()
+	return startPostgresContainer(t)
+}

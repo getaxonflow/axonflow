@@ -141,11 +141,11 @@ func TestSweepTerminateInactive_DB(t *testing.T) {
 	defer cleanup()
 
 	inactive := seedSweepTenant(t, db, "inactive",
-		time.Now().UTC().AddDate(0, -6, 0),                // created 6 months ago
+		time.Now().UTC().AddDate(0, -6, 0),                                  // created 6 months ago
 		sql.NullTime{Valid: true, Time: time.Now().UTC().AddDate(0, -4, 0)}, // idle 4 months
 		false)
 	active := seedSweepTenant(t, db, "active",
-		time.Now().UTC().AddDate(0, -1, 0),                              // created 1 month ago
+		time.Now().UTC().AddDate(0, -1, 0),                                    // created 1 month ago
 		sql.NullTime{Valid: true, Time: time.Now().UTC().Add(-1 * time.Hour)}, // active 1h ago
 		false)
 
@@ -552,6 +552,7 @@ func TestSweepCascadeDelete_RejectsBadIdentifier(t *testing.T) {
 func TestSweepEndToEnd_RegisterAgeSweepRejectAuth(t *testing.T) {
 	db, cleanup := connectSweepDB(t)
 	defer cleanup()
+	skipWithoutAdminAuditLog(t, db)
 
 	// 1. Register via the real handler with a unique IP so the rate limiter
 	//    state from previous tests doesn't trip us.

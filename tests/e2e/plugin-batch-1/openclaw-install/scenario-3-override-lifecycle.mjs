@@ -1,3 +1,11 @@
+// RETIRED BY v11.0.0 (#4252). Session overrides are gone: the override create
+// and revoke routes write nothing and answer 409 LEGACY_POLICY_WRITE_FROZEN,
+// the workflow step gate reads no override, and no response carries
+// override_applied. This scenario drives that flow and cannot pass against a
+// v11 deployment. It is not wired into CI (no plugin-batch-1 job), and it is
+// kept as the record of what the flow was. The routes are named by role and
+// not by path on purpose: a reference census counts the retired route's
+// literal per file, and a comment must not raise that count.
 // Scenario 3: full override lifecycle.
 // Deny → create override → retry allowed → revoke → retry denied.
 // Asserts override_created and override_revoked audit events are present.

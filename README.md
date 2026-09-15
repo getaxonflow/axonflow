@@ -39,7 +39,7 @@ AxonFlow is not a workflow engine, observability dashboard, or prompt gateway. Y
 
 ## What AxonFlow Does
 
-**Policy Enforcement**: 80 built-in system policies (70 pattern-based, evaluated on the Agent; 10 condition-based, evaluated on the Orchestrator), seeded by `migrations/core` and pinned by `platform/agent/system_policy_count_realpg_test.go`, plus editable tenant-tier starter policies. Categories:
+**Policy Enforcement**: 85 built-in system policies (70 pattern-based, evaluated on the Agent; 15 condition-based, evaluated on the Orchestrator), seeded by `migrations/core` and pinned by `platform/agent/system_policy_count_realpg_test.go`, plus editable tenant-tier starter policies. Categories:
 - **Security**: SQL injection detection (38 patterns), unsafe admin access, schema exposure
 - **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
 - **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, OJK/BI/UU PDP, NAIC/NYDFS/Colorado for US insurance, US banking supervision (federal and Farm Credit), SEC/FINRA examination packages for US securities, DORA frameworks with retention and exports (Enterprise)
@@ -369,12 +369,17 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 | Feature | Community | Evaluation (Free) | Enterprise |
 |---------|-----------|-------------------|------------|
 | Tenant policies | 20 | 50 | Unlimited |
-| Org-wide policies | 0 | 5 | Unlimited |
+| Org-wide policies | 0 | 0 | Unlimited |
 | Audit retention | 3 days | 14 days | 3650 days |
 | Concurrent executions | 5 | 25 | Unlimited |
+| Human principals | 25 | 75 | Unlimited |
+| Service principals | 5 | 25 | Unlimited |
+| Nodes | 1 | Unlimited | Unlimited |
 | HITL Approval Gates | - | Resolve-only | Unlimited, 24h default expiry (Professional and above) |
 | Policy Simulation | - | 300/day | Unlimited |
 | Evidence Export | - | 14-day window, 3/day | Unlimited |
+
+Org-wide policy authoring is an Enterprise capability, so the ceiling is 0 on Community and on Evaluation. Human principals, service principals and nodes are per-organization scale limits read from the licence key: a request that would admit a principal past the ceiling is refused with HTTP 402 and its own error code, and principals already admitted keep working. See [Licensing and Tier Limits](https://docs.getaxonflow.com/docs/deployment/licensing/?utm_source=readme_eval).
 
 [Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Run a paid production program](https://getaxonflow.com/design-partner?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
 
@@ -448,7 +453,7 @@ Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-lim
 pip install axonflow              # Python
 npm install @axonflow/sdk         # TypeScript
 go get github.com/getaxonflow/axonflow-sdk-go/v9  # Go
-cargo add axonflow-sdk-rust       # Rust (preview, v0.10.0)
+cargo add axonflow-sdk-rust       # Rust (preview, v0.11.0)
 ```
 
 ```xml
@@ -456,7 +461,7 @@ cargo add axonflow-sdk-rust       # Rust (preview, v0.10.0)
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>9.3.0</version>
+    <version>9.4.0</version>
 </dependency>
 ```
 
@@ -559,7 +564,7 @@ let response = client.proxy_llm_call(
 ).await?;
 ```
 
-The Rust SDK is at v0.10.0 preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
+The Rust SDK is at v0.11.0 preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview/)**
 

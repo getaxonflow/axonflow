@@ -4,7 +4,12 @@
 package policypath
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -40,8 +45,9 @@ func TestSuccessorOf(t *testing.T) {
 		{"/api/v1/dynamic-policies-v2", ""},
 		{"/api/v1/dynamic-policiesabc", ""},
 
-		// successors are never themselves legacy - this is what makes
-		// DeprecateLegacy safe to mount anywhere
+		// #1431 successors are never themselves #1431-legacy, which is what
+		// the portal's upstream-spelling rewrite rests on (the v11
+		// deprecation, IsDeprecated, covers both spellings)
 		{"/api/v1/system-policies", ""},
 		{"/api/v1/system-policies/effective", ""},
 		{"/api/v1/tenant-policies", ""},
@@ -91,9 +97,10 @@ func TestSuccessorOf(t *testing.T) {
 	}
 }
 
-// TestIsSuccessorAndIsLegacyAreDisjoint is the property the whole design rests
-// on: DeprecateLegacy is mounted on routers that also carry successor routes,
-// and it is safe there only because no path can be both.
+// TestIsSuccessorAndIsLegacyAreDisjoint is the property the portal's
+// upstream-spelling rewrite rests on (static_policies.go, policy_overrides.go):
+// it maps a successor-spelled request onto the successor upstream only because
+// no path can be both.
 func TestIsSuccessorAndIsLegacyAreDisjoint(t *testing.T) {
 	fams := Families()
 	if len(fams) == 0 {
@@ -133,60 +140,261 @@ func TestFamiliesReturnsACopy(t *testing.T) {
 	}
 }
 
+// The wire values, written out rather than derived from the package: an
+// expectation computed by the code under test agrees with it whatever it does.
+const (
+	wantLink      = `</api/v1/typed-policies>; rel="successor-version"`
+	wantRemovedIn = "v11.1"
+	// fixedSince and fixedDeprecation pin the RFC 9745 FORMAT against a fixed
+	// date: 2026-10-01T00:00:00Z is 1790812800 seconds after the epoch. The
+	// real date is DeprecatedSince, which release prep sets.
+	fixedSince       = "2026-10-01"
+	fixedDeprecation = "@1790812800"
+)
+
+func TestIsDeprecated(t *testing.T) {
+	members := DeprecatedFamilies()
+	// Eight prefixes: static/system, dynamic/tenant, policies, templates, the
+	// policy-overrides alias and the RBI policy-template catalogue. A shorter
+	// table is a family that answers unstamped, and every other assertion in
+	// this file would pass over it.
+	if len(members) != 8 {
+		t.Fatalf("DeprecatedFamilies() has %d prefixes, want 8: %v", len(members), members)
+	}
+	for _, f := range members {
+		for _, suffix := range []string{"", "/", "/abc", "/{id}/versions"} {
+			if !IsDeprecated(f + suffix) {
+				t.Errorf("IsDeprecated(%q) = false", f+suffix)
+			}
+		}
+	}
+	for _, p := range []string{
+		// The successor must never be deprecated itself: a client following
+		// rel="successor-version" would loop.
+		Successor, Successor + "/active", "/api/v1/typed-policies",
+		// Near misses on a segment boundary.
+		"/api/v1/policies-archive", "/api/v1/templatesX", "/api/v1/policy-overrides-v2",
+		// The RBI module's other policy read, and a near miss on the catalogue.
+		"/api/v1/rbi/policies/categories", "/api/v1/rbi/policies/templatesX",
+		// ADR-044's session overrides: not in this surface until its successor exists.
+		"/api/v1/overrides", "/api/v1/overrides/abc",
+		"/api/v2/policies", "/proxy/api/v1/policies", "/health", "", "/",
+	} {
+		if IsDeprecated(p) {
+			t.Errorf("IsDeprecated(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestDeprecatedFamiliesReturnsACopy(t *testing.T) {
+	first := DeprecatedFamilies()
+	original := first[0]
+	first[0] = "/tampered"
+	if got := DeprecatedFamilies()[0]; got != original {
+		t.Errorf("mutating the returned slice changed the table: now %q, want %q", got, original)
+	}
+}
+
+func TestDeprecationValue(t *testing.T) {
+	if got, ok := DeprecationValue(fixedSince); !ok || got != fixedDeprecation {
+		t.Errorf("DeprecationValue(%q) = %q, %v; want %q, true", fixedSince, got, ok, fixedDeprecation)
+	}
+	for _, bad := range []string{"", "2026-13-01", "01/10/2026", "2026-10-01T00:00:00Z", "true"} {
+		if got, ok := DeprecationValue(bad); ok {
+			t.Errorf("DeprecationValue(%q) = %q, true; want no value", bad, got)
+		}
+	}
+}
+
 func TestStampDeprecation(t *testing.T) {
-	t.Run("stamps a legacy path", func(t *testing.T) {
-		h := http.Header{}
-		if !StampDeprecation(h, "/api/v1/static-policies/abc") {
-			t.Fatal("StampDeprecation reported no match on a legacy path")
-		}
-		if got := h.Get(HeaderDeprecation); got != DeprecationValue {
-			t.Errorf("Deprecation = %q; want %q", got, DeprecationValue)
-		}
-		want := LinkSuccessor("/api/v1/system-policies/abc")
-		if got := h.Get(HeaderLink); got != want {
-			t.Errorf("Link = %q; want %q", got, want)
-		}
-		// A Sunset value is a promise that the path stops working on a given
-		// day. This change makes no such promise, so the package must not be
-		// able to emit one.
-		if got := h.Get("Sunset"); got != "" {
-			t.Errorf("Sunset = %q; want empty", got)
-		}
-	})
-
-	t.Run("is inert on a successor path", func(t *testing.T) {
-		h := http.Header{}
-		if StampDeprecation(h, "/api/v1/system-policies") {
-			t.Error("StampDeprecation reported a match on a successor path")
-		}
-		if len(h) != 0 {
-			t.Errorf("wrote headers on a successor path: %v", h)
+	t.Run("stamps every deprecated family with the typed route and the removal release", func(t *testing.T) {
+		for _, f := range DeprecatedFamilies() {
+			for _, suffix := range []string{"", "/abc", "/abc/versions"} {
+				h := http.Header{}
+				if !stamp(h, f+suffix, fixedSince) {
+					t.Errorf("%s: stamp reported no match", f+suffix)
+					continue
+				}
+				for k, want := range map[string]string{
+					HeaderDeprecation: fixedDeprecation,
+					HeaderLink:        wantLink,
+					HeaderRemovedIn:   wantRemovedIn,
+				} {
+					if got := h.Get(k); got != want {
+						t.Errorf("%s: %s = %q; want %q", f+suffix, k, got, want)
+					}
+				}
+				// Sunset is a DATE (RFC 8594), and v11.1 has none yet.
+				if got := h.Get("Sunset"); got != "" {
+					t.Errorf("%s: Sunset = %q; want empty", f+suffix, got)
+				}
+			}
 		}
 	})
 
-	t.Run("is inert on a near miss", func(t *testing.T) {
-		h := http.Header{}
-		if StampDeprecation(h, "/api/v1/static-policies-archive") {
-			t.Error("StampDeprecation matched a path that only shares a byte prefix")
+	t.Run("omits Deprecation rather than guess while the date is unset or unparseable", func(t *testing.T) {
+		for _, since := range []string{"", "not-a-date"} {
+			h := http.Header{}
+			if !stamp(h, Policies, since) {
+				t.Fatalf("since=%q: stamp reported no match on %s", since, Policies)
+			}
+			if _, present := h[HeaderDeprecation]; present {
+				t.Errorf("since=%q: Deprecation = %q; want the header absent", since, h.Get(HeaderDeprecation))
+			}
+			if h.Get(HeaderLink) != wantLink || h.Get(HeaderRemovedIn) != wantRemovedIn {
+				t.Errorf("since=%q: Link=%q Removed-In=%q; the signal must still name the successor and the release",
+					since, h.Get(HeaderLink), h.Get(HeaderRemovedIn))
+			}
 		}
-		if len(h) != 0 {
-			t.Errorf("wrote headers on a near miss: %v", h)
+	})
+
+	t.Run("StampDeprecation dates the header from DeprecatedSince", func(t *testing.T) {
+		h := http.Header{}
+		StampDeprecation(h, Templates)
+		want, dated := DeprecationValue(DeprecatedSince)
+		if got, present := h[HeaderDeprecation]; present != dated || (dated && got[0] != want) {
+			t.Errorf("Deprecation = %v (present=%v); DeprecatedSince=%q wants present=%v value %q",
+				got, present, DeprecatedSince, dated, want)
+		}
+	})
+
+	t.Run("is inert on the typed route and on near misses", func(t *testing.T) {
+		for _, p := range []string{Successor, "/api/v1/policies-archive", "/api/v1/overrides", "/health"} {
+			h := http.Header{}
+			if stamp(h, p, fixedSince) {
+				t.Errorf("stamp matched %q", p)
+			}
+			if len(h) != 0 {
+				t.Errorf("wrote headers on %q: %v", p, h)
+			}
 		}
 	})
 
 	t.Run("overwrites rather than appends", func(t *testing.T) {
-		// Set, not Add: a stamp applied twice must not reach the client as
-		// "Deprecation: true, true".
+		// Set, not Add: a stamp applied on two hops reaches the client once.
 		h := http.Header{}
-		StampDeprecation(h, "/api/v1/static-policies")
-		StampDeprecation(h, "/api/v1/static-policies")
-		if n := len(h.Values(HeaderDeprecation)); n != 1 {
-			t.Errorf("Deprecation appears %d times after two stamps; want 1", n)
-		}
-		if n := len(h.Values(HeaderLink)); n != 1 {
-			t.Errorf("Link appears %d times after two stamps; want 1", n)
+		stamp(h, LegacySystemPolicies, fixedSince)
+		stamp(h, LegacySystemPolicies, fixedSince)
+		for _, k := range DeprecationHeaders() {
+			if n := len(h.Values(k)); n != 1 {
+				t.Errorf("%s appears %d times after two stamps; want 1", k, n)
+			}
 		}
 	})
+}
+
+// TestDeprecationHeadersListsEveryStampedHeader pins DeprecationHeaders to what
+// a dated stamp writes. The CORS tests on every plane read their expectation
+// from DeprecationHeaders, so a header the stamp writes and the list omits
+// would be stamped, never exposed to a browser, and pass every one of them.
+func TestDeprecationHeadersListsEveryStampedHeader(t *testing.T) {
+	h := http.Header{}
+	stamp(h, Policies, fixedSince)
+	listed := map[string]bool{}
+	for _, k := range DeprecationHeaders() {
+		listed[http.CanonicalHeaderKey(k)] = true
+	}
+	for k := range h {
+		if !listed[k] {
+			t.Errorf("stamp writes %s, which DeprecationHeaders omits - no plane exposes it to a browser", k)
+		}
+	}
+	if len(listed) != len(h) {
+		t.Errorf("DeprecationHeaders lists %v and a dated stamp writes %v", DeprecationHeaders(), h)
+	}
+}
+
+// requireDeprecationDate is the release-prep rule: once VERSION reaches the
+// release that deprecates the surface, the date that release was tagged must
+// be set, because the Deprecation header is omitted without it.
+func requireDeprecationDate(version, deprecatedIn, since string) error {
+	reached, err := versionReaches(version, deprecatedIn)
+	if err != nil {
+		return err
+	}
+	if !reached {
+		return nil
+	}
+	if _, ok := DeprecationValue(since); !ok {
+		return fmt.Errorf("VERSION is %s, which is at or past %s, and DeprecatedSince is %q: "+
+			"set it to the UTC date (YYYY-MM-DD) %s was tagged, or the legacy policy routes ship without "+
+			"their RFC 9745 Deprecation header", version, deprecatedIn, since, deprecatedIn)
+	}
+	return nil
+}
+
+// versionReaches reports whether version is at or past target under semver
+// precedence, where a pre-release (11.0.0-rc.1) precedes its release.
+func versionReaches(version, target string) (bool, error) {
+	core, pre, _ := strings.Cut(strings.TrimSpace(version), "-")
+	v, err := semverCore(core)
+	if err != nil {
+		return false, fmt.Errorf("VERSION %q: %w", version, err)
+	}
+	want, err := semverCore(target)
+	if err != nil {
+		return false, fmt.Errorf("DeprecatedInRelease %q: %w", target, err)
+	}
+	for i := range v {
+		if v[i] != want[i] {
+			return v[i] > want[i], nil
+		}
+	}
+	return pre == "", nil
+}
+
+func semverCore(s string) ([3]int, error) {
+	var out [3]int
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return out, fmt.Errorf("not MAJOR.MINOR.PATCH")
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, fmt.Errorf("not MAJOR.MINOR.PATCH")
+		}
+		out[i] = n
+	}
+	return out, nil
+}
+
+// TestTheDeprecationDateRuleRedsWhereItShould is the planted positive for the
+// guard below: without it, a rule that returned nil for every input would pass
+// on every VERSION this repository has ever carried.
+func TestTheDeprecationDateRuleRedsWhereItShould(t *testing.T) {
+	for _, c := range []struct {
+		version, since string
+		wantErr        bool
+	}{
+		{"10.4.0", "", false},
+		{"11.0.0-rc.1", "", false},
+		{"11.0.0", "", true},
+		{"11.0.0", "2026-13-01", true},
+		{"11.0.0", fixedSince, false},
+		{"11.1.0", "", true},
+		{"12.0.0", "", true},
+		{"11.0", "", true}, // an unreadable VERSION is an error, not a pass
+	} {
+		err := requireDeprecationDate(c.version, DeprecatedInRelease, c.since)
+		if (err != nil) != c.wantErr {
+			t.Errorf("VERSION=%q since=%q: err=%v, want error=%v", c.version, c.since, err, c.wantErr)
+		}
+	}
+}
+
+// TestDeprecatedSinceIsSetOnceVERSIONReachesTheDeprecatingRelease reds the
+// release-prep commit that moves VERSION to 11.0.0 until DeprecatedSince is
+// set, which is how the tag date reaches the wire without a guessed one ever
+// shipping.
+func TestDeprecatedSinceIsSetOnceVERSIONReachesTheDeprecatingRelease(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "VERSION"))
+	if err != nil {
+		t.Fatalf("read the repository's VERSION file: %v", err)
+	}
+	if err := requireDeprecationDate(string(raw), DeprecatedInRelease, DeprecatedSince); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDeprecateLegacyMiddleware(t *testing.T) {
@@ -195,12 +403,18 @@ func TestDeprecateLegacyMiddleware(t *testing.T) {
 		_, _ = w.Write([]byte("body"))
 	})
 
-	for _, c := range []struct{ path, wantDeprecation string }{
-		{"/api/v1/static-policies", DeprecationValue},
-		{"/api/v1/dynamic-policies/x", DeprecationValue},
-		{"/api/v1/system-policies", ""},
-		{"/api/v1/tenant-policies/x", ""},
-		{"/health", ""},
+	for _, c := range []struct {
+		path    string
+		stamped bool
+	}{
+		{"/api/v1/static-policies", true},
+		{"/api/v1/system-policies", true},
+		{"/api/v1/dynamic-policies/x", true},
+		{"/api/v1/tenant-policies/x", true},
+		{"/api/v1/policies/abc/versions", true},
+		{"/api/v1/templates/stats", true},
+		{"/api/v1/typed-policies/active", false},
+		{"/health", false},
 	} {
 		for name, h := range map[string]http.Handler{
 			"handler": DeprecateLegacy(next),
@@ -208,8 +422,12 @@ func TestDeprecateLegacyMiddleware(t *testing.T) {
 		} {
 			rr := newRecorder()
 			h.ServeHTTP(rr, httpRequest(c.path))
-			if got := rr.Header().Get(HeaderDeprecation); got != c.wantDeprecation {
-				t.Errorf("%s %s: Deprecation = %q; want %q", name, c.path, got, c.wantDeprecation)
+			want := ""
+			if c.stamped {
+				want = wantLink
+			}
+			if got := rr.Header().Get(HeaderLink); got != want {
+				t.Errorf("%s %s: Link = %q; want %q", name, c.path, got, want)
 			}
 			// The wrapper must be transparent: same status, same body.
 			if rr.code != http.StatusOK {

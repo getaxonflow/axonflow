@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -72,11 +75,11 @@ func TestPublishRunsEveryGateAndSigns(t *testing.T) {
 // unusual.
 func TestPublishIsTheOnlyPathToASignedArtifact(t *testing.T) {
 	trust, _ := systemTrust(t)
-	store, err := NewStore(trust)
+	store, err := NewStore(StaticTrust(trust), mustProfile(t, EditionEnterprise))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Admit(&Artifact{}); err == nil {
+	if err := store.Admit(context.Background(), &Artifact{}); err == nil {
 		t.Fatal("a hand-built artifact was admitted")
 	}
 	// And one assembled by hand out of a real bundle, which is the shape a
@@ -101,7 +104,7 @@ func TestPublishIsTheOnlyPathToASignedArtifact(t *testing.T) {
 		report:     GauntletReport{},
 		provenance: PublicationProvenance{Root: pdp.RootSystem, Author: pid(t, principalAlice)},
 	}
-	err = store.Admit(forged)
+	err = store.Admit(context.Background(), forged)
 	if err == nil {
 		t.Fatal("an artifact whose gauntlet never ran was admitted")
 	}
@@ -125,7 +128,7 @@ func TestPublishIsTheOnlyPathToASignedArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	forged.signature = ed25519.Sign(priv, payload)
-	err = store.Admit(forged)
+	err = store.Admit(context.Background(), forged)
 	if err == nil {
 		t.Fatal("a correctly signed artifact whose gauntlet never ran was admitted")
 	}
@@ -638,30 +641,40 @@ func TestUnicodeNormalizationCannotForgeAnArtifact(t *testing.T) {
 func TestActivationLifecycle(t *testing.T) {
 	ctx := context.Background()
 	cat := baseCatalog(t)
-	trust, priv := systemTrust(t)
-	api, err := NewAPI(cat, trust)
+	trust, priv := organizationTrust(t)
+	api, err := NewAPI(cat, StaticTrust(trust), mustProfile(t, EditionEnterprise))
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Unix(1_700_000_200, 0).UTC()
 
-	v1, _, err := api.Publish(ctx, baseDocument(t), publishOptions(t, priv))
+	v1, _, err := api.Publish(ctx, organizationDocument(t), organizationPublishOptions(t, priv))
 	if err != nil {
 		t.Fatalf("v1 must publish: %v", err)
 	}
 
 	t.Run("the author cannot activate their own version", func(t *testing.T) {
-		if _, err := api.Promote(pdp.RootSystem, v1.Digest(), pid(t, principalAlice), now, "self"); err == nil {
+		// THE REASON, not just a refusal. The author is never among the
+		// approvers - separation of duties at publish guarantees it - so
+		// `err != nil` here is equally satisfied by the not-an-approver rule,
+		// and this subtest passed with the author rule deleted entirely.
+		// Pre-existing, and picked up because #3711 changes the comparison
+		// that rule uses.
+		_, err := api.Promote(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalAlice), now, "self")
+		if err == nil {
 			t.Fatal("the author activated their own document")
+		}
+		if !strings.Contains(err.Error(), "cannot also activate it") {
+			t.Fatalf("the author was refused, but by the approver-list rule rather than by separation of duties (%v); this assertion cannot tell those apart unless it names the rule", err)
 		}
 	})
 	t.Run("a stranger cannot activate it either", func(t *testing.T) {
-		if _, err := api.Promote(pdp.RootSystem, v1.Digest(), pid(t, principalCarol), now, "stranger"); err == nil {
+		if _, err := api.Promote(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalCarol), now, "stranger"); err == nil {
 			t.Fatal("a principal who is not an approver activated the document")
 		}
 	})
 
-	act, err := api.Promote(pdp.RootSystem, v1.Digest(), pid(t, principalBob), now, "initial rollout")
+	act, err := api.Promote(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalBob), now, "initial rollout")
 	if err != nil {
 		t.Fatalf("an approver must be able to activate: %v", err)
 	}
@@ -670,7 +683,7 @@ func TestActivationLifecycle(t *testing.T) {
 	}
 
 	// Render back what is active, and prove it is the source that was signed.
-	back, err := api.Render(pdp.RootSystem)
+	back, err := api.Render(context.Background(), pdp.RootOrganization)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,52 +692,55 @@ func TestActivationLifecycle(t *testing.T) {
 	}
 
 	// A second version that correctly names its parent.
-	v2doc := documentWith(t, cat, func(m *Metadata, d *pdp.Document) {
+	v2doc := organizationDocumentWith(t, cat, func(m *Metadata, d *pdp.Document) {
 		d.Version = 2
 		m.Supersedes = v1.Digest()
 		policyByIDIn(d, "perm.refund").Where = pdp.Compare("args.amount_cents", pdp.OpLe, 250000)
 	})
-	v2, _, err := api.Publish(ctx, v2doc, publishOptions(t, priv))
+	v2, _, err := api.Publish(ctx, v2doc, organizationPublishOptions(t, priv))
 	if err != nil {
 		t.Fatalf("v2 must publish: %v", err)
 	}
 
 	t.Run("a version that does not name the active parent is refused", func(t *testing.T) {
-		orphan := documentWith(t, cat, func(m *Metadata, d *pdp.Document) {
+		orphan := organizationDocumentWith(t, cat, func(m *Metadata, d *pdp.Document) {
 			d.Version = 3
 			m.Supersedes = "sha256:" + strings.Repeat("00", 32)
 		})
-		art, _, err := api.Publish(ctx, orphan, publishOptions(t, priv))
+		art, _, err := api.Publish(ctx, orphan, organizationPublishOptions(t, priv))
 		if err != nil {
 			t.Fatalf("the orphan must publish; it is activation that refuses it: %v", err)
 		}
-		if _, err := api.Promote(pdp.RootSystem, art.Digest(), pid(t, principalBob), now, "orphan"); err == nil {
+		if _, err := api.Promote(context.Background(), pdp.RootOrganization, art.Digest(), pid(t, principalBob), now, "orphan"); err == nil {
 			t.Fatal("a version edited from a digest that is not active was promoted over the active one")
 		}
 	})
 
-	if _, err := api.Promote(pdp.RootSystem, v2.Digest(), pid(t, principalBob), now, "narrow the refund cap"); err != nil {
+	if _, err := api.Promote(context.Background(), pdp.RootOrganization, v2.Digest(), pid(t, principalBob), now, "narrow the refund cap"); err != nil {
 		t.Fatalf("v2 must promote: %v", err)
 	}
 
 	t.Run("promotion cannot go backwards", func(t *testing.T) {
-		if _, err := api.Promote(pdp.RootSystem, v1.Digest(), pid(t, principalBob), now, "back"); err == nil {
+		if _, err := api.Promote(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalBob), now, "back"); err == nil {
 			t.Fatal("an older version was promoted over a newer one")
 		}
 	})
 
 	t.Run("rollback restores a previously activated digest", func(t *testing.T) {
-		if _, err := api.Rollback(pdp.RootSystem, v1.Digest(), pid(t, principalBob), now, ""); err == nil {
+		if _, err := api.Rollback(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalBob), now, ""); err == nil {
 			t.Fatal("an unexplained rollback was accepted")
 		}
-		act, err := api.Rollback(pdp.RootSystem, v1.Digest(), pid(t, principalBob), now, "the narrower cap blocked legitimate refunds")
+		act, err := api.Rollback(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalBob), now, "the narrower cap blocked legitimate refunds")
 		if err != nil {
 			t.Fatalf("rollback to a previously activated digest must work: %v", err)
 		}
 		if act.Kind != ActivationRollback || act.PreviousDigest != v2.Digest() {
 			t.Fatalf("unexpected rollback record: %+v", act)
 		}
-		active, ok := api.Store().Active(pdp.RootSystem)
+		active, ok, err := api.Store().Active(context.Background(), pdp.RootOrganization)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !ok || active.Digest() != v1.Digest() {
 			t.Fatal("the rollback did not change what is active")
 		}
@@ -735,14 +751,14 @@ func TestActivationLifecycle(t *testing.T) {
 		// only thing wrong with this rollback is the actor. An unattributed
 		// activation record (actor "::") would defeat the audited history
 		// that makes emergency changes tolerable.
-		if _, err := api.Rollback(pdp.RootSystem, v2.Digest(), contract.ID{}, now, "unattributed emergency"); err == nil {
+		if _, err := api.Rollback(context.Background(), pdp.RootOrganization, v2.Digest(), contract.ID{}, now, "unattributed emergency"); err == nil {
 			t.Fatal("a rollback with a zero actor was accepted, so the audit trail can carry an unattributed activation")
 		} else if !strings.Contains(err.Error(), "no actor") {
 			t.Fatalf("the refusal should name the missing actor, got: %v", err)
 		}
 	})
 	t.Run("the author cannot roll back to their own version either", func(t *testing.T) {
-		if _, err := api.Rollback(pdp.RootSystem, v2.Digest(), pid(t, principalAlice), now, "author self-service"); err == nil {
+		if _, err := api.Rollback(context.Background(), pdp.RootOrganization, v2.Digest(), pid(t, principalAlice), now, "author self-service"); err == nil {
 			t.Fatal("the author rolled back to their own version, which is a route to activating their own policy that Promote refuses")
 		} else if !strings.Contains(err.Error(), "separation of author and approver duties") {
 			t.Fatalf("the refusal should name the separation of duties, got: %v", err)
@@ -750,20 +766,23 @@ func TestActivationLifecycle(t *testing.T) {
 	})
 
 	t.Run("rollback to a never-activated digest is refused", func(t *testing.T) {
-		never := documentWith(t, cat, func(m *Metadata, d *pdp.Document) {
+		never := organizationDocumentWith(t, cat, func(m *Metadata, d *pdp.Document) {
 			d.Version = 9
 			m.Supersedes = v2.Digest()
 		})
-		art, _, err := api.Publish(ctx, never, publishOptions(t, priv))
+		art, _, err := api.Publish(ctx, never, organizationPublishOptions(t, priv))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := api.Rollback(pdp.RootSystem, art.Digest(), pid(t, principalBob), now, "never activated"); err == nil {
+		if _, err := api.Rollback(context.Background(), pdp.RootOrganization, art.Digest(), pid(t, principalBob), now, "never activated"); err == nil {
 			t.Fatal("a digest that was never activated was rolled back to; it is not a verified digest to return to")
 		}
 	})
 
-	history := api.Store().History(pdp.RootSystem)
+	history, err := api.Store().History(context.Background(), pdp.RootOrganization)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(history) != 3 {
 		t.Fatalf("expected three activations in the history, got %d: %+v", len(history), history)
 	}
@@ -785,7 +804,7 @@ func TestADeauthorizedKeyStopsActivation(t *testing.T) {
 	pub, priv := testKeys(t)
 	trust := pdp.NewTrustStore()
 	trust.Authorize(pdp.RootSystem, "system-key-1", pub)
-	store, err := NewStore(trust)
+	store, err := NewStore(StaticTrust(trust), mustProfile(t, EditionEnterprise))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +812,7 @@ func TestADeauthorizedKeyStopsActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Admit(art); err != nil {
+	if err := store.Admit(context.Background(), art); err != nil {
 		t.Fatalf("admission must succeed while the key is authorized: %v", err)
 	}
 	// Withdraw the key by rebuilding the store's trust with a different key
@@ -801,7 +820,384 @@ func TestADeauthorizedKeyStopsActivation(t *testing.T) {
 	// looks like from the verifier's side.
 	otherPub, _ := otherKeys(t)
 	trust.Authorize(pdp.RootSystem, "system-key-1", otherPub)
-	if _, err := store.Promote(pdp.RootSystem, art.Digest(), pid(t, principalBob), time.Now(), "after rotation"); err == nil {
+	if _, err := store.Promote(context.Background(), pdp.RootSystem, art.Digest(), pid(t, principalBob), time.Now(), "after rotation"); err == nil {
 		t.Fatal("an artifact signed by a key that no longer verifies was activated")
 	}
+}
+
+// THE FIFTH SURFACE THAT ACCEPTS A PRINCIPAL (#3711).
+//
+// R3 round 3 reached this one by publishing with a `Robot::acme:r1` approver
+// and finding it SIGNED into the provenance and intact after LoadArtifact,
+// while the CHANGELOG said the four surfaces that accept a principal all
+// enforce the vocabulary. Four did. This is the fifth, and it is the only one
+// whose value ends up under a signature, so an out-of-vocabulary type here was
+// a signed statement rather than a rejected input.
+//
+// The test refuses at the surface rather than trusting the caller: the portal
+// validates before calling, which is exactly why nothing was broken and
+// exactly why nothing noticed.
+func TestPublishRefusesAnApproverOutsideThePrincipalVocabulary(t *testing.T) {
+	_, priv := systemTrust(t)
+	base := publishOptions(t, priv)
+
+	// PRECONDITION: the baseline publishes. Every refusal below must be
+	// attributable to the approver and not to the fixture.
+	if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), base); err != nil {
+		t.Fatalf("the baseline must publish before this test can attribute a refusal to the approver: %v\n%v", err, findings)
+	}
+
+	// The field is a LIST, not one identifier, because the case that actually
+	// published is a mixed one and a single-entry table cannot express it.
+	cases := []struct {
+		name      string
+		approvers []contract.ID
+		wantCode  string
+	}{
+		{
+			name:      "a principal type outside the vocabulary",
+			approvers: []contract.ID{{Kind: contract.KindPrincipal, Type: "Robot", Qualifier: "acme", Local: "r1"}},
+			wantCode:  pdp.RuleMalformedIdentifier,
+		},
+		{
+			// THE THIRD UNGUARDED TERM in this control, after the type and the
+			// realm. Both checks SKIPPED a zero identifier, so a publication
+			// naming one was signed with `approvers=[::]` - a signed statement
+			// that nobody approved the version, wearing the shape of one that
+			// somebody did.
+			name:      "a zero identifier",
+			approvers: []contract.ID{{}},
+			wantCode:  pdp.RuleMalformedIdentifier,
+		},
+		{
+			// THE CASE THAT ACTUALLY PUBLISHED. A list of only a zero id was
+			// already refused before the fix, by the separation-of-duties rule
+			// downstream - so testing that alone would have passed on the
+			// broken code. The mixed list is the one that got through: the
+			// genuine approver satisfied separation of duties and the zero
+			// entry rode along into the signed provenance.
+			name:      "a zero identifier beside a genuine approver",
+			approvers: []contract.ID{{}, pid(t, principalBob)},
+			wantCode:  pdp.RuleMalformedIdentifier,
+		},
+		{
+			name:      "a well-formed identifier of the wrong kind",
+			approvers: []contract.ID{contract.MustParseID(contract.KindResource, "Resource::db:customers")},
+			wantCode:  pdp.RuleIdentifierWrongKind,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := base
+			opts.Approvers = append([]contract.ID(nil), tc.approvers...)
+			art, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts)
+			if err == nil {
+				t.Fatalf("Publish accepted approvers %v and produced an artifact; the value is signed into the provenance, so this would be a signed statement that they approved the version", tc.approvers)
+			}
+			if art != nil {
+				t.Error("Publish refused and still returned an artifact")
+			}
+			var found bool
+			for _, f := range findings {
+				if f.Code == tc.wantCode {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the refusal does not carry %s; an author cannot tell what to change from %v", tc.wantCode, findings)
+			}
+		})
+	}
+
+	// AND THE VOCABULARY IS NOT REFUSED WHOLESALE. Without this, a check that
+	// rejected every approver would pass everything above.
+	for _, member := range contract.PrincipalTypes() {
+		opts := base
+		opts.Approvers = []contract.ID{{Kind: contract.KindPrincipal, Type: string(member), Qualifier: "acme", Local: "reviewer"}}
+		if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts); err != nil {
+			t.Errorf("Publish refused a %q approver, which is a member of the vocabulary: %v\n%v", member, err, findings)
+		}
+	}
+}
+
+// THE AUTHOR CANNOT APPROVE THEIR OWN POLICY UNDER ANY PRINCIPAL TYPE (#3876).
+//
+// Separation of duties compared `ap.String()` against the author's, and
+// `String()` renders the TYPE. So an author named themselves under a different
+// type, the two strings differed, the rule was satisfied, and the artifact was
+// signed with the author as their own sole approver. Reproduced end to end
+// before the fix: author `User::acme:alice`, sole approver `Robot::acme:alice`,
+// PUBLISHED.
+//
+// Closing the type vocabulary narrows that and does not close it - the author
+// simply uses another member of the closed set - which is why this test is
+// PARAMETERISED OVER ALL SIX rather than over the two that were probed. A test
+// that checked `Robot` would have gone green on a fix that left five routes
+// open.
+func TestTheAuthorCannotApproveTheirOwnPolicyUnderAnyPrincipalType(t *testing.T) {
+	_, priv := systemTrust(t)
+	d := baseDocument(t)
+	author := d.Metadata.Author
+	if author.IsZero() {
+		t.Fatal("the baseline document names no author, so this test could not fail")
+	}
+
+	// PRECONDITION: the baseline publishes with a genuine second approver, so
+	// every refusal below is attributable to the author-as-approver and not to
+	// the fixture.
+	if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), publishOptions(t, priv)); err != nil {
+		t.Fatalf("the baseline must publish: %v\n%v", err, findings)
+	}
+
+	for _, typ := range contract.PrincipalTypes() {
+		t.Run(string(typ), func(t *testing.T) {
+			self := author
+			self.Type = string(typ)
+			opts := publishOptions(t, priv)
+			opts.Approvers = []contract.ID{self}
+
+			art, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts)
+			if err == nil {
+				t.Fatalf("the author published with themselves as the sole approver, named %s against author %s; the two-person rule for policy publication is satisfied by a string difference",
+					self.String(), author.String())
+			}
+			if art != nil {
+				t.Error("Publish refused and still returned an artifact")
+			}
+			var found bool
+			for _, f := range findings {
+				if f.Code == CodeApproverIsAuthor {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the refusal does not carry %s, so an author is not told which rule stopped them: %v", CodeApproverIsAuthor, findings)
+			}
+		})
+	}
+
+	// THE CASING AXIS, which is the same class one field over. The directory
+	// resolves an address case-insensitively - the roles store matches on
+	// `lower(btrim(user_email))` - so these are one person, and a byte
+	// comparison made them two. That axis had already been found and fixed at
+	// the customer portal, on its own inputs; this asserts it at the CONTROL,
+	// which is what covers a caller that is not the portal.
+	t.Run("a different casing of the author is the same person", func(t *testing.T) {
+		self := author
+		self.Local = strings.ToUpper(self.Local)
+		if self.Local == author.Local {
+			t.Fatal("the fixture author's local part has no case to change, so this assertion could not fail")
+		}
+		opts := publishOptions(t, priv)
+		opts.Approvers = []contract.ID{self}
+		if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts); err == nil {
+			t.Fatalf("the author approved themselves as %s against author %s; the directory resolves these to one person", self.String(), author.String())
+		} else {
+			var found bool
+			for _, f := range findings {
+				if f.Code == CodeApproverIsAuthor {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the refusal does not carry %s: %v", CodeApproverIsAuthor, findings)
+			}
+		}
+	})
+
+	// A DIFFERENT REALM IS A DIFFERENT PERSON, and nothing tested it. Review
+	// dropped `a.Qualifier == b.Qualifier` from samePerson and all eleven
+	// packages stayed green: the local part alone decided identity, so
+	// `User::acme:alice` and `User::other-realm:alice` were one person.
+	//
+	// Here that mutant only widens a refusal - an approver in another realm
+	// would be wrongly rejected as the author. On the ACTIVATION path it opens
+	// a hole instead, and that direction is asserted in
+	// TestActivationComparesIdentityRatherThanItsRenderedForm.
+	t.Run("the same local part in another realm is a different person", func(t *testing.T) {
+		foreign := author
+		foreign.Qualifier = "other-realm"
+		if foreign.Qualifier == author.Qualifier {
+			t.Fatal("the fixture author has no realm to change, so this assertion could not fail")
+		}
+		opts := publishOptions(t, priv)
+		opts.Approvers = []contract.ID{foreign}
+		if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts); err != nil {
+			t.Errorf("an approver with the author's local part in a DIFFERENT realm was refused as the author; a realm is part of an identity and is deliberately not folded: %v\n%v", err, findings)
+		}
+	})
+
+	// AND THE RULE STILL PASSES FOR A DIFFERENT PERSON. Without this, a check
+	// that refused every publication would satisfy every case above.
+	other := author
+	other.Local = "someone-else@acme.example"
+	opts := publishOptions(t, priv)
+	opts.Approvers = []contract.ID{other}
+	if _, findings, err := Publish(context.Background(), baseDocument(t), baseCatalog(t), opts); err != nil {
+		t.Errorf("a genuine second approver was refused: %v\n%v", err, findings)
+	}
+}
+
+// ACTIVATION IS THE OTHER END OF THE SAME RULE, AND IT HAD THE SAME DEFECT
+// (#3876).
+//
+// checkActivationActor compared the activator to the author with String(), and
+// checkActivationAuthority compared the activator to each recorded approver the
+// same way. So the two-person rule was defeatable at BOTH ENDS of the
+// lifecycle: approve your own publication, then activate your own version. This
+// asserts both ends now hold, and it asserts them across every member of the
+// vocabulary and across casing, because those are the two axes the rendered
+// form carries that identity does not.
+func TestActivationComparesIdentityRatherThanItsRenderedForm(t *testing.T) {
+	ctx := context.Background()
+	trust, priv := organizationTrust(t)
+	api, err := NewAPI(baseCatalog(t), StaticTrust(trust), mustProfile(t, EditionEnterprise))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_400, 0).UTC()
+	art, _, err := api.Publish(ctx, organizationDocument(t), organizationPublishOptions(t, priv))
+	if err != nil {
+		t.Fatalf("the baseline must publish: %v", err)
+	}
+	author := pid(t, principalAlice)
+	approver := pid(t, principalBob)
+
+	// THE BYPASS. The author, wearing each type in turn, must never activate.
+	//
+	// AND THE REFUSAL'S REASON IS ASSERTED, not merely that there was one. The
+	// author is never in the approver list - separation of duties at publish
+	// makes sure of that - so `err != nil` alone is satisfied by the
+	// NOT-AN-APPROVER refusal further down, and reverting checkActivationActor
+	// to String() left this test green. A refusal assertion that does not name
+	// the rule it expects is an assertion that something went wrong, which is
+	// not what this test is about.
+	const authorRule = "cannot also activate it"
+	refusedAsAuthor := func(t *testing.T, actor contract.ID, why string) {
+		t.Helper()
+		_, err := api.Promote(context.Background(), pdp.RootOrganization, art.Digest(), actor, now, "self")
+		if err == nil {
+			t.Fatalf("the author activated their own version as %s; %s", actor, why)
+		}
+		if !strings.Contains(err.Error(), authorRule) {
+			t.Fatalf("the author as %s was refused, but by the approver-list rule rather than by separation of duties (%v); this test cannot tell those apart unless it names the rule", actor, err)
+		}
+	}
+	for _, typ := range contract.PrincipalTypes() {
+		t.Run("the author cannot activate as "+string(typ), func(t *testing.T) {
+			self := author
+			self.Type = string(typ)
+			refusedAsAuthor(t, self, "separation of duties is satisfied by a string difference")
+		})
+	}
+	t.Run("the author cannot activate under a different casing", func(t *testing.T) {
+		self := author
+		self.Local = strings.ToUpper(self.Local)
+		if self.Local == author.Local {
+			t.Fatal("the fixture author's local part has no case to change, so this assertion could not fail")
+		}
+		refusedAsAuthor(t, self, "the directory resolves this address case-insensitively, so these are one person")
+	})
+
+	// EACH PROMOTION GETS A FRESH STORE, and that is not tidiness.
+	//
+	// Review found the cross-realm subtest below sharing a store with the one
+	// above it, so by the time it ran version one was already promoted and
+	// `err != nil` carried no information about realms at all: it passed with
+	// the qualifier comparison deleted, and the genuine approver was refused in
+	// that same state, which is the tell.
+	//
+	// THE ORDER IS IDENTITY FIRST, and an earlier version of this comment had
+	// it backwards. store.go checks checkActivationAuthority at :157 and only
+	// then reaches the version-advance rule at :171, the
+	// `DocumentVersion <= current.DocumentVersion` predicate - which is what
+	// refuses a re-promotion of the digest that is already active. (:167 is the
+	// neighbouring document-identity rule; I cited that one first, which is the
+	// same class of error as the backwards ordering it was correcting.) So the mutant did not
+	// sneak past a check that had not run - it made the identity check PASS
+	// (with the realm ignored, the foreign principal IS one of the approvers),
+	// and the refusal then came from the version rule further down, which
+	// refuses everyone once a version is active. Same vacuity, opposite
+	// mechanism, and the wrong one would send the next reader to the wrong
+	// line.
+	//
+	// That is this test function's own subject, three subtests below the
+	// refusedAsAuthor helper written to prevent exactly it. A refusal assertion
+	// is not an assertion of the reason, and a shared fixture is how the reason
+	// changes underneath one.
+	freshArtifact := func(t *testing.T) (*API, *Artifact) {
+		t.Helper()
+		trust, priv := organizationTrust(t)
+		a, err := NewAPI(baseCatalog(t), StaticTrust(trust), mustProfile(t, EditionEnterprise))
+		if err != nil {
+			t.Fatal(err)
+		}
+		art, _, err := a.Publish(ctx, organizationDocument(t), organizationPublishOptions(t, priv))
+		if err != nil {
+			t.Fatalf("the baseline must publish: %v", err)
+		}
+		return a, art
+	}
+
+	// THE MIRROR IMAGE, and a BEHAVIOUR CHANGE rather than a hole being closed.
+	// A genuine approver presenting a different type - or a different casing -
+	// is the same person, was refused before, and now succeeds. Stated here so
+	// nobody reads it as a second bypass: the type was never what made them an
+	// approver.
+	t.Run("a genuine approver may activate under a different type", func(t *testing.T) {
+		a, art := freshArtifact(t)
+		ap := approver
+		ap.Type = "Service"
+		if ap.String() == approver.String() {
+			t.Fatal("the probe did not change the rendered form")
+		}
+		if _, err := a.Promote(context.Background(), pdp.RootOrganization, art.Digest(), ap, now, "approver, reclassified"); err != nil {
+			t.Fatalf("a recorded approver was refused activation for presenting a different principal type: %v", err)
+		}
+	})
+
+	// A REALM IS PART OF AN IDENTITY, and this is the direction where dropping
+	// it is a HOLE rather than an inconvenience: a principal carrying an
+	// approver's local part in a different realm must not be able to activate
+	// a version that approver approved.
+	t.Run("an approver's local part in another realm cannot activate", func(t *testing.T) {
+		a, art := freshArtifact(t)
+		foreign := approver
+		foreign.Qualifier = "other-realm"
+		if foreign.Qualifier == approver.Qualifier {
+			t.Fatal("the fixture approver has no realm to change, so this assertion could not fail")
+		}
+
+		// PRECONDITION: on a store in THIS state the genuine approver CAN
+		// activate. Without it, the refusal below could be the version-advance
+		// rule, an unpublished digest, or anything else that refuses everyone
+		// equally - which is exactly how the previous version of this subtest
+		// passed with the qualifier comparison deleted.
+		//
+		// (The artifact is content-addressed, so every fresh store publishes
+		// the same digest and admits it. What differs between stores is only
+		// which version is already active, which is the thing being isolated.)
+		if _, err := a.Promote(context.Background(), pdp.RootOrganization, art.Digest(), approver, now, "control"); err != nil {
+			t.Fatalf("the genuine approver cannot activate in this state either, so a refusal below would say nothing about realms: %v", err)
+		}
+
+		// And now the foreign-realm principal, on its OWN fresh store, refused
+		// BY NAME - the approver-list rule, not the version rule.
+		a2, art2 := freshArtifact(t)
+		_, err := a2.Promote(context.Background(), pdp.RootOrganization, art2.Digest(), foreign, now, "cross-realm")
+		if err == nil {
+			t.Fatalf("%s activated a version approved by %s; a realm is part of an identity, so these are two people", foreign, approver)
+		}
+		if !strings.Contains(err.Error(), "is not among the approvers") {
+			t.Fatalf("%s was refused, but not by the approver-list rule (%v); this test cannot tell that apart from a version-advance refusal unless it names the rule", foreign, err)
+		}
+	})
+
+	// AND A STRANGER STILL CANNOT. Without this, a comparison that treated
+	// everyone as the same person would satisfy the case above.
+	t.Run("a stranger still cannot activate", func(t *testing.T) {
+		if _, err := api.Promote(context.Background(), pdp.RootOrganization, art.Digest(), pid(t, principalCarol), now, "stranger"); err == nil {
+			t.Fatal("a principal who is not an approver activated the document")
+		}
+	})
 }

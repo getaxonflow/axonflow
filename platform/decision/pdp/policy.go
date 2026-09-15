@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package pdp is the deterministic policy decision point: a typed authoring
 // document, a lossless compiler into Rego v1, an in-process OPA runtime with
 // restricted capabilities, and the ADR-065 combining semantics implemented in
@@ -317,10 +320,20 @@ type Policy struct {
 	Obligations []contract.Obligation `json:"obligations,omitempty"`
 	// Mandatory marks a requirement whose obligations must be discharged.
 	Mandatory bool `json:"mandatory,omitempty"`
+	// Assurance is the ADR-065 "Inspection and risk" class this control
+	// declares: what happens when it cannot be evaluated. It is held to the
+	// failure behaviour the combiner gives the policy's shape (DeriveAssurance)
+	// wherever it is declared, and every shipped control declares one. A
+	// permission declares none. See assurance.go.
+	Assurance AssuranceClass `json:"assurance,omitempty"`
 	// PierceableBy names the break-glass roles that may suspend a constraint.
 	// Nil means the constraint is unbreakable by construction, which is what a
 	// regulatory or contractual constraint declares.
 	PierceableBy []contract.ID `json:"pierceable_by,omitempty"`
+	// Name is the operator-facing name of the policy (#4127): what a portal
+	// and an audit row show in place of its identifier. Optional, and never
+	// read by the combiner: a decision's reason text comes from Description.
+	Name string `json:"name,omitempty"`
 	// Description is operator-facing text carried into the trace.
 	Description string `json:"description,omitempty"`
 }
@@ -437,6 +450,11 @@ const (
 	RuleRootMismatch           = "ROOT_MISMATCH"
 	RulePoolNotInteractive     = "POOL_NOT_INTERACTIVE"
 	RuleAbsenceNotHandled      = "ABSENCE_NOT_HANDLED"
+	RuleMalformedIdentifier    = "MALFORMED_IDENTIFIER"
+	RuleIdentifierWrongKind    = "IDENTIFIER_WRONG_KIND"
+	RuleAssuranceUnknown       = "ASSURANCE_CLASS_UNKNOWN"
+	RuleAssuranceOnPermission  = "ASSURANCE_CLASS_ON_A_PERMISSION"
+	RuleAssuranceMismatch      = "ASSURANCE_CLASS_CONTRADICTS_THE_POLICY"
 )
 
 // AllRules returns every authoring rejection rule this validator can emit, in
@@ -451,13 +469,18 @@ func AllRules() []string {
 	return []string{
 		RuleAbsenceNotHandled,
 		RuleApprovalUnsatisfiable,
+		RuleAssuranceMismatch,
+		RuleAssuranceOnPermission,
+		RuleAssuranceUnknown,
 		RuleAuthorityFromUntrusted,
 		RuleConstraintObligations,
 		RuleDuplicatePolicyID,
 		RuleEmptySelector,
 		RuleFieldNotInSchema,
 		RuleInspectionGrants,
+		RuleIdentifierWrongKind,
 		RuleMalformedCondition,
+		RuleMalformedIdentifier,
 		RuleOrgPolicyPiercesSystem,
 		RulePermissionEmitsDeny,
 		RulePoolNotInteractive,
@@ -501,6 +524,52 @@ func (d *Document) Validate() []ValidationError {
 		if err := p.Authority.Validate(); err != nil {
 			errs = append(errs, ValidationError{RuleMalformedCondition, p.ID, err.Error()})
 			continue
+		}
+		// A DECLARED assurance class is held to what the combiner does with this
+		// policy's shape. An undeclared one is not refused here: see
+		// RequireDeclaredAssurance for where it is.
+		if p.Assurance != "" {
+			errs = append(errs, validateAssurance(p)...)
+		}
+
+		// EVERY IDENTIFIER A POLICY NAMES IS VALIDATED, and its KIND must be
+		// the one the field means (#3711). Nothing checked these before: a
+		// scope could name `Robot::acme:r1` - a principal type outside the
+		// closed vocabulary - or a resource identifier where a principal
+		// belongs, and the document compiled, published and evaluated. The
+		// compiler reads Scope.Principals through ID.String() with no Kind and
+		// no Validate at all, so this is the only place it can be caught.
+		for _, group := range []struct {
+			field string
+			kind  contract.Kind
+			ids   []contract.ID
+		}{
+			{"scope.principals", contract.KindPrincipal, p.Scope.Principals},
+			{"scope.groups", contract.KindGroup, p.Scope.Groups},
+			{"actions", contract.KindAction, p.Actions.Actions},
+			// pierceable_by names break-glass ROLES, which are groups. It is
+			// here because the schema closes it too - it is a $ref to the same
+			// identifier definition - and a document that NewDocument accepts
+			// and Publish then refuses in the round-trip gate, with a bare
+			// JSON pointer and no findings, is a worse experience than a
+			// refusal at save time that names the field.
+			{"pierceable_by", contract.KindGroup, p.PierceableBy},
+		} {
+			for _, id := range group.ids {
+				// The KIND is a separate refusal from the FORM, because they
+				// are separate author mistakes with separate remedies: a
+				// well-formed resource id in a principal scope is not
+				// malformed, it is in the wrong field.
+				if id.Kind != group.kind {
+					errs = append(errs, ValidationError{RuleIdentifierWrongKind, p.ID,
+						fmt.Sprintf("%s names a %q identifier (%s); it must name a %q", group.field, id.Kind, id.String(), group.kind)})
+					continue
+				}
+				if err := id.Validate(); err != nil {
+					errs = append(errs, ValidationError{RuleMalformedIdentifier, p.ID,
+						fmt.Sprintf("%s: %v", group.field, err)})
+				}
+			}
 		}
 
 		// A permission may only widen. It carries no obligations of its own

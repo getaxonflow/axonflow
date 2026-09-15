@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package conformance
 
 import (
@@ -141,6 +144,13 @@ func (w *World) Request(s Scenario) (*contract.Request, error) {
 		attrs[path] = *a
 	}
 
+	// RECOMPUTED, not advertised (#3700): Snapshot.PolicyBundle is the value a
+	// decision is attributed to, and ADR-065 binds it into the decision proof.
+	bundleDigest, err := w.Bundles[0].VerifiedDigest()
+	if err != nil {
+		return nil, fmt.Errorf("conformance: bundle digest: %w", err)
+	}
+
 	requestID := s.RequestID
 	if requestID == "" {
 		requestID = "req_" + s.Principal + "_" + s.Action + "_" + s.Resource
@@ -161,7 +171,7 @@ func (w *World) Request(s Scenario) (*contract.Request, error) {
 		},
 		Snapshot: contract.Snapshot{
 			IdentityEpoch: 83, ResourceEpoch: 14, RegistryVersion: 18, PolicyEpoch: 1,
-			PolicyBundle:  w.Bundles[0].Digest,
+			PolicyBundle:  bundleDigest,
 			SchemaVersion: contract.SchemaVersion,
 		},
 		Attributes:  attrs,
