@@ -132,6 +132,87 @@ rule applied at every auth boundary.
 |---------|------|-------------|
 | Go | `v9_identity/go/` | Self-contained mock agent + orchestrator demo |
 
+### Governance, Compliance & Security
+
+| Example | Path | Description |
+|---------|------|-------------|
+| Audit Logging | `audit-logging/` | Audit logging for compliance and monitoring |
+| Code Governance | `code-governance/` | Automatic detection and auditing of LLM-generated code |
+| Governance Profiles | `governance-profiles/` | `AXONFLOW_PROFILE` environment profiles (v6.2.0) |
+| Indonesia Compliance | `indonesia-compliance/` | Indonesia PII detection (OJK / UU PDP) compliance |
+| Singapore PII | `singapore-pii/` | Singapore PII detection for MAS FEAT compliance |
+| PII Detection | `pii-detection/` | Built-in PII detection capabilities |
+| SQL Injection Detection | `sqli-detection/` | SQL injection detection for queries and responses |
+| Media Governance | `media-governance/` | Multimodal media governance for images |
+| Media Governance Policies | `media-governance-policies/` | Media governance policy management |
+
+### Policy Configuration & Cost
+
+| Example | Path | Description |
+|---------|------|-------------|
+| Dynamic Policies | `dynamic-policies/` | CRUD for LLM-powered dynamic policies |
+| Static Policies | `static-policies/` | All static policy SDK methods |
+| Policy Configuration | `policy-configuration/` | Per-mode MCP policy configuration |
+| Gateway Policy Config | `gateway-policy-config/` | Gateway-mode policy configuration via environment variables |
+| MCP Policies | `mcp-policies/` | MCP policy enforcement with phase-aware blocking and redaction |
+| Feature Limits | `feature-limits/` | Tier-based feature limits |
+| Cost Controls | `cost-controls/` | All Cost Controls SDK methods and HTTP endpoints |
+| Cost Estimation | `cost-estimation/` | Cost estimation examples |
+| Risk-Tiered Approvals | `risk-tiered-approvals/` | Risk-tiered approval workflows |
+
+### Workflows & Execution
+
+| Example | Path | Description |
+|---------|------|-------------|
+| Workflows | `workflows/` | Example workflows (sequential and parallel) |
+| Workflow Control | `workflow-control/` | Workflow Control Plane examples |
+| Workflow Policy | `workflow-policy/` | Workflow policy enforcement |
+| Workflow Fail | `workflow-fail/` | Workflow failure handling |
+| MAP Confirm Mode | `map-confirm-mode/` | Multi-agent planning with confirm-mode governance |
+| MAP Lifecycle | `map-lifecycle/` | Multi-agent planning lifecycle management |
+| Checkpoint Resume | `checkpoint-resume/` | Checkpoint and resume of workflow execution |
+| WCP Retry + Idempotency | `wcp-retry-idempotency/` | Workflow Control Plane retry and idempotency validators |
+| Retry Semantics | `retry-semantics/` | Execution boundary retry semantics |
+| Execution Replay | `execution-replay/` | Decision & execution replay API |
+| Execution Tracking | `execution-tracking/` | Unified execution tracking for MAP and WCP |
+
+### Human-in-the-Loop
+
+| Example | Path | Description |
+|---------|------|-------------|
+| HITL | `hitl/` | `require_approval` policy action and HITL workflows |
+| HITL Queue | `hitl-queue/` | HITL approval queue handling |
+| HITL Response Parity | `hitl-response-parity/` | Unified approve/reject response shape (v7.4.0) |
+
+### LLM Providers & Routing
+
+| Example | Path | Description |
+|---------|------|-------------|
+| LLM Providers | `llm-providers/` | Alternate LLM providers (Azure OpenAI, Mistral) |
+| LLM Routing | `llm-routing/` | LLM provider routing capabilities |
+| Evaluation Tier | `evaluation-tier/` | Three-tier licensing model tests |
+| Version Check | `version-check/` | SDK-platform version compatibility and capability discovery |
+
+### Operations
+
+| Example | Path | Description |
+|---------|------|-------------|
+| Health Check | `health-check/` | Health check examples |
+| Config | `config/` | Example configuration files |
+| SDK Audit | `sdk-audit/` | Validates all SDK methods against live services |
+| MCP Audit | `mcp-audit/` | MCP audit logging examples |
+| Webhooks | `webhooks/` | Webhook subscription CRUD operations |
+| Demo | `demo/` | Community demo snippets |
+| Support Demo | `support-demo/` | Customer support AI governance demo application |
+
+### Additional Integration Modes
+
+| Example | Path | Description |
+|---------|------|-------------|
+| AutoGen | `integrations/autogen/` | AutoGen + AxonFlow integration |
+| Claude Agent SDK | `integrations/claude-agent-sdk/` | Claude Agent SDK integration |
+| Claude Code | `integrations/claude-code/` | Claude Code integration |
+
 ## SDK Versions
 
 All examples use the latest SDK versions:
@@ -201,7 +282,7 @@ Enterprise-only examples are in `ee/examples/`:
 - EU AI Act compliance
 - RBI/SEBI compliance (India)
 
-See [ee/examples/README.md](../ee/examples/README.md) for details.
+See the hosted documentation at https://docs.getaxonflow.com for details.
 
 ## Documentation
 
