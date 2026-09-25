@@ -624,7 +624,10 @@ func TestExecuteSingleStep_MissingProcessor(t *testing.T) {
 // with a mock StepProcessor that returns output.
 func TestExecuteSingleStep_SuccessfulExecution(t *testing.T) {
 	executor := NewMAPWCPExecutor(nil, nil)
-	ctx := context.Background()
+	// The step is decided before it runs (#4249 row 5666236540): an allowing
+	// engine, for the credential the resume route installs.
+	withMAPEngine(t, allowedStepVerdict())
+	ctx := mapSubjectContext()
 
 	plan := &planning.Plan{PlanID: "test-success-exec"}
 	workflow := &Workflow{
@@ -687,7 +690,10 @@ func TestExecuteSingleStep_SuccessfulExecution(t *testing.T) {
 // results in a failed StepExecutionResult (returned without a Go-level error).
 func TestExecuteSingleStep_ProcessorReturnsError(t *testing.T) {
 	executor := NewMAPWCPExecutor(nil, nil)
-	ctx := context.Background()
+	// The step is decided before it runs (#4249 row 5666236540): an allowing
+	// engine, for the credential the resume route installs.
+	withMAPEngine(t, allowedStepVerdict())
+	ctx := mapSubjectContext()
 
 	plan := &planning.Plan{PlanID: "test-proc-error"}
 	workflow := &Workflow{
@@ -740,7 +746,10 @@ func TestExecuteSingleStep_ProcessorReturnsError(t *testing.T) {
 // correctly passed to the step processor as input.
 func TestExecuteSingleStep_WithExecContext(t *testing.T) {
 	executor := NewMAPWCPExecutor(nil, nil)
-	ctx := context.Background()
+	// The step is decided before it runs (#4249 row 5666236540): an allowing
+	// engine, for the credential the resume route installs.
+	withMAPEngine(t, allowedStepVerdict())
+	ctx := mapSubjectContext()
 
 	plan := &planning.Plan{PlanID: "test-context-pass"}
 	workflow := &Workflow{
@@ -811,7 +820,10 @@ func (p *inputCapturingProcessor) ExecuteStep(ctx context.Context, step Workflow
 // TestExecuteSingleStep_NilExecContext tests that nil execContext doesn't cause panic.
 func TestExecuteSingleStep_NilExecContext(t *testing.T) {
 	executor := NewMAPWCPExecutor(nil, nil)
-	ctx := context.Background()
+	// The step is decided before it runs (#4249 row 5666236540): an allowing
+	// engine, for the credential the resume route installs.
+	withMAPEngine(t, allowedStepVerdict())
+	ctx := mapSubjectContext()
 
 	plan := &planning.Plan{PlanID: "test-nil-context"}
 	workflow := &Workflow{
@@ -844,7 +856,10 @@ func TestExecuteSingleStep_NilExecContext(t *testing.T) {
 // TestExecuteSingleStep_LastStepIndex tests executing the last step in a multi-step workflow.
 func TestExecuteSingleStep_LastStepIndex(t *testing.T) {
 	executor := NewMAPWCPExecutor(nil, nil)
-	ctx := context.Background()
+	// The step is decided before it runs (#4249 row 5666236540): an allowing
+	// engine, for the credential the resume route installs.
+	withMAPEngine(t, allowedStepVerdict())
+	ctx := mapSubjectContext()
 
 	plan := &planning.Plan{PlanID: "test-last-step"}
 	workflow := &Workflow{

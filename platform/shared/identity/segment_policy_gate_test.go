@@ -18,6 +18,15 @@ type fakeSegmentGateResolver struct {
 	err      error
 }
 
+// ResolveSegments completes the resolver interface; it counts nothing, so the
+// Resolve call count stays the observability resolve's own.
+func (f *fakeSegmentGateResolver) ResolveSegments(_ context.Context, _, _ string) ([]Segment, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resolved.Segments, nil
+}
+
 func (f *fakeSegmentGateResolver) Resolve(_ context.Context, _, _ string) (ResolvedIdentity, error) {
 	if f.err != nil {
 		return ResolvedIdentity{}, f.err

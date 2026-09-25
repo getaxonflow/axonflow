@@ -93,6 +93,22 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - google-adk 1.3.0 -> 1.3.1 (corrected on the v11.1.0 train). 1.3.0 was
+//     NEVER PUBLISHED: its release run failed its runtime e2e, so PyPI has
+//     1.0.0, 1.0.2, 1.1.0, 1.2.0 and 1.3.1 and answers 404 for 1.3.0, and the
+//     v1.3.1 release notes say 1.3.1 carries every change listed under 1.3.0.
+//     v11.0.0 shipped advertising 1.3.0, so `pip install
+//     axonflow-google-adk-plugin==1.3.0` found no matching distribution. This
+//     map, the test below and both published specs agreed on it, because each
+//     compares against the others and none against the registry: the same
+//     blind spot as the claude-desktop catch-up below, this time naming a
+//     version that does not exist rather than an old one.
+//   - the 11.0.0 train (#4313) moves four and adds two: openclaw 2.9.0 ->
+//     2.9.1, claude-code 1.12.0 -> 1.13.0, cursor 1.8.0 -> 1.9.0 and codex
+//     1.8.0 -> 1.9.0; n8n joins at floor 1.2.0, recommended 1.2.1, and
+//     google-adk at floor 1.2.0, recommended 1.3.0 (corrected above). This
+//     entry was written on the v11.1.0 train: the 11.0.0 prep moved the map
+//     without recording it here.
 //   - the 10.4.0 train moves all five: openclaw 2.8.6 -> 2.9.0
 //     (openclaw-plugin#191 + #193), claude-code 1.11.0 -> 1.12.0
 //     (claude-plugin#124), cursor 1.7.0 -> 1.8.0 (cursor-plugin#94), codex
@@ -142,7 +158,7 @@ var recommendedVersion = map[string]string{
 	"codex":          "1.9.0",
 	"claude-desktop": "0.4.0",
 	"n8n":            "1.2.1",
-	"google-adk":     "1.3.0",
+	"google-adk":     "1.3.1",
 }
 
 // MinVersions returns the floor map.

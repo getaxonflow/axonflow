@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/authoring"
@@ -27,7 +28,8 @@ type Summary struct {
 	// while no document is active, the organization template's controls.
 	Shipped int `json:"shipped"`
 	// Organization is the organization's own: every policy of its published
-	// document, the shipped controls that document re-actions, and the
+	// document that binds on the scope (NotBoundHere lists the rest), the
+	// shipped controls that document re-actions, and the
 	// replacements its recorded detection overrides carry
 	// (activation.CountEffects says why an override counts here).
 	Organization int `json:"organization"`
@@ -37,13 +39,64 @@ type Summary struct {
 	// PacksCounted says whether the activation counted carried the
 	// deployment's installed policy packs.
 	PacksCounted bool `json:"packs_counted"`
+	// PacksUncountedReason says why the packs were not counted, one of the
+	// PacksUncounted* values, and is omitted when they were. Only the agent
+	// loads a deployment's packs, so a summary served elsewhere counts them by
+	// reading the agent's (AgentSummaryPath); this names why that read failed.
+	PacksUncountedReason string `json:"packs_uncounted_reason,omitempty"`
 	// Disabled is how many policies of the shipped controls the organization's
 	// document disabled on the scope; one control can bind several policies.
 	// The engine does not carry them, so Total does not count them.
 	Disabled int `json:"disabled"`
 	// Total is Shipped + Organization, plus Pack when packs are counted.
 	Total int `json:"total"`
+	// NotBoundHere names the organization's controls left out of this scope, so
+	// neither counted nor enforced here, in the document's order: those whose
+	// binds_on does not name it (#4371), and those that read a registry
+	// detector this scope does not run (#4249 row 5674230432), which
+	// DetectorNotRunHere names again with the detector. Omitted when there are
+	// none, which is every summary of a document that scopes nothing and reads
+	// no detector, so such a summary is byte-identical to what it was.
+	NotBoundHere []string `json:"not_bound_here,omitempty"`
+	// DetectorNotRunHere names, per control, the registry detector this scope
+	// does not run and the planes that do. Every id here is also in
+	// NotBoundHere, which is the one list an operator reads for "what is not
+	// enforced here"; this one answers "why, and where it is". Omitted when
+	// there are none.
+	DetectorNotRunHere []DetectorNotRun `json:"detector_not_run_here,omitempty"`
 }
+
+// DetectorNotRun is one control left off this scope because the scope does not
+// run a registry detector it reads (#4249 row 5674230432).
+type DetectorNotRun struct {
+	ID       string   `json:"id"`
+	Detector string   `json:"detector"`
+	RunsOn   []string `json:"runs_on"`
+}
+
+// The reasons a summary served away from the agent could not count the
+// installed policy packs (Summary.PacksUncountedReason).
+const (
+	// PacksUncountedAgentUnreachable: the agent's summary could not be reached.
+	PacksUncountedAgentUnreachable = "agent_unreachable"
+	// PacksUncountedAgentRefused: the agent answered, but not with a summary
+	// (a non-2xx status).
+	PacksUncountedAgentRefused = "agent_refused"
+	// PacksUncountedAgentAnswerUnreadable: the agent answered 2xx with a body
+	// that is not a summary of the scope asked for.
+	PacksUncountedAgentAnswerUnreadable = "agent_answer_unreadable"
+)
+
+// AgentSummaryPath is the agent's summary of what it enforces on the decide
+// scope, installed policy packs included: GET, the internal-service
+// credential (serviceauth.ServiceIDHeader and ServiceTokenHeader), and the
+// organization in X-Org-ID. The internal-service security scheme, not the
+// path, is what makes it internal. It is deliberately NOT under
+// /api/v1/typed-policies, which the agent forwards whole to the orchestrator
+// (platform/agent/proxy.go): there it would either shadow the tenant summary
+// route with a 401, or send the orchestrator's read back to the orchestrator,
+// which would count no packs and say nothing.
+const AgentSummaryPath = "/api/v1/policy-packs/summary"
 
 // ErrNoInputs is ActiveSummary's refusal on a surface that builds no
 // activation inputs, because it has no deployment vocabulary to build them
@@ -54,7 +107,9 @@ var ErrNoInputs = errors.New("activationinputs: this surface builds no activatio
 // asked of it.
 var activate = activation.Activate
 
-// ActiveSummary activates what is in force on one organization and counts it.
+// ActiveSummary activates what is in force on one organization and counts it:
+// the same activation ActiveEffects lists (activeActivation), so the counts a
+// summary states are the counts of the effects a report reads.
 // inputs are the organization's activation inputs for one scope (Builder.Source,
 // the same ones its typed-authoring workspace dry-runs with), and active is the
 // artifact active on the organization root, nil when nothing is active: the
@@ -80,34 +135,42 @@ var activate = activation.Activate
 // agent alone loads a deployment's packs (platform/agent/policy_packs.go): the
 // Enterprise agent image is the only one that carries the pack files, and the
 // agent's service is the only one given AXONFLOW_POLICY_PACKS. Builder carries
-// none, so on both routes Pack is nil and PacksCounted false.
+// none, so this count leaves Pack nil and PacksCounted false; the orchestrator's
+// and the portal's routes then read the agent's own count (WithAgentPacks,
+// AgentSummaryPath), which is the activation the agent enforces.
 func ActiveSummary(ctx context.Context, inputs func(context.Context) (activation.Inputs, error), active *authoring.Artifact, enforcesConstructBoundary bool) (Summary, error) {
-	if inputs == nil {
-		return Summary{}, ErrNoInputs
-	}
-	in, err := inputs(ctx)
+	act, in, err := activeActivation(ctx, inputs, active, enforcesConstructBoundary)
 	if err != nil {
 		return Summary{}, err
 	}
-	in.Organization = active
-	in.RefuseConstructsOutsideEdition = enforcesConstructBoundary
-	act, err := activate(ctx, in)
-	if err != nil {
-		return Summary{}, err
-	}
+	return SummaryOf(act, scopeOf(in), len(in.Packs) > 0)
+}
+
+// SummaryOf counts an activation's policies on scope. packsCounted says the
+// activation was built with the deployment's installed packs, so its pack
+// count is the deployment's: true on the agent, which loads them (even when it
+// loads none, which is then a counted zero), and true elsewhere only when the
+// inputs carried them. An uncounted summary whose activation nonetheless holds
+// pack policies is refused rather than answered with a pack count it says it
+// did not take.
+func SummaryOf(act *activation.Activation, scope legacycompile.EnforcementScope, packsCounted bool) (Summary, error) {
 	counts, err := activation.CountEffects(act.PolicyEffects())
 	if err != nil {
 		return Summary{}, err
 	}
-	scope := legacycompile.EnforcementScope{Plane: legacycompile.Plane(in.Plane), Phase: in.Phase}
 	s := Summary{
 		Scope:        scope.String(),
 		Shipped:      counts.Shipped,
 		Organization: counts.Organization,
 		Disabled:     counts.Disabled,
 		Total:        counts.Shipped + counts.Organization,
+		NotBoundHere: slices.Clone(act.ScopeUnboundControls),
 	}
-	if len(in.Packs) > 0 {
+	for _, c := range act.DetectorUnboundControls {
+		s.NotBoundHere = append(s.NotBoundHere, c.ID)
+		s.DetectorNotRunHere = append(s.DetectorNotRunHere, DetectorNotRun{ID: c.ID, Detector: c.Detector, RunsOn: slices.Clone(c.Planes)})
+	}
+	if packsCounted {
 		pack := counts.Pack
 		s.Pack, s.PacksCounted, s.Total = &pack, true, counts.Total()
 	} else if counts.Pack != 0 {

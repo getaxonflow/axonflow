@@ -114,6 +114,8 @@ func forgedValueFor(header string) string {
 		return sharedidentity.AdminAuthorityAsserted
 	case sharedidentity.HeaderTenancyScope:
 		return sharedidentity.TenancyScopeOrg
+	case sharedidentity.HeaderIdentitySource:
+		return sharedidentity.IdentitySourceValidatedToken
 	default:
 		// A header in the census with no forged value here is a gap in this
 		// test, not a pass. Return something non-empty so the strip assertion

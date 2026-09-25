@@ -127,7 +127,7 @@ func TestTheOrchestratorEnforcerIsNotInstalledWithoutItsDependencies(t *testing.
 }
 
 func failingEnforcerBuild(anchoredenforcer.ActiveDocumentSource, func() (*authoringcatalog.Snapshot, error),
-	*sharedidentity.SubjectAdmitter, func() int64, anchoredenforcer.Options) (*anchoredenforcer.Enforcer, error) {
+	*sharedidentity.SubjectAdmitter, func() int64, sharedidentity.GroupClosureResolver, anchoredenforcer.Options) (*anchoredenforcer.Enforcer, error) {
 	return nil, errors.New("planted build failure")
 }
 

@@ -4,6 +4,7 @@
 package authoring
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -21,6 +22,59 @@ const (
 	sysStaticControl  = "corpus:static_policies:sys__admin__audit__log"
 	sysDynamicControl = "corpus:dynamic_policies:sys__dyn__anomalous__access"
 )
+
+// sysForcedControl is a shipped PII control the cowork ingest storage plane
+// forces to redact (#4259).
+const sysForcedControl = "corpus:static_policies:sys__pii__ssn"
+
+// publishForcedEntry publishes the baseline document with a disable of
+// sysForcedControl at edition ed, and returns what publication found. The
+// warning does not refuse, so the publication may succeed.
+func publishForcedEntry(t *testing.T, ed Edition) Findings {
+	t.Helper()
+	cat := baseCatalog(t)
+	d := organizationDocumentWith(t, cat, nil)
+	d.SystemControls = []SystemControlEntry{sysDisabled(sysForcedControl)}
+	_, priv := testKeys(t)
+	opts := organizationPublishOptions(t, priv)
+	opts.Profile = mustProfile(t, ed)
+	_, findings, err := Publish(context.Background(), d, cat, opts)
+	if err != nil && !findings.Rejected() {
+		t.Fatalf("publication at %s failed before it judged the document: %v", ed, err)
+	}
+	return findings
+}
+
+// The warning names the forcing scope and says why, is not a refusal, and is
+// not given where the build runs no forcing scope (Community), nor for a
+// control no scope forces.
+func TestTheForcedScopeWarningIsEnterpriseOnlyAndNamesTheScope(t *testing.T) {
+	scopes, err := SystemControlForcedScopes(sysForcedControl)
+	if err != nil || !slices.Equal(scopes, []string{"cowork_ingest"}) {
+		t.Fatalf("PREMISE: %s is forced on %v (%v), want [cowork_ingest]", sysForcedControl, scopes, err)
+	}
+	if none, _ := SystemControlForcedScopes(sysStaticControl); len(none) != 0 {
+		t.Fatalf("PREMISE: %s is forced on %v, want nowhere", sysStaticControl, none)
+	}
+	enterprise := publishForcedEntry(t, EditionEnterprise)
+	var detail string
+	for _, f := range enterprise {
+		if f.Code == CodeSystemControlForcedOnScope {
+			detail = f.Detail
+		}
+	}
+	for _, want := range []string{sysForcedControl, "disabled", "cowork_ingest", "forces redact", "masks PII before it stores content"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("the warning reads %q; want it to say %q", detail, want)
+		}
+	}
+	if enterprise.Rejected() {
+		t.Fatalf("the warning refused the publication: %v", enterprise.Rejections())
+	}
+	if community := publishForcedEntry(t, EditionCommunity); community.Has(CodeSystemControlForcedOnScope) {
+		t.Fatalf("Community, whose build has no cowork ingest plane, was warned: %v", community)
+	}
+}
 
 func sysDisabled(control string) SystemControlEntry {
 	off := false

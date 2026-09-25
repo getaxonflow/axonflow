@@ -402,8 +402,13 @@ func TestPolicyService_Integration_TestPolicy(t *testing.T) {
 	if !result.Blocked {
 		t.Error("Expected request to be blocked")
 	}
-	if result.EvalTimeMs <= 0 {
-		t.Error("Expected positive evaluation time")
+	// Matched and Blocked above carry "the evaluation ran". The duration is a
+	// reported metric: a warm evaluation can finish in well under a
+	// microsecond, so the only property that holds on every machine is that
+	// it is never negative (#4249 rows 5781567856, 5766609846;
+	// TestEvalTimeMsKeepsSubMicrosecondResolution pins the resolution).
+	if result.EvalTimeMs < 0 {
+		t.Errorf("EvalTimeMs = %v, a reported duration is never negative", result.EvalTimeMs)
 	}
 
 	// Test with non-matching query

@@ -31,3 +31,15 @@ package agent
 func applyMCPRedactionRefusal(_ pepHandshakeResolution, _ bool) (string, bool) {
 	return "", false
 }
+
+// pepSubstitutesParameters is false on this build.
+//
+// Deciding on the strength of a declaration is enterprise_implementation
+// (ADR-066 Decision 5), so this build never hands back a masked parameter: a
+// redaction that masks one is refused unsupported_obligation whatever the
+// enforcement point declared, which is what this build did before the hand-back
+// existed (#4264). It fails closed; it never runs a tool on raw parameters the
+// audit row records masked.
+func pepSubstitutesParameters(_ pepHandshakeResolution) bool {
+	return false
+}

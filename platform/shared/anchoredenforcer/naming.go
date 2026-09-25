@@ -14,6 +14,7 @@ import (
 	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
+	"axonflow/platform/decision/pdp"
 )
 
 // ApprovalRequiredReason is how a plane with no approval hold answers the
@@ -23,6 +24,15 @@ import (
 func ApprovalRequiredReason(scope legacycompile.EnforcementScope) string {
 	return fmt.Sprintf("%s: the policy engine requires an approval, and the %s plane has no approval hold, so it is refused rather than held (PRD v11 §1.13)",
 		contract.ReasonApprovalRequired, scope)
+}
+
+// ApprovalRequiredAtPositionReason is ApprovalRequiredReason for one position
+// on a plane that otherwise holds, where no hold can be kept: the same reason
+// code first, then the position and the plane. position reads as a noun phrase,
+// "a branch step of a conditional".
+func ApprovalRequiredAtPositionReason(scope legacycompile.EnforcementScope, position string) string {
+	return fmt.Sprintf("%s: the policy engine requires an approval, and %s on the %s plane has no approval hold, so it is refused rather than held (PRD v11 §1.13)",
+		contract.ReasonApprovalRequired, position, scope)
 }
 
 // UnknownConstraints is what an unknown_constraint refusal could not evaluate,
@@ -51,6 +61,44 @@ func UnknownConstraints(dec *contract.Decision) []contract.UnknownPolicy {
 		}
 	}
 	return append(first, rest...)
+}
+
+// admissionReasons are the reason codes the engine refuses with BEFORE any
+// policy runs, as pdp declares them (pdp.AdmissionRefusalReasons).
+var admissionReasons = func() map[contract.ReasonCode]bool {
+	out := map[contract.ReasonCode]bool{}
+	for _, r := range pdp.AdmissionRefusalReasons() {
+		out[r] = true
+	}
+	return out
+}()
+
+// AdmissionDetail is the engine's own account of a refusal made before any
+// policy ran - which realm, action, argument or depth it could not admit - and
+// empty for every other decision (#4249).
+//
+// The bare code alone told nobody anything: for a day every OIDC-admitted user
+// on the MCP-server session was refused "unknown_realm", and the sentence
+// naming the realm was on the trace and nowhere else. A caller now reads
+// "<code>; <detail>".
+//
+// WHAT IT MAY CARRY. An admission detail is built only from the request: the
+// actor's own identifier and realm qualifier, the action it named, the argument
+// names it sent, the chain length and the registry's declared depth. Nothing
+// from an organization's stored policy reaches it. The one other producer of
+// these codes that also writes a remediation, obligation composition, runs
+// after policies MATCHED, so a decision with any determining policy is never
+// read as an admission refusal: its detail can name what a policy attached.
+func AdmissionDetail(dec *contract.Decision) string {
+	if dec == nil || dec.Trace == nil || !admissionReasons[dec.Reason] {
+		return ""
+	}
+	d := dec.Determining
+	if len(d.MatchedPermissions) > 0 || len(d.MatchedConstraints) > 0 || len(d.MatchedRequirement) > 0 ||
+		len(d.MatchedInspections) > 0 || len(d.Unknown) > 0 {
+		return ""
+	}
+	return dec.Trace.Remediation
 }
 
 // DecidingPolicies is what an anchored decision names as having decided it, in
@@ -87,13 +135,32 @@ func BlockingConstraint(d contract.Determining, unknown []contract.UnknownPolicy
 // the attributes it could not establish (PRD v11 §1.14), as
 // "<id> (<source>[, version]) could not be evaluated: <why>", the why naming the
 // attributes.
-func UnknownConstraintReasons(act *activation.Activation, unknown []contract.UnknownPolicy) []string {
+//
+// identityDetail is the directory's account of why the subject's group closure
+// is unknown (Verdict.IdentityDetail), empty when it is not. A constraint that
+// could not establish principal.groups carries it after the why, so the refusal
+// and its audit row name the directory's cause and not only its reason code.
+func UnknownConstraintReasons(act *activation.Activation, unknown []contract.UnknownPolicy, identityDetail string) []string {
 	out := make([]string, 0, len(unknown))
 	for _, u := range unknown {
 		p, _ := act.Identity(u.PolicyID)
-		out = append(out, UnknownConstraintReason(p, u))
+		reason := UnknownConstraintReason(p, u)
+		if identityDetail != "" && readsPrincipalGroups(u) {
+			reason += " (" + identityDetail + ")"
+		}
+		out = append(out, reason)
 	}
 	return out
+}
+
+// readsPrincipalGroups reports whether u could not establish principal.groups.
+func readsPrincipalGroups(u contract.UnknownPolicy) bool {
+	for _, path := range u.Paths {
+		if path == pdp.PrincipalGroupsPath {
+			return true
+		}
+	}
+	return false
 }
 
 // UnknownConstraintReason is one constraint's reason. An id the activation did

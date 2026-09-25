@@ -17,6 +17,7 @@ package workflow_control
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,12 +31,14 @@ import (
 var wcpHITLNamespace = uuid.MustParse("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 // DeriveHITLApprovalID reconstructs the HITL queue request_id for a given
-// (workflow_id, step_id) pair. The queue row itself is written by wcpHITLAdapter
-// in the orchestrator package using the same derivation, so the ID we surface
-// in approve/reject responses matches the queue row one-to-one.
+// (workflow_id, step_id) pair's FIRST hold. The queue row itself is written by
+// wcpHITLAdapter in the orchestrator package using the same derivation. A step
+// held again has one row per hold (DeriveHITLApprovalIDForHold), so the
+// approve/reject responses project the current hold's id
+// (Service.CurrentApprovalID), not this one.
 //
 // Returns an empty string when either argument is empty — callers should treat
-// that as "no HITL queue entry for this step" (the legacy in-memory MAP flow).
+// that as "no HITL queue entry for this step".
 func DeriveHITLApprovalID(workflowID, stepID string) string {
 	if workflowID == "" || stepID == "" {
 		return ""
@@ -43,9 +46,29 @@ func DeriveHITLApprovalID(workflowID, stepID string) string {
 	return uuid.NewSHA1(wcpHITLNamespace, []byte(workflowID+":"+stepID)).String()
 }
 
-// deriveHITLApprovalID is the unexported alias used by package-internal handlers.
-func deriveHITLApprovalID(workflowID, stepID string) string {
-	return DeriveHITLApprovalID(workflowID, stepID)
+// DeriveHITLApprovalIDForHold names the queue row of the n-th hold of a step
+// (#4249 row 5700138809). A step whose earlier hold was decided and is held
+// again gets a NEW row rather than reusing the decided one, because that row
+// is the record of the earlier decision. Hold 1 is DeriveHITLApprovalID
+// unchanged, so every row written before this existed keeps its id; hold n >= 2
+// is UUID v5 over workflowID+":"+stepID+"#"+n.
+//
+// This is a name, not an identity check: a step literally named "a#2" hashes
+// the same string as hold 2 of step "a". The queue's enqueue refuses a
+// conflicting row that belongs to another step, so the collision fails closed.
+//
+// Returns an empty string for an empty argument or n < 1.
+func DeriveHITLApprovalIDForHold(workflowID, stepID string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	if n == 1 {
+		return DeriveHITLApprovalID(workflowID, stepID)
+	}
+	if workflowID == "" || stepID == "" {
+		return ""
+	}
+	return uuid.NewSHA1(wcpHITLNamespace, []byte(workflowID+":"+stepID+"#"+strconv.Itoa(n))).String()
 }
 
 // StepGateHTTPResponse is the rich HTTP response for approve / reject across
@@ -54,7 +77,7 @@ func deriveHITLApprovalID(workflowID, stepID string) string {
 // the approve/reject response for the same step.
 //
 // Fields are omitempty-tagged where empty carries meaning ("approver metadata
-// unknown because the legacy in-memory flow has no HITL queue entry"), but
+// unknown because no HITL queue entry exists for the step"), but
 // retry_context is always present per the wire contract (see RetryContext).
 type StepGateHTTPResponse struct {
 	// WorkflowID is the underlying WCP workflow id. In MAP's confirm/step mode
@@ -90,8 +113,8 @@ type StepGateHTTPResponse struct {
 	// ApprovalStatus is the current approval state of the step.
 	ApprovalStatus *ApprovalStatus `json:"approval_status,omitempty"`
 
-	// ApprovalID is the HITL queue entry UUID. Empty if the legacy in-memory
-	// HITL flow created no queue entry (MAP legacy path).
+	// ApprovalID is the HITL queue entry UUID. Empty when no queue entry
+	// exists for the step.
 	ApprovalID string `json:"approval_id,omitempty"`
 
 	// ApprovedBy / ApprovedAt come from the workflow_steps row (PR #1670).
@@ -117,14 +140,14 @@ type StepGateHTTPResponse struct {
 }
 
 // ApproverMeta carries HITL queue identifiers that aren't stored on the
-// workflow_steps row. Today the only such field is the deterministic HITL
-// queue entry UUID (UUID v5 over workflow_id+step_id — see wcpHITLAdapter).
+// workflow_steps row. Today the only such field is the HITL queue entry UUID of
+// the step's current hold (Service.CurrentApprovalID - see wcpHITLAdapter).
 // Leaving this as a struct lets us extend the HITL-queue-side metadata (e.g.
 // reviewer role, override justification) without changing the function
 // signature of ProjectStepGateToHTTP.
 type ApproverMeta struct {
 	// ApprovalID is the HITL queue entry UUID. Empty when no queue row was
-	// created (the legacy in-memory MAP flow).
+	// created.
 	ApprovalID string
 }
 
@@ -139,8 +162,8 @@ type ApproverMeta struct {
 //     Must reflect post-update state (ApprovedBy / ApprovedAt populated on
 //     approval, ApprovalStatus set to approved/rejected) so retry_context
 //     and approval metadata are correct. Pass nil to produce a minimal
-//     response (workflow_id + message only — used by legacy MAP flow when
-//     no WCP step row exists).
+//     response (workflow_id + message only — for when no WCP step row
+//     could be read).
 //   - approver: approver metadata from the HITL queue row (optional; zero
 //     value is fine — the response simply omits ApprovalID).
 //   - message: human-readable status summary ("Step approved", "Step rejected,
@@ -160,9 +183,10 @@ func ProjectStepGateToHTTP(
 	includePriorOutput bool,
 ) StepGateHTTPResponse {
 	if step == nil {
-		// Minimal shell for the legacy in-memory MAP flow where no WCP step
-		// row exists. retry_context stays at its zero value — GateCount: 0
-		// signals "no WCP state tracked".
+		// Minimal shell when no WCP step row could be read (the in-memory MAP
+		// flow that also produced it is retired, #4249 row 5774060413).
+		// retry_context stays at its zero value — GateCount: 0 signals "no WCP
+		// state tracked".
 		return StepGateHTTPResponse{
 			WorkflowID: workflowID,
 			PlanID:     planID,
@@ -252,7 +276,7 @@ func ProjectStepGateToHTTP(
 // otherwise, forcing cross-plane attention.
 //
 // Field presence-or-absence on the JSON wire depends on the response path
-// (approve vs reject) and the flow (WCP-backed vs legacy in-memory MAP). The
+// (approve vs reject) and whether a WCP step row exists. The
 // parity assertion is about the *field set being identical* across planes for
 // the same scenario — not every field being populated.
 var HITLResponseFieldSet = []string{

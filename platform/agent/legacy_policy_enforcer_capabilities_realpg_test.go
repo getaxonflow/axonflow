@@ -339,11 +339,11 @@ func TestNoRelationReachingALegacyPolicyTableConfersWriteOnAnApplicationRole_Rea
 // TestAViewCreatedAfterMigration174IsBoundByTheEnforcer_RealPG is the test for
 // the reason the enforcer is called from the boot path at all.
 //
-// It simulates what migrations/industry/travel/200 and industry/banking/{300,
-// 302,401} do on a FRESH deployment: create a view over static_policies AFTER
-// core/174 has already run. Seven of the eight such views in this tree are
-// created that way, and industry migrations are numbered 200+ precisely so
-// that they run last.
+// It simulates what migrations/industry/banking/{300,302,401} do on a FRESH
+// deployment: create a view over static_policies AFTER core/174 has already
+// run. They create seven such views, and industry migrations are numbered 200+
+// precisely so that they run last. (industry/travel/200 also recreated core's
+// eu_ai_act_compliance_summary until #4180 made it a no-op.)
 //
 // The first assertion is the one that matters. It requires the new view to be
 // WRITABLE the moment it is created - not as a bug to be fixed, but as the

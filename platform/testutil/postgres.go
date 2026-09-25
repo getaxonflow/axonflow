@@ -7,7 +7,10 @@ package testutil
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +19,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"axonflow/platform/testutil/pgstart"
 )
 
 // PostgresContainer wraps a testcontainers PostgreSQL instance.
@@ -45,25 +50,46 @@ func DefaultPostgresConfig() PostgresConfig {
 
 // StartPostgres starts a PostgreSQL container for testing.
 // The container is automatically terminated when the test completes.
+//
+// It starts under pgstart's rule (#4249 rows 5771426373, 5796048780): one
+// window, AXONFLOW_TEST_PG_START_WAIT (default 90s, floor 30s), and ONE retry
+// with a fresh container when the first stopped or never published its port.
+// The WAIT is the library's: the wait strategy includes
+// wait.ForListeningPort("5432/tcp"), which polls the mapped port (and the
+// container's state) until the window ends, so when postgres.Run returns the
+// port is published and the single ConnectionString call cannot miss it. It
+// used to wait for the log line only, and ConnectionString answered "port
+// 5432/tcp not found" when the daemon had not yet published the mapping.
 func StartPostgres(t *testing.T, cfg PostgresConfig) *PostgresContainer {
 	t.Helper()
 
 	ctx := context.Background()
+	window, err := pgstart.Window(t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	container, err := postgres.Run(ctx,
-		cfg.Image,
-		postgres.WithDatabase(cfg.Database),
-		postgres.WithUsername(cfg.Username),
-		postgres.WithPassword(cfg.Password),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second),
-		),
-	)
+	start := func() (pgstart.Attempt, error) {
+		container, err := postgres.Run(ctx,
+			cfg.Image,
+			postgres.WithDatabase(cfg.Database),
+			postgres.WithUsername(cfg.Username),
+			postgres.WithPassword(cfg.Password),
+			testcontainers.WithWaitStrategy(startupWait(window)),
+		)
+		if container == nil {
+			if err == nil {
+				err = errors.New("postgres.Run returned no container")
+			}
+			return nil, fmt.Errorf("start the PostgreSQL container: %w", err)
+		}
+		return &tcAttempt{ctx: ctx, c: container, waitErr: err}, nil
+	}
+	connStr, attempt, err := pgstart.Waiter{Window: window, Logf: t.Logf}.Start(start, pingPostgres)
 	if err != nil {
 		t.Fatalf("Failed to start PostgreSQL container: %v", err)
 	}
+	container := attempt.(*tcAttempt).c
 
 	// Register cleanup
 	t.Cleanup(func() {
@@ -71,12 +97,6 @@ func StartPostgres(t *testing.T, cfg PostgresConfig) *PostgresContainer {
 			t.Logf("Warning: failed to terminate PostgreSQL container: %v", err)
 		}
 	})
-
-	// Get connection string
-	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("Failed to get PostgreSQL connection string: %v", err)
-	}
 
 	// Open database connection
 	db, err := sql.Open("postgres", connStr)
@@ -100,6 +120,71 @@ func StartPostgres(t *testing.T, cfg PostgresConfig) *PostgresContainer {
 		URL:       connStr,
 	}
 }
+
+// startupWait is the library wait StartPostgres runs under: the log line twice,
+// then the published port, sharing ONE deadline (WithDeadline) of window. Each
+// child's own timeout is set to the same window: a child with no timeout of its
+// own applies the library's 60s default inside whatever context it is given,
+// and the earlier deadline wins, so WithStartupTimeoutDefault alone capped
+// every window at 60s (#4435 round 1).
+func startupWait(window time.Duration) wait.Strategy {
+	return wait.ForAll(
+		wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(window),
+		wait.ForListeningPort("5432/tcp").WithStartupTimeout(window),
+	).WithDeadline(window)
+}
+
+// pingPostgres is one readiness probe: open and ping dsn.
+func pingPostgres(dsn string) error {
+	conn, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	return conn.Ping()
+}
+
+// tcAttempt is one container started with testcontainers. waitErr is the
+// library wait's failure, when it gave up: Endpoint reports it wrapped in
+// pgstart.ErrWaited, so no second window is waited on it.
+type tcAttempt struct {
+	ctx     context.Context
+	c       *postgres.PostgresContainer
+	waitErr error
+}
+
+func (a *tcAttempt) Name() string { return a.c.GetContainerID() }
+
+func (a *tcAttempt) Endpoint() (string, error) {
+	if a.waitErr != nil {
+		return "", fmt.Errorf("%w: %v", pgstart.ErrWaited, a.waitErr)
+	}
+	return a.c.ConnectionString(a.ctx, "sslmode=disable")
+}
+
+func (a *tcAttempt) State() (pgstart.State, error) {
+	st, err := a.c.State(a.ctx)
+	if err != nil {
+		return pgstart.State{}, err
+	}
+	return pgstart.State{Running: st.Running, Status: string(st.Status), ExitCode: st.ExitCode, OOMKilled: st.OOMKilled}, nil
+}
+
+func (a *tcAttempt) Logs(n int) string {
+	rc, err := a.c.Logs(a.ctx)
+	if err != nil {
+		return "logs unreadable: " + err.Error()
+	}
+	defer func() { _ = rc.Close() }()
+	b, _ := io.ReadAll(rc)
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *tcAttempt) Remove() { _ = a.c.Terminate(a.ctx) }
 
 // RunMigration executes a SQL migration on the test database.
 func (pc *PostgresContainer) RunMigration(t *testing.T, migration string) {

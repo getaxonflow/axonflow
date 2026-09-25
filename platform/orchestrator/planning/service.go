@@ -204,8 +204,13 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 	}
 
 	// Atomically mark as executing - this prevents race conditions
-	// If another request already marked it as executing, this will fail
-	if err := s.repo.UpdatePlanStatusAtomic(ctx, planID, PlanStatusPending, PlanStatusExecuting); err != nil {
+	// If another request already marked it as executing, this will fail.
+	// #4249: the same statement records an empty workflow binding when the
+	// plan's STORED mode is confirm or step, so such a plan is never executing
+	// without one, even if its mode changed after the read above: until its
+	// executor returns and the binding is filled, a resume or a plan-level
+	// decision is refused rather than selecting a workflow by name.
+	if err := s.repo.MarkExecutingWithPendingBinding(ctx, planID); err != nil {
 		if err == ErrPlanAlreadyRun {
 			return nil, ErrPlanAlreadyRun
 		}
@@ -230,6 +235,15 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 	})
 
 	return plan, nil
+}
+
+// BindExecutionWorkflow fills the empty binding a confirm/step plan was marked
+// executing with, once, with the workflow-control workflow its executor
+// created (#4249). Resume and the
+// plan-level approve/reject select that workflow by this id rather than by a
+// name or metadata a caller can write.
+func (s *Service) BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error {
+	return s.repo.BindExecutionWorkflow(ctx, planID, workflowID)
 }
 
 // MarkPlanCompleted marks a plan as completed with the execution result

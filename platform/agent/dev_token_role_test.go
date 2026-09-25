@@ -214,7 +214,7 @@ func TestRegisterDevTokenHandler_UnregisteredInProd(t *testing.T) {
 	}
 }
 
-func TestRegisterDevTokenHandler_RegisteredInNonProd(t *testing.T) {
+func TestRegisterDevTokenHandler_RegisteredOnADevelopmentEnvironment(t *testing.T) {
 	clearGateEnv(t)
 	t.Setenv("DEPLOYMENT_MODE", "community") // explicit non-prod signal
 	router := mux.NewRouter()
@@ -224,5 +224,36 @@ func TestRegisterDevTokenHandler_RegisteredInNonProd(t *testing.T) {
 	var match mux.RouteMatch
 	if !router.Match(req, &match) {
 		t.Error("non-prod: POST /api/v1/dev/token must be REGISTERED, but the router did not match it")
+	}
+}
+
+// TestRegisterDevTokenHandler_UnregisteredOnADeployedStack pins #4249 row
+// 5680659356 at the router: a staging-typed stack (what deploy-cloudformation.sh
+// types every non-production environment as, with DEPLOYMENT_KIND=production
+// from the template) and a production veto beside a development signal both
+// leave the route unregistered, so the router does not match it (404).
+func TestRegisterDevTokenHandler_UnregisteredOnADeployedStack(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"CFN staging stack", map[string]string{"ENVIRONMENT": "staging", "DEPLOYMENT_KIND": "production", "DEPLOYMENT_MODE": "saas"}},
+		{"staging alone", map[string]string{"ENVIRONMENT": "staging"}},
+		{"production beside community mode", map[string]string{"ENVIRONMENT": "production", "DEPLOYMENT_MODE": "community"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearGateEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			router := mux.NewRouter()
+			RegisterDevTokenHandler(router)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/dev/token", nil)
+			var match mux.RouteMatch
+			if router.Match(req, &match) {
+				t.Errorf("%v: POST /api/v1/dev/token must be UNREGISTERED, but the router matched it", c.env)
+			}
+		})
 	}
 }

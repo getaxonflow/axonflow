@@ -424,6 +424,36 @@ func TestDeriveHITLApprovalID(t *testing.T) {
 	}
 }
 
+// TestDeriveHITLApprovalIDForHold pins the hold-n ids against values computed
+// OUTSIDE Go (python3 uuid.uuid5 over the same namespace and strings), the way
+// suite 3408 derives them, so the Go function cannot agree with itself.
+func TestDeriveHITLApprovalIDForHold(t *testing.T) {
+	const (
+		hold1 = "a08f5f47-f38c-52b6-ae0a-11aafb53bedf" // uuid5(ns, "wf-4249:step-a")
+		hold2 = "189eab2c-ad75-5b6e-b889-bd62adb01bf8" // uuid5(ns, "wf-4249:step-a#2")
+		hold3 = "f50ac3da-6baf-5759-901a-dfcc3e8ef4ab" // uuid5(ns, "wf-4249:step-a#3")
+	)
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{{1, hold1}, {2, hold2}, {3, hold3}} {
+		if got := DeriveHITLApprovalIDForHold("wf-4249", "step-a", tc.n); got != tc.want {
+			t.Errorf("hold %d = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+	if got := DeriveHITLApprovalID("wf-4249", "step-a"); got != hold1 {
+		t.Errorf("DeriveHITLApprovalID = %q, want the unchanged hold-1 id %q", got, hold1)
+	}
+	for _, tc := range []struct {
+		wf, step string
+		n        int
+	}{{"wf", "s", 0}, {"wf", "s", -1}, {"", "s", 2}, {"wf", "", 2}, {"", "s", 1}} {
+		if got := DeriveHITLApprovalIDForHold(tc.wf, tc.step, tc.n); got != "" {
+			t.Errorf("DeriveHITLApprovalIDForHold(%q, %q, %d) = %q, want empty", tc.wf, tc.step, tc.n, got)
+		}
+	}
+}
+
 // Helpers -------------------------------------------------------------
 
 func keys(m map[string]json.RawMessage) []string {

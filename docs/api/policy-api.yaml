@@ -85,7 +85,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.0.0
+  version: 11.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -105,8 +105,10 @@ tags:
   - name: Tenant Policies
     description: |
       Tenant policy CRUD via the ADR-024 `/api/v1/tenant-policies` surface
-      (Orchestrator, proxied by the Agent). Accepts only policies whose
-      category starts with `dynamic-` or `media-`.
+      (Orchestrator, proxied by the Agent). On create, update and import it
+      accepts only policies whose category starts with `dynamic-` or
+      `media-`; the list and the export return the caller's rows whatever
+      their category (#4293).
 
       Note the category prefixes keep their original spelling. The
       terminology migration renamed the PATHS only; the category vocabulary
@@ -122,8 +124,8 @@ tags:
       In v11 BOTH spellings are the deprecated export surface (PRD §1.11):
       reads are served, and every response carries
       `Link: </api/v1/typed-policies>; rel="successor-version"` and
-      `X-AxonFlow-Removed-In: v11.1`, plus an RFC 9745
-      `Deprecation: @<epoch>` from the v11.0.0 tag. v11.1 removes both
+      `X-AxonFlow-Removed-In: v12.0`, plus an RFC 9745
+      `Deprecation: @<epoch>` from the v11.0.0 tag. v12.0.0 removes both
       spellings; there is no `Sunset` header until that release has a date.
   - name: Policies
     description: Dynamic policy CRUD operations (Orchestrator)
@@ -143,8 +145,10 @@ paths:
   # Dynamic Policies API (ADR-024: Single Entry Point)
   # =============================================================================
   # Preferred surface for dynamic policy management. Served by the Orchestrator
-  # and proxied by the Agent at port 8080. Accepts only policies whose category
-  # starts with "dynamic-" or "media-".
+  # and proxied by the Agent at port 8080. On create, update and import it
+  # accepts only policies whose category starts with "dynamic-" or "media-";
+  # the list and the export return the caller's rows whatever their category
+  # (#4293).
   # =============================================================================
   /api/v1/dynamic-policies:
     get:
@@ -153,10 +157,13 @@ paths:
         - Dynamic Policies
       summary: List dynamic policies
       description: |
-        Retrieve a paginated list of dynamic policies. Only policies whose
-        category starts with `dynamic-` or `media-` are returned. When
-        `type=media` is passed without a category, results are filtered to
-        `media-*` categories.
+        Retrieve a paginated list of the caller's policies, whatever their
+        category: with no `category` parameter no category filter is applied,
+        so rows categorised otherwise, or not at all (written through
+        `/api/v1/policies`), are returned too. A `category` parameter must
+        start with `dynamic-` or `media-`, and any other value is refused
+        `400`. When `type=media` is passed without a category, results are
+        filtered to `media-*` categories.
 
         `limit` is the preferred pagination parameter; `page_size` is
         deprecated but still accepted.
@@ -327,8 +334,15 @@ paths:
         - Dynamic Policies
       summary: Export dynamic policies
       description: |
-        Export the tenant's dynamic policies as JSON. Only policies with a
-        `dynamic-*` or `media-*` category are included.
+        Export the organization's policies as JSON: every row the list
+        route returns for the caller, whatever its category, including a
+        row with no category (one written through `/api/v1/policies`). The
+        same set as `/api/v1/policies/export`. Before v11.1.0 only rows with
+        a `dynamic-*` or `media-*` category were included, and the rest were
+        left out without notice (#4293). This family's import still accepts
+        only `dynamic-*` and `media-*` rows and refuses the whole batch at the
+        first other one, so a file that carries other rows is imported
+        through `/api/v1/policies/import`, which accepts them.
       operationId: exportDynamicPolicies
       parameters:
         - $ref: '#/components/parameters/TenantID'
@@ -541,10 +555,13 @@ paths:
         - Tenant Policies
       summary: List dynamic policies
       description: |
-        Retrieve a paginated list of dynamic policies. Only policies whose
-        category starts with `dynamic-` or `media-` are returned. When
-        `type=media` is passed without a category, results are filtered to
-        `media-*` categories.
+        Retrieve a paginated list of the caller's policies, whatever their
+        category: with no `category` parameter no category filter is applied,
+        so rows categorised otherwise, or not at all (written through
+        `/api/v1/policies`), are returned too. A `category` parameter must
+        start with `dynamic-` or `media-`, and any other value is refused
+        `400`. When `type=media` is passed without a category, results are
+        filtered to `media-*` categories.
 
         `limit` is the preferred pagination parameter; `page_size` is
         deprecated but still accepted.
@@ -715,8 +732,15 @@ paths:
         - Tenant Policies
       summary: Export dynamic policies
       description: |
-        Export the tenant's dynamic policies as JSON. Only policies with a
-        `dynamic-*` or `media-*` category are included.
+        Export the organization's policies as JSON: every row the list
+        route returns for the caller, whatever its category, including a
+        row with no category (one written through `/api/v1/policies`). The
+        same set as `/api/v1/policies/export`. Before v11.1.0 only rows with
+        a `dynamic-*` or `media-*` category were included, and the rest were
+        left out without notice (#4293). This family's import still accepts
+        only `dynamic-*` and `media-*` rows and refuses the whole batch at the
+        first other one, so a file that carries other rows is imported
+        through `/api/v1/policies/import`, which accepts them.
       operationId: exportTenantPolicies
       parameters:
         - $ref: '#/components/parameters/TenantID'

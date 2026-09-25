@@ -65,6 +65,36 @@ const HeaderIdentityGated = "X-Axonflow-Identity-Gated"
 // generic message, never to a wrong diagnosis.
 const IdentityGatedTrue = "true"
 
+// HeaderIdentitySource is the hop marker the AxonFlow Agent sets on a request it
+// forwards to the orchestrator, naming where the X-User-Email beside it came
+// from (ADR-067 Decision 4, step 1b; #4249 row 5697957634). IdentitySourceValidatedToken
+// is the only value that establishes segment membership: absent, "header" or
+// any other value means membership is not established, and the orchestrator
+// then applies every segment-scoped route row of the organisation.
+//
+// SECURITY: the agent owns it. It is in NeverClientAssertableHeaders, so both
+// proxy strip sites delete any inbound value before the agent sets its own, and
+// the agent sets it only where the email came from a verified token (the
+// reverse proxy's validated X-User-Token branch, and forwardToOrchestrator for
+// an enterprise user token). The orchestrator reads it only on a request whose
+// proxy auth validated. Stripping it only narrows (the caller gets every
+// segment's restrictions); FORGING it would widen (a header identity would
+// select only the segment it names), which is why it is never
+// client-assertable.
+const HeaderIdentitySource = "X-Axonflow-Identity-Source"
+
+// IdentitySourceValidatedToken is the one HeaderIdentitySource value that
+// establishes segment membership.
+const IdentitySourceValidatedToken = "validated_token"
+
+// IdentityIsEstablished reports whether a HeaderIdentitySource value establishes
+// segment membership. Exact match: anything else, including a different case,
+// is not established, so a value that fails to parse degrades to every
+// segment's restrictions.
+func IdentityIsEstablished(headerValue string) bool {
+	return headerValue == IdentitySourceValidatedToken
+}
+
 // IdentityWasGated reports whether the agent stamped HeaderIdentityGated on
 // this request, i.e. the caller DID present per-user identity and the trust
 // gate dropped it. Both the header name and the exact-match rule live here so

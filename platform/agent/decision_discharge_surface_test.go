@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -147,6 +148,16 @@ func TestEveryEnforcingSeamActivatesOnBothEditions(t *testing.T) {
 			}
 
 			for _, seam := range enforcingSeams {
+				// A seam whose plane this mode's plane set does not carry does
+				// not serve here (seamServes, #4259): the Enterprise build's
+				// cowork_ingest seam under a core-only mode. It must serve on
+				// Enterprise, and nothing else may be skipped.
+				if !seamServes(seam) {
+					if mode == "enterprise" || !slices.ContainsFunc(editionSeams, func(e enforcingSeam) bool { return e.scope == seam.scope }) {
+						t.Errorf("%s does not serve on the %s mode", seam.scope, mode)
+					}
+					continue
+				}
 				if got := seamDelivers(seam.scope); fmt.Sprint(got) != fmt.Sprint(seam.delivers) {
 					t.Errorf("seamDelivers(%s) = %v; the seam list declares %v", seam.scope, got, seam.delivers)
 				}
@@ -187,7 +198,7 @@ func TestTheEnforcerActivatesEverySeamWithTheDeliveryItDeclares(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch)
+	e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 	if err != nil {
 		t.Fatal(err)
 	}

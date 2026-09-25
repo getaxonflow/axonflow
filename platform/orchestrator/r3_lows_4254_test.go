@@ -43,7 +43,7 @@ func TestAStepWithNoSubjectIsCountedUnavailableOnBothPlanes(t *testing.T) {
 	}{
 		{"map", mapSeamScope, func(t *testing.T) {
 			withMAPEngine(t, allowedStepVerdict())
-			if _, err := (&MAPHITLPolicyChecker{}).CheckPolicy(context.Background(), WorkflowStep{Name: "s", Type: "llm-call"}, mapExecution()); err != nil {
+			if _, err := (&MAPHITLPolicyChecker{}).CheckPolicy(context.Background(), WorkflowStep{Name: "s", Type: "llm-call"}, StepContent{}, mapExecution()); err != nil {
 				t.Fatalf("CheckPolicy returned an error: %v", err)
 			}
 		}},
@@ -95,7 +95,7 @@ func TestAChallengeWithNoApprovalRequirementIsWithheldOnEveryPlane(t *testing.T)
 	})
 	t.Run("map", func(t *testing.T) {
 		withMAPEngine(t, challengeWithoutTerms())
-		result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), WorkflowStep{Name: "s", Type: "llm-call"}, mapExecution())
+		result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), WorkflowStep{Name: "s", Type: "llm-call"}, StepContent{}, mapExecution())
 		if err != nil {
 			t.Fatalf("CheckPolicy returned an error: %v", err)
 		}

@@ -108,6 +108,60 @@ func Override(ctx context.Context, db *sql.DB, p OverrideParams) error {
 }
 
 // ---------------------------------------------------------------------------
+// Consume (#4370)
+// ---------------------------------------------------------------------------
+
+// ConsumeBindingGrantSQL spends a call-binding approval: it admits exactly one
+// call, once. SpendBindingGrant runs it; the binding hold's doc
+// (binding_hold.go) is the design.
+//
+// SINGLE USE IS THE WRITE. The row is chosen and locked in one statement and
+// stamped consumed_at in the same statement, guarded on consumed_at IS NULL:
+// two concurrent retries serialise on the row, SKIP LOCKED sends the loser
+// away with no row, and there is no window in which both see it unspent.
+//
+// Every clause is a refusal the approval must clear, and none is decorative:
+//   - request_id + org_id: this organization's approval, by the id the caller
+//     was handed (RLS scopes it again);
+//   - request_type: a call-binding hold, never a workflow step's row or an
+//     agent HITL request;
+//   - status approved, not consumed, before its expiry by the DATABASE clock;
+//   - the binding: the call being retried is the call that was approved;
+//   - the hold number: $5 is the number SpendBindingGrant checked derives
+//     this row's id from the binding, so only a row Enqueue wrote is spent;
+//   - a PERSON approved it: a reviewer recorded, with a role that is not
+//     'service' (a credential's approval names no one);
+//   - and not the caller itself, by either rendering of its identity ($4 is
+//     every identifier that names the caller, lower-cased).
+//
+// These are the clauses #3509's retired grant enforced (core/167's header
+// quotes that statement), with the binding in place of its query hash; it is
+// no weaker than the last shipped grant model, and #4369 replaces the
+// identity half.
+const ConsumeBindingGrantSQL = `
+		UPDATE hitl_approval_queue
+		   SET consumed_at = CURRENT_TIMESTAMP,
+		       updated_at = CURRENT_TIMESTAMP
+		 WHERE id = (
+		       SELECT id FROM hitl_approval_queue
+		        WHERE request_id = $1
+		          AND org_id = $2
+		          AND request_type = 'policy_step_up'
+		          AND status = 'approved'
+		          AND consumed_at IS NULL
+		          AND expires_at > CURRENT_TIMESTAMP
+		          AND request_context->>'binding_digest' = $3
+		          AND request_context->>'binding_hold' = $5
+		          AND reviewed_at IS NOT NULL
+		          AND reviewer_id IS NOT NULL
+		          AND reviewer_role IS NOT NULL
+		          AND reviewer_role <> 'service'
+		          AND NOT (lower(reviewer_id) = ANY($4::text[])
+		                   OR lower(COALESCE(reviewer_email, '')) = ANY($4::text[]))
+		        FOR UPDATE SKIP LOCKED)
+		RETURNING request_id, tenant_id, reviewer_id`
+
+// ---------------------------------------------------------------------------
 // Expiry
 // ---------------------------------------------------------------------------
 

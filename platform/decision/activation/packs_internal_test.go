@@ -89,3 +89,93 @@ func TestAPackBindsWhereItsDetectorsRun(t *testing.T) {
 		}
 	}
 }
+
+// TestAScoreControlBindsOnlyWhereAChallengeIsHeld holds the #3330 rule that a
+// score never authors a block: a pack's score control compiles to an approval
+// requirement, and it must bind only on scopes that HOLD a challenge, never on
+// one that refuses it approval_required or withholds it - there a breach would
+// be a refusal authored by a score. It binds by its declared category, like a
+// detector control, so the set is derived, not listed; this test reads it over
+// every declared scope and holds each one to legacycompile's approval handling.
+func TestAScoreControlBindsOnlyWhereAChallengeIsHeld(t *testing.T) {
+	src := &policypack.Source{
+		ID: "scorepack", Version: 1,
+		Approval: &policypack.ApproverPool{Quorum: 1, Group: "scorepack-approvers"},
+		Scores: []policypack.ScoreThreshold{{
+			ID: "sp_ml", Name: "ML", Category: "fincrime", Severity: "high", Phase: "request",
+			Signal: "sp_fraud", Threshold: 0.3, ThresholdRule: "test", Description: "test",
+		}},
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := policypack.Render(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack, err := policypack.Load(raw, committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, digest, err := pack.Instantiate([]string{"r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := InstalledPack{Pack: pack, Document: doc, Digest: digest}
+	id := policypack.PolicyID("scorepack", "sp_ml")
+	var bound []string
+	for _, scope := range legacycompile.AllScopes() {
+		scoped, err := packForScope(scope, ip)
+		if err != nil {
+			t.Fatalf("%s: %v", scope, err)
+		}
+		for _, p := range scoped.Policies {
+			if p.ID != id {
+				continue
+			}
+			bound = append(bound, scope.String())
+			if !legacycompile.ApprovalHandlingOf(scope).Holds() {
+				t.Errorf("the score control binds on %s, which %s a challenge: a breach there would be a score-authored refusal",
+					scope, legacycompile.ApprovalHandlingOf(scope))
+			}
+			if len(scoped.Attributes) != 1 || scoped.Attributes[0].Path != policypack.ScorerSignalPath("sp_fraud") || !scoped.Attributes[0].Optional {
+				t.Errorf("%s: schema %v; want the optional scorer signal alone", scope, scoped.Attributes)
+			}
+		}
+	}
+	sort.Strings(bound)
+	if strings.Join(bound, " ") != "decide mcp:request" {
+		t.Fatalf("the score control binds on %v; want decide mcp:request, the scopes whose request pass carries the pack's objects", bound)
+	}
+}
+
+// TestInstallPacksRefusesTwoPacksThresholdingOneSignal: one scorer signal
+// carries one pack's threshold, as one detector id is one pack's signal.
+func TestInstallPacksRefusesTwoPacksThresholdingOneSignal(t *testing.T) {
+	mk := func(id string) *policypack.Pack {
+		src := &policypack.Source{
+			ID: id, Version: 1, Approval: &policypack.ApproverPool{Quorum: 1, Group: "g"},
+			Scores: []policypack.ScoreThreshold{{ID: id + "_ml", Name: "n", Category: "fincrime", Severity: "high", Phase: "request",
+				Signal: "shared_fraud", Threshold: 0.5, ThresholdRule: "r", Description: "d"}},
+		}
+		raw, _ := json.Marshal(src)
+		committed, err := policypack.Render(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := policypack.Load(raw, committed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	snap := internalSnapshot(t)
+	if _, err := InstallPacks(snap, []*policypack.Pack{mk("packa")}); err != nil {
+		t.Fatalf("POSITIVE CONTROL: one pack refused: %v", err)
+	}
+	_, err := InstallPacks(snap, []*policypack.Pack{mk("packa"), mk("packb")})
+	if err == nil || !strings.Contains(err.Error(), `"shared_fraud"`) {
+		t.Fatalf("err %v; want a refusal naming the shared signal", err)
+	}
+}

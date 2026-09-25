@@ -37,19 +37,32 @@ var enterpriseSourceRe = regexp.MustCompile(`(?m)^//go:build enterprise|^// \+bu
 // the same reason; the shared thing between them is the expression above,
 // which one test pins across every site.
 func SourceEdition(root, rel string) (string, error) {
-	if strings.HasPrefix(rel, "ee/") ||
-		strings.HasSuffix(rel, "_enterprise.go") ||
-		strings.HasSuffix(rel, "_enterprise_test.go") {
+	if enterpriseByPath(rel) {
 		return "enterprise", nil
 	}
 	src, err := os.ReadFile(filepath.Join(root, rel))
 	if err != nil {
 		return "", err
 	}
-	if enterpriseSourceRe.Match(src) {
-		return "enterprise", nil
+	return sourceEditionOf(rel, src), nil
+}
+
+// enterpriseByPath is the part of SourceEdition the path alone decides: ee/ is
+// excluded wholesale and the *_enterprise(_test).go files are deleted by name.
+func enterpriseByPath(rel string) bool {
+	return strings.HasPrefix(rel, "ee/") ||
+		strings.HasSuffix(rel, "_enterprise.go") ||
+		strings.HasSuffix(rel, "_enterprise_test.go")
+}
+
+// sourceEditionOf is SourceEdition over content already read, so a caller that
+// reads files from somewhere other than the filesystem (DeriveSources) gets the
+// same classification.
+func sourceEditionOf(rel string, src []byte) string {
+	if enterpriseByPath(rel) || enterpriseSourceRe.Match(src) {
+		return "enterprise"
 	}
-	return "community", nil
+	return "community"
 }
 
 // TreeIsCommunityMirror reports whether this checkout is the public mirror,
@@ -174,18 +187,8 @@ type parsedFile struct {
 // finds neither, and a census built on it would report full coverage of a
 // route set missing its most important members.
 func Derive(repoRoot string, roots []string) (*Derivation, error) {
-	d := &Derivation{}
-	fset := token.NewFileSet()
-
-	var files []parsedFile
-	// specs are every top-level const/var declaration seen during the walk;
-	// consts is the fixpoint resolution of them, keyed by "<dir>\x00<Ident>"
-	// and by "<pkgName>.<Ident>". Both keys are needed: a registration in the
-	// same package names a bare identifier, and one in another package names
-	// pkg.Ident.
-	var specs []constSpec
-	var consts map[string]string
-
+	var srcs []Source
+	dirs := 0
 	for _, root := range roots {
 		abs := filepath.Join(repoRoot, root)
 		if _, err := os.Stat(abs); err != nil {
@@ -200,43 +203,96 @@ func Derive(repoRoot string, roots []string) (*Derivation, error) {
 				return err
 			}
 			if entry.IsDir() {
-				switch entry.Name() {
-				case "testdata", "node_modules", ".git", "vendor":
+				if skippedDir(entry.Name()) {
 					return filepath.SkipDir
 				}
-				d.DirsWalked++
+				dirs++
 				return nil
 			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			if !derivedGoFile(path) {
 				return nil
 			}
 			rel, relErr := filepath.Rel(repoRoot, path)
 			if relErr != nil {
 				return relErr
 			}
-			rel = filepath.ToSlash(rel)
-			f, perr := parser.ParseFile(fset, path, nil, parser.ParseComments)
-			if perr != nil {
-				return fmt.Errorf("parsing %s: %w", rel, perr)
+			content, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
 			}
-			ed, eerr := SourceEdition(repoRoot, rel)
-			if eerr != nil {
-				return eerr
-			}
-			d.FilesParsed++
-			files = append(files, parsedFile{rel: rel, file: f, edition: ed})
-			collectConstSpecs(f, filepath.ToSlash(filepath.Dir(rel)), &specs)
+			srcs = append(srcs, Source{Rel: filepath.ToSlash(rel), Content: content})
 			return nil
 		})
 		if err != nil {
 			return nil, err
 		}
 	}
+	d, err := DeriveSources(srcs)
+	if err != nil {
+		return nil, err
+	}
+	d.DirsWalked = dirs
+	return d, nil
+}
 
-	// The fixpoint runs AFTER the whole walk, so a constant defined in terms of
-	// one declared in another file resolves whichever order the walk reached
-	// them in.
-	consts = resolveConsts(specs)
+// Source is one file DeriveSources reads: its repository-relative path with
+// forward slashes, and its content.
+type Source struct {
+	Rel     string
+	Content []byte
+}
+
+// skippedDir names the directories no derivation reads: fixtures, vendored and
+// installed code, and the repository's own metadata.
+func skippedDir(name string) bool {
+	switch name {
+	case "testdata", "node_modules", ".git", "vendor":
+		return true
+	}
+	return false
+}
+
+// derivedGoFile reports whether a path is a non-test Go file.
+func derivedGoFile(path string) bool {
+	return strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go")
+}
+
+// DeriveSources is Derive over files already read, so a caller whose files come
+// from somewhere other than a checkout - a commit read through git's object
+// store, an in-memory tree - derives exactly what Derive derives from the same
+// files (#4249 row 5782954005: the no-reference census reads its trees this
+// way). It applies Derive's own filters: a test file, a non-Go file and any
+// file under a directory Derive skips are not read. DirsWalked is Derive's to
+// set; it stays zero here.
+func DeriveSources(srcs []Source) (*Derivation, error) {
+	d := &Derivation{}
+	fset := token.NewFileSet()
+
+	var files []parsedFile
+	// specs are every top-level const/var declaration seen; consts is the
+	// fixpoint resolution of them, keyed by "<dir>\x00<Ident>" and by
+	// "<pkgName>.<Ident>". Both keys are needed: a registration in the same
+	// package names a bare identifier, and one in another package names
+	// pkg.Ident.
+	var specs []constSpec
+	for _, src := range srcs {
+		rel := filepath.ToSlash(src.Rel)
+		if !derivedGoFile(rel) || underSkippedDir(rel) {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, rel, src.Content, parser.ParseComments)
+		if perr != nil {
+			return nil, fmt.Errorf("parsing %s: %w", rel, perr)
+		}
+		d.FilesParsed++
+		files = append(files, parsedFile{rel: rel, file: f, edition: sourceEditionOf(rel, src.Content)})
+		collectConstSpecs(f, filepath.ToSlash(filepath.Dir(rel)), &specs)
+	}
+
+	// The fixpoint runs AFTER every file is read, so a constant defined in
+	// terms of one declared in another file resolves whichever order the files
+	// arrived in.
+	consts := resolveConsts(specs)
 
 	byDir := map[string][]parsedFile{}
 	for _, pf := range files {
@@ -264,6 +320,17 @@ func Derive(repoRoot string, roots []string) (*Derivation, error) {
 		return d.Routes[i].Line < d.Routes[j].Line
 	})
 	return d, nil
+}
+
+// underSkippedDir reports whether any directory in rel is one Derive skips.
+func underSkippedDir(rel string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Dir(rel)), "/")
+	for _, p := range parts {
+		if skippedDir(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // constSpec is one top-level `const`/`var` declaration whose value might be a

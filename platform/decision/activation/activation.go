@@ -99,6 +99,10 @@ type Inputs struct {
 	// template by digest - the organization owns its root, so a template
 	// control its document omits stops deciding, and one it carries binds
 	// only where the template's would (Activation.UnboundTemplateControls).
+	// A control whose binds_on names other scopes is left off this one
+	// (Activation.ScopeUnboundControls), and a pack's or the baseline's own
+	// policy of its id composes in its place, as if the document had deleted
+	// it here (#4371).
 	// The root is signed by Composition: never persisted and never an
 	// organization key.
 	Organization *authoring.Artifact
@@ -123,7 +127,8 @@ type Inputs struct {
 	// the shipped actions.
 	Overrides legacycompile.CategoryActions
 	// Composition signs the organization root: the active document, or none,
-	// less the template controls it carries that the scope does not bind,
+	// less the template controls it carries that the scope does not bind and
+	// the controls its binds_on confines to other scopes (#4371),
 	// composed with the baseline pack, the organization template while no
 	// document is active, and the replacements Overrides carries. Its key must
 	// be neither the system key nor the organization's.
@@ -221,6 +226,22 @@ type Activation struct {
 	// scope does not run would refuse every request it cannot decide. Nil when
 	// there are none, and while no document is active.
 	UnboundTemplateControls []string
+	// ScopeUnboundControls are the active document's controls whose binds_on
+	// does not name this scope (#4371), in the document's order: left out of
+	// the organization root here, so the engine does not carry them. It is a
+	// separate list from UnboundTemplateControls because it is a separate
+	// fact - the author confined the control, where the template's detector
+	// does not run - and a control can be both. Nil when there are none, and
+	// while no document is active.
+	ScopeUnboundControls []string
+	// DetectorUnboundControls are the active document's controls that read a
+	// registry detector this scope does not run (#4249 row 5674230432), in the
+	// document's order: left off the organization root here through the same
+	// omission, each naming the detector and the planes that run it
+	// (detector_unbound.go). A control binds_on already leaves off is listed
+	// there, not here. Nil when there are none, and while no document is
+	// active.
+	DetectorUnboundControls []DetectorUnboundControl
 	// SystemControls is what the active document's system_controls did on this
 	// scope (PRD v11 §1.5): one entry per control it names, sorted, naming the
 	// shipped policies each displaced here. Nil when it names none.
@@ -242,7 +263,8 @@ type Activation struct {
 	// bundle the engine activated: the composition's whenever anything was
 	// composed with the authored document - the baseline pack, the organization
 	// template, a recorded override's replacements (#4045) - or anything was
-	// left out of it (UnboundTemplateControls), and the authored document's own
+	// left out of it (UnboundTemplateControls, ScopeUnboundControls), and the
+	// authored document's own
 	// when it already carries the whole pack, no override applies and it binds
 	// here whole.
 	OrganizationBundleDigest string
@@ -279,6 +301,8 @@ type Activation struct {
 	// detectorSignals are the censused detector signal paths those policies
 	// read, sorted (see DetectorSignalPaths).
 	detectorSignals []string
+	// readers indexes policies by the paths they read (readersByPath).
+	readers map[string][]string
 	// origins records each organization-root policy that is not shipped - the
 	// organization's own document's, or an installed pack's - with the version
 	// it was published at (see Identity). A policy with no entry is shipped.
@@ -354,6 +378,7 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	if err != nil {
 		return nil, err
 	}
+	scopeRestriction := system
 	// THE ORGANIZATION'S DOCUMENT, read here because its system_controls shape
 	// the restriction below (PRD v11 §1.5). It is the artifact's signed source:
 	// an Artifact is built only by Publish or LoadArtifact, both of which bind
@@ -390,6 +415,14 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	if fold.reason != "" {
 		system = fold.system
 		restriction += "; " + fold.reason
+	}
+	// A SCOPE THAT FORCES AN ACTION KEEPS ITS FORCED CONTROLS (#4259), after
+	// every fold that can leave a shipped control out. It holds by construction
+	// (foldSystemControls keeps them, and no plane both passes overrides and
+	// forces an action), so a refusal here names a defect, and the plane fails
+	// closed rather than store what it was built to mask.
+	if err := refuseForcedControlMissing(scope, scopeRestriction, system); err != nil {
+		return nil, err
 	}
 	// THE DISCHARGE GUARD (#4046), beside the restriction it reads: a shipped
 	// control that binds here and carries a mandatory obligation that neither
@@ -453,6 +486,19 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	orgBundleDigest, orgArtifactDigest := "", ""
 	documentVersion, origins := 0, map[string]policyOrigin{}
 	var authored *authoring.AuthoredSource
+	var scopeUnbound []string
+	// offScope is every control of the active document left off this scope:
+	// by its binds_on (scopeUnbound) or because the scope does not run a
+	// registry detector it reads (detectorUnbound). One omission for both.
+	var offScope, templateUnbound []string
+	// orgPin is the active document's catalog pin, read once for the backstop
+	// below; 0 while none is active, where the backstop has nothing to judge.
+	var orgPin int64
+	var detectorUnbound []DetectorUnboundControl
+	judge, err := legacycompile.NewScopeDetectorJudge(scope)
+	if err != nil {
+		return nil, fmt.Errorf("activation: %w", err)
+	}
 	if in.Organization != nil {
 		orgBundle := in.Organization.Bundle()
 		orgKey, ok := in.Trust.PublicKey(pdp.RootOrganization, orgBundle.KeyID)
@@ -476,9 +522,37 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 			return nil, err
 		}
 		authored = &authoring.AuthoredSource{Document: &orgDoc.Policy, Bundle: orgBundle, Key: orgKey}
+		// A CONTROL BINDS WHERE ITS DOCUMENT SAYS (#4371, binds_on.go): one
+		// whose binds_on does not name this scope is omitted here, and read
+		// before any pack composes, because on this scope the document does not
+		// carry it (notCarried): a pack's or the baseline's own control of that
+		// id composes in its place, exactly as if the document had deleted it.
+		// THE CATALOG VERSION THE DOCUMENT WAS PUBLISHED AGAINST decides what
+		// its binds_on meant: `wcp` covered the orchestrator's request routes
+		// until the split (#4249 row 5706695827). Absent on every artifact
+		// published before the pin existed, which is the pre-split vocabulary.
+		orgPin = in.Organization.Provenance().CatalogVersion
+		pin := orgPin
+		if scopeUnbound, err = scopeUnboundControls(scope, authored.Document, admittedScopes(in.Snapshot.Catalog), pin); err != nil {
+			return nil, err
+		}
+		// The template's own controls the document carries by id are placed by
+		// the template's arm (unboundTemplateControls) exactly as before; the
+		// detector arm judges every other control, and one binds_on leaves off.
+		if templateUnbound, err = unboundTemplateControls(scope, authored.Document); err != nil {
+			return nil, fmt.Errorf("activation: the organization template on %s: %w", scope, err)
+		}
+		detectorUnbound = organizationDetectorUnbound(judge, authored.Document, append(slices.Clone(scopeUnbound), templateUnbound...))
+		offScope = append(slices.Clone(scopeUnbound), detectorUnboundIDs(detectorUnbound)...)
 		orgArtifactDigest = in.Organization.Digest()
 		documentVersion = in.Organization.Provenance().DocumentVersion
 		for _, p := range orgDoc.Policy.Policies {
+			// A control left off this scope is not the organization's here: the
+			// policy of its id on this scope, if any, is a pack's or the
+			// baseline's, and Identity must name it so.
+			if slices.Contains(offScope, p.ID) {
+				continue
+			}
 			origins[p.ID] = policyOrigin{source: SourceOrganization, version: documentVersion}
 		}
 	}
@@ -492,7 +566,16 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("activation: the baseline permission pack: %w", err)
 	}
-	additions := notCarried(pack.Policies, authored)
+	// THE OMISSION SUBSTITUTES ONLY WHERE THE AUTHOR CONFINED THE CONTROL.
+	// scopeUnbound is the document's own binds_on, and leaving a control off a
+	// scope there is deleting it there, so a pack's or the baseline's policy of
+	// that id composes in its place (#4371). The detector arm is the PLATFORM's
+	// omission, not the author's: substituting there would replace a control
+	// the organization narrowed with the deployment's unconfined policy of the
+	// same id - a permission the organization had restricted would come back
+	// whole - so a detector-unbound control is omitted and nothing takes its
+	// place (#4249 row 5674230432).
+	additions := notCarried(pack.Policies, authored, scopeUnbound)
 	schemas := slices.Clone(pack.Attributes)
 	// THE INSTALLED POLICY PACKS (PRD v11 §1.9), beside the baseline pack and on
 	// the same terms: implicit or published, each composes what binds here.
@@ -510,7 +593,7 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 			continue
 		}
 		// A pack control the document already carries is the document's own.
-		composed := notCarried(scoped.Policies, authored)
+		composed := notCarried(scoped.Policies, authored, scopeUnbound)
 		for _, p := range composed {
 			origins[p.ID] = policyOrigin{source: SourcePack, version: ip.Pack.Source.Version}
 		}
@@ -541,15 +624,16 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	// seeded with, and a scope that does not run one's detector would decide it
 	// UNKNOWN and refuse every request, so the composition leaves each such
 	// control out here exactly as the implicit bundle leaves the template's out.
-	var unbound []string
-	if authored != nil {
-		if unbound, err = unboundTemplateControls(scope, authored.Document); err != nil {
-			return nil, fmt.Errorf("activation: the organization template on %s: %w", scope, err)
+	unbound := templateUnbound
+	omit := slices.Clone(unbound)
+	for _, id := range offScope {
+		if !slices.Contains(omit, id) {
+			omit = append(omit, id)
 		}
 	}
 	var orgBundle *pdp.Bundle
 	switch {
-	case len(additions) > 0 || len(unbound) > 0:
+	case len(additions) > 0 || len(omit) > 0:
 		compKey := in.Composition.PublicKey()
 		if compKey.Equal(in.System.PublicKey()) || (authored != nil && compKey.Equal(authored.Key)) {
 			return nil, &pdp.ActivationRefusal{
@@ -559,7 +643,7 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 					"of its own; mint its key separately (authoring.NewCompositionAuthority)",
 			}
 		}
-		comp, err := in.Composition.Compose(authored, unbound, additions, schemas)
+		comp, err := in.Composition.Compose(authored, omit, additions, schemas)
 		if err != nil {
 			return nil, fmt.Errorf("activation: %w", err)
 		}
@@ -573,6 +657,12 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 	}
 	if orgBundle != nil {
 		bundles = append(bundles, orgBundle)
+		if err := refuseCarriedOffScope(scope, docs[len(docs)-1], orgPin); err != nil {
+			return nil, err
+		}
+		if err := refuseDetectorCarriedOffScope(judge, docs[len(docs)-1]); err != nil {
+			return nil, err
+		}
 	}
 
 	registry, err := in.Snapshot.Registry.PDPRegistry()
@@ -642,9 +732,11 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 		PEP:                        pep,
 		Delivers:                   surface.Delivers,
 		Scope:                      scope,
-		Restriction:                restriction,
+		Restriction:                restriction + detectorUnboundReason(scope, detectorUnbound),
 		Overrides:                  fold.displacements,
 		UnboundTemplateControls:    unbound,
+		ScopeUnboundControls:       scopeUnbound,
+		DetectorUnboundControls:    detectorUnbound,
 		SystemControls:             controls.effects,
 		SystemPolicies:             len(system.Policies),
 		ShippedPolicies:            len(shipped.Policies),
@@ -657,23 +749,27 @@ func Activate(ctx context.Context, in Inputs) (*Activation, error) {
 		DocumentVersion:            documentVersion,
 		policies:                   policies,
 		detectorSignals:            detectorSignals,
+		readers:                    readersByPath(policies),
 		origins:                    origins,
 		disabled:                   controls.disabled,
 		census:                     census,
 	}, nil
 }
 
-// notCarried is the pack's policies the authored document does not already
-// carry. A document that published the pack itself keeps its own copy, and a
-// composition refuses a second policy under one id.
-func notCarried(pack []pdp.Policy, authored *authoring.AuthoredSource) []pdp.Policy {
+// notCarried is the pack's policies the authored document does not carry on
+// this scope. A document that published the pack itself keeps its own copy,
+// and a composition refuses a second policy under one id. A policy the document
+// leaves off this scope (scopeUnbound, its binds_on) is not carried here, so
+// the pack's own policy of that id composes in its place: leaving a control off
+// a scope is deleting it there, never more (#4371).
+func notCarried(pack []pdp.Policy, authored *authoring.AuthoredSource, scopeUnbound []string) []pdp.Policy {
 	out := slices.Clone(pack)
 	if authored == nil {
 		return out
 	}
 	carried := make(map[string]bool, len(authored.Document.Policies))
 	for _, p := range authored.Document.Policies {
-		carried[p.ID] = true
+		carried[p.ID] = !slices.Contains(scopeUnbound, p.ID)
 	}
 	return slices.DeleteFunc(out, func(p pdp.Policy) bool { return carried[p.ID] })
 }
@@ -699,6 +795,45 @@ func (a *Activation) DetectorSignalPaths() []string {
 		return nil
 	}
 	return slices.Clone(a.detectorSignals)
+}
+
+// ReadsPath reports whether a policy this activation carries reads path. A
+// fact producer that asks something out of process (an external scorer,
+// #3330) asks it only where a control will read the answer.
+func (a *Activation) ReadsPath(path string) bool {
+	return len(a.PoliciesReading(path)) > 0
+}
+
+// PoliciesReading is every policy this activation carries that reads path,
+// sorted by id, so a record of a fact can name the controls that read it.
+func (a *Activation) PoliciesReading(path string) []pdp.Policy {
+	if a == nil {
+		return nil
+	}
+	ids := a.readers[path]
+	out := make([]pdp.Policy, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, a.policies[id])
+	}
+	return out
+}
+
+// readersByPath indexes policies by the attribute paths they read, each list
+// sorted by policy id. Built once per activation, so a per-request question
+// (ReadsPath) is a map lookup rather than a walk over every policy.
+func readersByPath(policies map[string]pdp.Policy) map[string][]string {
+	out := map[string][]string{}
+	for id, p := range policies {
+		for _, path := range p.ReferencedPaths() {
+			if !slices.Contains(out[path], id) {
+				out[path] = append(out[path], id)
+			}
+		}
+	}
+	for path := range out {
+		sort.Strings(out[path])
+	}
+	return out
 }
 
 // payloadLeaves is the union of every registered action's payload leaves,

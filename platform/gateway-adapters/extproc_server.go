@@ -368,12 +368,15 @@ func (s *ExtProcServer) requestHeaders(ctx context.Context, st *extProcStream, h
 
 	// Bodyless request: gate on the request line.
 	//
-	// HEADERS-ONLY on this path (#2958): the only content here is :path/:method,
-	// which Envoy ext_proc cannot rewrite — so this leg genuinely cannot
-	// discharge a request-body redaction, even though the same adapter can on
-	// the request-BODY path below. Declaring it accurately is what lets the PDP
-	// suppress the obligation and apply the org's fallback posture, instead of
-	// handing us a redaction we can only answer with a local 403.
+	// HEADERS-ONLY on this path: the only content here is :path/:method, which
+	// Envoy ext_proc cannot rewrite — so this leg genuinely cannot discharge a
+	// request-body redaction, even though the same adapter can on the
+	// request-BODY path below. It declares exactly that on both axes: #2958's
+	// headers-only seam mechanics and an ADR-065 handshake with an EMPTY
+	// capability set. Declaring it accurately is what makes the PDP answer a
+	// redaction it cannot have (a v11 PDP refuses it unsupported_obligation; an
+	// older >=9.11.0 one applies the org's obligation-fallback posture), instead
+	// of handing us one we can only answer with a local 403.
 	query := st.method + " " + st.path
 	outcome := s.pdp.GateRequest(ctx, s.decideRequest(st, "", query), query, st.ident.Traceparent, s.pdp.SeamHeadersOnly())
 	switch outcome.Kind {
@@ -387,12 +390,14 @@ func (s *ExtProcServer) requestHeaders(ctx context.Context, st *extProcStream, h
 			}},
 		}}
 	case OutcomeAllowRedacted:
-		// UNREACHABLE against a >=9.11.0 PDP (#2958): this path advertised
-		// headers-only, so a conforming PDP suppresses the request-line
-		// redaction and applies the org's obligation-fallback posture — which
-		// arrives here as OutcomeAllow (log) or OutcomeDeny (block), never as a
-		// redaction we cannot apply. Reaching here means the PDP ignored the
-		// advertisement, i.e. a platform older than the adapter.
+		// UNREACHABLE against a >=9.11.0 PDP: this path declared it cannot
+		// rewrite a body, so a conforming PDP never hands it a request-line
+		// redaction. A v11 PDP, and a v10.4.0+ Enterprise one, refuses it against
+		// the empty capability set, which arrives here as OutcomeDeny; any other
+		// >=9.11.0 PDP suppresses it under the org's obligation-fallback posture
+		// (#2958), which arrives as OutcomeAllow (log) or OutcomeDeny (block).
+		// Reaching here means the PDP ignored both declarations, i.e. a platform
+		// older than the adapter.
 		//
 		// Block: we hold content a policy wanted masked and cannot mask it
 		// (ext_proc cannot rewrite :path/:method), and forwarding the original

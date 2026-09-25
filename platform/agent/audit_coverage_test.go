@@ -73,7 +73,7 @@ import (
 //
 //	Symmetric one hop on the WRITE side: a PEP that records its verdict by
 //	calling a thin in-tree wrapper which itself calls a canonical writer (e.g.
-//	ExecuteWithHITL → auditStepGate → LogWorkflowOperation, #2693; Service.StepGate
+//	mapStepGate.decide → auditStepGate → LogWorkflowOperation, #2693/#4382; Service.StepGate
 //	→ s.logAudit → LogWorkflowOperation) counts as auditing. These wrappers are
 //	curated in auditDelegatingWrappers() and resolved PER PACKAGE DIRECTORY so a
 //	deliberately-generic method name (logAudit has a canonical forwarder in
@@ -532,6 +532,12 @@ func policyEvalSinks() map[string]bool {
 		"EvaluateAllPolicies":     true,
 		"EvaluateMCPPermission":   true,
 		"EvaluateStepGate":        true,
+		// The orchestrator request plane's anchored fact producer (#4249 row
+		// 5779814437): obtaining it is deciding on that plane, so every caller
+		// is a PEP - applyLLMCallRoutes (llm_call_route_effects.go, #4387),
+		// which refuses an LLM call by the organization's route rows, and the
+		// route seam's decideRouteRequestOnce.
+		"routeRequestFactProducer": true,
 	}
 }
 
@@ -558,6 +564,14 @@ func policyDelegatingHelpers() map[string]bool {
 		"responseDetectorPass":   true, // response_enforcing_seam.go — response detector facts
 		"decideResponse":         true, // response_enforcing_seam.go — response plane
 		"CheckPolicy":            true, // map_hitl_adapter.go — MAP/HITL step gate
+		// route_request_enforcing_seam.go — the orchestrator request plane (#4249
+		// row 5779814437): decideRouteRequestOnce obtains the plane's fact
+		// producer and returns the decision; decideRouteRequest adds the risk
+		// floor and returns it; processRequestHandler and executePlanHandler
+		// record the refusal (LogBlockedRequest). Two hops, each named, so the
+		// handlers are gated.
+		"decideRouteRequestOnce": true,
+		"decideRouteRequest":     true,
 	}
 }
 
@@ -583,8 +597,8 @@ func pepMarkers() map[string]bool {
 // lands in audit_logs. Following this one hop on the WRITE side is what lets the
 // gate SEE the audit that:
 //
-//   - HITLWorkflowEngine.ExecuteWithHITL performs via auditStepGate →
-//     LogWorkflowOperation (#2693, merged), and
+//   - mapStepGate.decide performs via auditStepGate → LogWorkflowOperation
+//     (#2693; the multi-agent step gate both executors call since #4382), and
 //   - workflow_control Service.StepGate performs via s.logAudit →
 //     LogWorkflowOperation,
 //
@@ -612,8 +626,11 @@ func pepMarkers() map[string]bool {
 // tree (e.g. reverting auditStepGate's LogWorkflowOperation call fails the gate).
 func auditDelegatingWrappers() map[string]bool {
 	return map[string]bool{
-		"auditStepGate": true, // hitl_execution.go (HITLWorkflowEngine) → LogWorkflowOperation (#2693)
+		"auditStepGate": true, // map_step_gate.go (mapStepGate, both multi-agent executors since #4382) → LogWorkflowOperation (#2693)
 		"logAudit":      true, // workflow_control/service.go (Service) → LogWorkflowOperation
+		// llm_call_route_effects.go: applyLLMCallRoutes's every refusal path
+		// returns through it, and it writes LogBlockedRequest (#4387).
+		"recordLLMCallRouteRefusal": true,
 	}
 }
 
@@ -1056,7 +1073,7 @@ func mcpToolLike(ctx context.Context) {
 		// The symmetric write-side hop: a PEP records its verdict by calling a
 		// thin wrapper (auditStepGate) defined in the SAME package that forwards
 		// to a canonical writer (LogWorkflowOperation). This is the shape
-		// ExecuteWithHITL takes after #2693, and it must NOT be flagged.
+		// mapStepGate.decide takes (#2693), and it must NOT be flagged.
 		src := `package x
 import "context"
 func auditStepGate(ctx context.Context) { LogWorkflowOperation(ctx, nil) }

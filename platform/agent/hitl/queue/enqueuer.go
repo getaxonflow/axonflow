@@ -56,8 +56,9 @@ type Outcome string
 const (
 	// OutcomeCreated - a new queue row was written.
 	OutcomeCreated Outcome = "created"
-	// OutcomeReused - an existing row with the same deterministic request_id
-	// was returned by the ON CONFLICT arm. Not charged against the cap.
+	// OutcomeReused - an existing PENDING row with the same deterministic
+	// request_id was returned by the ON CONFLICT arm. Not charged against the
+	// cap. A conflict with a decided row is OutcomeError (ErrResolvedConflict).
 	OutcomeReused Outcome = "reused"
 	// OutcomeCapReached - refused by MaxPendingApprovals.
 	OutcomeCapReached Outcome = "cap_reached"
@@ -162,13 +163,14 @@ func (e *Enqueuer) MaxPending() int { return e.maxPending }
 // Input is one enqueue attempt.
 type Input struct {
 	// RequestID is the caller-supplied deterministic id that makes the
-	// enqueue idempotent. The WCP plane derives it from (workflow_id,
-	// step_id) via workflow_control.DeriveHITLApprovalID, which is the SAME
-	// derivation the approve/reject response projects - so the id a client
-	// is handed resolves to the row, on EVERY edition.
+	// enqueue idempotent (the ADR-065 bridge's decision id). The WCP plane
+	// does not set it: it sets StepHold, and Enqueue names the hold with
+	// workflow_control.DeriveHITLApprovalIDForHold - the id the
+	// approve/reject response projects for that hold.
 	//
 	// uuid.Nil means "no natural key": a fresh v4 is minted and the ON
-	// CONFLICT arm is unreachable.
+	// CONFLICT arm is unreachable - unless StepHold is set, in which case
+	// Enqueue picks the id from the step's holds.
 	RequestID uuid.UUID
 
 	OrgID               string
@@ -187,7 +189,56 @@ type Input struct {
 	RiskClassification  string
 	NotifyURL           string
 	ExpiresIn           time.Duration
+
+	// StepHold, when set, makes Enqueue choose the request id itself from the
+	// step's existing holds (#4249 row 5700138809); RequestID must then be
+	// uuid.Nil. Nil keeps the caller-supplied RequestID path unchanged.
+	StepHold *StepHold
+	// BindingHold, when set, makes Enqueue choose the request id itself from
+	// the call's existing holds (#4370, binding_hold.go); RequestID must then
+	// be uuid.Nil and StepHold unset.
+	BindingHold *BindingHold
 }
+
+// StepHold identifies the workflow step a hold belongs to and names its holds.
+//
+// A step can be held more than once: a step approved earlier and re-evaluated
+// back to require_approval is held again. Each hold is its own queue row,
+// because a decided row is the record of that decision (the regulator packs
+// read the row, not the history) and must not be reopened. So Enqueue reads
+// the step's holds BY ID inside its transaction (walkHolds):
+//
+//   - none: hold 1, IDForHold(1);
+//   - a pending hold: that row - a retry of a live hold, `reused`;
+//   - a decided newest hold n: hold n+1, a NEW row, `created`.
+//
+// IDForHold is supplied by the caller because the derivation lives in the
+// workflow plane (workflow_control.DeriveHITLApprovalIDForHold), which this
+// package does not import. IDForHold(1) must be the id the step's first hold
+// has always had.
+type StepHold struct {
+	WorkflowID string
+	StepID     string
+	IDForHold  func(n int) uuid.UUID
+}
+
+// ErrResolvedConflict refuses an enqueue whose insert met an existing row that
+// is no longer pending. Returning that row as `reused` would answer a live
+// hold with a decided one - #4249 row 5700138809 exactly - so it is an error
+// on every caller, whatever produced the id.
+var ErrResolvedConflict = errors.New("hitl enqueue: the request id names an approval that is already decided")
+
+// ErrHoldSequence refuses an enqueue, or a current-hold read, whose step holds
+// are not in the shape this package writes: a hold after a pending one, or more
+// than maxHoldsPerStep. Guessing from a sequence this package did not write
+// could reuse or skip a hold, so it refuses instead.
+var ErrHoldSequence = errors.New("hitl enqueue: the step's queue rows do not follow the hold numbering")
+
+// ErrHoldOwnership refuses an enqueue whose insert met a row that belongs to a
+// different step. Hold ids are names, not identities: step "a#2" hashes the
+// same string as hold 2 of step "a", and step_id is a client-supplied path
+// segment.
+var ErrHoldOwnership = errors.New("hitl enqueue: the request id names an approval that belongs to another workflow step")
 
 // Enqueue applies the tier gate and the pending cap, writes (or reuses) the
 // queue row, and writes the `created` history entry - all inside one
@@ -297,9 +348,52 @@ func (e *Enqueuer) Enqueue(ctx context.Context, in Input) (row *Row, outcome Out
 			}
 		}
 
+		// previousStatus is the final status of the step's previous hold when
+		// this call opens a new one; empty for a first hold.
+		var previousStatus string
+		if h := in.StepHold; h != nil {
+			id, prev, holdErr := nextHoldID(ctx, tx, in.RequestType, h)
+			if holdErr != nil {
+				return holdErr
+			}
+			params.RequestID, previousStatus = id, prev
+		}
+		if h := in.BindingHold; h != nil {
+			id, n, prev, holdErr := nextBindingHoldID(ctx, tx, h)
+			if holdErr != nil {
+				return holdErr
+			}
+			params.RequestID, previousStatus = id, prev
+			// The hold number rides in the row, so the spend can prove the
+			// row's id is derived (ContextBindingHold). A copy: the caller's
+			// map is not the platform's to write.
+			rc := make(map[string]interface{}, len(in.RequestContext)+1)
+			for k, v := range in.RequestContext {
+				rc[k] = v
+			}
+			rc[ContextBindingHold] = n
+			params.RequestContext = rc
+		}
+
 		r, insErr := insertIdempotent(ctx, tx, params)
 		if insErr != nil {
 			return insErr
+		}
+
+		if !r.Inserted {
+			if r.Status != "pending" {
+				return fmt.Errorf("%w (request %s is %s)", ErrResolvedConflict, r.RequestID, r.Status)
+			}
+			if h := in.StepHold; h != nil {
+				if ownErr := checkHoldOwner(ctx, tx, r.RequestID, h); ownErr != nil {
+					return ownErr
+				}
+			}
+			if h := in.BindingHold; h != nil {
+				if ownErr := checkBindingOwner(ctx, tx, r.RequestID, h); ownErr != nil {
+					return ownErr
+				}
+			}
 		}
 
 		if r.Inserted && e.maxPending > 0 {
@@ -318,13 +412,22 @@ func (e *Enqueuer) Enqueue(ctx context.Context, in Input) (row *Row, outcome Out
 		}
 
 		if r.Inserted {
-			if hErr := insertHistory(ctx, tx, HistoryParams{
+			history := HistoryParams{
 				RequestID: r.RequestID,
 				OrgID:     in.OrgID,
 				TenantID:  in.TenantID,
 				Action:    "created",
 				NewStatus: "pending",
-			}); hErr != nil {
+			}
+			if previousStatus != "" && in.StepHold != nil {
+				history.PreviousStatus = previousStatus
+				history.Comment = fmt.Sprintf("re-hold of workflow step %s, whose previous hold ended %s", in.StepHold.StepID, previousStatus)
+			}
+			if previousStatus != "" && in.BindingHold != nil {
+				history.PreviousStatus = previousStatus
+				history.Comment = fmt.Sprintf("re-hold of the same call, whose previous approval ended %s", previousStatus)
+			}
+			if hErr := insertHistory(ctx, tx, history); hErr != nil {
 				// Unlike hitl.Service, which logs a history failure and
 				// keeps the row, this rolls back. The history row is the
 				// EU AI Act Article 14 trail for a human-oversight event;
@@ -347,10 +450,70 @@ func (e *Enqueuer) Enqueue(ctx context.Context, in Input) (row *Row, outcome Out
 		return nil, OutcomeError, fmt.Errorf("hitl enqueue (%s): %w", e.plane, scopeErr)
 	}
 
+	// A conflict that met a decided row, another step's row or an off-sequence
+	// step never reaches here: each returned an error inside the transaction.
+	// So `reused` below is only ever a still-pending row.
 	if result.Inserted {
 		return result, OutcomeCreated, nil
 	}
 	return result, OutcomeReused, nil
+}
+
+// nextHoldID picks the request id for an enqueue of h, inside the caller's
+// org-scoped transaction. previousStatus is the decided status of the hold this
+// one follows, and empty unless a new hold follows a decided one.
+//
+// The step's holds are read by id (walkHolds): a pending hold is reused (a
+// retry); otherwise the next hold is written, after refusing a step that has a
+// row outside its hold ids (ErrHoldUnnamedRow).
+//
+// Concurrency: two callers that both see a decided newest hold both derive
+// hold n+1; the unique index on request_id admits one insert and puts the other
+// on the conflict arm against the winner's PENDING row, which is `reused`. A
+// caller that looks after the winner commits sees that pending hold and reuses
+// it. No lock is needed for "one live hold per step".
+func nextHoldID(ctx context.Context, tx *sql.Tx, requestType string, h *StepHold) (id uuid.UUID, previousStatus string, err error) {
+	w, err := walkHolds(ctx, tx, h)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if hook := testHookAfterStepHoldWalk; hook != nil {
+		hook(h)
+	}
+	if w.HasPending {
+		return w.Pending, "", nil
+	}
+	next, err := holdID(h, w.Holds+1)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	// The next hold's own id is NAMED in the unnamed-row check. A concurrent
+	// re-hold of the same step that committed between this call's walk and
+	// the check wrote exactly that row: it is this step's next hold, not a
+	// stray, and the insert below meets it on the ON CONFLICT arm (`reused`).
+	// Before, the check ran on the walk's ids alone and refused it as unnamed:
+	// a false refusal of a legitimate re-hold under contention
+	// (TestAReHoldWhoseWalkPredatesAConcurrentReHoldReusesIt). A row under any
+	// other id still refuses.
+	if err := refuseUnnamedStepRow(ctx, tx, requestType, h, append(append([]uuid.UUID(nil), w.IDs...), next)); err != nil {
+		return uuid.Nil, "", err
+	}
+	return next, w.LastStatus, nil
+}
+
+// testHookAfterStepHoldWalk, when set, runs after a step hold's walk and
+// before anything that walk decides: a point at which a concurrent re-hold of
+// the same step can commit between this call's reads (others exist, inside the
+// walk and between the check and the insert). Tests set it to make that
+// interleaving happen on purpose; it is nil in production.
+var testHookAfterStepHoldWalk func(h *StepHold)
+
+func holdID(h *StepHold, n int) (uuid.UUID, error) {
+	id := h.IDForHold(n)
+	if id == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("hitl enqueue: no request id for hold %d of %s/%s", n, h.WorkflowID, h.StepID)
+	}
+	return id, nil
 }
 
 // validate rejects input the queue row's own constraints or its readers
@@ -385,6 +548,50 @@ func validate(in *Input) error {
 	}
 	if in.RequestType == "" {
 		return fmt.Errorf("hitl enqueue: request_type is required")
+	}
+	if h := in.StepHold; h != nil {
+		if h.WorkflowID == "" || h.StepID == "" || h.IDForHold == nil {
+			return fmt.Errorf("hitl enqueue: a step hold needs a workflow_id, a step_id and a hold id function")
+		}
+		if in.RequestID != uuid.Nil {
+			return fmt.Errorf("hitl enqueue: a step hold chooses its own request id; RequestID must be unset")
+		}
+		// The unnamed-row check on this write passes in.RequestType, and the
+		// read path (CurrentHoldExpiry) passes RequestTypeWCPStepGate. Holding
+		// every step hold to that one type keeps the two predicates, and the
+		// type of the rows they look for, the same value.
+		if in.RequestType != RequestTypeWCPStepGate {
+			return fmt.Errorf("hitl enqueue: a step hold is written as request_type %q, not %q", RequestTypeWCPStepGate, in.RequestType)
+		}
+		// The unnamed-row check finds rows that name a step by request_context,
+		// so a hold written without the same pair would read as a stray of its
+		// own step (the walk itself finds holds by id).
+		wf, _ := in.RequestContext["workflow_id"].(string)
+		step, _ := in.RequestContext["step_id"].(string)
+		if wf != h.WorkflowID || step != h.StepID {
+			return fmt.Errorf("hitl enqueue: request_context workflow_id/step_id must equal the step hold's")
+		}
+	}
+	if h := in.BindingHold; h != nil {
+		if in.StepHold != nil {
+			return fmt.Errorf("hitl enqueue: a hold is a step's or a call's, not both")
+		}
+		if h.BindingDigest == "" {
+			return fmt.Errorf("hitl enqueue: a call hold needs its binding digest")
+		}
+		if in.RequestID != uuid.Nil {
+			return fmt.Errorf("hitl enqueue: a call hold chooses its own request id; RequestID must be unset")
+		}
+		// The consume and the walk both require this type (binding_hold.go);
+		// a call hold written under another would be one nobody could spend.
+		if in.RequestType != RequestTypePolicyStepUp {
+			return fmt.Errorf("hitl enqueue: a call hold is written as request_type %q, not %q", RequestTypePolicyStepUp, in.RequestType)
+		}
+		// The walk and the consume find the binding in request_context; a row
+		// written without it would read as another call's hold under its own id.
+		if b, _ := in.RequestContext[ContextBindingDigest].(string); b != h.BindingDigest {
+			return fmt.Errorf("hitl enqueue: request_context %s must equal the call hold's binding digest", ContextBindingDigest)
+		}
 	}
 	if in.Severity == "" {
 		in.Severity = "high"

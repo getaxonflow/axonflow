@@ -4,6 +4,7 @@
 package activation
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -60,6 +61,17 @@ type PolicyEffect struct {
 	// blocks.
 	Category string
 	Severity string
+	// Tier is the shipped detector census's tier for a policy that reads a
+	// censused detector (`system` or `tenant`, registry.CensusRow.Tier), and
+	// empty otherwise. It travels with Category and Severity, from the one
+	// census the activation loads.
+	Tier string
+	// BindsOn is the scopes the policy's document confines it to (#4371), nil
+	// when it binds on every scope. Every policy listed in PolicyEffects is
+	// carried on this scope, so when BindsOn is set this scope is one of its
+	// entries; the controls left off this scope are
+	// Activation.ScopeUnboundControls.
+	BindsOn []string
 }
 
 // PolicyEffects lists every policy this activation enforces on its scope, and
@@ -93,6 +105,9 @@ func (a *Activation) PolicyEffects() []PolicyEffect {
 // replaces. Identity's fields are the caller's to set.
 func (a *Activation) effectOf(p pdp.Policy) PolicyEffect {
 	e := PolicyEffect{PolicyID: p.ID, Authority: p.Authority}
+	if p.BindsOn != nil {
+		e.BindsOn = slices.Clone(*p.BindsOn)
+	}
 	shipped := p.ID
 	switch {
 	case strings.HasPrefix(p.ID, OverridePolicyIDPrefix):
@@ -105,7 +120,7 @@ func (a *Activation) effectOf(p pdp.Policy) PolicyEffect {
 	}
 	e.Action, e.Category, e.Severity, _ = legacycompile.LegacyActionOf(p)
 	if _, fact, censused := censusFactFor(p, a.census); censused {
-		e.Category, e.Severity = fact.category, fact.severity
+		e.Category, e.Severity, e.Tier = fact.category, fact.severity, fact.tier
 	}
 	return e
 }

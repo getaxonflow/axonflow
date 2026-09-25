@@ -67,8 +67,8 @@ var agentStaticCallSiteAdmissions = map[string]func() legacycompile.CategoryAdmi
 	"proxy_request|EvaluateRequest|proxyDetectorPass": func() legacycompile.CategoryAdmission {
 		return admissionFromCategories(proxyPolicyCategories, false)
 	},
-	// coworkRedactDefault: EnabledPIICategories only.
-	"cowork_ingest|EvaluateResponse|coworkRedactDefault": func() legacycompile.CategoryAdmission {
+	// decideCoworkContent (coworkObservedCategories): EnabledPIICategories only.
+	"cowork_ingest|EvaluateResponse|decideCoworkContent": func() legacycompile.CategoryAdmission {
 		return admissionFromCategories(nil, true)
 	},
 }

@@ -17,7 +17,7 @@ func TestAdmitDecisionSubjectAdmitsAVerifiedUserAndRefusesAClientRoot(t *testing
 	a, _ := admitterFixture(t, BuiltinRealmDeployment{})
 
 	t.Run("a verified per-user token is admitted as the root, keyed on its sub claim", func(t *testing.T) {
-		chain, adm := a.AdmitDecisionSubject(ctx, HS256Principal(fixtureOrg, mintedClaims(), true, ""), DefaultMaxDelegationDepth)
+		chain, _, adm := a.AdmitDecisionSubject(ctx, HS256Principal(fixtureOrg, mintedClaims(), true, ""), DefaultMaxDelegationDepth)
 		if !adm.State.IsAdmitted() {
 			t.Fatalf("a verified minted token was refused: %s", adm)
 		}
@@ -28,7 +28,7 @@ func TestAdmitDecisionSubjectAdmitsAVerifiedUserAndRefusesAClientRoot(t *testing
 	})
 
 	t.Run("an internal-service hop is admitted as a Service", func(t *testing.T) {
-		chain, adm := a.AdmitDecisionSubject(ctx, InternalServicePrincipal(fixtureOrg, "orchestrator", true, fixtureNow), DefaultMaxDelegationDepth)
+		chain, _, adm := a.AdmitDecisionSubject(ctx, InternalServicePrincipal(fixtureOrg, "orchestrator", true, fixtureNow), DefaultMaxDelegationDepth)
 		if !adm.State.IsAdmitted() {
 			t.Fatalf("an internal-service credential was refused: %s", adm)
 		}
@@ -45,7 +45,7 @@ func TestAdmitDecisionSubjectAdmitsAVerifiedUserAndRefusesAClientRoot(t *testing
 		"a licence / API-credential caller": APICredentialPrincipal(fixtureOrg, "client-7", VerificationAPICredential, true, fixtureNow),
 	} {
 		t.Run(name+" is refused SUBJECT_TYPE_REJECTED", func(t *testing.T) {
-			chain, adm := a.AdmitDecisionSubject(ctx, in, DefaultMaxDelegationDepth)
+			chain, _, adm := a.AdmitDecisionSubject(ctx, in, DefaultMaxDelegationDepth)
 			if adm.State != AdmissionDeny || adm.Reason != ReasonSubjectTypeRejected {
 				t.Fatalf("got state %s reason %s (%s), want a Deny for %s", adm.State, adm.Reason, adm.Detail, ReasonSubjectTypeRejected)
 			}
@@ -56,7 +56,7 @@ func TestAdmitDecisionSubjectAdmitsAVerifiedUserAndRefusesAClientRoot(t *testing
 	}
 
 	t.Run("no authenticated organization is Indeterminate, never a subject", func(t *testing.T) {
-		_, adm := a.AdmitDecisionSubject(ctx, HS256Principal("", mintedClaims(), true, ""), DefaultMaxDelegationDepth)
+		_, _, adm := a.AdmitDecisionSubject(ctx, HS256Principal("", mintedClaims(), true, ""), DefaultMaxDelegationDepth)
 		if adm.State != AdmissionIndeterminate {
 			t.Fatalf("got state %s (%s), want Indeterminate", adm.State, adm.Detail)
 		}
@@ -64,7 +64,7 @@ func TestAdmitDecisionSubjectAdmitsAVerifiedUserAndRefusesAClientRoot(t *testing
 
 	t.Run("a nil admitter is Indeterminate", func(t *testing.T) {
 		var nilAdmitter *SubjectAdmitter
-		if _, adm := nilAdmitter.AdmitDecisionSubject(ctx, HS256Principal(fixtureOrg, mintedClaims(), true, ""), 0); adm.State != AdmissionIndeterminate {
+		if _, _, adm := nilAdmitter.AdmitDecisionSubject(ctx, HS256Principal(fixtureOrg, mintedClaims(), true, ""), 0); adm.State != AdmissionIndeterminate {
 			t.Fatalf("a nil admitter produced state %s", adm.State)
 		}
 	})

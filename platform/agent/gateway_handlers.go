@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"axonflow/platform/shared/anchoredenforcer"
 	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"crypto/sha256"
@@ -847,7 +848,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		user:                user,
 		userIdentity:        callerUserIdentity(authKind, userErr, req.UserToken),
 		observation:         observationOf(preCheckEvaluation),
-		pep:                 pepHandshake.pep.Profile(),
+		pep:                 pepHandshake.requestProfile(),
 		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
 	})
 	preCheckAudit.decisionEngine = enforced.engine
@@ -859,7 +860,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
 		// the legacy engine's verdict because a dependency failed would turn
 		// enforcement off during exactly the incidents it exists for.
-		recordAnchoredEnforcement(gatewayRequestSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		recordAnchoredEnforcement(gatewayRequestSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, enforced.unavailable)
 		gatewayPreCheckRequests.WithLabelValues("error", "false").Inc()
 		response := PreCheckResponse{
 			ContextID:   contextID,

@@ -80,7 +80,7 @@ func TestMetricsCollector_RecordViolation(t *testing.T) {
 	}
 
 	// Should not panic with NoOpAuditQueue
-	collector.RecordViolation(ctx, opts, policy, "DROP TABLE users")
+	collector.RecordViolation(ctx, opts, policy, PolicyMatch{PolicyID: policy.PolicyID, Action: ActionBlock}, PhaseRequest)
 }
 
 func TestMetricsCollector_RecordError(t *testing.T) {
@@ -204,7 +204,7 @@ func TestMetricsCollector_NilAuditQueue(t *testing.T) {
 
 	// Should not panic with nil queue
 	collector.RecordEvaluation(ctx, "request", opts, nil, false, 0)
-	collector.RecordViolation(ctx, opts, policy, "test")
+	collector.RecordViolation(ctx, opts, policy, PolicyMatch{PolicyID: policy.PolicyID, Action: ActionBlock}, PhaseRequest)
 
 	stats := collector.GetStats()
 	if stats == nil {

@@ -26,9 +26,11 @@ const (
 	// SeverityReject blocks the save. The document cannot be stored, compiled,
 	// signed or published while a rejection stands.
 	SeverityReject Severity = "reject"
-	// SeverityWarn is surfaced and recorded and does not block. Every warning
-	// here describes a policy that is well formed and cannot match, which is
-	// the author's mistake to make knowingly.
+	// SeverityWarn is surfaced and recorded and does not block. A warning
+	// describes a policy that is well formed and will not do what it appears
+	// to: one that can never match, or (#4371) an approval requirement that
+	// binds where it cannot hold and is refused there rather than held. Either
+	// is the author's choice to make knowingly.
 	SeverityWarn Severity = "warn"
 )
 
@@ -163,6 +165,79 @@ const (
 	// action the day the action leaves the catalog.
 	CodeBlanketPermission = "BLANKET_PERMISSION"
 
+	// THE SCOPES A CONTROL BINDS ON (#4371). `binds_on` absent binds a control
+	// on every scope, as every document before it did; present, it names the
+	// scopes, and activation leaves the control out everywhere else, which is
+	// the same as withdrawing it there. Each code below is a way a list could
+	// mean something its author did not write.
+	//
+	// CodeBindsOnEmpty refuses `binds_on: []`. Absent is the only way to say
+	// "everywhere"; an empty list would otherwise mean "nowhere", which removes
+	// a constraint from every scope, and it round-trips through an omitempty
+	// encoding as absent, which means the opposite.
+	CodeBindsOnEmpty = "BINDS_ON_EMPTY"
+	// CodePlaneNotDeclared refuses a scope this deployment does not enforce:
+	// a typo, a two-phase plane named without its phase (`mcp` for
+	// `mcp:request`), or a name that is not the engine's own. A scope nothing
+	// decides on is a control scoped to nowhere.
+	CodePlaneNotDeclared = "PLANE_NOT_DECLARED"
+	// CodeActionNotPresentedOnPlane refuses a scope that presents none of the
+	// actions the selector reaches (a tool.call control scoped to
+	// openai_compatible). The control could never be reached there, so the
+	// entry is a mistake that reads as a scope.
+	CodeActionNotPresentedOnPlane = "ACTION_NOT_PRESENTED_ON_PLANE"
+	// CodeBindsOnDuplicatePlane refuses a scope named twice. It changes
+	// nothing the engine does, and it is refused rather than folded because a
+	// repeated entry is usually a second scope mistyped as the first.
+	CodeBindsOnDuplicatePlane = "BINDS_ON_DUPLICATE_PLANE"
+	// CodeBindsOnMCPResponse WARNS that an approval requirement binds on the
+	// MCP response pass - by naming mcp:response, or by leaving binds_on
+	// absent - on an action that pass presents (tool.call). The response pass
+	// has no approval hold, so there the challenge is refused
+	// approval_required rather than held: an approved tool call runs, and its
+	// response is then refused. It is a warning and not a refusal, because
+	// absent is what every document before #4371 means and must stay
+	// publishable; binds_on: ["mcp:request"] (or the planes that hold) says
+	// where the author means it.
+	CodeBindsOnMCPResponse = "BINDS_ON_MCP_RESPONSE"
+	// CodeBindsOnOrchestratorRequestNoHold WARNS that an approval requirement
+	// binds on the orchestrator request plane - by naming orchestrator_request,
+	// or by leaving binds_on absent - on an action it presents
+	// (/api/v1/process as llm.completion, /api/v1/plan/execute as
+	// agent.invoke). Neither route can hold an approval, so there the
+	// challenge is refused approval_required rather than held. A warning, not a
+	// refusal, for the reason CodeBindsOnMCPResponse gives. It replaces
+	// BINDS_ON_WCP_ROUTE_SEAM, which warned only on an explicit wcp while the
+	// routes decided under wcp's scope (#4249 row 5706695827).
+	CodeBindsOnOrchestratorRequestNoHold = "BINDS_ON_ORCHESTRATOR_REQUEST_NO_HOLD"
+	// CodeBindsOnMapNoHold WARNS that an approval requirement binds on the
+	// multi-agent plane - by naming map, or by leaving binds_on absent - on an
+	// action it presents (llm.completion, tool.call). Since #4382 every
+	// multi-agent step is decided, and a challenge there is WITHHELD as
+	// approval_requires_durable_record: the step never runs and nothing is
+	// held. No plane holds a multi-agent step's approval in any mode: confirm
+	// and step mode hold a step through a gate override that asks no policy
+	// (workflow_control GateOverride), and the one policy decision those modes
+	// make, when the released step runs, refuses a challenge approval_required.
+	// A warning, not a refusal, for the reason CodeBindsOnMCPResponse
+	// gives (#4249 row 5774872368, which spells it BINDS_ON_MAP).
+	CodeBindsOnMapNoHold = "BINDS_ON_MAP_NO_HOLD"
+	// CodeDetectorControlUnboundOnPlanes WARNS that a control reading a
+	// registry detector binds on scopes that do not run any registry detector
+	// (#4249 row 5674230432): activation leaves it off each of them rather than
+	// decide it unknown there. The scopes are the ones binds_on names, or every
+	// scope presenting a selected action when binds_on is absent, and WHICH
+	// ones run no detector is derived from the census by
+	// legacycompile.ScopeDetectorJudge - never listed here. It is five planes,
+	// not the three an enforcement reader expects: the two operator tools,
+	// policy_simulation and policy_test, have no census row either, and no
+	// anchored seam activates an organization document on them.
+	CodeDetectorControlUnboundOnPlanes = "DETECTOR_CONTROL_UNBOUND_ON_PLANES"
+	// CodeDetectorControlBindsNowhere REFUSES a control reading a registry
+	// detector whose binds_on names only scopes that do not run any registry
+	// detector: it would bind nowhere, which the author cannot have meant.
+	CodeDetectorControlBindsNowhere = "DETECTOR_CONTROL_BINDS_NOWHERE"
+
 	// CodeSystemControlsOutsideOrganization refuses a system_controls section on
 	// a document that is not the organization's: only an organization controls
 	// the shipped set it runs under (PRD v11 §1.5).
@@ -177,6 +252,14 @@ const (
 	// CodeSystemControlNotReactionable refuses a replacement action on a shipped
 	// dynamic control, which v11 lets an organization disable but not re-action.
 	CodeSystemControlNotReactionable = "SYSTEM_CONTROL_NOT_REACTIONABLE"
+	// CodeSystemControlForcedOnScope WARNS that an entry disables or re-actions
+	// a shipped control on a scope that forces an action on its category, where
+	// the entry is not applied (#4259): the cowork ingest storage plane masks
+	// every PII category before it stores content, so a document cannot let raw
+	// PII reach storage. It is a warning and not a refusal because the entry is
+	// plane-global and legitimate on every other plane it reaches (PRD v11
+	// §1.5), and the upgrade import proposes such entries from legacy disables.
+	CodeSystemControlForcedOnScope = "SYSTEM_CONTROL_FORCED_ON_SCOPE"
 )
 
 // CodeCatalogIsFixture is the ACTIVATION refusal for a fixture catalog. It is
@@ -248,6 +331,7 @@ var declaredChecks = []CheckDeclaration{
 	{CodeSystemControlDuplicate, SeverityReject, "A system control is named twice, so which of the two entries applies would be ambiguous.", false},
 	{CodeSystemControlMalformed, SeverityReject, "A system control entry says exactly one thing: enabled false, which leaves the control out, or a replacement action of block, redact, warn or log.", false},
 	{CodeSystemControlNotReactionable, SeverityReject, "A shipped dynamic control can be disabled but not given a replacement action in v11.", false},
+	{CodeSystemControlForcedOnScope, SeverityWarn, "This entry disables or re-actions a shipped control on a plane that forces an action on its category, so it is not applied there: the cowork ingest storage plane keeps masking PII before it stores content. The entry applies on every other plane.", false},
 
 	// The edition boundary (#3907, ruled by #3906). These are the only checks
 	// here whose outcome depends on the licence rather than on the document,
@@ -260,6 +344,15 @@ var declaredChecks = []CheckDeclaration{
 	{CodeAttributeNamespaceNotInEdition, SeverityReject, "This edition's request-context predicates do not include the attribute namespace this policy reads.", false},
 	{CodeConstructUnruled, SeverityReject, "This policy uses a construct that no edition ruling covers. It is reserved to Enterprise until one is made.", false},
 	{CodeBlanketPermission, SeverityReject, "This permission grants every action to the whole organization unconditionally, so it would also permit every action registered after it. Name the actions it grants.", false},
+	{CodeBindsOnEmpty, SeverityReject, "binds_on is an empty list. Omit binds_on to bind the control on every plane, or name the planes it binds on.", false},
+	{CodePlaneNotDeclared, SeverityReject, "binds_on names a plane this deployment does not enforce. Use the plane names the deployment vocabulary lists, such as wcp, map or mcp:request.", false},
+	{CodeActionNotPresentedOnPlane, SeverityReject, "binds_on names a plane that presents none of the actions this control selects, so the control could never apply there.", false},
+	{CodeBindsOnDuplicatePlane, SeverityReject, "binds_on names the same plane twice.", false},
+	{CodeBindsOnMCPResponse, SeverityWarn, "This approval requirement binds on the MCP response pass, which has no approval hold, so a tool call's response is refused as approval_required there rather than held. Name the planes it binds on in binds_on, for example mcp:request on Enterprise, or wcp.", false},
+	{CodeBindsOnOrchestratorRequestNoHold, SeverityWarn, "This approval requirement binds on /api/v1/process or /api/v1/plan/execute (the orchestrator_request plane). Those routes cannot hold an approval, so there it is refused as approval_required; only workflow steps are held. Bind it on the planes that hold: wcp for workflow steps, and on Enterprise mcp:request for a tool call and decide.", false},
+	{CodeBindsOnMapNoHold, SeverityWarn, "This approval requirement binds on the multi-agent plane (map), which cannot hold an approval: a step it challenges is withheld as approval_requires_durable_record and never runs. No plane holds a multi-agent step's approval: confirm and step mode hold steps by their mode, asking no policy, and refuse a challenged step approval_required. Bind the requirement on the planes that hold (wcp for workflow steps, and on Enterprise mcp:request for a tool call and decide); if a person must gate multi-agent steps, run the plan in confirm or step mode.", false},
+	{CodeDetectorControlUnboundOnPlanes, SeverityWarn, "This control reads a registry detector, and some of the planes it binds on do not run any registry detector. The finding names them, derived from the detector census; it does not bind on those planes.", false},
+	{CodeDetectorControlBindsNowhere, SeverityReject, "This control reads a registry detector, and binds_on names only planes that do not run any registry detector, so it would bind nowhere. Name a plane that runs registry detectors, such as proxy_request, or omit binds_on.", false},
 }
 
 // retiredCheck records a source-specification check that ADR-065 does not
@@ -294,6 +387,13 @@ var retiredChecks = []retiredCheck{
 		Code: "SEGMENT_SCOPE_WITHOUT_GRAPH",
 		Reason: "Re-expressed as " + CodeGroupScopeWithoutGraph + ". ADR-065 replaces segments with canonical realm-qualified " +
 			"groups, and keeps the source disposition of warning rather than rejection.",
+	},
+	{
+		Code: "BINDS_ON_WCP_ROUTE_SEAM",
+		Reason: "Re-expressed as " + CodeBindsOnOrchestratorRequestNoHold + ". It warned that an approval requirement " +
+			"scoped to wcp also bound /api/v1/process and /api/v1/plan/execute, which decided under wcp's scope and cannot " +
+			"hold. The routes decide under their own orchestrator_request plane since #4249 row 5706695827, so wcp is the " +
+			"step gate alone, and the warning moved to the plane that cannot hold - including an absent binds_on.",
 	},
 	{
 		Code:   "DEAD_GRANT",

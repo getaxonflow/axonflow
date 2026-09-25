@@ -168,7 +168,7 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		}
 	}
 	if cfg.ApprovalTTL <= 0 {
-		cfg.ApprovalTTL = 15 * time.Minute
+		cfg.ApprovalTTL = DefaultApprovalTTL
 	}
 	// The combiner's metadata comes from the DOCUMENTS: which policies may be
 	// pierced by break-glass, which obligations they attach, which are
@@ -250,6 +250,18 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		}
 	}
 	return e, nil
+}
+
+// DefaultApprovalTTL is the challenge lifetime an engine stamps when its
+// EngineConfig.ApprovalTTL is unset: the one default, which the deployment's
+// window (anchoredenforcer.DefaultApprovalTTL) re-exports rather than restates.
+const DefaultApprovalTTL = 15 * time.Minute
+
+// ApprovalTTL is the challenge lifetime this engine stamps on a composed
+// approval that no policy gave its own expiry: the configured
+// EngineConfig.ApprovalTTL, or its 15-minute default.
+func (e *Engine) ApprovalTTL() time.Duration {
+	return e.approvalTTL
 }
 
 // Decide evaluates one normalized request.

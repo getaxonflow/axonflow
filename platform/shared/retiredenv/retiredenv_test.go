@@ -109,7 +109,8 @@ func TestEveryRetiredFinCrimeScorerVariableRefusesBootByName(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s=100 booted; a set retired variable must refuse, not be ignored", name)
 			}
-			for _, want := range []string{name + `="100"`, PRD, "§1.2", "FinCrime Engine B scorer"} {
+			want := append([]string{name + `="100"`, PRD, "§1.2", "FinCrime Engine B scorer"}, FinCrimeRiskFactReplacements...)
+			for _, want := range want {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("the refusal does not name %q: %v", want, err)
 				}
@@ -118,6 +119,43 @@ func TestEveryRetiredFinCrimeScorerVariableRefusesBootByName(t *testing.T) {
 				if strings.Contains(err.Error(), other) {
 					t.Fatalf("a FinCrime scorer variable was refused with another family's reason (%q): %v", other, err)
 				}
+			}
+		})
+	}
+}
+
+// TestTheV10FinCrimeScorerNamesStayRetired pins the retired set BY VALUE
+// (#3330): the Engine B score came back in v11.1.0 as a fact under new names,
+// and un-retiring a v10 name - which carried "the scorer's threshold decides" -
+// by deleting it here would boot a v10 environment into a meaning its
+// configuration misdescribes. Removing one fails this test on purpose.
+func TestTheV10FinCrimeScorerNamesStayRetired(t *testing.T) {
+	want := []string{"AXONFLOW_FINCRIME_SCORER_URL", "AXONFLOW_FINCRIME_SCORER_TIMEOUT_MS"}
+	if strings.Join(FinCrimeScorer, ",") != strings.Join(want, ",") {
+		t.Fatalf("the retired v10 FinCrime scorer set is %v; want exactly %v", FinCrimeScorer, want)
+	}
+}
+
+// TestTheFinCrimeRiskFactNamesAreNotRetired holds the replacement names out of
+// every retired family, so a process configuring the v11.1.0 fact boots, and
+// the refusal of a v10 name points at a name that is accepted.
+func TestTheFinCrimeRiskFactNamesAreNotRetired(t *testing.T) {
+	if len(FinCrimeRiskFactReplacements) != len(FinCrimeScorer) {
+		t.Fatalf("%d replacements for %d retired names; each v10 name has one", len(FinCrimeRiskFactReplacements), len(FinCrimeScorer))
+	}
+	retired := map[string]bool{}
+	for _, name := range retiredNames() {
+		retired[name] = true
+	}
+	for _, name := range FinCrimeRiskFactReplacements {
+		if retired[name] {
+			t.Fatalf("%s is in a retired family", name)
+		}
+		t.Run(name, func(t *testing.T) {
+			clearAll(t)
+			t.Setenv(name, "100")
+			if err := Refuse(); err != nil {
+				t.Fatalf("%s=100 refused boot: %v", name, err)
 			}
 		})
 	}

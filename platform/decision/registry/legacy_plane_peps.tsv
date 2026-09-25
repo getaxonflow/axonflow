@@ -11,11 +11,13 @@ openai_compatible	community	immutable_audit@1	platform/agent/audit_coverage_test
 openai_compatible	enterprise	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
 orchestrator_response	community	field_redact@1,immutable_audit@1	platform/orchestrator/response_processor.go::ResponseProcessor
 orchestrator_response	enterprise	field_redact@1,immutable_audit@1	platform/orchestrator/response_processor.go::ResponseProcessor
-cowork_ingest	enterprise	field_redact@1,immutable_audit@1	platform/agent/cowork_otel_ingest.go::coworkOTELIngestHandler
+orchestrator_request	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
+orchestrator_request	enterprise	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
+cowork_ingest	enterprise	field_redact@1,immutable_audit@1	platform/agent/cowork_ingest_enforcing_seam.go::decideCoworkContent
 wcp	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
 wcp	enterprise	approval_challenge@1,immutable_audit@1	platform/agent/hitl/queue/writer.go::RequestTypeWCPStepGate
 map	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
-map	enterprise	approval_challenge@1,immutable_audit@1	platform/orchestrator/map_hitl_adapter.go::MAPHITLApprovalAdapter.CreateApproval
+map	enterprise	approval_challenge@1,immutable_audit@1	platform/orchestrator/map_step_gate.go::mapStepGate.decide
 policy_simulation	community	-	platform/orchestrator/policy_simulation_handler.go::PolicySimulationHandler.SimulatePolicies
 policy_simulation	enterprise	-	platform/orchestrator/policy_simulation_handler.go::PolicySimulationHandler.SimulatePolicies
 policy_test	community	-	platform/orchestrator/run.go::testPolicyHandler

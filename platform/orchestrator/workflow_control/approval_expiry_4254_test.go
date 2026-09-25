@@ -6,6 +6,7 @@ package workflow_control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,5 +174,22 @@ func TestTheApproveRouteNamesAnExpiredOrUnreadableApproval(t *testing.T) {
 				t.Errorf("status = %d, body = %s; want %d naming %s", rr.Code, rr.Body.String(), c.status, c.code)
 			}
 		})
+	}
+}
+
+// #4249 row 5700138809: an unqueued re-hold is refused by identity, not by the
+// wording of its message. The error here wraps ErrApprovalHoldDecided in text
+// that names none of the substrings the route also matches.
+func TestTheApproveRouteAnswersAnUnqueuedReholdNotPendingWhateverItsWording(t *testing.T) {
+	err := fmt.Errorf("reworded refusal: %w", ErrApprovalHoldDecided)
+	for _, text := range []string{"not pending", "not found", "does not require"} {
+		if strings.Contains(err.Error(), text) {
+			t.Fatalf("the reworded error %q contains %q, so it does not isolate the identity match", err, text)
+		}
+	}
+	rr := httptest.NewRecorder()
+	NewHandler(NewService(NewMockRepository(), &MockApprovalPolicyEvaluator{}, nil)).writeApproveStepError(rr, "wf-1", "step-1", err)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "NOT_PENDING") {
+		t.Errorf("status = %d, body = %s; want 409 NOT_PENDING", rr.Code, rr.Body.String())
 	}
 }

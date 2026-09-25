@@ -41,11 +41,21 @@ const (
 	// override map coercing every enabled PII category to redact, so a
 	// warn/log/block deployment still masks before store.
 	PlaneCoworkIngest Plane = "cowork_ingest"
-	// PlaneWCP is the workflow control plane: the step gate, the plan executor
-	// and the orchestrator's own request handler. Since #4254 each decides on the
-	// anchored engine and reads the dynamic rows as facts, through the dynamic
-	// fact producer.
+	// PlaneWCP is the workflow control plane's step gate: each step of a
+	// workflow, decided on the anchored engine over the dynamic rows as facts,
+	// through the dynamic fact producer (#4254). Until #4249 row 5706695827 it
+	// also carried the orchestrator's two request routes, which now decide
+	// under PlaneOrchestratorRequest.
 	PlaneWCP Plane = "wcp"
+	// PlaneOrchestratorRequest is the orchestrator's request plane: the two
+	// request routes, /api/v1/process (llm.completion) and /api/v1/plan/execute
+	// (agent.invoke), decided before any LLM call (route_request_enforcing_seam.go).
+	// It reads the DYNAMIC substrate only, as facts through the dynamic fact
+	// producer, exactly as the step gate does; the registry's static detectors
+	// run on the agent's planes, which proxied traffic has already passed. It
+	// is the request-side sibling of PlaneOrchestratorResponse (#4249 rows
+	// 5674229988, 5706695827).
+	PlaneOrchestratorRequest Plane = "orchestrator_request"
 	// PlaneMAP is the multi-agent plane, reached through map_hitl_adapter. It
 	// reads the DYNAMIC substrate only, as facts through the dynamic fact producer,
 	// and decides on the anchored engine (#4254).
@@ -252,6 +262,9 @@ var planeSpecs = map[Plane]PlaneSpec{
 	PlaneWCP: {
 		Plane: PlaneWCP, Substrates: []Substrate{SubstrateDynamic},
 	},
+	PlaneOrchestratorRequest: {
+		Plane: PlaneOrchestratorRequest, Substrates: []Substrate{SubstrateDynamic},
+	},
 	PlaneMAP: {
 		Plane: PlaneMAP, Substrates: []Substrate{SubstrateDynamic},
 	},
@@ -309,34 +322,18 @@ var UnimplementedPlanes = map[Plane]string{
 // TestGatedPlanesMatchTheCallSiteCensus, so a plane cannot be listed here
 // without every one of its rows saying default_posture=gated, and a plane whose
 // rows all say gated cannot be left out.
-var PlanesGatedUnderDefaultPosture = map[Plane]string{
-	PlaneMAP: "map's only call site is MAPHITLPolicyChecker.CheckPolicy, which reaches the dynamic rows through " +
-		"mapStepPolicyCheck and its decision mapStepDecide (the census row since #4254), and MAPHITLPolicyChecker is " +
-		"constructed in exactly one place - the orchestrator's HITL block. TWO conditions gate it and " +
-		"both must hold: AXONFLOW_HITL_ENABLED=\"true\", and the DEPLOYMENT POSTURE is not community " +
-		"(isCommunityMode, which reads deploymode.CurrentIsCommunityPosture - a DEPLOYMENT_MODE env " +
-		"read, NOT a build tag; the edition column means the build and these are different axes). " +
-		"Clearing only the first still leaves the site unreachable, which is why naming one gate would " +
-		"be a claim a reader could check and still be wrong about. " +
-		"The variable is absent from every deploy surface in this repository, defaults to false in " +
-		"docker-compose.yml, and was absent from the running task definitions of BOTH fleet stacks when " +
-		"this was measured (2026-09-08). The live orchestrator says so itself at boot: " +
-		"\"HITL mode disabled (set AXONFLOW_HITL_ENABLED=true to enable)\". So hitlWorkflowEngine is nil, " +
-		"both ExecuteWithHITL call sites are guarded on it being non-nil, so the plane has no reachable " +
-		"observation site on either stack. The claim is the MECHANISM, deliberately: a Prometheus " +
-		"counter is per-process and bounded by retention, so \"the counter has never left zero\" - which " +
-		"an earlier revision of this entry asserted - is not something any instrument here can support. " +
-		"REVISIT WHEN a SHIPPED deploy surface turns AXONFLOW_HITL_ENABLED on - a CloudFormation " +
-		"template under infrastructure/ or ee/ that sets it to \"true\", or docker-compose.yml's default " +
-		"for it, which is \"false\" today - or when MAPHITLPolicyChecker gains a construction site outside " +
-		"the orchestrator's HITL block. Either one makes the site reachable on some deployment, and this " +
-		"entry is then stale. The condition was an observation counter until v11 retired the decision " +
-		"shadow that emitted it; the agent's enforce counter cannot stand in for it, because map is an " +
-		"orchestrator plane. The runtime-e2e harnesses are deliberately excluded: three of them set the " +
-		"variable to true and DO construct the checker (runtime-e2e/3297_map_segment_policy, " +
-		"3135_map_hitl_approver_identity, cross-system-hitl), and a retirement condition that is already " +
-		"met on the day it is written retires nothing.",
-}
+//
+// # EMPTY SINCE #4382
+//
+// The map plane was the one entry: MAPHITLPolicyChecker was constructed only
+// under AXONFLOW_HITL_ENABLED="true" off the community posture, and no shipped
+// deploy surface set the variable, so its site had no reachable observation on
+// either fleet stack (2026-09-08). Its REVISIT WHEN named the checker gaining a
+// construction site outside the orchestrator's HITL block. #4382 met it from
+// the other side: the checker is wired at boot onto the declarative engine on
+// every deployment and posture (wireMultiAgentEngines), the variable gates
+// nothing, and the census row reads reachable.
+var PlanesGatedUnderDefaultPosture = map[Plane]string{}
 
 // ComponentAgent and ComponentOrchestrator are the two binaries that hold
 // legacy policy call sites. They are the same strings Bootstrap is called with,
@@ -373,6 +370,7 @@ var planeComponents = map[Plane][]string{
 	PlaneProxyRequest:         {ComponentAgent},
 	PlaneMAP:                  {ComponentOrchestrator},
 	PlaneWCP:                  {ComponentOrchestrator},
+	PlaneOrchestratorRequest:  {ComponentOrchestrator},
 	PlanePolicySimulation:     {ComponentOrchestrator},
 	PlaneOrchestratorResponse: {ComponentOrchestrator},
 	PlanePolicyTest:           {ComponentOrchestrator},
@@ -424,14 +422,16 @@ func ComponentsForPlane(p Plane) []string {
 // directions, so a plane cannot become enterprise-only without a declaration
 // and a declaration cannot outlive the tag.
 var PlanesGatedByEdition = map[Plane]string{
-	PlaneCoworkIngest: "cowork_ingest's only call site is coworkRedactDefault in " +
-		"platform/agent/cowork_otel_ingest.go, whose first line is //go:build enterprise. The " +
+	PlaneCoworkIngest: "cowork_ingest's only call site is decideCoworkContent in " +
+		"platform/agent/cowork_ingest_enforcing_seam.go, whose first line is //go:build enterprise " +
+		"(#4259; its caller coworkRedactDefault is in cowork_otel_ingest.go, also enterprise-only). The " +
 		"community twin (cowork_otel_ingest_community.go, //go:build !enterprise) mounts a 501 stub " +
 		"and evaluates no policy, so on a community binary the function does not exist and the plane " +
 		"has no observation site at all - while planeSpecs, which is not build-tagged, still models " +
-		"it. " +
-		"REVISIT WHEN platform/agent/cowork_otel_ingest.go loses its //go:build enterprise " +
-		"constraint, or when coworkRedactDefault gains a caller in a file without it. Either one " +
+		"it. An enterprise binary in a core-only deployment mode mounts the same stub, because its " +
+		"plane edition registers no cowork_ingest plane. " +
+		"REVISIT WHEN platform/agent/cowork_ingest_enforcing_seam.go loses its //go:build enterprise " +
+		"constraint, or when decideCoworkContent gains a caller in a file without it. Either one " +
 		"means the plane is reachable outside the enterprise edition and this entry is stale. The " +
 		"condition also named an observation counter until v11 retired the decision shadow that " +
 		"emitted it; the code condition is the whole of it now.",

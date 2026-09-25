@@ -451,9 +451,11 @@ func handleAuthZENEvaluation(w http.ResponseWriter, r *http.Request) {
 		//
 		// APPROVAL IS PASSED AS nil, DELIBERATELY, AND THE ADVERTISEMENTS NOW
 		// SAY SO (#3631). This route is an adapter over POST /api/v1/decide, and
-		// DecideResponse carries no approval requirement: a needs_approval
-		// verdict raises a HITL queue entry, but nothing in the response names
-		// the eligible groups, the quorum or the challenge expiry that
+		// DecideResponse carries no approval requirement. A challenge is NOT
+		// held on this plane (handleDecide skips the approval hold for
+		// PlaneAccessEvaluation, #4375): this wire cannot carry the approval id
+		// back, so it answers approval_required and queues nothing. Nor does
+		// anything in the response name the eligible groups, the quorum or the challenge expiry that
 		// contract.ApprovalRequirement.Validate requires. Populating it would
 		// mean INVENTING an approval policy - a fabricated quorum over a
 		// fabricated eligible set - which is worse than the omission, because a

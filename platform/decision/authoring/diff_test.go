@@ -6,6 +6,7 @@ package authoring
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"axonflow/platform/decision/contract"
@@ -239,7 +240,9 @@ func TestDiffAgainstNothingIsAllAdditions(t *testing.T) {
 // reach fails here rather than in production.
 func TestDiffCoversEveryPolicyField(t *testing.T) {
 	typ := reflect.TypeOf(pdp.Policy{})
-	cat := baseCatalog(t)
+	// catalogWithPlanes, a superset of baseCatalog, so a binds_on edit is a
+	// valid document (#4371).
+	cat := catalogWithPlanes(t)
 	base := documentWith(t, cat, nil)
 
 	// Field-by-field mutators. The map is keyed by the Go field name, and the
@@ -260,6 +263,7 @@ func TestDiffCoversEveryPolicyField(t *testing.T) {
 		"PierceableBy":  func(p *pdp.Policy) { p.PierceableBy = []contract.ID{gid(t, groupIncident)} },
 		"Name":          func(p *pdp.Policy) { p.Name = "renamed for people" },
 		"Description":   func(p *pdp.Policy) { p.Description = "changed" },
+		"BindsOn":       func(p *pdp.Policy) { p.BindsOn = &[]string{"wcp"} },
 	}
 	if len(mutators) != typ.NumField() {
 		var names []string
@@ -383,5 +387,45 @@ func TestAPIDiffComparesAgainstWhatIsActive(t *testing.T) {
 	}
 	if diff.FromDigest == "" || diff.FromVersion != 1 || diff.ToVersion != 2 {
 		t.Fatalf("the diff does not identify both sides: %+v", diff)
+	}
+}
+
+// TestDiffClassifiesABindsOnEditByAuthority (#4371): a binds_on edit adds or
+// removes the whole policy on the planes it moves, so its direction is the
+// authority's. A constraint confined to fewer planes restricts fewer requests
+// (widening, the edit a reviewer must see); a permission confined to fewer
+// planes grants fewer (narrowing); growing either reverses it. A swap drops
+// some planes: for a constraint that is a widening named by the dropped planes,
+// and for a permission it is not stated.
+func TestDiffClassifiesABindsOnEditByAuthority(t *testing.T) {
+	cat := catalogWithPlanes(t)
+	for _, tc := range []struct {
+		name          string
+		id            string
+		before, after *[]string
+		effect        Effect
+	}{
+		{"a permission confined to one plane", "perm.refund", nil, &[]string{"wcp"}, EffectNarrowing},
+		{"a constraint confined to one plane", "con.big", nil, &[]string{"wcp"}, EffectWidening},
+		{"a constraint's confinement removed", "con.big", &[]string{"wcp"}, nil, EffectNarrowing},
+		{"a permission's confinement grown", "perm.refund", &[]string{"wcp"}, &[]string{"decide", "wcp"}, EffectWidening},
+		{"a constraint moved to another plane", "con.big", &[]string{"wcp"}, &[]string{"decide"}, EffectWidening},
+		{"a permission moved to another plane", "perm.refund", &[]string{"wcp"}, &[]string{"decide"}, EffectUndetermined},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from := documentWith(t, cat, func(_ *Metadata, d *pdp.Document) { policyByIDIn(d, tc.id).BindsOn = tc.before })
+			to := documentWith(t, cat, func(_ *Metadata, d *pdp.Document) { policyByIDIn(d, tc.id).BindsOn = tc.after })
+			diff, err := DiffDocuments(from, to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(diff.Policies) != 1 || diff.Policies[0].Effect != tc.effect {
+				t.Fatalf("got %+v; want one change classified %s", diff.Policies, tc.effect)
+			}
+			// A swap that widens says which planes it dropped.
+			if tc.name == "a constraint moved to another plane" && !strings.Contains(diff.Policies[0].Rationale, "no longer binds on [wcp]") {
+				t.Fatalf("the swap's rationale %q does not name the dropped plane wcp", diff.Policies[0].Rationale)
+			}
+		})
 	}
 }

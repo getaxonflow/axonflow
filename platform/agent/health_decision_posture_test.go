@@ -24,9 +24,9 @@ import (
 // wiredSeamScopes are the scopes whose seams this binary holds, stated here as
 // the test's own expectation rather than read back from enforcingSeams, so a
 // seam dropped from that list reds here naming the plane it dropped.
-var wiredSeamScopes = []legacycompile.EnforcementScope{
+var wiredSeamScopes = append([]legacycompile.EnforcementScope{
 	decideSeamScope, gatewayRequestSeamScope, mcpRequestSeamScope, mcpResponseSeamScope, proxyRequestSeamScope, openaiCompatibleSeamScope,
-}
+}, wiredEditionSeamScopes...)
 
 func healthBody(t *testing.T) map[string]json.RawMessage {
 	t.Helper()

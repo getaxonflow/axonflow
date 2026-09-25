@@ -26,7 +26,7 @@
 # Usage:
 #   chmod +x media-governance-policies.sh
 #   ./media-governance-policies.sh
-# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v12.0.0.
 
 
 set -e

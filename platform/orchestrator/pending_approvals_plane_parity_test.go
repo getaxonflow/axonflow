@@ -48,13 +48,11 @@ func setupPlaneParityPendingEnv(t *testing.T, name string) *planeParityPendingTe
 
 	origWCP := workflowControlService
 	origHitl := hitlEnabled
-	origEngine := hitlWorkflowEngine
 
 	repo := workflow_control.NewMockRepository()
 	svc := workflow_control.NewService(repo, &wcpParityPolicyEvaluator{}, nil)
 	workflowControlService = svc
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	tenantID := "tenant-" + name
 
@@ -106,7 +104,6 @@ func setupPlaneParityPendingEnv(t *testing.T, name string) *planeParityPendingTe
 		cleanup: func() {
 			workflowControlService = origWCP
 			hitlEnabled = origHitl
-			hitlWorkflowEngine = origEngine
 			if origDeployment != "" {
 				os.Setenv("DEPLOYMENT_MODE", origDeployment)
 			} else {
@@ -220,12 +217,10 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 	origChecker := tierChecker
 	origWCP := workflowControlService
 	origHitl := hitlEnabled
-	origEngine := hitlWorkflowEngine
 	defer func() {
 		tierChecker = origChecker
 		workflowControlService = origWCP
 		hitlEnabled = origHitl
-		hitlWorkflowEngine = origEngine
 		if origDeployment != "" {
 			os.Setenv("DEPLOYMENT_MODE", origDeployment)
 		} else {
@@ -237,7 +232,6 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 	svc := workflow_control.NewService(repo, &wcpParityPolicyEvaluator{}, nil)
 	workflowControlService = svc
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	tests := []struct {
 		name         string
@@ -321,11 +315,9 @@ func TestMAPPendingApprovals_MissingTenant(t *testing.T) {
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	origWCP := workflowControlService
 	origHitl := hitlEnabled
-	origEngine := hitlWorkflowEngine
 	defer func() {
 		workflowControlService = origWCP
 		hitlEnabled = origHitl
-		hitlWorkflowEngine = origEngine
 		if origDeployment != "" {
 			os.Setenv("DEPLOYMENT_MODE", origDeployment)
 		} else {
@@ -337,7 +329,6 @@ func TestMAPPendingApprovals_MissingTenant(t *testing.T) {
 	repo := workflow_control.NewMockRepository()
 	workflowControlService = workflow_control.NewService(repo, &wcpParityPolicyEvaluator{}, nil)
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	rr := httptest.NewRecorder()
@@ -436,11 +427,9 @@ func TestMAPPendingApprovals_EmptyListSerialisedAsArray(t *testing.T) {
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	origWCP := workflowControlService
 	origHitl := hitlEnabled
-	origEngine := hitlWorkflowEngine
 	defer func() {
 		workflowControlService = origWCP
 		hitlEnabled = origHitl
-		hitlWorkflowEngine = origEngine
 		if origDeployment != "" {
 			os.Setenv("DEPLOYMENT_MODE", origDeployment)
 		} else {
@@ -452,7 +441,6 @@ func TestMAPPendingApprovals_EmptyListSerialisedAsArray(t *testing.T) {
 	repo := workflow_control.NewMockRepository()
 	workflowControlService = workflow_control.NewService(repo, &wcpParityPolicyEvaluator{}, nil)
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans/approvals/pending", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-empty")

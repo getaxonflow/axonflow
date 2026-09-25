@@ -8,9 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,6 +87,7 @@ var classifiedPlanes = []legacycompile.Plane{
 	legacycompile.PlaneMAP,
 	legacycompile.PlaneMCP,
 	legacycompile.PlaneOpenAICompatible,
+	legacycompile.PlaneOrchestratorRequest,
 	legacycompile.PlaneOrchestratorResponse,
 	legacycompile.PlanePolicySimulation,
 	legacycompile.PlanePolicyTest,
@@ -123,6 +127,10 @@ type postureScope struct {
 	// configuration (legacycompile.PlanesGatedByEdition and
 	// PlanesGatedUnderDefaultPosture).
 	GatedBy string `json:"gated_by,omitempty"`
+	// Engine names what authors the scope's outcome: anchored or legacy
+	// (scopeEngine). It is never empty: a scope the derivation cannot
+	// classify fails the derivation instead.
+	Engine string `json:"engine"`
 }
 
 type postureEntry struct {
@@ -262,6 +270,16 @@ func TestNoPostureReasonClaimsWhatALegacyEngineDid(t *testing.T) {
 }
 
 func derivePosture() (*postureArtifact, error) {
+	src, err := loadEngineSources()
+	if err != nil {
+		return nil, err
+	}
+	return derivePostureWith(src)
+}
+
+// derivePostureWith is derivePosture over the given engine sources, so a cell
+// can plant a source and read the value the DERIVED artifact publishes.
+func derivePostureWith(src engineSources) (*postureArtifact, error) {
 	system, err := pdp.SystemCorpusDocument()
 	if err != nil {
 		return nil, err
@@ -337,7 +355,11 @@ func derivePosture() (*postureArtifact, error) {
 			templateKept[p.ID] = append(templateKept[p.ID], s.String())
 		}
 		kind, gatedBy := scopeKind(s.Plane)
-		a.Scopes = append(a.Scopes, postureScope{Scope: s.String(), Kind: kind, GatedBy: gatedBy})
+		engine, err := scopeEngine(s, src)
+		if err != nil {
+			return nil, err
+		}
+		a.Scopes = append(a.Scopes, postureScope{Scope: s.String(), Kind: kind, GatedBy: gatedBy, Engine: engine})
 	}
 
 	censusByID := map[string]registry.CensusRow{}
@@ -551,6 +573,416 @@ func scopeKind(p legacycompile.Plane) (kind, gatedBy string) {
 		return "operator-tool", ""
 	}
 	return "enforcement", ""
+}
+
+// WHICH ENGINE AUTHORS A SCOPE'S OUTCOME (#4249 row 5675441698).
+//
+// A scope is ANCHORED only when two sources agree: it is in
+// legacycompile.EnforcingScopes, and a decide call for it is OBSERVED in the
+// agent or orchestrator source - an anchored evaluation whose scope is the
+// variable that seam declares with legacycompile.MustScopeFor (see
+// observedDecideSites). The set alone is not enough: the tests that hold it to
+// the seams check each registered seam against the set, and the converse
+// (legacycompile's TestScopeActionsKeysAreTheSeamsOfBothBinaries) pins that a
+// scope VARIABLE is declared, not that anything decides on it.
+//
+// A scope is LEGACY when it is an operator tool, is in neither source, and
+// every row the call-site census (legacy_call_sites.tsv) records for its plane
+// calls the legacy dynamic evaluator (EvaluateDynamicPolicies).
+//
+// The census's evaluator column is not the anchored source: on the anchored
+// planes the shared engine's EvaluateRequest or EvaluateResponse still runs as
+// the observation whose facts the anchored engine reads
+// (cowork_ingest_enforcing_seam.go says so).
+//
+// Everything else is refused rather than published: the two anchored sources
+// disagreeing, an enforcing scope whose every census row is the legacy
+// evaluator, a scope in neither source that is not an operator tool, and an
+// operator tool with no census row or with a site naming another evaluator.
+const (
+	engineAnchored = "anchored"
+	engineLegacy   = "legacy"
+	// legacyDynamicEvaluator is the census's evaluator value for the legacy
+	// dynamic policy engine's evaluation.
+	legacyDynamicEvaluator = "EvaluateDynamicPolicies"
+)
+
+// engineSources are the inputs scopeEngine reads.
+type engineSources struct {
+	// enforcing is legacycompile.EnforcingScopes.
+	enforcing map[string]bool
+	// observed is the scopes with an observed decide call (observedDecideSites).
+	observed map[string][]string
+	// siteEvaluators is the census's evaluators per plane.
+	siteEvaluators map[legacycompile.Plane][]string
+	// onMirror is true on a community-mirror checkout (no ee/ at the
+	// repository root). The sync deletes every enterprise-tagged file there,
+	// so a scope whose plane legacycompile.PlanesGatedByEdition declares
+	// Enterprise-only has no decide site to observe on that tree - the
+	// declaration's own text says the community binary models such a plane
+	// with no code for it. Only those scopes are excused, only there: any
+	// other enforcing scope with no observed site is still refused on a
+	// mirror, and on the enterprise tree every enforcing scope needs one.
+	onMirror bool
+}
+
+// postureOnMirror reports whether this checkout is a community mirror.
+func postureOnMirror() bool {
+	_, err := os.Stat(filepath.Join("..", "..", "..", "ee"))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// strippedOnMirror reports whether scope s is excused a missing decide site:
+// on a mirror, and only for a plane declared Enterprise-only.
+func (src engineSources) strippedOnMirror(s legacycompile.EnforcementScope) bool {
+	_, gated := legacycompile.PlanesGatedByEdition[s.Plane]
+	return src.onMirror && gated
+}
+
+// seamSourceDirs are the binaries whose seams decide, relative to this package.
+var seamSourceDirs = []string{filepath.Join("..", "..", "agent"), filepath.Join("..", "..", "orchestrator")}
+
+// legacyPlaneGoPath is where the Plane and Phase constants are declared.
+var legacyPlaneGoPath = filepath.Join("..", "legacycompile", "plane.go")
+
+func loadEngineSources() (engineSources, error) {
+	callSites, err := os.ReadFile(legacyCallSitesPath)
+	if err != nil {
+		return engineSources{}, err
+	}
+	sites, err := callSiteEvaluators(callSites)
+	if err != nil {
+		return engineSources{}, err
+	}
+	planeGo, err := os.ReadFile(legacyPlaneGoPath)
+	if err != nil {
+		return engineSources{}, err
+	}
+	observed, err := observedDecideSites(seamSourceDirs, planeGo)
+	if err != nil {
+		return engineSources{}, err
+	}
+	enforcing := map[string]bool{}
+	for _, s := range legacycompile.EnforcingScopes() {
+		enforcing[s] = true
+	}
+	return engineSources{enforcing: enforcing, observed: observed, siteEvaluators: sites, onMirror: postureOnMirror()}, nil
+}
+
+func scopeEngine(s legacycompile.EnforcementScope, src engineSources) (string, error) {
+	name := s.String()
+	inSet, sites := src.enforcing[name], src.observed[name]
+	evaluators := src.siteEvaluators[s.Plane]
+	allLegacy := len(evaluators) > 0
+	for _, e := range evaluators {
+		if e != legacyDynamicEvaluator {
+			allLegacy = false
+		}
+	}
+	switch {
+	case inSet && len(sites) == 0 && src.strippedOnMirror(s):
+		// A mirror checkout, and a plane declared Enterprise-only: its decide
+		// site is in an enterprise-tagged file the sync deleted. The artifact
+		// is derived on the enterprise tree, where the site is observed.
+		return engineAnchored, nil
+	case inSet && len(sites) == 0:
+		return "", fmt.Errorf("scope %q is in legacycompile.EnforcingScopes but no anchored decide call for it is observed in %v, "+
+			"so the table will not publish it anchored on a declaration alone", s, seamSourceDirs)
+	case !inSet && len(sites) > 0:
+		return "", fmt.Errorf("scope %q has anchored decide calls (%v) but is not in legacycompile.EnforcingScopes; the two "+
+			"anchored sources disagree", s, sites)
+	case inSet && allLegacy:
+		return "", fmt.Errorf("scope %q is enforcing, yet every census row for plane %q calls %s; the sources contradict each other", s, s.Plane, legacyDynamicEvaluator)
+	case inSet:
+		return engineAnchored, nil
+	}
+	if !operatorToolPlanes[s.Plane] {
+		return "", fmt.Errorf("scope %q: no enforcing seam decides on it and it is not an operator tool, "+
+			"so the shipped-posture table cannot say which engine authors its outcome and refuses to publish it blank", s)
+	}
+	if len(evaluators) == 0 {
+		return "", fmt.Errorf("scope %q: the operator tool has no row in %s, so the table cannot say which engine answers it", s, legacyCallSitesPath)
+	}
+	if !allLegacy {
+		return "", fmt.Errorf("scope %q: its call sites name evaluators %v; an operator tool is classified only when every site "+
+			"runs the legacy dynamic evaluator (%s)", s, evaluators, legacyDynamicEvaluator)
+	}
+	return engineLegacy, nil
+}
+
+var (
+	scopeVarDeclRe  = regexp.MustCompile(`var\s+(\w+)\s*=\s*legacycompile\.MustScopeFor\(\s*legacycompile\.(\w+)\s*,\s*(?:legacycompile\.(\w+)|"")\s*\)`)
+	planeConstRe    = regexp.MustCompile(`\b((?:Plane|Phase)\w+)\s+(?:Plane|Phase)\s*=\s*"(\w+)"`)
+	lineCommentRe   = regexp.MustCompile(`(?m)//.*$`)
+	blockCommentRe  = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	requestPassRe   = regexp.MustCompile(`\benforceRequestPass\(\s*[^,()]+(?:\([^()]*\))?\s*,\s*(\w+)\s*,`)
+	anchoredCallRe  = regexp.MustCompile(`\bevaluate\(\s*\w+\s*,\s*anchoredCall\{[^}]*?\bscope:\s*(\w+)`)
+	enforcerCallRe  = regexp.MustCompile(`\.Evaluate\(\s*\w+\s*,\s*anchoredenforcer\.Call\{[^}]*?\bScope:\s*(\w+)`)
+	requestPassBody = regexp.MustCompile(`(?s)\nfunc enforceRequestPass\(ctx context\.Context, scope legacycompile\.EnforcementScope,.*?\n}`)
+	passDelegates   = regexp.MustCompile(`\.decideRequestPass\(ctx, scope,`)
+	decideBody      = regexp.MustCompile(`(?s)\nfunc \(e \*anchoredEnforcer\) decideRequestPass\(ctx context\.Context, scope legacycompile\.EnforcementScope,.*?\n}`)
+	passEvaluates   = regexp.MustCompile(`(?s)anchoredCall\{[^}]*?\bscope:\s*scope\b.*?\.evaluate\(ctx, call\)`)
+)
+
+// observedDecideSites finds, in the Go sources under dirs (tests excluded,
+// line and block comments stripped), every scope variable declared with
+// legacycompile.MustScopeFor and every anchored decide call naming one, and
+// returns each scope that has a call with the file:line of each. A call through
+// enforceRequestPass counts only when that function is observed to hand its
+// scope to decideRequestPass and decideRequestPass to put it in the anchoredCall
+// it evaluates. Observed means the call's TEXT is present in code, never that it
+// is reached: a string literal or dead code carrying the call text is observed,
+// which is why anchored also needs the scope in EnforcingScopes.
+func observedDecideSites(dirs []string, planeGo []byte) (map[string][]string, error) {
+	idents := map[string]string{}
+	for _, m := range planeConstRe.FindAllStringSubmatch(string(planeGo), -1) {
+		idents[m[1]] = m[2]
+	}
+	if len(idents) == 0 {
+		return nil, fmt.Errorf("%s: no Plane or Phase constant read", legacyPlaneGoPath)
+	}
+	type file struct{ path, code string }
+	var files []file
+	for _, dir := range dirs {
+		matches, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range matches {
+			if strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return nil, err
+			}
+			// Block comments go first, keeping their newlines so a reported
+			// line is still the file's; then line comments.
+			code := blockCommentRe.ReplaceAllStringFunc(string(b), func(c string) string { return strings.Repeat("\n", strings.Count(c, "\n")) })
+			files = append(files, file{p, lineCommentRe.ReplaceAllString(code, "")})
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no Go source read under %v", dirs)
+	}
+	scopeOf := map[string]string{}
+	delegates, evaluates := false, false
+	for _, f := range files {
+		for _, m := range scopeVarDeclRe.FindAllStringSubmatch(f.code, -1) {
+			plane, ok := idents[m[2]]
+			if !ok {
+				return nil, fmt.Errorf("%s: %s names plane constant %s, which %s does not declare", f.path, m[1], m[2], legacyPlaneGoPath)
+			}
+			phase := ""
+			if m[3] != "" {
+				ph, ok := idents[m[3]]
+				if !ok {
+					return nil, fmt.Errorf("%s: %s names phase constant %s, which %s does not declare", f.path, m[1], m[3], legacyPlaneGoPath)
+				}
+				phase = ph
+			}
+			// The canonical form, as the seam's own MustScopeFor builds it.
+			scope, err := legacycompile.ScopeFor(legacycompile.Plane(plane), legacycompile.Phase(phase))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %s: %w", f.path, m[1], err)
+			}
+			scopeOf[m[1]] = scope.String()
+		}
+		if body := requestPassBody.FindString(f.code); body != "" && passDelegates.MatchString(body) {
+			delegates = true
+		}
+		if body := decideBody.FindString(f.code); body != "" && passEvaluates.MatchString(body) {
+			evaluates = true
+		}
+	}
+	passObserved := delegates && evaluates
+	out := map[string][]string{}
+	for _, f := range files {
+		note := func(re *regexp.Regexp) {
+			for _, idx := range re.FindAllStringSubmatchIndex(f.code, -1) {
+				v := f.code[idx[2]:idx[3]]
+				scope, ok := scopeOf[v]
+				if !ok {
+					continue
+				}
+				line := strings.Count(f.code[:idx[0]], "\n") + 1
+				out[scope] = append(out[scope], fmt.Sprintf("%s:%d", filepath.Base(f.path), line))
+			}
+		}
+		note(anchoredCallRe)
+		note(enforcerCallRe)
+		if passObserved {
+			note(requestPassRe)
+		}
+	}
+	return out, nil
+}
+
+// callSiteEvaluators reads the call-site census into each plane's evaluators,
+// by the header's column names.
+func callSiteEvaluators(tsv []byte) (map[legacycompile.Plane][]string, error) {
+	lines := strings.Split(strings.TrimRight(string(tsv), "\n"), "\n")
+	if len(lines) < 2 {
+		return nil, fmt.Errorf("%s: no rows under its header", legacyCallSitesPath)
+	}
+	col := map[string]int{}
+	for i, name := range strings.Split(lines[0], "\t") {
+		col[name] = i
+	}
+	pi, okP := col["plane"]
+	ei, okE := col["evaluator"]
+	if !okP || !okE {
+		return nil, fmt.Errorf("%s: the header names no plane or evaluator column: %q", legacyCallSitesPath, lines[0])
+	}
+	out := map[legacycompile.Plane][]string{}
+	for n, line := range lines[1:] {
+		f := strings.Split(line, "\t")
+		if len(f) <= pi || len(f) <= ei {
+			return nil, fmt.Errorf("%s line %d: %d fields", legacyCallSitesPath, n+2, len(f))
+		}
+		out[legacycompile.Plane(f[pi])] = append(out[legacycompile.Plane(f[pi])], f[ei])
+	}
+	return out, nil
+}
+
+// TestThePostureEngineFollowsSeamReachability plants each engine source and
+// reads the value the DERIVED artifact publishes (derivePostureWith), so the
+// plants move the derivation itself, not only a helper.
+func TestThePostureEngineFollowsSeamReachability(t *testing.T) {
+	real, err := loadEngineSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engines := func(src engineSources) (map[string]string, error) {
+		a, err := derivePostureWith(src)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]string{}
+		for _, s := range a.Scopes {
+			out[s.Scope] = s.Engine
+		}
+		return out, nil
+	}
+	clone := func(mut func(*engineSources)) engineSources {
+		c := engineSources{enforcing: map[string]bool{}, observed: map[string][]string{}, siteEvaluators: map[legacycompile.Plane][]string{}, onMirror: real.onMirror}
+		for k, v := range real.enforcing {
+			c.enforcing[k] = v
+		}
+		for k, v := range real.observed {
+			c.observed[k] = append([]string(nil), v...)
+		}
+		for k, v := range real.siteEvaluators {
+			c.siteEvaluators[k] = append([]string(nil), v...)
+		}
+		mut(&c)
+		return c
+	}
+
+	// The shipped values, read off the derived artifact.
+	got, err := engines(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeByName := map[string]legacycompile.EnforcementScope{}
+	for _, sc := range legacycompile.AllScopes() {
+		scopeByName[sc.String()] = sc
+	}
+	for _, s := range legacycompile.EnforcingScopes() {
+		if got[s] != engineAnchored {
+			t.Errorf("derived engine for %q is %q; want %q", s, got[s], engineAnchored)
+		}
+		if len(real.observed[s]) == 0 && !real.strippedOnMirror(scopeByName[s]) {
+			t.Errorf("no anchored decide call observed for enforcing scope %q", s)
+		}
+	}
+
+	// The mirror excuse is bound on both trees: it covers an edition-gated
+	// plane on a mirror and nothing else.
+	for _, c := range []struct {
+		name     string
+		onMirror bool
+		mut      func(*engineSources)
+	}{
+		{"on a mirror, a community scope (map) with its decide calls removed", true, func(s *engineSources) { delete(s.observed, "map") }},
+		{"on the enterprise tree, the edition-gated cowork_ingest with its decide calls removed", false, func(s *engineSources) { delete(s.observed, "cowork_ingest") }},
+	} {
+		src := clone(c.mut)
+		src.onMirror = c.onMirror
+		if g, err := engines(src); err == nil {
+			t.Errorf("%s: the derivation published %v; want a refusal", c.name, g)
+		}
+	}
+	for _, s := range []string{"policy_simulation", "policy_test"} {
+		if got[s] != engineLegacy {
+			t.Errorf("derived engine for %q is %q; want %q", s, got[s], engineLegacy)
+		}
+	}
+	if len(got) != len(legacycompile.AllScopes()) {
+		t.Errorf("the derived artifact classifies %d scopes; the plane model has %d", len(got), len(legacycompile.AllScopes()))
+	}
+
+	for _, c := range []struct {
+		name string
+		mut  func(*engineSources)
+	}{
+		{"map's decide calls removed (declared and listed, deciding nothing)", func(s *engineSources) { delete(s.observed, "map") }},
+		{"map out of the enforcing set, its calls still there", func(s *engineSources) { delete(s.enforcing, "map") }},
+		{"policy_test listed as enforcing with no decide call (the two-line plant)", func(s *engineSources) { s.enforcing["policy_test"] = true }},
+		{"an enforcing scope whose census rows all call the legacy evaluator", func(s *engineSources) {
+			s.siteEvaluators[legacycompile.PlaneMAP] = []string{legacyDynamicEvaluator}
+		}},
+		{"policy_simulation's census rows removed", func(s *engineSources) { delete(s.siteEvaluators, legacycompile.PlanePolicySimulation) }},
+		{"policy_test's site naming another evaluator", func(s *engineSources) {
+			s.siteEvaluators[legacycompile.PlanePolicyTest] = []string{"Produce"}
+		}},
+	} {
+		if g, err := engines(clone(c.mut)); err == nil {
+			t.Errorf("%s: the derivation published %v; want a refusal", c.name, g)
+		}
+	}
+	// Both anchored sources for policy_test: the value moves.
+	g, err := engines(clone(func(s *engineSources) {
+		s.enforcing["policy_test"] = true
+		s.observed["policy_test"] = []string{"planted.go:1"}
+		s.siteEvaluators[legacycompile.PlanePolicyTest] = []string{"Produce"}
+	}))
+	if err != nil || g["policy_test"] != engineAnchored {
+		t.Errorf("with policy_test enforcing and decided the derivation gave %q (err %v); want %q", g["policy_test"], err, engineAnchored)
+	}
+
+	// The observer itself: a scope variable declared with no decide call is not
+	// observed, and one with a call is, on source planted in a temporary tree.
+	planeGo, err := os.ReadFile(legacyPlaneGoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	write := func(name, code string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(code), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("declared.go", "package x\nvar policyTestSeamScope = legacycompile.MustScopeFor(legacycompile.PlanePolicyTest, \"\")\n"+
+		"// v := enforcer.Evaluate(ctx, anchoredenforcer.Call{Scope: policyTestSeamScope})\n")
+	write("decides.go", "package x\nvar mapSeamScope = legacycompile.MustScopeFor(legacycompile.PlaneMAP, \"\")\n"+
+		"func f() { v := enforcer.Evaluate(ctx, anchoredenforcer.Call{\n\tScope: mapSeamScope,\n}) }\n")
+	write("block.go", "package x\n/*\nv := enforcer.Evaluate(ctx, anchoredenforcer.Call{Scope: policyTestSeamScope})\n*/\n")
+	write("ignored_test.go", "package x\nfunc g() { enforcer.Evaluate(ctx, anchoredenforcer.Call{Scope: policyTestSeamScope}) }\n")
+	obs, err := observedDecideSites([]string{dir}, planeGo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs["policy_test"]) != 0 {
+		t.Errorf("a declared scope with its call only in a line comment, a block comment and a _test file was observed: %v", obs["policy_test"])
+	}
+	if len(obs["map"]) != 1 {
+		t.Errorf("a real decide call was not observed: %v", obs)
+	}
+	// The census reader refuses a header it cannot read, rather than reading nothing.
+	if _, err := callSiteEvaluators([]byte("plane\tfile\nmap\tx.go\n")); err == nil {
+		t.Error("a census with no evaluator column was read")
+	}
 }
 
 func postureDivergences(ds []legacycompile.Divergence) []postureDivergence {

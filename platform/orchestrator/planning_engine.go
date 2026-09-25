@@ -56,6 +56,11 @@ type PlanGenerationRequest struct {
 	ClientID      string // Client identifier for multi-tenant logging
 	RequestID     string // Request ID for tracing
 	Context       map[string]interface{}
+	// User and Client are the requester the plan is generated for. Their
+	// organization's route rows bind the planner's LLM calls, which are still
+	// made as the planner (#4249 row 5774077156, routePlannerCall).
+	User   UserContext
+	Client ClientContext
 }
 
 // NewPlanningEngine creates a new planning engine instance
@@ -262,7 +267,7 @@ func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationReq
 	})
 
 	// 1. Analyze query
-	analysis, err := e.analyzeQuery(ctx, req.Query, req.Domain)
+	analysis, err := e.analyzeQuery(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("query analysis failed: %w", err)
 	}
@@ -302,8 +307,27 @@ func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationReq
 	return workflow, nil
 }
 
+// routePlannerCall applies the requester's route rows to one of the planner's
+// LLM calls (applyLLMCallRoutes): the rows are selected for the requester's
+// organization and user, while the call itself keeps the planner's identity.
+// Plan generation used to reach any provider whatever the organization's rows
+// allowed (#4249 row 5774077156).
+//
+// The content a row's condition reads is the requester's QUERY, as
+// /api/v1/process presents it, not the prompt the call sends: that prompt
+// wraps the query in the planner's own instructions, so a row conditioned on
+// a word in those instructions would apply to every plan generation (R3 round
+// 1, L7).
+func (e *PlanningEngine) routePlannerCall(ctx context.Context, planReq PlanGenerationRequest, llmReq *OrchestratorRequest) error {
+	presented := *llmReq
+	presented.User, presented.Client = planReq.User, planReq.Client
+	presented.Query = planReq.Query
+	return applyLLMCallRoutes(ctx, presented, llmReq)
+}
+
 // Analyze query to determine decomposition strategy
-func (e *PlanningEngine) analyzeQuery(ctx context.Context, query string, domainHint string) (*QueryAnalysis, error) {
+func (e *PlanningEngine) analyzeQuery(ctx context.Context, planReq PlanGenerationRequest) (*QueryAnalysis, error) {
+	query, domainHint := planReq.Query, planReq.Domain
 	// Get domain template - prefer registry configs over hardcoded templates
 	template := e.getDomainTemplate(domainHint)
 
@@ -318,6 +342,13 @@ func (e *PlanningEngine) analyzeQuery(ctx context.Context, query string, domainH
 		User: UserContext{
 			TenantID: "system",
 		},
+	}
+
+	// A route refusal is returned, never answered by the heuristic fallback
+	// below: that fallback is for a provider that failed, not for one the
+	// organization's rows do not permit.
+	if err := e.routePlannerCall(ctx, planReq, &req); err != nil {
+		return nil, err
 	}
 
 	response, _, err := e.llmRouter.RouteRequest(ctx, req)
@@ -442,6 +473,12 @@ func (e *PlanningEngine) generateWorkflowDefinition(ctx context.Context, req Pla
 		User: UserContext{
 			TenantID: "system",
 		},
+	}
+
+	// As in analyzeQuery: a route refusal is returned, never answered by the
+	// template fallback below.
+	if err := e.routePlannerCall(ctx, req, &llmReq); err != nil {
+		return nil, err
 	}
 
 	response, _, err := e.llmRouter.RouteRequest(ctx, llmReq)

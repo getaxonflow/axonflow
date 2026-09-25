@@ -72,8 +72,10 @@ suites:
   - ee/policy-packs/fincrime/**
   - .github/workflows/approvals-decide-plane-e2e.yml
   audit-date-range-e2e.yml:
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/3363_audit_date_range/**
   - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
   - runtime-e2e/lib/typed_constraint_body.jq
   - docker-compose.yml
   - docker-compose.enterprise.yml
@@ -100,8 +102,10 @@ suites:
   - platform/shared/anchoredenforcer/**
   - .github/workflows/audit-date-range-e2e.yml
   audit-display-names-e2e.yml:
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/3347_audit_display_names/**
   - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
   - runtime-e2e/lib/typed_constraint_body.jq
   - docker-compose.yml
   - docker-compose.enterprise.yml
@@ -129,6 +133,7 @@ suites:
   - platform/shared/anchoredenforcer/**
   - .github/workflows/audit-display-names-e2e.yml
   audit-latency-tile-e2e.yml:
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/3424_audit_latency_tile/**
   - runtime-e2e/lib/**
   - docker-compose.yml
@@ -263,6 +268,7 @@ suites:
   - platform/orchestrator/db_dynamic_policies.go
   - platform/orchestrator/route_request_enforcing_seam.go
   - platform/orchestrator/dynamic_fact_producer.go
+  - platform/shared/anchoredenforcer/**
   - platform/shared/policy/loader.go
   - migrations/core/031_seed_system_policies.sql
   - docker-compose.yml
@@ -270,6 +276,27 @@ suites:
   - platform/orchestrator/Dockerfile
   - runtime-e2e/lib/proxy_auth.sh
   - .github/workflows/computed-risk-score-e2e.yml
+  fincrime-engine-b-e2e.yml:
+  - runtime-e2e/3330_engine_b_risk_fact/**
+  - runtime-e2e/lib/host-ports.tsv
+  - runtime-e2e/lib/risk_scorer_fixture_bundle.sh
+  - ee/platform/risk-scorer/**
+  - ee/policy-packs/fincrime/**
+  - platform/agent/risk_score_fact*.go
+  - platform/agent/decision_enforcing_seam.go
+  - platform/agent/decision_handler.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/mcp_response_enforcing_seam.go
+  - platform/agent/mcp_request_enforcing_seam.go
+  - platform/agent/approval_hold*.go
+  - platform/agent/pep_handshake.go
+  - platform/agent/policy_packs.go
+  - platform/shared/anchoredenforcer/**
+  - platform/decision/policypack/**
+  - platform/decision/activation/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - .github/workflows/fincrime-engine-b-e2e.yml
   org-tier-promotion-e2e.yml:
   - migrations/core/094_v9_org_id_backfill*.sql
   - migrations/core/117_promote_deployment_org_license*.sql
@@ -295,6 +322,7 @@ suites:
   - platform/agent/Dockerfile
   - .github/workflows/otel-exporters-e2e.yml
   tier-scale-limits-e2e.yml:
+    - 'platform/decision/pdp/system_corpus.json'
     - 'runtime-e2e/3593_tier_scale_limits/**'
     - 'runtime-e2e/lib/**'
     # Arm D (#3592): the edition construct boundary at activation, and the
@@ -484,6 +512,9 @@ suites:
   identity-caep-receiver-e2e.yml:
   - runtime-e2e/3550_caep_receiver/**
   - runtime-e2e/lib/wait_for_stack.sh
+  - runtime-e2e/lib/typed_approval.sh
+  - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_constraint_body.jq
   - platform/shared/identity/org_settings.go
   - platform/shared/identity/org_settings_contract.go
   - platform/shared/identity/org_settings_community.go
@@ -510,6 +541,14 @@ suites:
   - platform/shared/identity/segment_cache.go
   - platform/shared/identity/identity_attribute_resolver.go
   - platform/shared/identity/principal.go
+  - platform/shared/identity/directory.go
+  - platform/shared/identity/directory_scim_projection.go
+  - platform/shared/identity/scim_role_resolver.go
+  - platform/shared/anchoredenforcer/enforcer.go
+  - platform/shared/anchoredenforcer/naming.go
+  - platform/agent/group_closure_enterprise.go
+  - platform/agent/decision_enforcing_seam.go
+  - platform/agent/mcp_request_enforcing_seam.go
   - platform/agent/identity_plane.go
   - platform/agent/identity_admission.go
   - platform/agent/identity_caep.go
@@ -522,6 +561,10 @@ suites:
   - platform/orchestrator/identity_realm_deployment.go
   - platform/orchestrator/run.go
   - ee/platform/customer-portal/api/identity_org_settings.go
+  - ee/platform/customer-portal/api/typed_authoring.go
+  - ee/platform/customer-portal/api/typed_authoring_self_approval.go
+  - ee/platform/customer-portal/api/auth.go
+  - ee/platform/customer-portal/api/bootstrap_identity.go
   - ee/platform/customer-portal/middleware/admin_auth.go
   - ee/platform/customer-portal/main.go
   - ee/platform/customer-portal/Dockerfile
@@ -530,6 +573,7 @@ suites:
   - platform/agent/Dockerfile
   - platform/orchestrator/Dockerfile
   - migrations/enterprise/146_identity_org_settings.sql
+  - migrations/enterprise/161_drop_identity_org_settings_unread_columns*.sql
   - migrations/enterprise/117_scim_provisioning.sql
   - migrations/core/143_sso_configurations_oidc.sql
   - migrations/core/106_v9_b9_completion_sso_configurations.sql
@@ -575,7 +619,6 @@ suites:
   - platform/orchestrator/hitl_execution.go
   - platform/orchestrator/workflow_engine.go
   - platform/orchestrator/agent_proxy_guard.go
-  - platform/orchestrator/override_enforcement.go
   - platform/orchestrator/planning/service.go
   - platform/orchestrator/planning/types.go
   - platform/shared/identity/identity_attribute_resolver.go
@@ -655,6 +698,21 @@ suites:
   - platform/agent/Dockerfile
   - platform/orchestrator/Dockerfile
   - .github/workflows/mcp-override-refusal-e2e.yml
+  media-ocr-pii-e2e.yml:
+  - runtime-e2e/4300_media_ocr_pii/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/orchestrator/**
+  - platform/agent/**
+  - platform/shared/**
+  - platform/common/**
+  - platform/connectors/**
+  - platform/database/**
+  - platform/go.mod
+  - platform/go.sum
+  - platform/decision/**
+  - migrations/core/**
+  - .github/workflows/media-ocr-pii-e2e.yml
   ojk-pii-export-e2e.yml:
   - platform/orchestrator/ojk/**
   - platform/orchestrator/run.go
@@ -668,10 +726,9 @@ suites:
   - .github/workflows/ojk-pii-export-e2e.yml
   orchestrator-segment-policy-e2e.yml:
   - runtime-e2e/3052_orchestrator_segment_policy/**
-  - platform/orchestrator/dynamic_policy_engine.go
+  - platform/orchestrator/dynamic_policy_types.go
   - platform/orchestrator/db_dynamic_policies.go
   - platform/orchestrator/segment_policy_gate.go
-  - platform/orchestrator/override_enforcement.go
   - platform/orchestrator/run.go
   - platform/shared/identity/identity_attribute_resolver.go
   - migrations/core/159_dynamic_policies_segment_id.sql
@@ -730,6 +787,7 @@ suites:
   - runtime-e2e/3564_per_plane_enforcement/**
   - runtime-e2e/lib/wait_for_stack.sh
   - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
   - runtime-e2e/lib/typed_constraint_body.jq
   - platform/shared/retiredenv/**
   - platform/shared/identity/**
@@ -737,7 +795,13 @@ suites:
   - platform/shared/policy/detector_facts.go
   - platform/shared/policy/loader.go
   - platform/shared/policy/types.go
+  - platform/shared/policy/metrics.go
   - platform/agent/*_enforcing_seam.go
+  - platform/agent/audit_adapter.go
+  - platform/agent/audit_queue.go
+  - platform/agent/audit_drop.go
+  - platform/agent/audit_manager.go
+  - platform/agent/detection_override.go
   - platform/shared/anchoredenforcer/**
   - platform/agent/decision_handler.go
   - platform/agent/gateway_handlers.go
@@ -749,6 +813,12 @@ suites:
   - platform/agent/run.go
   - platform/orchestrator/run.go
   - platform/orchestrator/response_enforcing_seam.go
+  - platform/orchestrator/wcp_enforcing_seam.go
+  - platform/orchestrator/map_enforcing_seam.go
+  - platform/orchestrator/route_request_enforcing_seam.go
+  - platform/orchestrator/hitl_execution.go
+  - platform/orchestrator/api_call_processor.go
+  - platform/orchestrator/workflow_control/**
   - platform/orchestrator/response_processor.go
   - platform/orchestrator/anchored_enforcement.go
   - platform/orchestrator/audit_logger.go
@@ -767,6 +837,8 @@ suites:
   - platform/agent/Dockerfile
   - platform/orchestrator/Dockerfile
   - migrations/core/010_policy_tables.sql
+  - migrations/core/120_detection_action_overrides.sql
+  - migrations/core/186_policy_metrics_org_policy_date_unique.sql
   - ee/platform/agent/license/cmd/keygen/**
   - .github/workflows/per-plane-enforcement-e2e.yml
   pii-action-posture-e2e.yml:
@@ -838,6 +910,8 @@ suites:
   - platform/shared/policy/evaluator.go
   - platform/shared/policy/engine.go
   - runtime-e2e/lib/wait_for_stack.sh
+  - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
   - platform/shared/policypath/**
   - platform/agent/static_policy_api_handlers.go
   - platform/orchestrator/dynamic_policy_handlers.go
@@ -881,17 +955,16 @@ suites:
   - .github/workflows/portal-credential-provision-e2e.yml
   portal-parity-e2e.yml:
   - runtime-e2e/3364_portal_parity/**
+  - runtime-e2e/lib/typed_template_omissions.cjs
+  - runtime-e2e/lib/typed_template_omissions.jq
   - docker-compose.yml
   - docker-compose.enterprise.yml
   - docker-compose.portal-ui.yml
-  - ee/platform/customer-portal-ui/app/policies/**
   - ee/platform/customer-portal-ui/components/policies/**
   - ee/platform/customer-portal-ui/app/login/**
   - ee/platform/customer-portal-ui/app/api/v1/**
   - ee/platform/customer-portal-ui/lib/api.ts
   - ee/platform/customer-portal-ui/lib/proxy.ts
-  - ee/platform/customer-portal/api/unified_policies.go
-  - ee/platform/customer-portal/api/policies.go
   - platform/agent/static_policy_api_handlers.go
   - platform/agent/static_policy_repository.go
   - platform/orchestrator/policy_api_handlers.go
@@ -913,6 +986,7 @@ suites:
   - ee/platform/customer-portal/main.go
   - migrations/enterprise/154_identity_org_settings_typed_authoring.sql
   - migrations/enterprise/157_identity_org_settings_typed_authoring_retired.sql
+  - migrations/enterprise/161_drop_identity_org_settings_unread_columns*.sql
   - platform/decision/authoring/**
   - platform/decision/conformance/**
   - platform/decision/pdp/**
@@ -934,6 +1008,7 @@ suites:
   - ee/platform/customer-portal-ui/**
   - .github/workflows/portal-sso-browser-e2e.yml
   enterprise-authoring-path-e2e.yml:
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/4023_enterprise_authoring_path/**
   - runtime-e2e/lib/**
   - docker-compose.yml
@@ -1053,6 +1128,7 @@ suites:
   - platform/orchestrator/anchored_enforcement.go
   - platform/orchestrator/route_request_enforcing_seam.go
   - platform/orchestrator/dynamic_fact_producer.go
+  - platform/shared/anchoredenforcer/**
   - platform/orchestrator/authn_middleware.go
   - docker-compose.yml
   - platform/agent/Dockerfile
@@ -1083,8 +1159,10 @@ suites:
   - platform/agent/migration_helpers.go
   - .github/workflows/template-apply-repair-e2e.yml
   top-policies-identity-e2e.yml:
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/3426_top_policies_identity/**
   - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
   - runtime-e2e/lib/typed_constraint_body.jq
   - docker-compose.yml
   - docker-compose.enterprise.yml
@@ -1218,6 +1296,9 @@ suites:
   - migrations/core/125_audit_record_signing.sql
   - .github/workflows/ussecurities-compliance-e2e.yml
   wcp-hitl-chokepoint-e2e.yml:
+  - runtime-e2e/lib/typed_constraint.sh
+  - runtime-e2e/lib/typed_template_omissions.jq
+  - platform/decision/pdp/system_corpus.json
   - runtime-e2e/3408_wcp_hitl_chokepoint/**
   - platform/agent/hitl/queue/**
   - platform/orchestrator/hitl_wcp_adapter.go

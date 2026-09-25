@@ -66,10 +66,43 @@ else
     suite_dir="${repo_root}/tests/regression-test-required"
 fi
 
+# TEST CONTAINERS THIS RUN LEAVES ARE REAPED ON EXIT, AND ONLY THOSE (#4184).
+# A test that starts a throwaway container with the docker CLI labels it with
+# its owner process (approletest.DockerRunArgs); its own cleanup does not run
+# when it is killed. On exit this runner removes:
+#   - the containers of the run it MINTED an id for (axonflow.test.run=<id>).
+#     A run id it inherited belongs to its caller, who reaps it: a nested
+#     run-all (regression_suite_runner_test.sh runs several) must never reap
+#     its parent's live containers;
+#   - every test container on this host whose owner process is gone
+#     (--dead-owners), which never touches a live process's container, one
+#     with no owner label, or one owned by another host.
+# The docker probe is bounded so a wedged daemon cannot hang the exit.
+minted_run_id=""
+if [[ -z "${AXONFLOW_TEST_RUN_ID:-}" ]]; then
+    AXONFLOW_TEST_RUN_ID="run-all-$$-$(date +%s)"
+    minted_run_id="$AXONFLOW_TEST_RUN_ID"
+fi
+export AXONFLOW_TEST_RUN_ID
+reaper="$(cd "$(dirname "$self_path")/../.." && pwd)/scripts/ci/reap-test-run-containers.sh"
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+reap_this_run() {
+    if ! command -v docker >/dev/null 2>&1 || ! perl -e 'alarm 10; exec @ARGV' docker info >/dev/null 2>&1; then
+        echo "run-all: no docker daemon answered, so no test container to reap"
+        return
+    fi
+    if [[ -n "$minted_run_id" ]]; then
+        bash "$reaper" "$minted_run_id" || true
+    fi
+    bash "$reaper" --dead-owners || true
+}
+trap reap_this_run EXIT
+
 echo "════════════════════════════════════════════════════════════════"
 echo "Regression-test suite runner"
 echo "  suite dir: $suite_dir"
 echo "  cwd:       $repo_root"
+echo "  run id:    $AXONFLOW_TEST_RUN_ID"
 echo "════════════════════════════════════════════════════════════════"
 
 # Property 2 — a missing directory is a failure, never a pass.

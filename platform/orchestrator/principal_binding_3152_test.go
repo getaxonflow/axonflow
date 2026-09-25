@@ -301,7 +301,8 @@ func TestProcess3152_ValidatedRoleHeaderIsHonoured(t *testing.T) {
 func TestWorkflowsExecute3152_ActorBound(t *testing.T) {
 	oldEngine, oldHITL := workflowEngine, hitlEnabled
 	t.Cleanup(func() { workflowEngine, hitlEnabled = oldEngine, oldHITL })
-	workflowEngine = NewWorkflowEngine()
+	// #4382: the engine decides every step, as the orchestrator wires it.
+	workflowEngine = newGovernedWorkflowEngine(&allowEveryStep{})
 	hitlEnabled = false
 
 	handler := gs3066ServedHandler(t, "/api/v1/workflows/execute", executeWorkflowHandler)

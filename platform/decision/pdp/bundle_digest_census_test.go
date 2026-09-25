@@ -249,6 +249,13 @@ func declaredDigestReaders() []digestReader {
 			"the artifact digest, as above", 3, true},
 		{"ee/platform/customer-portal/api/typed_authoring.go", "HandleArtifacts", "entry", classNotABundle,
 			"a stored history entry's artifact digest", 0, true},
+		{"ee/platform/customer-portal/api/typed_authoring.go", "HandleArtifacts", "sk", classNotABundle,
+			"an authoring.SkippedArtifact's Digest: the identifier of an artifact LEFT OUT of the listing, logged and " +
+				"reported in `unverifiable`. Nothing is verified against it - the artifact did not load (#4283 item 3, " +
+				"and the ACTIVE one by master's R3 round 1 on #4397)", 0, true},
+		{"ee/platform/customer-portal/api/typed_authoring.go", "HandleArtifacts", "already", classNotABundle,
+			"the same SkippedArtifact digest on the other side of the de-duplication that keeps the active artifact from " +
+				"being named twice", 0, true},
 		{"ee/platform/customer-portal/api/typed_authoring.go", "HandleActive", "art", classNotABundle,
 			"the artifact digest, as above", 2, true},
 		{"ee/platform/customer-portal/api/typed_authoring.go", "handleActivation", "req", classNotABundle,

@@ -54,10 +54,9 @@ func TestDevTokenEndpointEnabled_FailClosedMatrix(t *testing.T) {
 		{"DEPLOYMENT_KIND=production", "", "", "production", false},
 		{"DEPLOYMENT_MODE=saas (not community)", "", "saas", "", false},
 		{"DEPLOYMENT_MODE=in-vpc-enterprise", "", "in-vpc-enterprise", "", false},
-		// Explicit non-prod signals enable it:
+		// Explicit DEVELOPMENT signals enable it:
 		{"ENVIRONMENT=development", "development", "", "", true},
 		{"ENVIRONMENT=dev", "dev", "", "", true},
-		{"ENVIRONMENT=staging", "staging", "", "", true},
 		{"ENVIRONMENT=local", "local", "", "", true},
 		{"ENVIRONMENT=test (NOT in the pinned allowlist → off)", "test", "", "", false},
 		{"ENVIRONMENT=qa (unrecognized → off)", "qa", "", "", false},
@@ -65,12 +64,28 @@ func TestDevTokenEndpointEnabled_FailClosedMatrix(t *testing.T) {
 		{"ENVIRONMENT=dev with spaces", "  dev ", "", "", true},
 		{"DEPLOYMENT_MODE=community", "", "community", "", true},
 		{"DEPLOYMENT_KIND=dev", "", "", "dev", true},
-		{"DEPLOYMENT_KIND=staging", "", "", "staging", true},
-		// Precedence: an explicit prod ENVIRONMENT does NOT veto an explicit
-		// non-prod DEPLOYMENT_MODE/KIND (any one explicit non-prod signal is
-		// enough) — but neither does an explicit prod signal flip an all-unset
-		// case to true.
-		{"prod ENVIRONMENT + community mode → enabled", "production", "community", "", true},
+		// #4249 row 5680659356: staging is a deployed stack, not a developer's
+		// machine, on either signal.
+		{"ENVIRONMENT=staging → off", "staging", "", "", false},
+		{"ENVIRONMENT=Staging (case-folded) → off", " Staging ", "", "", false},
+		{"DEPLOYMENT_KIND=staging → off", "", "", "staging", false},
+		{"ENVIRONMENT=staging + DEPLOYMENT_KIND=dev → on (KIND states development)", "staging", "", "dev", true},
+		// Precedence (#4249 row 5680659356): an explicit production on
+		// ENVIRONMENT or DEPLOYMENT_KIND vetoes every other signal. Before, any
+		// one development signal was enough, and the first case below was ON.
+		{"prod ENVIRONMENT + community mode → off", "production", "community", "", false},
+		{"prod ENVIRONMENT + KIND=dev → off", "production", "", "dev", false},
+		{"KIND=production + ENVIRONMENT=development → off", "development", "", "production", false},
+		{"KIND=production + community mode → off", "", "community", "production", false},
+		// The short spelling vetoes too (master R3 round 1): the gate read the
+		// exact word, so ENVIRONMENT=prod beside an explicit community mode
+		// MOUNTED the minter. No deployable template writes it; the veto only
+		// ever turns the endpoint off.
+		{"ENVIRONMENT=prod + community mode → off", "prod", "community", "", false},
+		{"KIND=prod + ENVIRONMENT=development → off", "development", "", "prod", false},
+		{"ENVIRONMENT=PROD, padded → off", " PROD ", "community", "", false},
+		{"ENVIRONMENT=PRODUCTION (case-folded) + community → off", " PRODUCTION ", "community", "", false},
+		{"ENVIRONMENT=production + all three development → off", "production", "community", "dev", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -114,7 +129,8 @@ func TestDevTokenEndpointEnabled_DoesNotReuseFailOpenHelpers(t *testing.T) {
 	if getDeploymentKind() != "dev" {
 		t.Fatal("precondition: getDeploymentKind() should default to 'dev' on unset")
 	}
-	// ...yet the gate must still be CLOSED, because nothing is EXPLICITLY non-prod.
+	// ...yet the gate must still be CLOSED, because nothing is EXPLICITLY a
+	// development environment.
 	if devTokenEndpointEnabled() {
 		t.Error("FAIL-CLOSED VIOLATED: dev-token gate is open on an all-unset env (would expose the minter in production)")
 	}

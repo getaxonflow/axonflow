@@ -188,8 +188,9 @@ import (
 // condition: a single corrupt stored row could spam that log unboundedly,
 // which is the wrong shape for something that needs to be counted, not
 // narrated. Every place a condition cannot be evaluated — an unrecognized
-// operator, an operand that won't coerce, a non-string regex pattern, or
-// (one layer up, at the caller) corrupt conditions JSON or an unresolved
+// operator, an operand that won't coerce, a non-string regex pattern, a
+// string pattern that does not COMPILE, or (one layer up, at the caller)
+// corrupt conditions JSON or an unresolved
 // field — now reports through the UnevaluableRecorder passed into Match and
 // MatchAll instead. A nil recorder is always a safe no-op; see
 // unevaluable_recorder.go for the interface and the closed Reason* constant
@@ -466,11 +467,9 @@ func matchInList(fieldValue, listValue any) bool {
 // paired authoring-side rejection. The field value is stringified with
 // stringOrSprint either way. A pattern that fails to compile is a non-match,
 // never a panic — regexp.MatchString reports the compile error rather than
-// panicking, and this function discards it exactly as every legacy impl
-// does (each one only differed in whether it logged the error, which is
-// outside this pure-function evaluator's job — each caller's own
-// evaluateCondition performs an equivalent pre-check purely for its own
-// diagnostic log line).
+// panicking — and it is recorded as ReasonInvalidPattern (#4249 row
+// 5674229132), so a caller can tell "did not match" from "could not be
+// evaluated".
 func matchRegexCondition(fieldValue, patternValue any, recorder UnevaluableRecorder) bool {
 	pattern, ok := patternValue.(string)
 	if !ok {
@@ -480,6 +479,11 @@ func matchRegexCondition(fieldValue, patternValue any, recorder UnevaluableRecor
 	fieldStr := stringOrSprint(fieldValue)
 	matched, err := regexp.MatchString(pattern, fieldStr)
 	if err != nil {
+		// A pattern that does not compile cannot be evaluated: recorded as
+		// such, as a non-string one is (#4249 row 5674229132). The answer is
+		// still a non-match; a caller that must not read that as "did not
+		// match" consults the recorder (the dynamic fact producer does).
+		recordUnevaluable(recorder, ReasonInvalidPattern)
 		return false
 	}
 	return matched

@@ -107,6 +107,12 @@ type AuthError struct {
 	HTTPStatus int    // suggested HTTP status code
 	RetryAfter string // non-empty → rate limited, caller should set Retry-After header
 	Limit      int    // the per-minute limit a rate_limited refusal reached; 0 otherwise
+
+	// admission is the tier-scale decision behind a tier-limit refusal
+	// (tierLimitRefusal.AuthError), nil for every other AuthError. The MCP
+	// server renders the refusal's envelope from it (admissionRefusalOf); the
+	// scalar fields above stay what every other plane reads.
+	admission *admission.Decision
 }
 
 func (e *AuthError) Error() string { return e.Message }

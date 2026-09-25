@@ -4,9 +4,12 @@
 package orchestrator
 
 import (
+	"context"
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"axonflow/platform/decision/contract"
 )
 
 // TestMain declares the deployment posture this package's unit tests run under.
@@ -44,6 +47,18 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("DEPLOYMENT_MODE", "community"); err != nil {
 		panic("orchestrator TestMain: cannot set DEPLOYMENT_MODE: " + err.Error())
 	}
+	// #4249 row 5701303521: every LLM call takes the organization's route rows,
+	// and with no route source wired it is refused fail-closed. A test that
+	// reaches an LLM call without declaring a source (withLLMCallRouteSource)
+	// reads "no route rows" here, deterministically, rather than whatever an
+	// earlier test left cached (row 5774257842). A test of the production
+	// factory calls productionRouteRequestFactProducer.
+	newRouteRequestFactProducer = func() (routeFactSource, error) { return noRouteRows{}, nil }
+	// The policy summary reads the agent's installed-pack count (#4249). No
+	// test reaches a real agent: by default the read fails at once, as an
+	// unreachable agent does, and a test of the read installs its own agent
+	// (withSummaryAgent).
+	typedAuthoringAgentSummary = unreachableSummaryAgent
 	os.Exit(m.Run())
 }
 
@@ -105,4 +120,11 @@ func TestResolveCallerReadScope_UnsetModeDoesNotGrantTenantWide(t *testing.T) {
 	if scope.AdminAuthority {
 		t.Error("unset DEPLOYMENT_MODE granted AdminAuthority to an unidentified caller (#3096)")
 	}
+}
+
+// noRouteRows is a route fact source with no rows: no facts, no route effects.
+type noRouteRows struct{}
+
+func (noRouteRows) Produce(context.Context, OrchestratorRequest) (contract.AttributeSet, routeEffects, error) {
+	return contract.AttributeSet{}, routeEffects{}, nil
 }

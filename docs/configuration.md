@@ -1,5 +1,5 @@
 # Configuration Reference
-> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v12.0.0.
 
 
 AxonFlow is designed with secure-by-default settings that are fully configurable. This document covers all environment variables for controlling security detection and policy enforcement.
@@ -12,6 +12,7 @@ AxonFlow is designed with secure-by-default settings that are fully configurable
 |----------|--------|---------|-------------|
 | `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | SQL injection scanning mode (selects the scanner; it sets no action) |
 | `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` | seconds, `5` to `600` | `60` | How long an agent caches an organization's detection-posture overrides; an override change takes effect within this window |
+| `AXONFLOW_APPROVAL_TTL_SECONDS` | whole seconds, `60` to `604800` (7 days) | `900` (15 minutes) | The deployment's approval window, on the agent and the orchestrator: how long an approval requirement's hold stays grantable after the decision that raised it, when no mandatory policy gives its own `expiry_seconds`. A policy's `expiry_seconds` overrides it in either direction, within the same bounds. A value that is not a whole number within the bounds refuses the process's start rather than being clamped |
 
 ### Action Types
 

@@ -96,8 +96,8 @@ func init() {
 //     resolveTenantID, which prefers X-Tenant-ID; read by
 //     gateway_handlers (user.TenantID), GetConnectorForTenant(tenantID, …) and
 //     the marketplace handlers. All tenant-first.
-//   - HITL execution store: written AND read through normalizeHITLScope itself,
-//     so that one is self-consistently org-first.
+//   - (The in-memory HITL execution store, written and read org-first through
+//     normalizeHITLScope, is retired: #4249 row 5774060413.)
 //
 // OrgID and TenantID come from independent sources (the license payload vs the
 // client/customer record), so on a deployment where they diverge an org-first
@@ -291,12 +291,22 @@ func (p *MCPConnectorProcessor) buildParameters(step WorkflowStep, input map[str
 	return params
 }
 
-// replaceTemplateVars replaces template variables in strings
+// RenderStepContent is the content a connector-call step sends: its
+// statement, which is sent as written, and its parameters as buildParameters
+// builds them - the function ExecuteStep and routeToAgent send them with
+// (#4249 row 5666236540).
+func (p *MCPConnectorProcessor) RenderStepContent(step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) []any {
+	return []any{step.Statement, p.buildParameters(step, input, execution)}
+}
+
+// replaceTemplateVars replaces template variables in strings, in key order, so
+// a value that itself holds a placeholder is expanded the same way every time.
 func (p *MCPConnectorProcessor) replaceTemplateVars(template string, stepInput map[string]interface{}, execution *WorkflowExecution) string {
 	result := template
 
 	// Replace {{input.key}} variables
-	for key, value := range stepInput {
+	for _, key := range sortedInputKeys(stepInput) {
+		value := stepInput[key]
 		placeholder := fmt.Sprintf("{{input.%s}}", key)
 		if str, ok := value.(string); ok {
 			result = strings.ReplaceAll(result, placeholder, str)
@@ -306,7 +316,8 @@ func (p *MCPConnectorProcessor) replaceTemplateVars(template string, stepInput m
 	// Replace {{steps.stepname.output.key}} variables
 	for _, stepExec := range execution.Steps {
 		if stepExec.Status == "completed" {
-			for key, value := range stepExec.Output {
+			for _, key := range sortedInputKeys(stepExec.Output) {
+				value := stepExec.Output[key]
 				placeholder := fmt.Sprintf("{{steps.%s.output.%s}}", stepExec.Name, key)
 				if str, ok := value.(string); ok {
 					result = strings.ReplaceAll(result, placeholder, str)
@@ -316,7 +327,8 @@ func (p *MCPConnectorProcessor) replaceTemplateVars(template string, stepInput m
 	}
 
 	// Replace {{workflow.input.key}} variables
-	for key, value := range execution.Input {
+	for _, key := range sortedInputKeys(execution.Input) {
+		value := execution.Input[key]
 		placeholder := fmt.Sprintf("{{workflow.input.%s}}", key)
 		if str, ok := value.(string); ok {
 			result = strings.ReplaceAll(result, placeholder, str)

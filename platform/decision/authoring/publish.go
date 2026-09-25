@@ -44,10 +44,23 @@ type PublicationProvenance struct {
 	// which is what the bundle's own provenance pins. Both are recorded because
 	// they answer different questions: one identifies the document a reviewer
 	// approved, the other identifies the input the compiler consumed.
-	PolicySourceDigest string    `json:"policy_source_digest"`
-	BundleDigest       string    `json:"bundle_digest"`
-	Supersedes         string    `json:"supersedes,omitempty"`
-	PublishedAt        time.Time `json:"published_at"`
+	PolicySourceDigest string `json:"policy_source_digest"`
+	// CatalogVersion is the deployment catalog version the document was
+	// published against (Catalog.Provenance.RegistryVersion), which says what the plane
+	// names in its binds_on MEANT at publication: `wcp` covered the
+	// orchestrator's request routes until
+	// legacycompile.RouteSeamSplitCatalogVersion, and the step gate alone from
+	// it (activation reads this through legacycompile.BindsOnPinned).
+	//
+	// OMITEMPTY IS LOAD BEARING. Artifact.verify re-marshals this struct and
+	// re-digests it, so a field that serialised on an artifact published before
+	// it existed would break that artifact's signature and its digest - every
+	// stored artifact at once. Absent therefore means "published before the pin
+	// existed", which is exactly the pre-split vocabulary.
+	CatalogVersion int64     `json:"catalog_version,omitempty"`
+	BundleDigest   string    `json:"bundle_digest"`
+	Supersedes     string    `json:"supersedes,omitempty"`
+	PublishedAt    time.Time `json:"published_at"`
 }
 
 // artifactView is the exact byte sequence the artifact signature covers.
@@ -251,6 +264,7 @@ func Publish(ctx context.Context, d *Document, cat *Catalog, opts PublishOptions
 	findings := Validate(d, cat)
 	findings = append(findings, checkApproverIdentifiers(opts.Approvers)...)
 	findings = append(findings, checkEditionConstructs(d, profile)...)
+	findings = append(findings, warnForcedSystemControls(d, profile)...)
 	// Separation of duties is an EDITION capability (PRD 5.3, None/None/Full),
 	// so the check runs only where the edition carries it. The approver
 	// IDENTIFIER check above is not conditional and must not become so: a
@@ -326,6 +340,7 @@ func Publish(ctx context.Context, d *Document, cat *Catalog, opts PublishOptions
 			HelperDigest:       pdp.HelperDigest(),
 			SourceDigest:       sourceDigest,
 			PolicySourceDigest: bundle.Provenance.SourceDigest,
+			CatalogVersion:     cat.Provenance.RegistryVersion,
 			BundleDigest:       bundleDigest,
 			Supersedes:         d.Metadata.Supersedes,
 			PublishedAt:        now.UTC(),

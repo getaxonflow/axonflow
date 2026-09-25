@@ -172,7 +172,7 @@ func ungovernableResumeRequest(planID, orgID, tenantID, clientID string) Orchest
 // request_unbuildable carries, and a blocked audit row stamped with plane map and
 // the anchored engine (PRD v11 §5.7).
 func recordUngovernablePlan(ctx context.Context, req OrchestratorRequest, err error) {
-	anchoredenforcer.RecordEnforcement(mapSeamScope, anchoredenforcer.EngineAnchored, "unavailable", anchoredenforcer.CauseRequest)
+	anchoredenforcer.RecordEnforcement(mapSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, anchoredenforcer.CauseRequest)
 	if auditLogger == nil {
 		return
 	}

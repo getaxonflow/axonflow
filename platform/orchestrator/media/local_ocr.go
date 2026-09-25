@@ -12,26 +12,24 @@ import (
 	"time"
 )
 
-// LocalOCRAnalyzer uses Tesseract OCR to extract text from images,
-// then feeds the extracted text through the existing PII detection pipeline.
+// LocalOCRAnalyzer uses Tesseract OCR to extract text from images, then scans
+// the extracted text with the platform's PII detectors (NewEnginePIIDetector).
 // Available in Community tier (no license required).
 type LocalOCRAnalyzer struct {
-	name           string
-	tesseractPath  string
-	language       string
-	piiDetector    PIIDetectorFunc
+	name          string
+	tesseractPath string
+	language      string
+	piiDetector   PIIDetectorFunc
 }
 
-// PIIDetectorFunc is a function type for PII detection on extracted text.
+// PIIDetectorFunc scans extracted text for PII. An error means the text was NOT
+// scanned, which the analyzer records as unknown (MediaAnalysisResult.PIIScanned
+// false), never as "no PII".
 //
-// NOTHING INJECTS ONE ON THE PRODUCTION PATH. NewLocalOCRAnalyzer is called with
-// nil below, so OCR-extracted text is scanned by no detector (#4300). The
-// detector this comment used to name, the orchestrator's regex EnhancedPIIDetector,
-// was dead code and was removed in #4291; re-injecting it is not the fix. The
-// platform's detectors are the shared engine's, read as FACTS by the anchored
-// engine, and OCR text arrives request-side, so wiring it is a plane-assignment
-// decision rather than a hook to fill in here.
-type PIIDetectorFunc func(text string) []PIIFinding
+// The production factory injects NewEnginePIIDetector, the shared policy
+// engine's text PII detectors (#4300). Until then nil was injected and
+// OCR-extracted text was scanned by nothing.
+type PIIDetectorFunc func(ctx context.Context, text string) ([]PIIFinding, error)
 
 // NewLocalOCRAnalyzer creates a new local OCR analyzer.
 func NewLocalOCRAnalyzer(name string, tesseractPath string, language string, piiDetector PIIDetectorFunc) *LocalOCRAnalyzer {
@@ -105,10 +103,20 @@ func (a *LocalOCRAnalyzer) Analyze(ctx context.Context, media MediaContent) (*Me
 	}
 
 	result.ExtractedText = strings.TrimSpace(extractedText)
+	result.TextExtracted = true
 
-	// Run PII detection on extracted text
-	if a.piiDetector != nil && result.ExtractedText != "" {
-		result.PIIFindings = a.piiDetector(result.ExtractedText)
+	// Scan the extracted text for PII. Empty text from a successful OCR run is a
+	// scan with nothing to find; a detector that did not run leaves PIIScanned
+	// false, so the PII signal reads unknown rather than "no PII".
+	if a.piiDetector != nil {
+		if result.ExtractedText == "" {
+			result.PIIScanned = true
+		} else if findings, scanErr := a.piiDetector(ctx, result.ExtractedText); scanErr != nil {
+			result.Error = fmt.Sprintf("PII scan did not run: %v", scanErr)
+		} else {
+			result.PIIFindings = findings
+			result.PIIScanned = true
+		}
 	}
 
 	result.AnalysisTimeMs = time.Since(start).Milliseconds()
@@ -147,6 +155,6 @@ func init() {
 			}
 		}
 
-		return NewLocalOCRAnalyzer(config.Name, tesseractPath, language, nil), nil
+		return NewLocalOCRAnalyzer(config.Name, tesseractPath, language, NewEnginePIIDetector(globalPIIEngine, config.Name)), nil
 	})
 }

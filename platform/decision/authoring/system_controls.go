@@ -11,6 +11,7 @@ import (
 
 	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
+	"axonflow/platform/decision/registry"
 )
 
 // SystemControlEntry is an organization's control of one shipped system control
@@ -113,6 +114,102 @@ func validateSystemControls(d *Document) Findings {
 			out = append(out, newFinding(CodeSystemControlNotReactionable, "", fmt.Sprintf(
 				"%s assigns %q to the shipped dynamic control %s, which v11 lets an organization disable but not re-action", at, c.Action, c.Control)))
 		}
+	}
+	return out
+}
+
+// SystemControlForcedScopes returns the enforcement scopes, sorted, on which
+// the shipped control's action is FORCED for its category
+// (legacycompile.PlaneSpec.Forces), so that an entry disabling or re-actioning
+// it is not applied there (#4259). Empty for every control but the shipped PII
+// controls, which the cowork ingest storage plane forces to redact.
+//
+// Activation's fold decides the same question per policy on the restriction it
+// folds (activation.foldSystemControls); this is the publication-time reading
+// of it, over the shipped corpus, its scope bindings and the detector census,
+// and activation's TestThePublishWarningNamesExactlyTheScopesTheFoldKeeps holds
+// the two to one answer for every shipped control.
+func SystemControlForcedScopes(control string) ([]string, error) {
+	forced, err := forcedSystemControlScopes()
+	if err != nil {
+		return nil, err
+	}
+	return slices.Clone(forced[control]), nil
+}
+
+var forcedSystemControlScopes = sync.OnceValues(func() (map[string][]string, error) {
+	corpus, err := pdp.SystemCorpusDocument()
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := pdp.SystemCorpusScopeBindings()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := registry.ShippedCensus()
+	if err != nil {
+		return nil, err
+	}
+	bySignal := make(map[string]registry.CensusRow, len(rows))
+	for _, r := range rows {
+		bySignal[registry.DetectorID(r.PolicyID).SignalPath()] = r
+	}
+	out := map[string][]string{}
+	for _, scope := range legacycompile.AllScopes() {
+		spec, err := legacycompile.SpecFor(scope.Plane)
+		if err != nil {
+			return nil, err
+		}
+		if spec.ForcedAction == "" {
+			continue
+		}
+		for _, p := range corpus.Policies {
+			control, _, ok := legacycompile.CorpusControlOf(p.ID)
+			if !ok {
+				continue
+			}
+			if bound, has := bindings[p.ID]; has && !slices.Contains(bound, scope.String()) {
+				continue
+			}
+			for _, path := range p.ReferencedPaths() {
+				row, censused := bySignal[path]
+				if !censused || !slices.Contains(row.Planes, string(scope.Plane)) {
+					continue
+				}
+				if _, does := spec.Forces(row.Category); does && !slices.Contains(out[control], scope.String()) {
+					out[control] = append(out[control], scope.String())
+				}
+			}
+		}
+	}
+	for c := range out {
+		slices.Sort(out[c])
+	}
+	return out, nil
+})
+
+// warnForcedSystemControls warns of each entry whose control a scope forces
+// (CodeSystemControlForcedOnScope). It runs at publication, beside the edition
+// boundary, because the one forcing scope, cowork_ingest, exists only in the
+// Enterprise build (registry/legacy_plane_peps.tsv): a Community publication
+// never runs it, and is not warned.
+func warnForcedSystemControls(d *Document, p Profile) Findings {
+	if d == nil || len(d.SystemControls) == 0 || p.edition == EditionCommunity {
+		return nil
+	}
+	var out Findings
+	for _, c := range d.SystemControls {
+		scopes, err := SystemControlForcedScopes(c.Control)
+		if err != nil {
+			return append(out, newFinding(CodeEnvelopeInvalid, "", "the shipped corpus could not be read to check system_controls: "+err.Error()))
+		}
+		if len(scopes) == 0 {
+			continue
+		}
+		out = append(out, newFinding(CodeSystemControlForcedOnScope, "", fmt.Sprintf(
+			"system_controls names %s (%s), and %v forces redact on its category, so the entry is not applied there: "+
+				"the cowork ingest storage plane masks PII before it stores content, whatever a document says. "+
+				"The entry applies on every other plane", c.Control, c.instruction(), scopes)))
 	}
 	return out
 }

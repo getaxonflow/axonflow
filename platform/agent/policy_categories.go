@@ -157,6 +157,9 @@ func IsValidDynamicCategory(category PolicyCategory) bool {
 
 // PolicyTier represents the tier level in the policy hierarchy.
 // Policies are organized into three tiers: system, organization, and tenant.
+// The compliance reports state the same strings as
+// platform/shared/activationinputs.TierSystem, TierTenant and TierOrganization
+// (the sibling vocabulary, #4249): a rename in either must move the other.
 type PolicyTier string
 
 const (

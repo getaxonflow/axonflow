@@ -43,6 +43,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/telemetry"
+	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/shared/pep"
@@ -65,9 +66,9 @@ import (
 // to the other via canonicalAuditVerdict (on the decision plane) so
 // audit_logs.policy_decision is canonical without disturbing the wire.
 const (
-	VerdictAllow         = "allow"
-	VerdictDeny          = "deny"
-	VerdictNeedsApproval = "needs_approval"
+	VerdictAllow         = anchoredenforcer.VerdictAllow
+	VerdictDeny          = anchoredenforcer.VerdictDeny
+	VerdictNeedsApproval = anchoredenforcer.VerdictNeedsApproval
 	decisionHandlerPath  = "/api/v1/decide"
 	// decisionResponseDefaultTTL is the default expires_at delta returned
 	// to the PEP. Override with AXONFLOW_DECISION_EXPIRES_AFTER (a Go
@@ -347,6 +348,10 @@ type DecideRequest struct {
 	Query          string                 `json:"query"`
 	UserToken      string                 `json:"user_token,omitempty"`
 	Context        map[string]interface{} `json:"context,omitempty"`
+	// ApprovalID names the approval a retry spends (#4370), for a caller that
+	// cannot set the X-Axonflow-Approval-Id header. Never part of what the
+	// approval binds.
+	ApprovalID string `json:"approval_id,omitempty"`
 	// FulfillmentCapabilities is the caller's advertised seam capability set
 	// (#2958) — see pep.CapabilityRequestBodyRedaction for the wire contract.
 	// Absent/empty means a legacy (pre-9.11.0) PEP and reproduces the previous
@@ -468,6 +473,14 @@ type DecideResponse struct {
 	// LegacyValidators names a checksum validator that acted before the
 	// anchored engine decided (#4122); omitted when none did.
 	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
+
+	// PendingApproval is set with verdict needs_approval (#4370): the call is
+	// held for a person's approval, nothing may run, and the retry names the
+	// id.
+	PendingApproval *pendingApproval `json:"pending_approval,omitempty"`
+	// ApprovalID names the approval that admitted this call, on an allow a
+	// spent approval paid for.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // DecisionObligation is a PEP-side requirement attached to an allow verdict
@@ -1283,9 +1296,53 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		user:                user,
 		userIdentity:        callerUserIdentity(authKind, userErr, req.UserToken),
 		observation:         observation,
-		pep:                 pepHandshake.pep.Profile(),
+		pep:                 pepHandshake.requestProfile(),
 		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
+		finCrime:            fincrimeParams,
 	})
+	// #4370: a challenge holds as a pending approval bound to exactly this
+	// decision's input (the stage, the target, the query and the context the
+	// engine decided on), and a retry naming an approved one spends it. An
+	// allow or a deny is answered as it is.
+	//
+	// NOT ON THE AuthZEN ADAPTER (POST /access/v1/evaluation, plane
+	// PlaneAccessEvaluation, #4375 R3 round 1). That wire forwards no
+	// X-Axonflow-Approval-Id, its body has no approval_id and its response
+	// renders no pending_approval, so a hold queued there is a row a person may
+	// approve that nothing can ever retry. It keeps approval_required until the
+	// AuthZEN wire can carry the id (#4249 row filed with this fix).
+	decideApprovalID, decideApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
+	held := approvalHoldResult{enforced: enforced}
+	if plane != PlaneAccessEvaluation {
+		held = applyApprovalHold(ctx, enforced, approvalHoldCall{
+			plane:     approvalHoldPlaneDecide,
+			route:     "decide",
+			orgID:     client.OrgID,
+			tenantID:  client.TenantID,
+			clientID:  client.ID,
+			userEmail: verifiedCallerEmail(authResult, user, userErr, req.UserToken),
+			input: map[string]interface{}{
+				"stage": stage, "target": req.Target, "query": req.Query, "context": req.Context,
+			},
+			approvalID:         decideApprovalID,
+			approvalIDConflict: decideApprovalConflict,
+			descriptor:         "decide: " + stage,
+			label:              decideHoldLabel(stage, req.Target),
+			decisionID:         decisionID,
+			// The obligation gates that can still refuse an allow on this plane
+			// (the enforcement point's declared capabilities, the seam's
+			// fulfilment capabilities), run against the approval's permit before
+			// it is spent.
+			preflight: func(allowed requestPassEnforcement) (string, string) {
+				v, reasons, _, _, _ := applyObligationGates(ctx, orgID, plane, pepHandshake, req.FulfillmentCapabilities, allowed.verdict, allowed.reasons, allowed.obligations)
+				if v == VerdictAllow {
+					return "", ""
+				}
+				return approvalPreflightRefused, strings.Join(reasons, "; ")
+			},
+		})
+	}
+	enforced = held.enforced
 	decisionAudit.decisionEngine = enforced.engine
 	decisionAudit.decisionSubjectType = enforced.subjectType
 	if len(enforced.legacyValidators) > 0 {
@@ -1297,13 +1354,14 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		// best-effort setting that silently turns itself off during exactly the
 		// incidents it exists for. The 503 carries the cause and the audit row
 		// records it.
-		recordAnchoredEnforcement(decideSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		recordAnchoredEnforcement(decideSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, enforced.unavailable)
 		auditEarlyDeny(AuditVerdictError, stage, []string{"decision_enforcement_unavailable"}, []string{enforced.unavailable})
 		sendDecideError(w, enforceCauseMessages[enforced.unavailable], http.StatusServiceUnavailable, decisionID, traceID)
 		return
 	}
 	decisionAudit.decisionPolicyBundle = enforced.policyBundle
 	decisionAudit.decisionPolicyPacks = enforced.policyPacks
+	decisionAudit.fincrimeRiskScore = enforced.riskScore.auditDetail()
 	decisionAudit.carryAnchoredIdentity(enforced)
 	decisionAudit.decisionReasonCode = enforced.reasonCode
 	verdict, reasons, obligations, triggeredPolicies := enforced.verdict, enforced.reasons, enforced.obligations, enforced.evaluatedPolicies
@@ -1376,6 +1434,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if evaluatedPolicies == nil {
 		evaluatedPolicies = []string{}
 	}
+	// A held call answers the verdict the contract reserves for it (#4370):
+	// needs_approval, which every enforcement point refuses (each admits only
+	// allow), with the pending approval the retry names.
+	if held.pending != nil && verdict == VerdictDeny {
+		verdict = VerdictNeedsApproval
+	}
 
 	// Persist the structured obligations (e.g. redact_pii) onto the audit row
 	// instead of flattening them into the reason text. Only the terminal
@@ -1411,6 +1475,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		PolicyIdentities:  alignPolicyIdentities(evaluatedPolicies, enforced.policyIdentities),
 		DocumentVersion:   enforced.documentVersion,
 		LegacyValidators:  decisionAudit.decisionLegacyValidators,
+		PendingApproval:   held.pending,
+		ApprovalID:        spentApprovalID(held),
 	})
 	recordDecideMetrics(verdict, stage, origin, startTime)
 	recordDecideOutcomeMetrics(verdict, stage, origin, obligations, blockingPolicyID, blockingPolicyTier, evaluatedPolicies, seamFallback)
@@ -2172,6 +2238,10 @@ type decisionAuditInput struct {
 	// decisionPolicyPacks are the installed policy packs that bound, at
 	// policy_details->'policy_packs' (PRD v11 §1.9).
 	decisionPolicyPacks []string
+	// fincrimeRiskScore is what the pass stated for the Engine B risk score and
+	// why (#3330), at policy_details->'fincrime_risk_score'; nil - so omitted -
+	// when no control read the score.
+	fincrimeRiskScore *riskScoreRecord
 	// policyIdentities, documentVersion and actionName are what an anchored
 	// decision named (PRD v11 §1.14), set by carryAnchoredIdentity and written
 	// by stampAnchoredIdentity.
@@ -2467,6 +2537,9 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 	}
 	if len(audit.decisionPolicyPacks) > 0 {
 		details["policy_packs"] = audit.decisionPolicyPacks
+	}
+	if audit.fincrimeRiskScore != nil {
+		details[riskScoreAuditKey] = audit.fincrimeRiskScore
 	}
 	stampAnchoredIdentity(details, audit.policyIdentities, audit.documentVersion, audit.actionName)
 	if audit.decisionReasonCode != "" {

@@ -87,6 +87,15 @@ var unanchoredSchemaBudget = map[string]int{
 	// TemplateOmissionReport is flat - an array of strings, an integer and a
 	// string - so the parity guard refuses an anchor on it for exactly the
 	// reason recorded above, and it is what this +1 is. Raised deliberately.
+	//
+	// 143, not 142: #4382 names MultiAgentStepRefusal, the 403 both multi-agent
+	// execute routes answer a refused step with. It is flat (five scalar
+	// members, multiAgentStepRefusalBody), so the parity guard refuses an anchor
+	// on it for the same reason as TemplateOmissionReport. Raised deliberately.
+	//
+	// 142, not 143: #4249 row 5774060413 retires the in-memory HITL engine, so
+	// hitl-status answers no 200 and HITLExecutionStatus is reachable from no
+	// operation (its component goes with the route in v12.0.0).
 	"orchestrator-api.yaml": 142,
 }
 

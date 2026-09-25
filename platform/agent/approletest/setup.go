@@ -22,11 +22,15 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/testutil/pgstart"
 )
 
 // Env captures the per-test DSN trio + cleanup hook.
@@ -59,6 +63,89 @@ func SkipUnlessEnabled(t *testing.T) {
 // already happened once in this repo (`wshitl` vs `wshitlchoke`). A label the
 // reaper sets itself cannot collide with anything it did not create.
 const TestContainerLabel = "axonflow.test.ephemeral=1"
+
+// TestRunLabelKey is the label that names the run a container belongs to
+// (#4184). TestContainerLabel says a container is a test's and may be reaped;
+// it is a fixed contract (CI's reapers, deploy-platform.yml and several
+// harnesses filter on it), so it cannot also carry a run id. This one can.
+//
+// A run that exports TestRunIDEnv gets `axonflow.test.run=<id>` on every
+// container started here, beside TestContainerLabel, and its runner's exit
+// trap reaps exactly those (scripts/ci/reap-test-run-containers.sh). A
+// fleet-wide reap by TestContainerLabel alone would remove a peer's live
+// containers on a shared daemon; a reap by run id cannot.
+const TestRunLabelKey = "axonflow.test.run"
+
+// TestRunIDEnv is the environment variable a runner exports to name its run.
+// Unset, containers carry TestContainerLabel only, exactly as before #4184.
+const TestRunIDEnv = "AXONFLOW_TEST_RUN_ID"
+
+// testRunID is a run id safe to pass as a label value: letters, digits, '.',
+// '_' and '-', at most 64 characters.
+var testRunID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// runLabelArgs returns the docker run arguments that label a container with
+// the run TestRunIDEnv names, or none when it is unset. A value that is set but
+// malformed is an error, and the caller fails the test rather than start a
+// container no run-scoped reap could find.
+func runLabelArgs() ([]string, error) {
+	id := os.Getenv(TestRunIDEnv)
+	if id == "" {
+		return nil, nil
+	}
+	if !testRunID.MatchString(id) {
+		return nil, fmt.Errorf("%s=%q is not a run id: want 1-64 of [A-Za-z0-9._-]", TestRunIDEnv, id)
+	}
+	return []string{"--label", TestRunLabelKey + "=" + id}, nil
+}
+
+// TestOwnerLabelKey is the label that names the process that started a
+// container, as "<hostname>:<pid>" (#4184). A test's own cleanup removes its
+// container, but not when the test binary is killed (a -timeout, a Ctrl-C, a
+// killed board), and nothing that killed it knows which containers it left.
+// The owner label lets a reaper find exactly those: a container whose owner is
+// on this host and whose pid is no longer running
+// (scripts/ci/reap-test-run-containers.sh --dead-owners). That is safe on a
+// shared daemon in the direction that matters: a recycled pid makes a dead
+// owner look alive, so its container SURVIVES; no live process is ever read
+// as dead.
+//
+// The owner label is sound ONLY because the process that labels a container
+// is also the process that removes it, so the label lives exactly as long as
+// the container should. DockerRunArgs takes a *testing.T, so it cannot be
+// called outside a test: the container belongs to one test and dies with it.
+// A helper that starts a container for a LATER process to use must not carry
+// this label, or the reaper removes it the moment its starter exits.
+const TestOwnerLabelKey = "axonflow.test.owner"
+
+// ownerLabelValue is this process's owner label value, "<hostname>:<pid>".
+func ownerLabelValue() (string, error) {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "", fmt.Errorf("the host name for the %s label could not be read: %v", TestOwnerLabelKey, err)
+	}
+	return fmt.Sprintf("%s:%d", host, os.Getpid()), nil
+}
+
+// DockerRunArgs is `docker run -d` with the labels every throwaway test
+// container carries: TestContainerLabel, the owner (TestOwnerLabelKey) and,
+// when TestRunIDEnv is set, the run (TestRunLabelKey); rest follows. Every test
+// that starts a container with the docker CLI builds its arguments here, so the
+// labels a reaper filters on are set in one place.
+func DockerRunArgs(t *testing.T, rest ...string) []string {
+	t.Helper()
+	owner, err := ownerLabelValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLabel, err := runLabelArgs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"run", "-d", "--label", TestContainerLabel, "--label", TestOwnerLabelKey + "=" + owner}
+	args = append(args, runLabel...)
+	return append(args, rest...)
+}
 
 // Setup spins up a postgres:15 container, runs every core migration, and
 // provisions login passwords on the two RLS roles created by migration 098.
@@ -201,7 +288,10 @@ func pingAs(dsn, want string) error {
 // approletest so cross-package integration tests can reuse it.
 func startPostgresContainer(t *testing.T) (string, func()) {
 	t.Helper()
-	containerName := fmt.Sprintf("axonflow-test-approle-pg-%d", time.Now().UnixNano())
+	window, err := pgstart.Window(t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// THE DATA DIRECTORY IS A tmpfs, WHICH IS WHAT MAKES THE LEAK IMPOSSIBLE
 	// RATHER THAN MERELY TIDIED UP.
 	//
@@ -228,75 +318,99 @@ func startPostgresContainer(t *testing.T) (string, func()) {
 	// The label is the second half: a container CAN still be orphaned by a
 	// killed process, and a label makes those reapable by exact match instead
 	// of by a name glob that would catch a peer's stack on a shared daemon.
-	out, err := exec.Command("docker", "run", "-d",
-		"--name", containerName,
-		"--label", TestContainerLabel,
-		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
-		"-e", "POSTGRES_PASSWORD=testpass",
-		"-e", "POSTGRES_DB=axonflow_test",
-		"-p", "0:5432",
-		"postgres:15",
-	).CombinedOutput()
+	// Every attempt's container carries the same labels (DockerRunArgs, #4430),
+	// so a retry's container is as reapable as the first.
+	runArgs := func(name string) []string {
+		return DockerRunArgs(t,
+			"--name", name,
+			"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
+			"-e", "POSTGRES_PASSWORD=testpass",
+			"-e", "POSTGRES_DB=axonflow_test",
+			"-p", "0:5432",
+			"postgres:15",
+		)
+	}
+	start := func() (pgstart.Attempt, error) {
+		name := fmt.Sprintf("axonflow-test-approle-pg-%d", time.Now().UnixNano())
+		if out, err := exec.Command("docker", runArgs(name)...).CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("docker run: %v\n%s", err, string(out))
+		}
+		return dockerAttempt{name: name}, nil
+	}
+	// The wait-and-retry rule is pgstart's: one window (AXONFLOW_TEST_PG_START_WAIT,
+	// default 90s, floor 30s) for the port and the first answer, the
+	// container's state read on every failed poll, and ONE retry with a fresh
+	// container when this one stopped or never published its port. A server
+	// that answers with an error fails at once (#4249 rows 5771426373,
+	// 5796048780).
+	url, attempt, err := pgstart.Waiter{Window: window, Logf: t.Logf}.Start(start, pingPostgres)
 	if err != nil {
-		t.Fatalf("docker run: %v\n%s", err, string(out))
+		t.Fatal(err)
 	}
-	cleanup := func() {
-		// -v, not just -f. postgres:15 declares /var/lib/postgresql/data as a
-		// VOLUME, so every container started here gets an ANONYMOUS volume, and
-		// `docker rm -f` removes the container while orphaning it. Each one holds
-		// a full initdb plus the whole migration chain, and a single run of the
-		// real-PG lanes starts hundreds of them: measured on a developer daemon
-		// after one full pass of the three arms, 339 dangling volumes holding
-		// 26.59 GB, none of them reachable by name. CI never noticed because its
-		// between-arms reaper runs `docker system prune -af --volumes`, which
-		// sweeps them up wholesale -- so the leak is invisible exactly where it
-		// is compensated and unbounded everywhere else.
-		_ = exec.Command("docker", "rm", "-fv", containerName).Run()
-	}
-	// `docker port` can transiently fail (exit status 1) or return an empty
-	// mapping for a brief window right after `docker run -d`: the container
-	// exists but the daemon hasn't finished publishing the port yet. The race
-	// widens sharply under concurrent container starts — `go test ./...` runs
-	// many container-spinning packages in parallel, and a single-shot query
-	// then intermittently reddens CI (observed: "docker port: exit status 1").
-	// Poll until the mapping resolves instead of fataling on the first miss.
-	var hostPort string
-	portDeadline := time.Now().Add(30 * time.Second)
-	for {
-		portBytes, portErr := exec.Command("docker", "port", containerName, "5432/tcp").CombinedOutput()
-		if portErr == nil {
-			portLine := strings.TrimSpace(strings.Split(string(portBytes), "\n")[0])
-			if parts := strings.Split(portLine, ":"); len(parts) >= 2 {
-				if hp := parts[len(parts)-1]; hp != "" {
-					hostPort = hp
-					break
-				}
-			}
-		}
-		if time.Now().After(portDeadline) {
-			cleanup()
-			t.Fatalf("docker port did not resolve a host port for %s within 30s (last err: %v)", containerName, portErr)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	url := fmt.Sprintf("postgres://postgres:testpass@localhost:%s/axonflow_test?sslmode=disable", hostPort)
-
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := sql.Open("postgres", url)
-		if err == nil {
-			if pingErr := conn.Ping(); pingErr == nil {
-				_ = conn.Close()
-				return url, cleanup
-			}
-			_ = conn.Close()
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	cleanup()
-	t.Fatalf("postgres container did not become ready within 30s")
-	return "", nil
+	return url, attempt.Remove
 }
+
+// pingPostgres is one readiness probe: open and ping dsn.
+func pingPostgres(dsn string) error {
+	conn, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	return conn.Ping()
+}
+
+// dockerAttempt is one container started with the docker CLI.
+type dockerAttempt struct{ name string }
+
+func (d dockerAttempt) Name() string { return d.name }
+
+// Endpoint resolves the host port the daemon published for 5432. `docker port`
+// fails (exit status 1) or answers an empty mapping until the daemon has
+// published it, which takes longest when many containers start at once.
+func (d dockerAttempt) Endpoint() (string, error) {
+	out, err := exec.Command("docker", "port", d.name, "5432/tcp").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker port: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	line := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	parts := strings.Split(line, ":")
+	if len(parts) < 2 || parts[len(parts)-1] == "" {
+		return "", fmt.Errorf("docker port answered no host port: %q", line)
+	}
+	return fmt.Sprintf("postgres://postgres:testpass@localhost:%s/axonflow_test?sslmode=disable", parts[len(parts)-1]), nil
+}
+
+func (d dockerAttempt) State() (pgstart.State, error) {
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}} {{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}", d.name).CombinedOutput()
+	if err != nil {
+		return pgstart.State{}, fmt.Errorf("docker inspect: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var st pgstart.State
+	var running, oom string
+	if _, err := fmt.Sscan(strings.TrimSpace(string(out)), &running, &st.Status, &st.ExitCode, &oom); err != nil {
+		return pgstart.State{}, fmt.Errorf("docker inspect answered %q: %v", strings.TrimSpace(string(out)), err)
+	}
+	st.Running, st.OOMKilled = running == "true", oom == "true"
+	return st, nil
+}
+
+func (d dockerAttempt) Logs(n int) string {
+	out, _ := exec.Command("docker", "logs", "--tail", strconv.Itoa(n), d.name).CombinedOutput()
+	return string(out)
+}
+
+// Remove removes the container with -v, not just -f. postgres:15 declares
+// /var/lib/postgresql/data as a VOLUME, so every container started here gets an
+// ANONYMOUS volume, and `docker rm -f` removes the container while orphaning
+// it. Each one holds a full initdb plus the whole migration chain, and a single
+// run of the real-PG lanes starts hundreds of them: measured on a developer
+// daemon after one full pass of the three arms, 339 dangling volumes holding
+// 26.59 GB, none of them reachable by name. CI never noticed because its
+// between-arms reaper runs `docker system prune -af --volumes`, which sweeps
+// them up wholesale -- so the leak is invisible exactly where it is compensated
+// and unbounded everywhere else.
+func (d dockerAttempt) Remove() { _ = exec.Command("docker", "rm", "-fv", d.name).Run() }
 
 // extractHostPort strips the host port out of a localhost DSN.
 func extractHostPort(dsn string) string {

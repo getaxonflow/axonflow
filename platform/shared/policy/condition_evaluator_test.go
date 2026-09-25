@@ -490,6 +490,17 @@ func TestConditionEvaluator_Regex_InvalidPatternDoesNotPanic(t *testing.T) {
 		if got {
 			t.Errorf("invalid pattern %q must not match, got true", p)
 		}
+		// #4249 row 5674229132: and it is recorded as unevaluable, exactly once.
+		rec := &fakeRecorder{}
+		_ = e.Match(cond, fieldMapResolver(map[string]any{"f": "hello"}), rec)
+		if len(rec.reasons) != 1 || rec.reasons[0] != ReasonInvalidPattern {
+			t.Errorf("invalid pattern %q recorded %v; want exactly [%s]", p, rec.reasons, ReasonInvalidPattern)
+		}
+	}
+	// CONTROL: a valid pattern that does not match records nothing.
+	rec := &fakeRecorder{}
+	if e.Match(MatchCondition{Field: "f", Operator: "regex", Value: "^bye$"}, fieldMapResolver(map[string]any{"f": "hello"}), rec) || len(rec.reasons) != 0 {
+		t.Errorf("a valid non-matching pattern matched or recorded %v", rec.reasons)
 	}
 }
 

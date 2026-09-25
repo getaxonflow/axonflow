@@ -41,6 +41,7 @@ import (
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
 	"axonflow/platform/shared/idempotency"
 	logutil "axonflow/platform/shared/logger"
@@ -717,6 +718,10 @@ type MCPQueryRequest struct {
 	Parameters map[string]interface{} `json:"parameters"`  // Query parameters
 	Limit      int                    `json:"limit"`       // Result limit (optional)
 	Timeout    string                 `json:"timeout"`     // Timeout (optional, e.g., "5s")
+
+	// ApprovalID names the approval a retry spends (#4370), for a client that
+	// cannot set the X-Axonflow-Approval-Id header.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // --- Policy evaluation helpers (Issue #1258) ---
@@ -1741,7 +1746,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		"", // capabilityScopeIdentity: the agent runs the statement, so no tool identity scopes it (#2801)
 		statement, req.Parameters,
 		mcpDetectionCfg)
-	requestEnforced := enforceMCPRequest(ctx, requestPassInput{
+	queryApprovalID, queryApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
+	requestEnforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
 		orgID:        client.OrgID,
 		decisionID:   auditEntry.DecisionID,
 		query:        statement,
@@ -1749,12 +1755,34 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		user:         user,
 		userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
 		observation:  observationOf(inputOutcome.StaticResult),
-	}, pepHandshakeResolution{}) // this route resolves no capability handshake
+		finCrime:     finCrimeParametersFromContext(req.Parameters),
+	}, pepHandshakeResolution{}, // this route resolves no capability handshake
+		&approvalHoldCall{
+			plane:     approvalHoldPlaneMCPRequest,
+			route:     "mcp_query",
+			orgID:     client.OrgID,
+			tenantID:  user.TenantID,
+			clientID:  auth.Client.ID,
+			userEmail: verifiedCallerEmail(auth, user, userErr, req.UserToken),
+			// What the route will run: the connector, the operation, the
+			// statement it evaluated, the parameters and the row limit.
+			input: map[string]interface{}{
+				"connector": req.Connector, "operation": req.Operation, "statement": statement,
+				"parameters": req.Parameters, "limit": req.Limit,
+			},
+			approvalID:         queryApprovalID,
+			approvalIDConflict: queryApprovalConflict,
+			descriptor:         fmt.Sprintf("mcp query: %s", req.Connector),
+			label:              mcpHoldLabel(req.Connector, req.Operation),
+			// This route's own refusal of an allow (refuseMCPConnectorRequest),
+			// run against the approval's permit before it is spent.
+			preflight: mcpConnectorPreflight,
+		})
 	if inputOutcome.StaticResult != nil {
 		auditEntry.RequestPoliciesEvaluated = inputOutcome.StaticResult.PoliciesEvaluated
 	}
 	auditEntry.RequestMatchedPolicies = requestEnforced.evaluatedPolicies
-	if refuseMCPConnectorRequest(ctx, w, requestEnforced, &auditEntry, startTime, emitDecisionAudit) {
+	if refuseMCPConnectorRequest(ctx, w, requestEnforced, held.pending, &auditEntry, startTime, emitDecisionAudit) {
 		return
 	}
 
@@ -1904,6 +1932,10 @@ type MCPExecuteRequest struct {
 	Statement  string                 `json:"statement"`   // SQL/CQL statement
 	Parameters map[string]interface{} `json:"parameters"`  // Command parameters
 	Timeout    string                 `json:"timeout"`     // Timeout (optional)
+
+	// ApprovalID names the approval a retry spends (#4370), for a client that
+	// cannot set the X-Axonflow-Approval-Id header.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // mcpExecuteHandler executes a command via a connector (MCP Tool pattern)
@@ -2166,7 +2198,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		"", // capabilityScopeIdentity: the agent runs the statement, so no tool identity scopes it (#2801)
 		req.Statement, req.Parameters,
 		mcpDetectionCfg)
-	requestEnforced := enforceMCPRequest(ctx, requestPassInput{
+	executeApprovalID, executeApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
+	requestEnforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
 		orgID:        client.OrgID,
 		decisionID:   auditEntry.DecisionID,
 		query:        req.Statement,
@@ -2174,12 +2207,34 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		user:         user,
 		userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
 		observation:  observationOf(inputOutcome.StaticResult),
-	}, pepHandshakeResolution{}) // this route resolves no capability handshake
+		finCrime:     finCrimeParametersFromContext(req.Parameters),
+	}, pepHandshakeResolution{}, // this route resolves no capability handshake
+		&approvalHoldCall{
+			plane:     approvalHoldPlaneMCPRequest,
+			route:     "mcp_execute",
+			orgID:     client.OrgID,
+			tenantID:  user.TenantID,
+			clientID:  auth.Client.ID,
+			userEmail: verifiedCallerEmail(auth, user, userErr, req.UserToken),
+			// What the route will run: the connector, the operation, the
+			// action, the statement and its parameters.
+			input: map[string]interface{}{
+				"connector": req.Connector, "operation": req.Operation, "action": req.Action,
+				"statement": req.Statement, "parameters": req.Parameters,
+			},
+			approvalID:         executeApprovalID,
+			approvalIDConflict: executeApprovalConflict,
+			descriptor:         fmt.Sprintf("mcp execute: %s", req.Connector),
+			label:              mcpHoldLabel(req.Connector, req.Operation),
+			// This route's own refusal of an allow (refuseMCPConnectorRequest),
+			// run against the approval's permit before it is spent.
+			preflight: mcpConnectorPreflight,
+		})
 	if inputOutcome.StaticResult != nil {
 		auditEntry.RequestPoliciesEvaluated = inputOutcome.StaticResult.PoliciesEvaluated
 	}
 	auditEntry.RequestMatchedPolicies = requestEnforced.evaluatedPolicies
-	if refuseMCPConnectorRequest(ctx, w, requestEnforced, &auditEntry, startTime, emitDecisionAudit) {
+	if refuseMCPConnectorRequest(ctx, w, requestEnforced, held.pending, &auditEntry, startTime, emitDecisionAudit) {
 		return
 	}
 
@@ -2296,6 +2351,10 @@ type MCPCheckInputRequest struct {
 	Statement  string                 `json:"statement"`
 	Parameters map[string]interface{} `json:"parameters,omitempty"`
 	Operation  string                 `json:"operation,omitempty"` // "query" or "execute"; defaults to "execute"
+	// ApprovalID names the approval a retry spends (#4370), for a client that
+	// cannot set the X-Axonflow-Approval-Id header. Never part of what the
+	// approval binds.
+	ApprovalID string `json:"approval_id,omitempty"`
 	// ContentType selects the request-redaction detector (ADR-056 / #2563
 	// addendum). Empty defaults to "text/plain". A content_type with no
 	// registered detector is rejected (415) so the caller fails closed rather
@@ -2332,6 +2391,14 @@ type MCPCheckInputResponse struct {
 	// allowed statement with no PII), so the field is purely additive.
 	Redacted          bool   `json:"redacted,omitempty"`
 	RedactedStatement string `json:"redacted_statement,omitempty"`
+	// RedactedParameters hands back each request parameter the redaction
+	// masked, keyed by parameter, as the text the request pass scanned it as:
+	// the string itself, or a map or list parameter's JSON serialisation,
+	// masked as one text so a span across the serialisation is masked as it was
+	// matched; the caller decodes it where it decodes the parameter (#4264).
+	// omitempty: a caller that never carried PII in its parameters gets a
+	// byte-identical response.
+	RedactedParameters map[string]string `json:"redacted_parameters,omitempty"`
 	// RedactionEvaluated reports whether the redaction detector actually RAN
 	// (regardless of whether it masked anything). A PEP fulfilling a redact_pii
 	// obligation MUST fail closed when this is false — it means the redactor did
@@ -2353,6 +2420,13 @@ type MCPCheckInputResponse struct {
 	// LegacyValidators names a checksum validator that acted on the statement
 	// before the anchored engine decided it (#4122).
 	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
+
+	// PendingApproval is set when the call is held for a person's approval
+	// (#4370): allowed stays false, nothing ran, and the retry names the id.
+	PendingApproval *pendingApproval `json:"pending_approval,omitempty"`
+	// ApprovalID names the approval that admitted this call, on an allow a
+	// spent approval paid for.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // RicherPolicyMatch is the plugin-facing shape of a matched policy. Kept
@@ -2873,7 +2947,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			evaluated, req.Parameters,
 			mcpDetectionCfg)
 		observation := observationOf(outcome.StaticResult)
-		enforced := enforceMCPRequest(ctx, requestPassInput{
+		approvalID, approvalIDConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
+		enforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
 			orgID:        orgID,
 			decisionID:   decisionID,
 			query:        evaluated,
@@ -2881,7 +2956,38 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			user:         user,
 			userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
 			observation:  observation,
-		}, pepHandshake)
+			finCrime:     finCrimeParametersFromContext(req.Parameters),
+		}, pepHandshake, &approvalHoldCall{
+			plane:              approvalHoldPlaneMCPRequest,
+			route:              "mcp_check_input",
+			orgID:              orgID,
+			tenantID:           tenantID,
+			clientID:           auth.Client.ID,
+			userEmail:          verifiedCallerEmail(auth, user, userErr, req.UserToken),
+			input:              mcpStatementInput(req.ConnectorType, req.Tool, req.Operation, req.Statement, req.Parameters),
+			approvalID:         approvalID,
+			approvalIDConflict: approvalIDConflict,
+			descriptor:         fmt.Sprintf("mcp check-input: %s", req.ConnectorType),
+			label:              mcpHoldLabel(req.ConnectorType, req.Tool),
+			// The wire's refusals of an allow, run against the approval's permit
+			// before it is spent, on a throwaway seam so they record nothing.
+			preflight: func(allowed requestPassEnforcement) (string, string) {
+				p := projectMCPStatement(withMCPRequestSeam(ctx), orgID, allowed, pepHandshake, req.Statement, evaluated, outcome.Options, observation)
+				if p.unavailable != "" {
+					return approvalPreflightOutage, p.unavailable
+				}
+				if !p.allowed {
+					return p.reasonCode, p.blockReason
+				}
+				return "", ""
+			},
+		})
+		if held.outcome != "" {
+			// An answer the approval hold acted on belongs to THIS call in THIS
+			// state (a pending approval, a spend, a refused retry): the
+			// Idempotency-Key cache, keyed without the body, must not replay it.
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		projected := projectMCPStatement(ctx, orgID, enforced, pepHandshake, req.Statement, evaluated, outcome.Options, observation)
 		policiesEvaluated := 0
 		if outcome.StaticResult != nil {
@@ -2896,7 +3002,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			// FAIL CLOSED (PRD v11 §1.7): nothing decides a request the engine
 			// could not decide. The canonical "error" row keeps the unevaluated
 			// attempt portal-visible under the same decision_id (#2641).
-			recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, "unavailable", projected.unavailable)
+			recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, projected.unavailable)
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 			logMCPQueryAudit(auditEntry)
 			writeMCPDecisionAudit(ctx, usageDB,
@@ -2942,6 +3048,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
 				Allowed:           false,
 				BlockReason:       projected.blockReason,
+				PendingApproval:   held.pending,
 				PoliciesEvaluated: policiesEvaluated,
 				DecisionID:        decisionID,
 				PolicyMatches:     matches,
@@ -2956,12 +3063,11 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 
 		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, VerdictAllow, projected.reasonCode)
 		if projected.redacted {
-			// The masked unit on this surface IS the single statement, so the
-			// satellite records count=1 and the coarse "statement" descriptor
-			// (#2641 sibling finding #3).
+			// The masked units on this surface are the statement and each masked
+			// parameter, recorded by name (#2641 sibling finding #3; #4264).
 			auditEntry.ResponseRedacted = true
-			auditEntry.ResponseRedactionsCount = 1
-			auditEntry.ResponseRedactedFields = []string{"statement"}
+			auditEntry.ResponseRedactedFields = projected.redactedFields()
+			auditEntry.ResponseRedactionsCount = len(auditEntry.ResponseRedactedFields)
 		}
 		auditEntry.Success = true
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
@@ -3002,9 +3108,17 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			PolicyPacks:        seam.packsRecorded(),
 			LegacyValidators:   legacyValidators,
 		}
+		if held.outcome == approvalSpentOutcome {
+			resp.ApprovalID = held.approvalID
+		}
 		if projected.redacted {
 			resp.Redacted = true
+		}
+		if projected.statementRedacted {
 			resp.RedactedStatement = projected.statement
+		}
+		if len(projected.redactedParameters) > 0 {
+			resp.RedactedParameters = projected.redactedParameters
 		}
 
 		w.Header().Set("Content-Type", "application/json")

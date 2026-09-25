@@ -71,6 +71,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"axonflow/platform/agent/rls"
 	"axonflow/platform/decision/authoring"
@@ -214,6 +215,7 @@ func (s *Store) ArtifactBySourceDigest(ctx context.Context, root pdp.Root, sourc
 }
 
 func (s *Store) loadOne(ctx context.Context, query string, root pdp.Root, key string) (*authoring.Artifact, bool, error) {
+	since := time.Now() // when this read began: see reloadWaiting
 	var raw []byte
 	err := rls.WithOrgScope(ctx, s.db, s.orgID, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, query, s.orgID, string(root), key).Scan(&raw)
@@ -224,7 +226,7 @@ func (s *Store) loadOne(ctx context.Context, query string, root pdp.Root, key st
 	if err != nil {
 		return nil, false, fmt.Errorf("authoringstore: reading artifact under root %q: %w", root, err)
 	}
-	art, err := s.loadVerified(ctx, raw)
+	art, err := s.loadVerified(ctx, raw, since)
 	if err != nil {
 		return nil, false, loadFailure(root, err)
 	}
@@ -240,18 +242,24 @@ func (s *Store) loadOne(ctx context.Context, query string, root pdp.Root, key st
 var ErrArtifactUnverifiable = errors.New("authoringstore: a stored artifact did not verify on load")
 
 // ErrSigningKeyNotLoaded reports that a stored artifact's signing key is not in
-// this process's trust, and the reload that could admit it was deferred:
-// another reload was in flight, or the last ran inside the reload floor. The
-// key may be one another replica authorized moments ago, or one that is not
-// authorized at all, and only a reload can tell which (#4255). The
-// typed-authoring route answers it 503 key_not_loaded, and a retry after the
-// floor usually settles it.
+// this process's trust and no reload could settle whether it should be: the
+// read WAITED for the reload it would have been deferred behind (#4272) and
+// that wait timed out - a reload longer than the floor, or a context that
+// ended first. The key may be one another replica authorized moments ago, or
+// one that is not authorized at all, and only a reload that completes can tell
+// which (#4255). The typed-authoring route answers it 503 key_not_loaded, and
+// a retry usually settles it.
+//
+// It is NOT what a deferred reload yields any more: since #4272 a read whose
+// reload is deferred waits for it and is answered definitively - 200, 500
+// unverifiable, or 503 storage_unavailable if the reload itself failed. This
+// sentinel is the one case left over, the wait that did not finish.
 var ErrSigningKeyNotLoaded = errors.New("authoringstore: the artifact's signing key is not loaded on this replica")
 
 // loadFailure names why a stored artifact that was read did not load. The one
 // storage failure loadVerified can meet, a failed re-read of the authorized
-// keys, is marked there and stays a storage failure. A key that a deferred
-// reload has not loaded is ErrSigningKeyNotLoaded. Every other refusal is
+// keys, is marked there and stays a storage failure. A key whose reload the
+// read waited for WITHOUT it finishing is ErrSigningKeyNotLoaded (#4272). Every other refusal is
 // the artifact's own and carries ErrArtifactUnverifiable.
 func loadFailure(root pdp.Root, err error) error {
 	if errors.Is(err, errKeyReloadFailed) {
@@ -287,8 +295,9 @@ func (s *Store) CountArtifacts(ctx context.Context, root pdp.Root) (int, error) 
 // the alternative is showing an operator a version whose signature, module or
 // carried source no longer holds, labelled as though it did.
 func (s *Store) ListArtifacts(ctx context.Context, root pdp.Root, limit int) ([]*authoring.Artifact, error) {
+	since := time.Now() // when this listing began: one wait, not one per artifact (reloadWaiting)
 	query := `
-		SELECT artifact FROM typed_policy_artifacts
+		SELECT digest, artifact FROM typed_policy_artifacts
 		WHERE org_id = $1 AND root = $2
 		ORDER BY document_version DESC, digest ASC
 	`
@@ -298,6 +307,7 @@ func (s *Store) ListArtifacts(ctx context.Context, root pdp.Root, limit int) ([]
 		args = append(args, limit)
 	}
 	var raws [][]byte
+	var digests []string
 	err := rls.WithOrgScope(ctx, s.db, s.orgID, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
@@ -305,10 +315,12 @@ func (s *Store) ListArtifacts(ctx context.Context, root pdp.Root, limit int) ([]
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
+			var digest string
 			var raw []byte
-			if err := rows.Scan(&raw); err != nil {
+			if err := rows.Scan(&digest, &raw); err != nil {
 				return err
 			}
+			digests = append(digests, digest)
 			raws = append(raws, raw)
 		}
 		return rows.Err()
@@ -319,13 +331,38 @@ func (s *Store) ListArtifacts(ctx context.Context, root pdp.Root, limit int) ([]
 	// Loading happens OUTSIDE the transaction. Each load runs a compile and a
 	// lint, and holding a pooled connection open across that work for a page
 	// of artifacts is how an authoring listing starves the request path.
+	//
+	// ONE ARTIFACT THAT DOES NOT LOAD IS NAMED, NOT THE PAGE (#4283 item 3). An
+	// artifact that no longer verifies, or whose key a reload this read waited
+	// for did not settle (#4272), is left out and named in
+	// *authoring.ArtifactsSkipped beside the rest. A failed re-read of the authorized keys is the STORE failing, and
+	// still fails the listing.
 	out := make([]*authoring.Artifact, 0, len(raws))
-	for _, raw := range raws {
-		art, err := s.loadVerified(ctx, raw)
+	var skipped []authoring.SkippedArtifact
+	for i, raw := range raws {
+		art, err := s.loadVerified(ctx, raw, since)
 		if err != nil {
-			return nil, loadFailure(root, err)
+			failure := loadFailure(root, err)
+			// THE ORDER IS ClassifyStoreFailure's, NOT A SECOND COPY OF IT
+			// (master R3 round 1 on #4439, MEDIUM-1). This switch read
+			// unverifiable first and key-not-loaded second, the reverse of the
+			// classification, and its words reach the wire as
+			// SkippedArtifact.Reason. It agreed only because loadFailure marks
+			// one sentinel per error.
+			switch ClassifyStoreFailure(failure) {
+			case StoreKeyNotLoaded:
+				skipped = append(skipped, authoring.SkippedArtifact{Digest: digests[i], Reason: "key_not_loaded", Err: failure})
+				continue
+			case StoreUnverifiable:
+				skipped = append(skipped, authoring.SkippedArtifact{Digest: digests[i], Reason: "artifact_unverifiable", Err: failure})
+				continue
+			}
+			return nil, failure
 		}
 		out = append(out, art)
+	}
+	if len(skipped) > 0 {
+		return out, &authoring.ArtifactsSkipped{Skipped: skipped}
 	}
 	return out, nil
 }
@@ -533,6 +570,16 @@ func (s *Store) recordAudit(ctx context.Context, tx *sql.Tx, root pdp.Root, e au
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13)
 	`+onConflict, s.orgID, string(root), string(e.Action), e.Digest, activationSeq, e.PreviousDigest,
 		e.DocumentID, e.DocumentVersion, e.Actor.String(), string(rawApprovers), e.SelfApproved, e.Reason, e.At.UTC()); err != nil {
+		// A UNIQUE VIOLATION HERE IS THE RACE, NOT AN OUTAGE (master R3 round
+		// 1 on #4396, LOW-4). A row already holding this activation's sequence
+		// number describes a different event - another replica recorded it
+		// first - which is precisely ErrActivationRaced. Left unmarked it was
+		// marked as the store failing, and the caller was answered 503 "retry
+		// once the database is reachable": a retry cannot change it, and the
+		// database was reachable throughout.
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: an audit row for sequence %d under root %q is already recorded", authoring.ErrActivationRaced, activationSeq, root)
+		}
 		return fmt.Errorf("authoringstore: recording the %s audit row for %s under root %q: %w", e.Action, e.Digest, root, err)
 	}
 	return nil

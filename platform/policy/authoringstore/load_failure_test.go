@@ -58,7 +58,7 @@ func TestALoadFailureIsTheArtifactsOwnUnlessTheKeysCouldNotBeReRead(t *testing.T
 
 	t.Run("a key no longer authorized is ErrArtifactUnverifiable", func(t *testing.T) {
 		stub := &stubTrust{current: pdp.NewTrustStore(), changed: false}
-		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored)
+		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored, time.Now())
 		if lerr == nil {
 			t.Fatal("the artifact loaded although no trust source authorizes its key")
 		}
@@ -73,7 +73,7 @@ func TestALoadFailureIsTheArtifactsOwnUnlessTheKeysCouldNotBeReRead(t *testing.T
 
 	t.Run("a failed re-read of the keys is a storage failure, never ErrArtifactUnverifiable", func(t *testing.T) {
 		stub := &stubTrust{current: pdp.NewTrustStore(), err: errors.New("dial tcp: connection refused")}
-		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored)
+		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored, time.Now())
 		if lerr == nil {
 			t.Fatal("the artifact loaded although its key is unknown and the reload failed")
 		}
@@ -87,7 +87,7 @@ func TestALoadFailureIsTheArtifactsOwnUnlessTheKeysCouldNotBeReRead(t *testing.T
 	})
 
 	t.Run("a key whose reload was deferred is ErrSigningKeyNotLoaded, never ErrArtifactUnverifiable", func(t *testing.T) {
-		_, lerr := (&Store{trust: &deferredTrust{current: pdp.NewTrustStore()}}).loadVerified(context.Background(), stored)
+		_, lerr := (&Store{trust: &deferredTrust{current: pdp.NewTrustStore()}}).loadVerified(context.Background(), stored, time.Now())
 		if lerr == nil {
 			t.Fatal("the artifact loaded although no trust source authorizes its key")
 		}
@@ -108,7 +108,7 @@ func TestALoadFailureIsTheArtifactsOwnUnlessTheKeysCouldNotBeReRead(t *testing.T
 	// such read is a storage failure, never key_not_loaded.
 	t.Run("a deferred skip carrying a reload failure is storage, never key_not_loaded", func(t *testing.T) {
 		stub := &deferredFailingTrust{current: pdp.NewTrustStore(), err: errors.New("dial tcp: connection refused")}
-		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored)
+		_, lerr := (&Store{trust: stub}).loadVerified(context.Background(), stored, time.Now())
 		if lerr == nil {
 			t.Fatal("the artifact loaded although its key is unknown and the reload failed")
 		}

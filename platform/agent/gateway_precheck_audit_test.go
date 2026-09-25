@@ -178,7 +178,13 @@ func setupPreCheckAuditTest(t *testing.T) (sqlmock.Sqlmock, func()) {
 	origAuthDB := authDB
 	origCB := circuitBreakerInstance
 	origCost := costService
-	origIndo := indonesiaPIIDetector
+	// getIndonesiaPIIDetector, not the raw global. The detector is created
+	// lazily behind indonesiaPIIDetectorOnce, and a request in the test fires
+	// the Once. Saving the raw global saves nil when this is the first test to
+	// touch the detector, and cleanup would then restore nil under a fired
+	// Once: every later test in the process that relies on the Indonesia
+	// validator would decide with no detector (#4249 row 5675016368).
+	origIndo := getIndonesiaPIIDetector()
 
 	usageDB = mockDB
 	authDB = nil // satellite write no-ops → only the canonical row hits usageDB

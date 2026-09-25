@@ -65,6 +65,37 @@ assert_clean() {
   fi
 }
 
+# assert_flags_why <name> <content> <line> <reason substring>: flagged on that
+# line, and for that reason - an arm that fires for another arm's reason is not
+# tested by it.
+assert_flags_why() {
+  local name="$1" file rc=0
+  file=$(fixture "$name" "$2")
+  python3 "$LINT" "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq 1 ] && grep -qF -- "fixture.sh:$3:" "$TEST_TMPDIR/out.txt" \
+    && grep -qF -- "^ $4" <<<"$(grep -A1 -F -- "fixture.sh:$3:" "$TEST_TMPDIR/out.txt")"; then
+    record PASS "$name"
+  else
+    record FAIL "$name (want rc=1, a hit on line $3 for '$4', got rc=$rc)"
+    sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+  fi
+}
+
+# assert_admitted <name> <content> <line> <reason substring>: clean, and the
+# site is listed by --show-admitted under that reason. An admit that fires on
+# the wrong shape is the SILENT direction, so each reason has its own cell.
+assert_admitted() {
+  local name="$1" file rc=0
+  file=$(fixture "$name" "$2")
+  python3 "$LINT" --show-admitted "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qF -- "(admitted: $4" <<<"$(grep -F -- "fixture.sh:$3:" "$TEST_TMPDIR/out.txt")"; then
+    record PASS "$name"
+  else
+    record FAIL "$name (want rc=0 and line $3 admitted for '$4', got rc=$rc)"
+    sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+  fi
+}
+
 echo "=== Testing lint-pipefail-early-exit-reader.py ==="
 
 echo ""
@@ -91,8 +122,6 @@ names=$(cat list | grep -l x)' 2
 assert_flags "head -1 in an assignment" 'set -euo pipefail
 tip=$(printf '"'"'%s\n'"'"' "$shas" | head -1)' 2
 
-assert_flags "head inside \"\$(...)\" inside double quotes" 'set -euo pipefail
-echo "newest: $(ls -t | head -n 1)"' 2
 
 assert_flags "sed with a q command" 'set -euo pipefail
 first=$(cmd | sed -n '"'"'1p;q'"'"')' 2
@@ -187,6 +216,207 @@ if [ "$rc" -eq 2 ]; then
 else
   record FAIL "--readers grep,tail (want rc=2, got rc=$rc)"
 fi
+
+echo ""
+echo "Flagged where the status is READ, each arm for its own reason (row 5665386080)"
+
+assert_flags_why "the condition of an if" 'set -uo pipefail
+if cmd | grep -q x; then :; fi' 2 "a statement is the condition of if/elif/while/until/!"
+
+assert_flags_why "an assignment that is an operand of ||, without errexit" 'set -uo pipefail
+x=$(cmd | head -1) || echo none' 2 "an assignment is an operand of && / ||"
+
+assert_flags_why "the last statement of a function, without errexit" 'set -uo pipefail
+first() {
+  cmd | head -1
+}' 3 "a statement ends a function or subshell body"
+
+assert_flags_why "a statement whose status the next line reads" 'set -uo pipefail
+cmd | grep -q x
+if [ $? -eq 0 ]; then :; fi' 2 "the next statement reads"
+
+assert_flags_why "a bare statement under errexit" 'set -euo pipefail
+cmd | head -5' 2 "a statement under errexit"
+
+# The substitution-in-argument admit is the one most able to over-admit, so the
+# shapes an assignment can take are planted: each is an assignment-only command
+# whose status the shell reports (all four abort with 141 under errexit).
+assert_flags_why "an assignment written to look like an argument" 'set -euo pipefail
+x="prefix $(cmd | head -1) suffix"' 2 "an assignment under errexit"
+
+assert_flags_why "an array assignment" 'set -euo pipefail
+arr=($(cmd | head -1))' 2 "an assignment under errexit"
+
+assert_flags_why "the LAST substitution of an assignment-only command" 'set -euo pipefail
+x=$(true) y=$(cmd | head -1)' 2 "an assignment under errexit"
+
+assert_flags_why "an assignment with a redirection and no command" 'set -euo pipefail
+x=$(cmd | head -1) 2>/dev/null' 2 "an assignment under errexit"
+
+# A file in scope only by inheritance cannot know its caller's options, so it is
+# judged under errexit: the same assignment is admitted in a script that sets
+# pipefail without -e, and flagged in a lib/ helper.
+mkdir -p "$TEST_TMPDIR/inherit-errexit/lib"
+printf '%s\n' '# sourced; no set line of its own' 'x=$(cmd | head -1)' 'echo "$x"' > "$TEST_TMPDIR/inherit-errexit/lib/helper.sh"
+rc=0
+python3 "$LINT" "$TEST_TMPDIR/inherit-errexit/lib" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 1 ] && grep -qF "an assignment under errexit" <<<"$(grep -A1 -F -- "lib/helper.sh:2:" "$TEST_TMPDIR/out.txt")"; then
+  record PASS "an inherited-scope file is judged under errexit"
+else
+  record FAIL "an inherited-scope file (want rc=1 and lib/helper.sh:2 under errexit, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+echo ""
+echo "Read INSIDE a substitution, across quotes, and at the end of a body (R3 round 1 on #4412)"
+
+# #4072's own shape inside a substitution: the pipe's status is read by the
+# if / && INSIDE the substitution, whatever holds it. bash prints MISSING for
+# both; the lint before this fix admitted both.
+assert_flags_why "an if condition inside a substitution in an argument" 'set -euo pipefail
+echo "$(if yes | grep -q y; then echo found; else echo MISSING; fi)"' 2 "a statement is the condition of if/elif/while/until/!"
+
+assert_flags_why "an && operand inside a substitution under local" 'set -euo pipefail
+f(){ local v=$(yes | grep -q y && echo found || echo MISSING); echo "$v"; }
+f' 2 "a statement is an operand of && / ||"
+
+# A `;` or `)` inside a quoted argument does not end the statement.
+assert_flags_why "an && operand after a quoted semicolon" 'set -o pipefail
+yes "a;b" | grep -q "a;b" && echo found || echo MISSING
+echo end' 2 "a statement is an operand of && / ||"
+
+assert_flags_why "a function end after an awk program with a semicolon" 'set -o pipefail
+f() {
+  yes | awk '"'"'NR==3 {print; exit}'"'"'
+}
+x=$(f) || echo failed' 3 "a statement ends a function or subshell body"
+
+assert_flags_why "the last statement of an if body" 'set -o pipefail
+f() { if true; then yes | head -n 1 >/dev/null; fi; }
+f; echo "$?"' 2 "a statement ends the body of an if/for/while/case"
+
+assert_flags_why "the file's last statement" 'set -o pipefail
+echo start
+yes | head -n 1 >/dev/null' 3 "a statement is the file's last statement"
+
+assert_flags_why "an && split across a newline" 'set -o pipefail
+if true &&
+  yes | grep -q y; then echo found; fi' 3 "a statement is an operand of && / ||"
+
+assert_flags_why "\$? read past a comment line" 'set -o pipefail
+yes | grep -q y
+# a comment
+
+echo "status=$?"' 2 "the next statement reads"
+
+assert_flags_why "a bare return next" 'set -o pipefail
+g() {
+  yes | head -n 1 >/dev/null
+  return
+}
+g' 3 "a statement is followed by a bare exit/return"
+
+assert_flags_why "a substitution inside arithmetic" 'set -euo pipefail
+x=$(( $(yes 1 | head -n 1) + 1 ))
+echo "$x"' 2 "an assignment under errexit"
+
+assert_admitted "a statement inside a substitution that is not its last" 'set -euo pipefail
+x=$(yes | head -n 1; echo second)
+echo "$x"' 2 "a statement inside a command substitution that is not its last"
+
+# A sourced file that sets pipefail itself still cannot know its caller's
+# errexit, so it is judged under errexit.
+mkdir -p "$TEST_TMPDIR/own-pipefail/lib"
+printf '%s\n' 'set -o pipefail' 'k() {' '  v=$(yes | head -n 1)' '  echo "got $v"' '  echo done' '}' > "$TEST_TMPDIR/own-pipefail/lib/helper.sh"
+rc=0
+python3 "$LINT" "$TEST_TMPDIR/own-pipefail/lib" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 1 ] && grep -qF "an assignment under errexit" <<<"$(grep -A1 -F -- "lib/helper.sh:3:" "$TEST_TMPDIR/out.txt")"; then
+  record PASS "a lib/ file that sets pipefail but not -e is still judged under errexit"
+else
+  record FAIL "a lib/ file with its own pipefail (want rc=1 and lib/helper.sh:3 under errexit, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+echo ""
+echo "Admitted where the shell discards the status, each reason planted"
+
+assert_admitted "a substitution in an argument, even under errexit" 'set -euo pipefail
+echo "newest: $(ls -t | head -n 1)"' 2 "command substitution in a word of a command"
+
+assert_admitted "a substitution inside a test bracket" 'set -euo pipefail
+[ "$(cmd | head -1)" = x ] && echo same' 2 "command substitution in a word of a command"
+
+assert_admitted "a prefix assignment on a command" 'set -euo pipefail
+FOO=$(cmd | head -1) env' 2 "command substitution in a word of a command"
+
+assert_admitted "an assignment through local" 'set -euo pipefail
+f() {
+  local x=$(cmd | head -1)
+  echo "$x"
+}' 3 "assignment through local/declare/export/readonly"
+
+assert_admitted "not the last substitution of an assignment-only command" 'set -euo pipefail
+x=$(cmd | head -1) y=$(true)' 2 "not the last substitution"
+
+assert_admitted "an operand of || true" 'set -euo pipefail
+cmd | head -3 || true' 2 "operand of \`|| true\`"
+
+assert_admitted "a process substitution" 'set -euo pipefail
+while read -r l; do echo "$l"; done < <(cmd | head -1)' 2 "process substitution"
+
+assert_admitted "an untested assignment without errexit" 'set -uo pipefail
+x=$(cmd | head -1)
+echo "$x"' 2 "no errexit and nothing tests it"
+
+echo ""
+echo "The inline allow"
+
+rc=0
+file=$(fixture "an allow accepts a flagged site and lists it" 'set -euo pipefail
+tip=$(git log | head -1)  # pipefail-ok: the log is one line in this fixture')
+python3 "$LINT" "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && grep -qF -- "(allowed: the log is one line in this fixture) " "$TEST_TMPDIR/out.txt"; then
+  record PASS "an allow accepts a flagged site and the report lists it with its reason"
+else
+  record FAIL "an allowed site (want rc=0 and an (allowed: ...) line, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+rc=0
+file=$(fixture "an allow with no reason" 'set -euo pipefail
+tip=$(git log | head -1)  # pipefail-ok:')
+python3 "$LINT" "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 1 ] && grep -qF -- "fixture.sh:2: pipefail-ok with an empty reason" "$TEST_TMPDIR/out.txt"; then
+  record PASS "an allow with an empty reason is a finding"
+else
+  record FAIL "an empty allow (want rc=1 and the empty-reason finding, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+rc=0
+file=$(fixture "a stale allow" 'set -euo pipefail
+tip=$(git log | sed -n 1p)  # pipefail-ok: once read with head')
+python3 "$LINT" "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 1 ] && grep -qF -- "fixture.sh:2: stale pipefail-ok" "$TEST_TMPDIR/out.txt"; then
+  record PASS "an allow on a line with no flagged site is a finding (it cannot outlive its code)"
+else
+  record FAIL "a stale allow (want rc=1 and the stale finding, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+rc=0
+file=$(fixture "an allow on an admitted site" 'set -euo pipefail
+echo "$(git log | head -1)"  # pipefail-ok: nothing to accept here')
+python3 "$LINT" "$file" > "$TEST_TMPDIR/out.txt" 2>&1 || rc=$?
+if [ "$rc" -eq 1 ] && grep -qF -- "fixture.sh:2: stale pipefail-ok" "$TEST_TMPDIR/out.txt"; then
+  record PASS "an allow on an admitted site accepts nothing and is stale"
+else
+  record FAIL "an allow on an admitted site (want rc=1 and the stale finding, got rc=$rc)"
+  sed 's/^/      /' "$TEST_TMPDIR/out.txt"
+fi
+
+assert_clean "the allow text inside a string is not an allow" 'set -euo pipefail
+echo "a # pipefail-ok: not a comment"'
 
 echo ""
 echo "Not flagged"

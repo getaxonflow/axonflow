@@ -1,6 +1,6 @@
 # Decision Mode and the Decision Shadow (retired in v11)
 
-**Platform Version:** v11.0.0. v11.0.0 retires the decision mode: it and its shadow observer shipped in v10.3.0, and v10.4.0 added `enforce`.
+**Platform Version:** v11.1.0. v11.0.0 retires the decision mode: it and its shadow observer shipped in v10.3.0, and v10.4.0 added `enforce`.
 
 **Status:** Retired. This page states what replaced them and what a deployment that configured them has to change.
 
@@ -30,7 +30,7 @@ A scope that is not listed is still decided by the legacy engines until it cuts 
 | Any of `AXONFLOW_DECISION_SHADOW_MODE`, `_PLANES`, `_SAMPLE_RATE`, `_QUEUE_DEPTH`, `_WORKERS`, `_MATCH_LOG_EVERY`, `_REALM`, `_CONTENT_TARGET`, set to a non-empty value on the agent or the orchestrator | **The process refuses to boot**, and the message names every one that is set | Remove the variable. An empty value is accepted, because earlier compose files and templates pass these variables through empty |
 | The CloudFormation parameters `DecisionShadowMode`, `DecisionShadowPlanes`, `DecisionShadowSampleRate`, `DecisionShadowWorkers`, `DecisionShadowQueueDepth`, `DecisionShadowMatchLogEvery` | Removed from both templates. CloudFormation rejects a stack update that passes a parameter the template does not declare | Remove them from your parameter overrides before the update |
 | `decision_shadow_mode` or `decision_shadow_planes` in `PUT /api/v1/admin/organizations/{org_id}/identity-settings` (Enterprise) | **Refused with a 400** that names the field | Remove the field from the request |
-| A stored per-organization `decision_shadow_mode` or `decision_shadow_planes` value | Ignored. The columns stay in the schema, unread, and are dropped in v12: during a rolling deploy a v10.4 customer portal, which writes both columns by name, still runs against the migrated schema | Nothing |
+| A stored per-organization `decision_shadow_mode` or `decision_shadow_planes` value | Ignored in v11.0.0, where the columns stay in the schema unread so a v10.3-or-later customer portal still runs against them during a rolling deploy. From v11.1.0, enterprise migration 161 drops both columns and their values ([#4165](https://github.com/getaxonflow/axonflow-enterprise/issues/4165)); a v10.x customer portal, which reads and writes them by name, can then neither read nor save identity settings, and a v10.x agent's per-organization settings read fails (it falls back and logs the failure) | Upgrade every customer portal and every agent to v11 before v11.1.0's migrations run (advisory: nothing refuses a boot or a migration if you do not) |
 | Dashboards or alerts on `axonflow_decision_shadow_*` | The series are no longer exported | Remove the panels and alerts |
 
 The variables are refused rather than ignored for a reason. Each one chose what decided a request, or whether two engines were compared. A deployment that sets one believes it still does that. A container that will not start is noticed at once; a variable ignored with a log line leaves the deployment running in a posture its own configuration misdescribes.

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // This package is depended on by four planes, and its doc comment calls the
@@ -144,7 +146,7 @@ func TestFamiliesReturnsACopy(t *testing.T) {
 // expectation computed by the code under test agrees with it whatever it does.
 const (
 	wantLink      = `</api/v1/typed-policies>; rel="successor-version"`
-	wantRemovedIn = "v11.1"
+	wantRemovedIn = "v12.0"
 	// fixedSince and fixedDeprecation pin the RFC 9745 FORMAT against a fixed
 	// date: 2026-10-01T00:00:00Z is 1790812800 seconds after the epoch. The
 	// real date is DeprecatedSince, which release prep sets.
@@ -224,7 +226,7 @@ func TestStampDeprecation(t *testing.T) {
 						t.Errorf("%s: %s = %q; want %q", f+suffix, k, got, want)
 					}
 				}
-				// Sunset is a DATE (RFC 8594), and v11.1 has none yet.
+				// Sunset is a DATE (RFC 8594), and v12.0.0 has none yet.
 				if got := h.Get("Sunset"); got != "" {
 					t.Errorf("%s: Sunset = %q; want empty", f+suffix, got)
 				}
@@ -394,6 +396,120 @@ func TestDeprecatedSinceIsSetOnceVERSIONReachesTheDeprecatingRelease(t *testing.
 	}
 	if err := requireDeprecationDate(string(raw), DeprecatedInRelease, DeprecatedSince); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TagRunEnv gates the tag-step check below. The release runbook sets it to the
+// release being tagged (AXONFLOW_TAG_RUN=v11.1.0) in the checkout it is about to
+// tag; unset, which is every CI run and the community mirror, the check skips and
+// the parse-only guard above is the whole rule. No GitHub Actions run sets it:
+// no workflow runs go test on a tag push, so the tag step is where it runs
+// (#4249 row 5674413071).
+const TagRunEnv = "AXONFLOW_TAG_RUN"
+
+// deprecatingTag is the tag DeprecatedInRelease was released under. It is
+// derived, never passed in, so the check cannot be pointed at another tag.
+func deprecatingTag() string { return "v" + DeprecatedInRelease }
+
+// tagCommitUTCDate is the UTC calendar date (YYYY-MM-DD) of the commit tag
+// points at in the repository at dir. The committer date is read as %cI and
+// converted, because `git log --date=format:` renders a date in the commit's
+// OWN offset: v11.0.0 was committed at 07:42 +0200, and a commit at 23:30 -0500
+// is the NEXT day in UTC. A tag that does not exist is an error naming it.
+func tagCommitUTCDate(dir, tag string) (string, error) {
+	ref := "refs/tags/" + tag + "^{commit}"
+	sha, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Output()
+	if err != nil {
+		return "", fmt.Errorf("tag %s is not present in %s (git rev-parse --verify %s failed: %v); "+
+			"fetch the tags before the tag step, since a shallow or tagless checkout cannot answer this", tag, dir, ref, err)
+	}
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%cI", strings.TrimSpace(string(sha))).Output()
+	if err != nil {
+		return "", fmt.Errorf("read the committer date of %s in %s: %v", tag, dir, err)
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", fmt.Errorf("parse the committer date %q of %s: %v", strings.TrimSpace(string(out)), tag, err)
+	}
+	return at.UTC().Format("2006-01-02"), nil
+}
+
+// requireTagDate is the tag-step rule: DeprecatedSince must be the UTC date of
+// the commit the deprecating release's tag points at. A parseable date is not
+// enough, which is all requireDeprecationDate can check.
+func requireTagDate(dir, tag, since string) error {
+	want, err := tagCommitUTCDate(dir, tag)
+	if err != nil {
+		return err
+	}
+	if since != want {
+		return fmt.Errorf("DeprecatedSince is %q, but %s points at a commit dated %s UTC: the Deprecation header "+
+			"would claim the wrong day; set DeprecatedSince to %q", since, tag, want, want)
+	}
+	return nil
+}
+
+// TestDeprecatedSinceIsTheDeprecatingTagsUTCDate runs only at the release
+// runbook's tag step (TagRunEnv set). There, an absent tag is a failure, never a
+// skip: the step is the only place this is checked.
+func TestDeprecatedSinceIsTheDeprecatingTagsUTCDate(t *testing.T) {
+	release := os.Getenv(TagRunEnv)
+	if release == "" {
+		t.Skipf("%s is unset: this runs at the release runbook's tag step only; the parse-only guard "+
+			"TestDeprecatedSinceIsSetOnceVERSIONReachesTheDeprecatingRelease is the rule elsewhere", TagRunEnv)
+	}
+	if _, err := semverCore(strings.TrimPrefix(release, "v")); err != nil {
+		t.Fatalf("%s=%q is not the release being tagged (vMAJOR.MINOR.PATCH): %v", TagRunEnv, release, err)
+	}
+	if err := requireTagDate(filepath.Join("..", "..", ".."), deprecatingTag(), DeprecatedSince); err != nil {
+		t.Fatalf("tagging %s: %v", release, err)
+	}
+}
+
+// TestTheTagDateRuleRedsWhereItShould holds the tag-step rule to a repository it
+// builds, since CI checkouts carry no tags: the right date passes; a well-formed
+// wrong date, an absent tag, and a local date that is not the UTC date all red.
+func TestTheTagDateRuleRedsWhereItShould(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatalf("git is not on PATH, so the tag-step rule cannot be exercised: %v", err)
+	}
+	dir := t.TempDir()
+	git := func(date string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=tag@example.invalid",
+			"-c", "user.name=tag", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_COMMITTER_DATE="+date, "GIT_AUTHOR_DATE="+date)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("2026-09-15T07:42:05+02:00", "init", "-q", ".")
+	git("2026-09-15T07:42:05+02:00", "commit", "-q", "--allow-empty", "-m", "the deprecating release")
+	git("2026-09-15T07:42:05+02:00", "tag", "v11.0.0")
+	git("2026-09-15T23:30:00-05:00", "commit", "-q", "--allow-empty", "-m", "late in the day, west of UTC")
+	git("2026-09-15T23:30:00-05:00", "tag", "v-west")
+
+	for _, c := range []struct {
+		name, tag, since, wantErr string // wantErr "" means: must pass
+	}{
+		{"the tag's UTC date passes", "v11.0.0", "2026-09-15", ""},
+		{"a well-formed wrong date reds", "v11.0.0", "2026-09-14", `set DeprecatedSince to "2026-09-15"`},
+		{"an absent tag reds, naming it", "v10.9.9", "2026-09-15", "tag v10.9.9 is not present"},
+		{"the committer's local date is not the UTC date", "v-west", "2026-09-15", `set DeprecatedSince to "2026-09-16"`},
+		{"the UTC date of a commit west of UTC passes", "v-west", "2026-09-16", ""},
+	} {
+		err := requireTagDate(dir, c.tag, c.since)
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("%s: requireTagDate(%s, %q) = %v; want nil", c.name, c.tag, c.since, err)
+		case c.wantErr != "" && err == nil:
+			t.Errorf("%s: requireTagDate(%s, %q) = nil; want an error containing %q", c.name, c.tag, c.since, c.wantErr)
+		case c.wantErr != "" && !strings.Contains(err.Error(), c.wantErr):
+			t.Errorf("%s: requireTagDate(%s, %q) = %v; want it to contain %q", c.name, c.tag, c.since, err, c.wantErr)
+		}
+	}
+	if got := deprecatingTag(); got != "v11.0.0" {
+		t.Errorf("deprecatingTag() = %q; want v11.0.0 for DeprecatedInRelease %q", got, DeprecatedInRelease)
 	}
 }
 

@@ -108,10 +108,12 @@ func (e *tierLimitRefusal) Error() string { return e.Decision.Message() }
 
 // AuthError renders the refusal for the AuthError-carrying planes.
 func (e *tierLimitRefusal) AuthError() *AuthError {
+	decision := e.Decision
 	ae := &AuthError{
 		Code:       e.Decision.Code,
 		Message:    e.Decision.Message(),
 		HTTPStatus: admission.HTTPStatus,
+		admission:  &decision,
 	}
 	if e.Decision.RetryAfter > 0 {
 		ae.RetryAfter = strconv.Itoa(int(e.Decision.RetryAfter.Seconds()))
@@ -145,6 +147,33 @@ func writeTierLimitRefusal(w http.ResponseWriter, ref *tierLimitRefusal) {
 	}
 	w.WriteHeader(admission.HTTPStatus)
 	_ = json.NewEncoder(w).Encode(ref.Decision.Wire())
+}
+
+// writeTierLimitClientRefusal renders a tier-limit refusal on /api/request
+// (#4276), for both of its branches: the credential's service principal
+// (Authenticate) and the user token's human principal (ResolveUser). Callers
+// gate it on isTierLimitAuthError; every other AuthError keeps its own path.
+//
+// The body is the route's documented ClientResponse, not admission.Wire: the
+// SDKs parse a 402 on this route as a ClientResponse, and the Go SDK returns
+// it as a non-error, so the refusal must say blocked:true in that shape (a
+// Wire body would read as not blocked). The code is carried as a field, the
+// message as error and block_reason. Retry-After is set when and only when
+// the refusal carries one, which is the ledger-outage refusal; an over_limit
+// refusal is a ceiling with no reset.
+func writeTierLimitClientRefusal(w http.ResponseWriter, authErr *AuthError) {
+	if authErr.RetryAfter != "" {
+		w.Header().Set("Retry-After", authErr.RetryAfter)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(admission.HTTPStatus)
+	_ = json.NewEncoder(w).Encode(ClientResponse{
+		Success:     false,
+		Error:       authErr.Message,
+		Code:        authErr.Code,
+		Blocked:     true,
+		BlockReason: authErr.Message,
+	})
 }
 
 // canonicalPrincipalEmail is the key a human principal is admitted under:

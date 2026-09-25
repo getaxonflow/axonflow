@@ -1,6 +1,6 @@
 # Identity-Compat Mode and the Identity Comparison (retired in v11)
 
-**Platform Version:** v11.0.0. v11.0.0 retires the identity-compat mode: it and its comparison shipped in v10.2.0, dark and `off` by default.
+**Platform Version:** v11.1.0. v11.0.0 retires the identity-compat mode: it and its comparison shipped in v10.2.0, dark and `off` by default.
 
 **Status:** Retired. This page states what replaced them and what a deployment that configured them has to change.
 
@@ -21,7 +21,7 @@ From v10.2 to v10.4 the legacy credential paths decided authentication, and the 
 | Any of `AXONFLOW_IDENTITY_COMPAT_MODE`, `_ENFORCE_REASONS`, `_PATHS`, `_AGREEMENT_LOG_EVERY`, set to a non-empty value on the agent or the orchestrator, `off` included | **The process refuses to boot**, and the message names every one that is set | Remove the variable. An empty value is accepted, because earlier compose files and templates pass these variables through empty |
 | The CloudFormation parameters `IdentityCompatMode`, `IdentityCompatEnforceReasons`, `IdentityCompatPaths`, `IdentityCompatAgreementLogEvery` | Removed from both templates. CloudFormation rejects a stack update that passes a parameter the template does not declare | Remove them from your parameter overrides before the update |
 | `compat_mode` in `PUT /api/v1/admin/organizations/{org_id}/identity-settings` (Enterprise) | **Refused with a 400** that names the retirement | Remove the field from the request |
-| A stored per-organization `compat_mode` value | Ignored. The column stays in the schema, unread, until [#4165](https://github.com/getaxonflow/axonflow-enterprise/issues/4165) drops it: during a rolling deploy a v10.x customer portal, which writes it by name, still runs against the migrated schema | Nothing |
+| A stored per-organization `compat_mode` value | Ignored in v11.0.0, where the column stays in the schema unread so a v10.2-or-later customer portal and agent still run against it during a rolling deploy. From v11.1.0, enterprise migration 161 drops the column and the value with it ([#4165](https://github.com/getaxonflow/axonflow-enterprise/issues/4165)); a v10.x customer portal, which reads and writes it by name, can then neither read nor save identity settings, and a v10.x agent's per-organization settings read fails (it falls back and logs the failure) | Upgrade every customer portal and every agent to v11 before v11.1.0's migrations run (advisory: nothing refuses a boot or a migration if you do not) |
 | `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` on the orchestrator | Not read. The orchestrator read the settings only for the comparison; the agent still reads them, [below](#per-organization-identity-settings-enterprise) | Remove it from the orchestrator |
 | Dashboards, alerts or log queries on `axonflow_identity_compat_*` or `[IDENTITY-COMPAT]` | The series are no longer exported and the lines are no longer written | Remove the panels, alerts and queries |
 | The counter `axonflow_identity_compat_org_settings_read_failures_total` or the alert `AxonFlowIdentityCompatOrgSettingsUnreadable` | Renamed `axonflow_identity_org_settings_read_failures_total` and `AxonFlowIdentityOrgSettingsUnreadable`. The counter counts the same failures and the alert fires on the same condition | Rename them in any query, panel or silence |

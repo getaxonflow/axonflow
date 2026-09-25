@@ -32,6 +32,11 @@ func (r *recordingMirrorResolver) StepMirrorExpiry(context.Context, string, stri
 	return time.Time{}, false, false, nil
 }
 
+// CurrentHoldID reports no queue row, the state these tests stand for.
+func (r *recordingMirrorResolver) CurrentHoldID(context.Context, string, string, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
 func approvableWorkflow(t *testing.T, svc *Service) string {
 	t.Helper()
 	ctx := context.Background()

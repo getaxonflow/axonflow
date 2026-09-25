@@ -39,6 +39,7 @@ import (
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/cost"
+	"axonflow/platform/shared/anchoredenforcer"
 	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/shared/edition"
 	"axonflow/platform/shared/heartbeat"
@@ -538,6 +539,7 @@ type ClientResponse struct {
 	Steps         []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
 	Metadata      map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
 	Error         string                 `json:"error,omitempty"`
+	Code          string                 `json:"code,omitempty"` // #4276: a tier-limit refusal's ERR_TIER_LIMIT_<DIMENSION> (writeTierLimitClientRefusal)
 	Blocked       bool                   `json:"blocked"`
 	BlockReason   string                 `json:"block_reason,omitempty"`
 	PolicyInfo    *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
@@ -818,6 +820,14 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		// nowhere, which the first version of this change got the wrong way
 		// round - the runtime suite read `null` off a live agent.
 		"tier_admission": tierAdmissionHealth(),
+		// #4249 row 5681489141 (b): whether the orchestrator has answered since
+		// this process started. Additive: `status` does not read it.
+		"upstream": upstreamHealth(),
+	}
+	// #3330: the Engine B scorer's health, on Enterprise only (nil on
+	// Community, whose body is unchanged). Additive: `status` does not read it.
+	if risk := riskScoreFactHealth(); risk != nil {
+		body["risk_score_fact"] = risk
 	}
 	// #3957 item 1: whether the LICENSED tier verifiably reached the database,
 	// beside the in-memory `tier` above that it can now be compared against.
@@ -868,8 +878,9 @@ func wireEnforcingSeams(db *sql.DB) {
 	if err := installAnchoredEnforcer(db, identityAdmission); err != nil {
 		log.Fatalf("❌ %v", err)
 	}
-	names := make([]string, 0, len(enforcingSeams))
-	for _, seam := range enforcingSeams {
+	serving := servingSeams()
+	names := make([]string, 0, len(serving))
+	for _, seam := range serving {
 		names = append(names, seam.scope.String())
 	}
 	log.Printf("✅ [ANCHORED-ENFORCE] the ADR-065 decision plane authors every verdict on: %s", strings.Join(names, ", "))
@@ -1335,6 +1346,11 @@ func Run() {
 	if err := refuseNarrowedDetection(); err != nil {
 		log.Fatalf("❌ %v", err)
 	}
+	// The Engine B risk-score fact's scorer (#3330): a configuration that
+	// could never score anything refuses to start rather than scoring nothing.
+	if err := wireRiskScoreFact(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
 
 	// ADR-065 identity compatibility adapters (#3550). Installed here, AFTER
 	// the database block, because the built-in trust realms are derived from
@@ -1613,6 +1629,7 @@ func Run() {
 	//       "*" is a prefix match. Default:
 	//       "x-ai-agent,x-session-id,x-leader-identity,x-tenant-*" (#2509).
 	RegisterDecisionHandlers(globalRouter)
+	RegisterPolicyPackSummaryHandler(globalRouter)
 
 	// Register the AuthZEN surface (POST /api/v1/access/evaluation) -- ADR-065
 	// compatibility plan, #3603. It is an ADAPTER over the same evaluation
@@ -1636,9 +1653,10 @@ func Run() {
 
 	// Register the dev-mode token endpoint (#2541, design §2/§4). FAIL-CLOSED:
 	// RegisterDevTokenHandler registers POST /api/v1/dev/token ONLY on an
-	// explicit non-production environment; otherwise it leaves the route
-	// unregistered (→ 404) and logs the production stance. The minter must
-	// never be reachable in production.
+	// explicit DEVELOPMENT environment - {development, dev, local}, or the
+	// explicit community mode - and never where production is stated (#4249
+	// row 5680659356: a staging-typed stack is a deployed stack). Otherwise it
+	// leaves the route unregistered (→ 404) and logs the stance.
 	RegisterDevTokenHandler(globalRouter)
 
 	// Wire shared idempotency store (#2420). Opens an admin pool once at
@@ -1769,6 +1787,10 @@ func Run() {
 	// `hitl_approval_queue` table directly. Single enforcement chokepoint
 	// for the tier gate + pending cap + history.
 	mcpHITLService = hitlService
+	// The request planes that hold a challenge as a pending approval
+	// (mcp:request, decide; #4370) queue through the same chokepoint the
+	// step gate does, on the same pool. A no-op on the Community build.
+	wireApprovalHold(usageDB)
 	hitlHandler := hitl.NewHandler(hitlService)
 	// HITL routes need apiAuthMiddleware so X-Org-ID/X-Tenant-ID headers are set
 	// from auth credentials (same pattern as circuit breaker).
@@ -2015,6 +2037,11 @@ func Run() {
 		globalRouter.Use(tel.Middleware)
 	}
 
+	// #4249 row 5681489141: learn when the orchestrator first answers, so
+	// connections refused before then are not counted against a client's
+	// circuit and /health can say whether it has been reached.
+	startUpstreamReadinessProbe(upstreamOrchestrator, orchestratorURL)
+
 	// Mark application as ready - /health will now return "healthy"
 	appReady.Store(true)
 	log.Println("✅ All initialization complete - application ready")
@@ -2119,6 +2146,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	auth, authErr := Authenticate(r, &AuthHints{ClientID: req.ClientID})
 	if authErr != nil {
+		// #4276: the licence ceiling refusing the credential's service
+		// principal, in the one shape both tier-limit branches answer.
+		if isTierLimitAuthError(authErr) {
+			writeTierLimitClientRefusal(w, authErr)
+			return
+		}
 		if authErr.RetryAfter != "" {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
@@ -2137,6 +2170,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	validateUserStart := time.Now()
 	user, userAuthErr := ResolveUser(auth, req.UserToken)
 	if userAuthErr != nil {
+		// #4276: the licence ceiling refusing the user token's human
+		// principal, in the same shape as the credential branch above.
+		if isTierLimitAuthError(userAuthErr) {
+			writeTierLimitClientRefusal(w, userAuthErr)
+			return
+		}
 		sendErrorResponse(w, userAuthErr.Message, userAuthErr.HTTPStatus, nil)
 		return
 	}
@@ -2283,7 +2322,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
 		// the legacy engine's verdict because a dependency failed would turn
 		// enforcement off during exactly the incidents it exists for.
-		recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, "unavailable", proxyEnforced.unavailable)
+		recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, anchoredenforcer.VerdictUnavailable, proxyEnforced.unavailable)
 		auditProxyDeny(AuditVerdictError, []string{"decision_enforcement_unavailable"}, []string{proxyEnforced.unavailable})
 		promRequestsTotal.WithLabelValues("error").Inc()
 		writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
@@ -2484,7 +2523,10 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// Record error for circuit breaker auto-trip (#1176 Phase 2B)
 		// ADR-052 §5 (issue #2318): clientID = credential identity.
-		if circuitBreakerInstance != nil {
+		//
+		// A connection to an orchestrator that has never answered is not an
+		// error this client caused (#4249 row 5681489141): see upstream_reach.go.
+		if circuitBreakerInstance != nil && upstreamErrorCountsAgainstClient(upstreamOrchestrator, err) {
 			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ClientID); cbErr != nil {
 				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
 			}
@@ -2840,7 +2882,8 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 
 	// Validate JWT token using the configured secret.
 	// Generate tokens using: scripts/generate-jwt.sh, or the dev-mode endpoint
-	// POST /api/v1/dev/token (non-prod only, #2541).
+	// POST /api/v1/dev/token (development environments only, #2541, #4249 row
+	// 5680659356).
 	//
 	// Algorithm pinning (#2541 §5.4): the keyfunc asserts the token's signing
 	// method is HMAC before returning the symmetric secret, and
@@ -3019,6 +3062,15 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 	if user != nil {
 		if user.Email != "" {
 			orchReq.Header.Set("X-User-Email", user.Email)
+			// The request is built fresh above, so no inbound marker can be
+			// on it. Set only for an email from a verified token's claims
+			// (ADR-067 step 1b): TokenClaims is set by validateUserToken's
+			// verified-claims return alone, and every synthesised user (the
+			// community, community-SaaS and internal-service arms, and
+			// validateUserToken's own community bypasses) carries none.
+			if user.TokenClaims != nil {
+				orchReq.Header.Set(sharedidentity.HeaderIdentitySource, sharedidentity.IdentitySourceValidatedToken)
+			}
 		}
 		if user.Role != "" {
 			orchReq.Header.Set(sharedidentity.HeaderUserRole, user.Role)
@@ -3075,9 +3127,12 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 	resp, err := http.DefaultClient.Do(orchReq)
 	if err != nil {
 		log.Printf("❌ ERROR: Failed to call orchestrator at %s: %v", orchURL, err)
-		return nil, fmt.Errorf("orchestrator connection failed: %v", err)
+		// %w, so the circuit breaker's caller can tell a dial failure from
+		// any other (upstreamErrorCountsAgainstClient). The text is unchanged.
+		return nil, fmt.Errorf("orchestrator connection failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	markUpstreamReached(upstreamOrchestrator) // #4249 row 5681489141
 	log.Printf("✅ Orchestrator responded with status: %d", resp.StatusCode)
 
 	var result map[string]interface{}

@@ -58,3 +58,20 @@ func TestMCPRedactionObligationShipsInTheCommunityBuild(t *testing.T) {
 		t.Fatalf("the obligation is not valid under the contract in a community build: %v", err)
 	}
 }
+
+// The Community build never hands back a masked parameter (ADR-066 Decision 5:
+// deciding on a declaration is enterprise_implementation), EVEN FOR the
+// declaration the Enterprise build honours.
+func TestTheCommunityBuildSubstitutesNoParametersWhateverIsDeclared(t *testing.T) {
+	declared := resolvePEPHandshake(requestWithHandshake(encodedHandshake(t, "mcp-params-v1v2",
+		contract.Capability{Type: contract.ObFieldRedact, Version: 1}, contract.Capability{Type: contract.ObFieldRedact, Version: 2})), "acme")
+	if !declared.pep.Admitted() {
+		t.Fatalf("PREMISE: the declaration was not admitted, so this asserts nothing: %+v", declared)
+	}
+	if pepSubstitutesParameters(declared) {
+		t.Error("the Community build hands a masked parameter back to a declared enforcement point")
+	}
+	if pepSubstitutesParameters(resolvePEPHandshake(requestWithHandshake(), "acme")) {
+		t.Error("the Community build hands a masked parameter back to a caller with no handshake")
+	}
+}

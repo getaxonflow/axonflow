@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -235,6 +236,10 @@ type Enforcer struct {
 	// identityEpoch is the realm registry's epoch, stamped onto every request
 	// snapshot so a decision says which realm declarations it was taken under.
 	identityEpoch func() int64
+	// groups resolves an admitted user subject's group closure, stated on the
+	// request as principal.groups (groupsAttribute). A process with no
+	// directory passes sharedidentity.NoGraphOnlyResolver.
+	groups sharedidentity.GroupClosureResolver
 	// system signs this process's restrictions of the shipped corpus, one per
 	// scope. Its key is minted here and never persisted: a key minted per
 	// process signs a bundle only this process verifies
@@ -259,7 +264,10 @@ type Enforcer struct {
 	// carry. The process that holds the licence resolves it; this package never
 	// reads a licence.
 	editionBoundary func(ctx context.Context) (authoring.Profile, bool)
-	now             func() time.Time
+	// approvalTTL is the deployment's approval window (ApprovalTTLFrom), stamped
+	// on a composed approval that no policy gave its own expiry.
+	approvalTTL time.Duration
+	now         func() time.Time
 	// Packs are the policy packs this deployment installed, instantiated for
 	// its realms once, at install (policy_packs.go), and composed by every
 	// activation beside the baseline pack (PRD v11 §1.9).
@@ -317,17 +325,19 @@ type Options struct {
 }
 
 // New builds an enforcer over an organization's active-document source, the
-// deployment vocabulary, the identity plane's subject admitter and its realm
-// epoch, minting this process's system and composition signing keys.
+// deployment vocabulary, the identity plane's subject admitter, its realm epoch
+// and its group-closure resolver, minting this process's system and
+// composition signing keys.
 func New(
 	documents ActiveDocumentSource,
 	vocabulary func() (*authoringcatalog.Snapshot, error),
 	identity *sharedidentity.SubjectAdmitter,
 	identityEpoch func() int64,
+	groups sharedidentity.GroupClosureResolver,
 	opts Options,
 ) (*Enforcer, error) {
-	if documents == nil || vocabulary == nil || identity == nil || identityEpoch == nil {
-		return nil, errors.New("anchored enforcer: an active-document source, a vocabulary, a subject admitter and a realm epoch are all required")
+	if documents == nil || vocabulary == nil || identity == nil || identityEpoch == nil || groups == nil {
+		return nil, errors.New("anchored enforcer: an active-document source, a vocabulary, a subject admitter, a realm epoch and a group-closure resolver are all required")
 	}
 	if opts.EditionBoundary == nil {
 		return nil, errors.New("anchored enforcer: an edition boundary is required; an activation must know whether it may refuse a construct outside the deployment's edition")
@@ -348,6 +358,13 @@ func New(
 	if err != nil {
 		return nil, fmt.Errorf("anchored enforcer: %w", err)
 	}
+	// The deployment's approval window, read once for this process. An invalid
+	// value refuses the enforcer, and so the process's boot (#4249 row
+	// 5774029945).
+	approvalTTL, err := ApprovalTTLFrom(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("anchored enforcer: %w", err)
+	}
 	overrides := opts.Overrides
 	if overrides == nil {
 		overrides = func(context.Context, string) (legacycompile.CategoryActions, error) { return nil, nil }
@@ -358,11 +375,13 @@ func New(
 	}
 	return &Enforcer{
 		documents: documents, vocabulary: vocabulary, identity: identity, identityEpoch: identityEpoch,
+		groups:          groups,
 		system:          system,
 		composition:     composition,
 		overrides:       overrides,
 		delivers:        delivers,
 		editionBoundary: opts.EditionBoundary,
+		approvalTTL:     approvalTTL,
 		now:             func() time.Time { return time.Now().UTC() },
 		activations:     map[enforcedKey]enforcedActivation{},
 	}, nil
@@ -393,6 +412,28 @@ func MemoizedDeploymentVocabulary(resolve func() (*authoringcatalog.Snapshot, er
 		snap = s
 		return s, nil
 	}
+}
+
+// ActiveActivation is the activation this enforcer decides an organization's
+// requests on for scope: its active document, its recorded detection
+// overrides and the installed packs, resolved in the order Evaluate resolves
+// them and through the same cache (ActivationFor), so a count taken from it is
+// a count of what is enforced (#4249, the policy summary's installed-pack
+// count). The cause of a failure is the one Evaluate would fail closed with.
+func (e *Enforcer) ActiveActivation(ctx context.Context, scope legacycompile.EnforcementScope, orgID string) (*activation.Activation, string, error) {
+	digest, _, err := e.documents.ActiveTip(ctx, orgID)
+	if err != nil {
+		return nil, CauseActiveDocument, err
+	}
+	assigned, err := e.overrides(ctx, orgID)
+	if err != nil {
+		return nil, CauseOverrides, err
+	}
+	act, err := e.ActivationFor(ctx, scope, orgID, digest, assigned)
+	if err != nil {
+		return nil, CauseForActivation(err), err
+	}
+	return act, "", nil
 }
 
 // ActivationFor returns the organization's anchored engine for one scope, the
@@ -472,6 +513,9 @@ func (e *Enforcer) ActivationFor(ctx context.Context, scope legacycompile.Enforc
 		Delivers: e.delivers(scope),
 		// The deployment's installed policy packs (PRD v11 §1.9).
 		Packs: e.Packs,
+		// The deployment's approval window (#4249 row 5774029945). It was never
+		// set, so every approval expired at the engine's 15-minute default.
+		ApprovalTTL: e.approvalTTL,
 	})
 	if err != nil {
 		return nil, err
@@ -513,6 +557,42 @@ type Call struct {
 	// replaces what the enforcer builds itself (mergeFacts). Nil for a seam that
 	// states none, which then gets exactly the request it got before.
 	Facts contract.AttributeSet
+	// AdmittedFacts states facts that need the ADMITTED principal, and is
+	// called only once the identity plane has admitted one (#3330, PRD v11
+	// §1.2 ruling R2): an external scorer's identity input is the admitted
+	// principal, which Evaluate establishes after the seam built this call, so
+	// no seam can state such a fact through Facts. It is never called for a
+	// refused or unverifiable subject, so nothing about a caller the identity
+	// plane did not admit leaves the process.
+	//
+	// It may state only paths under AdmittedFactPrefix, and never one the
+	// enforcer builds (mergeAdmittedFacts): a scorer's number is a signal a
+	// typed constraint reads, not a detector verdict, so it can never
+	// contradict the observation. Nil for a call that needs none.
+	AdmittedFacts func(ctx context.Context, in AdmittedFactsInput) contract.AttributeSet
+}
+
+// AdmittedFactPrefix is the one namespace Call.AdmittedFacts may state: an
+// external scorer's signal (#3330). A path outside it is refused and the
+// request fails closed as CauseRequest, so the hook cannot become a second
+// route for any other fact.
+const AdmittedFactPrefix = "signal.scorer."
+
+// AdmittedFactsInput is what Call.AdmittedFacts is handed: the principal the
+// identity plane admitted, and which paths this scope's activation reads, so a
+// producer that calls out of process does so only where a control will read
+// its answer.
+type AdmittedFactsInput struct {
+	// Principal is the admitted root principal in the contract's wire form
+	// (Verdict.Principal), and SubjectType its type (User, Client, Service).
+	Principal   string
+	SubjectType string
+	// Reads reports whether a policy this activation carries reads path.
+	Reads func(path string) bool
+	// Act is the activation deciding the call, for a producer that records
+	// which controls read its fact.
+	Act *activation.Activation
+	Now time.Time
 }
 
 // Subject is the credential a request presents to the identity plane
@@ -536,6 +616,17 @@ type Verdict struct {
 	// subjectType is the admitted principal's type (User, Client, Service),
 	// set whenever the identity plane admitted one.
 	SubjectType string
+	// Principal is the admitted root principal the engine decided for, in the
+	// decision contract's wire form (Type::realm:subject), set whenever the
+	// identity plane admitted one. A plane that holds for an approval names its
+	// requester with it (#4370), so the requester is the principal decided for
+	// and not a second derivation. Never serialized: nothing marshals a Verdict
+	// whole (every record copies named fields), and the tag keeps it that way.
+	Principal string `json:"-"`
+	// IdentityDetail is the directory's own account of why the admitted
+	// subject's group closure is unknown, set only when it is; the request
+	// carries the reason code alone (principal.groups).
+	IdentityDetail string
 }
 
 // FailClosed logs why a request could not get an anchored verdict.
@@ -584,7 +675,7 @@ func (e *Enforcer) Evaluate(ctx context.Context, call Call) Verdict {
 		return fail(CauseRequest, fmt.Errorf("action %s is not in the deployment vocabulary", action))
 	}
 
-	principal, subjectType, adm := e.subjectFor(ctx, call, entry.MaxDelegationDepth)
+	subject, adm := e.subjectFor(ctx, call, entry.MaxDelegationDepth)
 	switch {
 	case adm.State == sharedidentity.AdmissionDeny:
 		// A determinate refusal of this request's subject: a user token that
@@ -594,11 +685,22 @@ func (e *Enforcer) Evaluate(ctx context.Context, call Call) Verdict {
 	case !adm.State.IsAdmitted():
 		return fail(CauseSubjectUnverifiable, errors.New(adm.String()))
 	}
-	v.SubjectType = subjectType
+	v.SubjectType = subject.subjectType
+	v.Principal = subject.id.String()
 
-	req, err := anchoredRequest(act, entry, action, principal, call, epoch, e.identityEpoch(), e.now())
+	closure, detail := e.groupsOf(ctx, call.OrgID, subject)
+	v.IdentityDetail = detail
+	req, err := anchoredRequest(act, entry, action, subject.id, call, epoch, e.identityEpoch(), closure, e.now())
 	if err != nil {
 		return fail(CauseRequest, err)
+	}
+	if call.AdmittedFacts != nil {
+		admitted := call.AdmittedFacts(ctx, AdmittedFactsInput{
+			Principal: v.Principal, SubjectType: v.SubjectType, Reads: act.ReadsPath, Act: act, Now: e.now(),
+		})
+		if err := mergeAdmittedFacts(req.Attributes, admitted); err != nil {
+			return fail(CauseRequest, err)
+		}
 	}
 	dec, err := act.Engine.DecideWith(ctx, req, pdp.DecideOptions{PEP: call.PEP})
 	if err != nil {
@@ -608,33 +710,78 @@ func (e *Enforcer) Evaluate(ctx context.Context, call Call) Verdict {
 	return v
 }
 
+// admittedSubject is what one admission established about a call's subject.
+type admittedSubject struct {
+	// id is the admitted root principal as the decision contract names it.
+	id contract.ID
+	// root is the same principal as the identity plane names it.
+	root sharedidentity.PrincipalID
+	// subjectType is the root's type (User, Client, Service).
+	subjectType string
+	// credential says the subject was admitted through the credential door: the
+	// request carried no user identity (Subject.Credential).
+	credential bool
+	// admitted is the realm the root was verified under and the aliases that
+	// verification bound to it.
+	admitted sharedidentity.AdmittedSubject
+}
+
 // subjectFor admits the call's subject through the identity plane's door for
-// it, and returns the admitted principal and its type.
-func (e *Enforcer) subjectFor(ctx context.Context, call Call, maxDepth int) (contract.ID, string, sharedidentity.Admission) {
+// it, and returns what the admission established.
+func (e *Enforcer) subjectFor(ctx context.Context, call Call, maxDepth int) (admittedSubject, sharedidentity.Admission) {
 	var subject Subject
 	ok := false
 	if call.Subject != nil {
 		subject, ok = call.Subject(e.now())
 	}
 	if !ok {
-		return contract.ID{}, "", sharedidentity.IndeterminateAdmission(sharedidentity.ReasonIdentityInternalError,
+		return admittedSubject{}, sharedidentity.IndeterminateAdmission(sharedidentity.ReasonIdentityInternalError,
 			"the request carries no authenticated organization and auth kind the identity plane can verify")
 	}
 	admit := e.identity.AdmitDecisionSubject
 	if subject.Credential {
 		admit = e.identity.AdmitCredentialSubject
 	}
-	chain, adm := admit(ctx, subject.Principal, maxDepth)
+	chain, admitted, adm := admit(ctx, subject.Principal, maxDepth)
 	if !adm.State.IsAdmitted() {
-		return contract.ID{}, "", adm
+		return admittedSubject{}, adm
 	}
 	root, _ := chain.Root()
 	id, err := contract.ParseID(contract.KindPrincipal, root.String())
 	if err != nil {
-		return contract.ID{}, "", sharedidentity.IndeterminateAdmission(sharedidentity.ReasonIdentityInternalError,
+		return admittedSubject{}, sharedidentity.IndeterminateAdmission(sharedidentity.ReasonIdentityInternalError,
 			fmt.Sprintf("the admitted principal %s is not a decision-contract identifier: %v", root, err))
 	}
-	return id, string(root.Type), adm
+	return admittedSubject{
+		id: id, root: root, subjectType: string(root.Type),
+		credential: subject.Credential, admitted: admitted,
+	}, adm
+}
+
+// groupsOf resolves the admitted subject's group closure for principal.groups,
+// with the directory's detail when the closure is unknown.
+//
+// ONLY A USER SUBJECT IS RESOLVED. A subject admitted through the credential
+// door carries no user identity, so nothing is stated for it and a
+// group-scoped constraint over it stays Indeterminate as the value nobody
+// supplied: an authoritative empty set there would say a caller with no
+// identity is in no group, and the constraint would stop applying to it.
+//
+// The closure is resolved under the realm the subject was ADMITTED under and
+// keyed by the aliases that admission verified (AdmittedSubject), never under a
+// second registry lookup, which could read a realm re-declared in between.
+func (e *Enforcer) groupsOf(ctx context.Context, orgID string, subject admittedSubject) (*sharedidentity.ClosureAttribute, string) {
+	if subject.credential {
+		return nil, ""
+	}
+	res := e.groups.ResolveClosure(ctx, orgID, subject.admitted.Realm,
+		sharedidentity.ClosureSubject{Principal: subject.root, Aliases: subject.admitted.Aliases},
+		sharedidentity.DefaultClosureBounds())
+	attr := res.GroupsAttribute()
+	if attr.Known {
+		return &attr, ""
+	}
+	return &attr, res.Detail
 }
 
 // anchoredRequest normalizes one call for the anchored engine.
@@ -656,6 +803,7 @@ func anchoredRequest(
 	action, principal contract.ID,
 	call Call,
 	policyEpoch, identityEpoch int64,
+	closure *sharedidentity.ClosureAttribute,
 	now time.Time,
 ) (*contract.Request, error) {
 	org, err := contract.ParseID(contract.KindOrganization, "Organization::"+call.OrgID)
@@ -704,6 +852,9 @@ func anchoredRequest(
 		}
 	}
 	actor := contract.AttributeSet{"principal.id": contract.Known(principal.String(), contract.ProvAuthentication, 1, now)}
+	if closure != nil {
+		actor[pdp.PrincipalGroupsPath] = groupsAttribute(*closure, identityEpoch, now)
+	}
 	if err := mergeFacts(shared, actor, built, call.Facts); err != nil {
 		return nil, err
 	}
@@ -723,13 +874,49 @@ func anchoredRequest(
 	}, nil
 }
 
+// groupsAttribute renders the admitted subject's group closure as
+// principal.groups, the one place the attribute is written.
+//
+// The closure is the identity plane's tri-state (ClosureResult.GroupsAttribute),
+// and each of its states keeps its meaning: a KNOWN set, empty included, is a
+// directory fact at the identity epoch it was resolved under; an UNKNOWN set
+// names the directory's cause, so a group-scoped constraint over it is
+// Indeterminate for a reason an operator can act on rather than for a value
+// nobody supplied.
+func groupsAttribute(closure sharedidentity.ClosureAttribute, identityEpoch int64, now time.Time) contract.Attribute {
+	if closure.Known {
+		groups := make([]any, 0, len(closure.Groups))
+		for _, g := range closure.Groups {
+			groups = append(groups, g)
+		}
+		return contract.Known(groups, contract.ProvDirectory, identityEpoch, now)
+	}
+	return contract.Unknown(closureUnknownReason(closure.UnknownReason), contract.ProvDirectory, identityEpoch, now)
+}
+
+// closureUnknownReason maps the identity plane's closure reason onto the
+// decision contract's. The two directory causes keep their distinct reasons;
+// anything else a closure can report is a resolution failure.
+func closureUnknownReason(reason sharedidentity.AdmissionReason) contract.UnknownReason {
+	switch reason {
+	case sharedidentity.ReasonClosureUnavailable:
+		return contract.ReasonClosureUnavailable
+	case sharedidentity.ReasonClosureTruncated:
+		return contract.ReasonClosureTruncated
+	default:
+		return contract.ReasonResolutionFailed
+	}
+}
+
 // mergeFacts adds a seam's facts (Call.Facts) to the request the enforcer
 // normalized, or refuses them.
 //
 // A fact at a path the enforcer builds is refused, naming the path, and never
 // taken: action.* and the query are the plane's own record of what is being
 // decided, principal.id is the admitted subject, and a detector the enforcer
-// stated came from this evaluation's observation or its empty content. Evaluate
+// stated came from this evaluation's observation or its empty content.
+// principal.groups is the admitted subject's directory closure, which the
+// enforcer alone resolves (groupsAttribute). Evaluate
 // refuses the request as CauseRequest.
 //
 // A declared argument the enforcer marks ABSENT may be stated. ABSENT says the
@@ -741,7 +928,7 @@ func anchoredRequest(
 // Only the principal attributes in seamPrincipalFacts may be stated.
 func mergeFacts(shared, actor contract.AttributeSet, built map[string]bool, facts contract.AttributeSet) error {
 	for _, path := range facts.Paths() {
-		if built[path] || strings.HasPrefix(path, "action.") || path == "principal.id" {
+		if built[path] || strings.HasPrefix(path, "action.") || path == "principal.id" || path == pdp.PrincipalGroupsPath {
 			return fmt.Errorf("the seam stated a fact at %s, a path the enforcer builds itself and never lets a fact replace", path)
 		}
 		if contract.NamespaceOf(path) == contract.NsPrincipal {
@@ -756,6 +943,24 @@ func mergeFacts(shared, actor contract.AttributeSet, built map[string]bool, fact
 	return nil
 }
 
+// mergeAdmittedFacts adds what Call.AdmittedFacts stated to the normalized
+// request, or refuses it. Only paths under AdmittedFactPrefix are taken, and
+// none the request already carries: the enforcer's own facts and the seam's
+// Facts are stated first and are never replaced, so the hook narrows to one
+// namespace and cannot restate anything else (#3330).
+func mergeAdmittedFacts(shared, facts contract.AttributeSet) error {
+	for _, path := range facts.Paths() {
+		if !strings.HasPrefix(path, AdmittedFactPrefix) {
+			return fmt.Errorf("an admitted-principal fact was stated at %s; only %s* may be stated after admission", path, AdmittedFactPrefix)
+		}
+		if _, stated := shared[path]; stated {
+			return fmt.Errorf("an admitted-principal fact was stated at %s, which the request already carries", path)
+		}
+		shared[path] = facts[path]
+	}
+	return nil
+}
+
 // seamPrincipalFacts are the principal attributes a seam may state (R3 A-M1).
 // A principal fact describes the admitted subject, and the identity plane is its
 // authority: a seam that stated another would place a request-bound field, such
@@ -763,6 +968,22 @@ func mergeFacts(shared, actor contract.AttributeSet, built map[string]bool, fact
 // plane admitted, with authentication provenance. principal.region, which the
 // dynamic fact producer states ABSENT, is the only one.
 var seamPrincipalFacts = map[string]bool{"principal.region": true}
+
+// The verdict label of axonflow_decision_enforce_decisions_total, one home for
+// every counter call in both binaries (#4249 row 5666277893). The first three
+// are also the decision verdicts the agent answers on the wire, which it
+// re-exports from here (agent.VerdictAllow and its siblings); unavailable is
+// the seam failing to reach a decision, so it is a fact about enforcement and
+// has no wire twin. pep keeps its own spelling of the three (a client library
+// that must not import this package), held equal to these by a test in the
+// agent. A guard (verdict_label_guard_test.go) reds on a counter call whose
+// verdict is anything but one of these.
+const (
+	VerdictAllow         = "allow"
+	VerdictDeny          = "deny"
+	VerdictNeedsApproval = "needs_approval"
+	VerdictUnavailable   = "unavailable"
+)
 
 // RecordEnforcement counts one decision on an enforcing scope.
 func RecordEnforcement(scope legacycompile.EnforcementScope, engine, verdict, reason string) {

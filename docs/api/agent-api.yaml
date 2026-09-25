@@ -48,7 +48,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.0.0
+  version: 11.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -134,8 +134,8 @@ tags:
       In v11 BOTH spellings are the deprecated export surface (PRD §1.11):
       reads are served, and every response carries
       `Link: </api/v1/typed-policies>; rel="successor-version"` and
-      `X-AxonFlow-Removed-In: v11.1`, plus an RFC 9745
-      `Deprecation: @<epoch>` from the v11.0.0 tag. v11.1 removes both
+      `X-AxonFlow-Removed-In: v12.0`, plus an RFC 9745
+      `Deprecation: @<epoch>` from the v11.0.0 tag. v12.0.0 removes both
       spellings; there is no `Sunset` header until that release has a date.
       The v11 write refusal described under System Policies applies to these
       paths identically.
@@ -160,6 +160,10 @@ tags:
       client. Authentication is HTTP Basic (org:license-key) — NOT OAuth;
       the `/.well-known/oauth-*` discovery paths deliberately return an
       advisory 404 saying so.
+  - name: Community SaaS
+    description: |
+      Self-registration on the hosted Community SaaS deployment
+      (`DEPLOYMENT_MODE=community-saas` only).
   - name: OTLP Ingest
     description: |
       OpenTelemetry OTLP/HTTP ingest for Claude Code (cowork) telemetry
@@ -424,9 +428,25 @@ paths:
           description: |
             A configured cost budget blocks the request (Enterprise cost
             controls; `blocked: true`, `policy_info.matched_policies`
-            `["budget_exceeded"]`), or, on Enterprise, the licence's ceiling
-            refuses the client's service principal or the verified user
-            token's principal at authentication (`error` names the refusal). Both bodies are a `ClientResponse`.
+            `["budget_exceeded"]`), or the licence's ceiling refuses a
+            principal: the client credential's service principal at
+            authentication, or the verified user token's human principal
+            when the user is resolved. Both tier-limit refusals answer one
+            shape: `blocked: true`, `code` the `ERR_TIER_LIMIT_*` code of the
+            refused dimension, and `error` and `block_reason` the refusal's
+            message, which begins with that code. A tier-limit refusal
+            carries `Retry-After` only when the licence ledger could not be
+            reached (its message says the ledger cannot be reached); a refusal over the
+            ceiling has no reset and carries none. Both bodies are a
+            `ClientResponse`. This route answers no 429 for the ceiling.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: |
+                Present only on a tier-limit refusal the licence ledger's
+                outage caused: seconds before retrying (30). Absent on every
+                other 402.
           content:
             application/json:
               schema:
@@ -506,6 +526,7 @@ paths:
       operationId: gatewayPreCheck
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
       requestBody:
         required: true
         content:
@@ -677,6 +698,96 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/policy-packs/summary:
+    get:
+      tags:
+        - Decision Mode
+      summary: What this agent enforces on an organization, installed policy packs counted (internal service)
+      description: |
+        The count of the policies in force on the decide scope, taken from the
+        activation this agent enforces on the organization: its active typed
+        document, its recorded detection overrides and the policy packs this
+        process installed (#4249). The agent is the only process that loads a
+        deployment's packs, so the orchestrator's and the customer portal's
+        `GET /api/v1/typed-policies/active/summary` read this to count them.
+
+        `packs_counted` is always true here: this process knows which packs
+        are installed, so a deployment that installed none, every Community
+        one included, answers `pack` 0, a counted zero.
+
+        INTERNAL BY ITS CREDENTIAL, NOT ITS PATH. Only the internal-service
+        credential (`X-Internal-Service-ID` + `X-Internal-Service-Token`) is
+        answered; any other caller, a tenant's included, gets 401. The
+        organization is the one the internal caller names in `X-Org-ID`. The
+        route is deliberately not under `/api/v1/typed-policies`, which the
+        agent forwards whole to the orchestrator: there it would either shadow
+        the tenant summary route with a 401, or send the orchestrator's read
+        back to the orchestrator, which would count no packs and say nothing.
+      operationId: getPolicyPackSummary
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: The organization whose summary is read.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The count of the policies in force, installed packs counted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, scope, shipped, organization, pack, packs_counted, disabled, total]
+                properties:
+                  success:
+                    type: boolean
+                  scope:
+                    type: string
+                    enum: [decide]
+                  shipped:
+                    type: integer
+                  organization:
+                    type: integer
+                  pack:
+                    type: integer
+                  packs_counted:
+                    type: boolean
+                  disabled:
+                    type: integer
+                  total:
+                    type: integer
+                  not_bound_here:
+                    type: array
+                    items:
+                      type: string
+                  detector_not_run_here:
+                    type: array
+                    description: |
+                      Per control, the registry detector this scope does not
+                      run and the planes that do. Every id here is also in
+                      `not_bound_here`. Omitted when there are none.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        detector:
+                          type: string
+                        runs_on:
+                          type: array
+                          items:
+                            type: string
+        '400':
+          description: Missing X-Org-ID header
+        '401':
+          description: Not the internal-service credential
+        '503':
+          description: What this agent enforces could not be counted; `reason` names the cause (`decision_enforcement_unavailable`, `active_document_unreadable`, `detection_overrides_unreadable`, `summary_unavailable`, or the activation's cause)
+
   /api/v1/decide:
     post:
       tags:
@@ -709,6 +820,7 @@ paths:
         policy engine is the same one Gateway Mode uses.
       operationId: decide
       parameters:
+        - $ref: '#/components/parameters/ApprovalId'
         - $ref: '#/components/parameters/AxonflowClient'
         - $ref: '#/components/parameters/AxonflowPEPHandshake'
         - in: header
@@ -1362,6 +1474,7 @@ paths:
         Statement content is stored as SHA256 hash for privacy.
       operationId: mcpQuery
       parameters:
+        - $ref: '#/components/parameters/ApprovalId'
         - $ref: '#/components/parameters/LicenseKey'
       requestBody:
         required: true
@@ -1450,6 +1563,7 @@ paths:
         is stored in the `operation` field.
       operationId: mcpExecute
       parameters:
+        - $ref: '#/components/parameters/ApprovalId'
         - $ref: '#/components/parameters/LicenseKey'
       requestBody:
         required: true
@@ -1794,7 +1908,9 @@ paths:
         `parameters_hash` (SHA-256) and `parameter_count` for forensic analysis.
       operationId: mcpCheckInput
       parameters:
+        - $ref: '#/components/parameters/ApprovalId'
         - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
       requestBody:
         required: true
         content:
@@ -1821,6 +1937,15 @@ paths:
                   tenant_id: "tenant-123"
                   connector_type: "postgres"
                   statement: "SELECT * FROM users; DROP TABLE users--"
+              toolParametersWithPII:
+                summary: A tool's name as the statement, the PII in its parameters (#4264)
+                description: The ADK plugin's shape. Under an organization's pii=redact posture the redaction masks the parameter. It is handed back in redacted_parameters only to an enforcement point whose PEP handshake declares field_redact at versions 1 and 2, on Enterprise; every other caller is refused 403 unsupported_obligation.
+                value:
+                  connector_type: "adk-tool"
+                  statement: "mail"
+                  parameters:
+                    command: "mail -s statement jane.doe@example.com"
+                  operation: "execute"
       responses:
         '200':
           description: Input passed all policy checks
@@ -1828,9 +1953,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MCPCheckInputResponse'
-              example:
-                allowed: true
-                policies_evaluated: 12
+              examples:
+                clean:
+                  summary: A clean request
+                  value:
+                    allowed: true
+                    policies_evaluated: 12
+                redactedParameters:
+                  summary: The PII in a parameter, handed back masked (#4264)
+                  description: The answer to toolParametersWithPII under pii=redact, sent by an enforcement point that declared field_redact@1 and field_redact@2 (Enterprise). The statement carried no PII, so redacted_statement is absent; the parameter comes back as the masked text the request pass scanned it as.
+                  value:
+                    allowed: true
+                    policies_evaluated: 12
+                    redacted: true
+                    redacted_parameters:
+                      command: "mail -s statement j******************m"
+                    redaction_evaluated: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1846,16 +1984,24 @@ paths:
 
             **`unsupported_obligation`: a redaction this route cannot
             discharge** (#4264). Under an organization's `pii=redact` posture a
-            permit composes a mandatory redaction of the request, and this route
-            hands back only the statement (`redacted_statement`). The request
-            pass also scans `parameters`, so when the statement carries none of
-            what the redaction requires masking, or a parameter carries some of
-            it too, nothing this route returns can discharge it: the request is
-            refused with `allowed: false` and a `block_reason` that starts
+            permit composes a mandatory redaction of the request. This route
+            hands back the masked statement (`redacted_statement`), so a
+            redaction of the statement alone is answered 200. A redaction that
+            masks a request parameter is answered 200, with each masked
+            parameter in `redacted_parameters`, ONLY to an enforcement point
+            whose PEP handshake (`X-Axonflow-PEP-Handshake`) declares
+            `field_redact` at version 2 as well as version 1, and only on
+            Enterprise: a caller that does not substitute the masked
+            parameters would run its tool on the originals. Every other caller
+            is refused, the masked statement included. So is a redaction that
+            masks nothing in the statement or in any parameter. The refusal is
+            `allowed: false` with a `block_reason` that starts
             `unsupported_obligation:` and names the obligation, the policy that
-            attached it and why. A redaction the platform could not attempt (no
-            redaction engine installed, the policies unreadable, a requirement
-            or detector the engine no longer holds) is a 503.
+            attached it and why: for a parameter, its key (never its value or
+            its masked text) and the missing `field_redact@2`. A redaction the
+            platform could not attempt (no redaction engine installed, the
+            policies unreadable, a requirement or detector the engine no longer
+            holds) is a 503.
           content:
             application/json:
               schema:
@@ -1921,6 +2067,7 @@ paths:
       operationId: mcpCheckOutput
       parameters:
         - $ref: '#/components/parameters/AxonflowClient'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
       requestBody:
         required: true
         content:
@@ -2098,6 +2245,121 @@ paths:
   # MCP Server (Streamable HTTP, spec 2025-06-18)
   # ==========================================================================
 
+  /api/v1/register:
+    post:
+      tags:
+        - Community SaaS
+      summary: Register a Community SaaS tenant (hosted deployment only)
+      description: |
+        Creates a free-tier tenant on the hosted Community SaaS deployment
+        and returns its credentials once. Mounted only under
+        `DEPLOYMENT_MODE=community-saas`; every other deployment answers
+        404. Not authenticated: it is the bootstrap that creates the
+        credential every other route needs. Limited to 5 registrations per
+        client IP per hour.
+
+        EVERY FIELD IS OPTIONAL (#4249 row 5764325123). `{}`, an empty body
+        and no body register an unlabelled tenant with no email; the Go and
+        Java SDKs' `RegisterTry("")` send exactly `{}`. A field the route
+        does not know is ignored. Every refusal below is decided before
+        anything is written, and discloses no credential.
+      operationId: registerCommunitySaasTenant
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  maxLength: 255
+                  description: An operator-readable name for the tenant.
+                email:
+                  type: string
+                  format: email
+                  description: |
+                    Binds the tenant to this address for the free recovery
+                    flow (`/api/v1/recover`). At most 3 active tenants per
+                    email.
+                internal_tenant_id_prefix:
+                  type: string
+                  description: |
+                    AxonFlow's own internal callers only: one of a fixed
+                    allowlist of `axonflow-internal-*` prefixes. Any other
+                    value is refused 400.
+      responses:
+        '201':
+          description: The tenant was created; the secret is shown only this once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                    example: cs_3f0c2a9e-1b7d-4c5e-9a41-6d2f8e0b7c13
+                  secret:
+                    type: string
+                  secret_prefix:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                  endpoint:
+                    type: string
+                  note:
+                    type: string
+        '400':
+          description: |
+            The body is not JSON, or a field is invalid. The message names
+            it: `Invalid JSON in request body`, `Label too long (max 255
+            characters)`, `Invalid email format`, or `Unsupported
+            internal_tenant_id_prefix value`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '405':
+          description: GET, PUT, DELETE or PATCH.
+        '409':
+          description: The email already holds the maximum of 3 active tenants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '413':
+          description: The body is over 1024 bytes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '415':
+          description: A Content-Type other than `application/json` (with optional parameters). An absent Content-Type is accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '429':
+          description: More than 5 registrations from this client IP in the hour.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '500':
+          description: The registration could not be created; no credential is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '503':
+          description: The database is not available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+
   /api/v1/mcp-server:
     post:
       tags:
@@ -2114,6 +2376,22 @@ paths:
         Enterprise deployment MAY additionally send a per-user token in
         `X-User-Token` (ADR-043/044). It is optional unless the organization's
         `require_user_token` posture demands one (see `BasicAuth`).
+
+        **A call held for approval (#4370, Enterprise).** When the
+        organization's active document requires a person's approval for a
+        `check_policy` call, the tool answers `allowed: false` with a
+        `pending_approval` object (see `PendingApproval`) and a
+        `block_reason` that leads with `approval_pending`; the approval is
+        queued in the portal's Approvals view. Once a person approves it,
+        call `check_policy` again with the SAME arguments, naming the
+        approval in the `X-Axonflow-Approval-Id` header or the `approval_id`
+        argument: it answers `allowed: true` once and names the approval in
+        `approval_id`. Any other outcome is refused with an
+        `ApprovalHoldReason` code. Nothing is queued on the Community build,
+        which keeps `approval_required`. An approval requirement that also
+        binds the response (`check_output`) still refuses there with
+        `approval_required` until the requirement is scoped to the request
+        plane (#4371).
 
         Governance segments no longer gate `check_policy` or `check_output`
         (they did from #3430, refusing with `blocked_by:
@@ -2158,8 +2436,12 @@ paths:
         midnight UTC. A credential refused by the pre-credential
         per-minute limiter gets the same per-minute answer, with an empty
         `tier` because the tier is not resolved yet, instead of a 401.
-        The `tools/call` tier gates (`feature_pro_only`, `active_policies`,
-        `hitl_approvals_window`) answer the same result shape with a 200.
+        The `tools/call` tier gates (`feature_pro_only`,
+        `hitl_approvals_window`) answer the same result shape with HTTP 403,
+        `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL`, as the REST
+        routes do (#4274; before it, a 200 with no headers). Only
+        `hitl_approvals_window` has a reset time, so only it is sent with
+        `Retry-After`: the seconds until its `resets_at`.
 
         JSON-RPC error codes: `-32001` is the one application code, an
         authentication failure, sent with HTTP 401 and a
@@ -2174,7 +2456,9 @@ paths:
         `/api/v1/mcp/check-output` endpoint (#2870).
       operationId: mcpServerJSONRPC
       parameters:
+        - $ref: '#/components/parameters/ApprovalId'
         - $ref: '#/components/parameters/LicenseKey'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
       requestBody:
         required: true
         content:
@@ -2209,10 +2493,38 @@ paths:
             Community SaaS rate limit (#4261): the per-minute limit
             (`limit_type: per_minute`), including a credential refused by
             the pre-credential limiter, or the daily quota
-            (`limit_type: daily_quota`). The body is a JSON-RPC response
-            whose `result.content[0].text` is the `RateLimitEnvelope` as
-            JSON text, with `result.isError: true`. Sent with `Retry-After`,
-            `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL`.
+            (`limit_type: daily_quota`). Also, on any method, a tier
+            admission refusal while the admission ledger cannot be reached
+            (`limit_type: service_principal` or `human_principal`, `code`
+            `ERR_TIER_LIMIT_<DIMENSION>`, #4249 row 5682255301). The body is
+            a JSON-RPC response whose `result.content[0].text` is the
+            `RateLimitEnvelope` as JSON text, with `result.isError: true`.
+            Sent with `Retry-After`, `X-Axonflow-Tier-Limit` and
+            `X-Axonflow-Upgrade-URL`.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: |
+            Community SaaS `tools/call` tier gate (#4274): a tool above the
+            caller's tier (`limit_type: feature_pro_only`) or the rolling
+            approval window (`limit_type: hitl_approvals_window`). The body is a JSON-RPC
+            response whose `result.content[0].text` is the `RateLimitEnvelope`
+            as JSON text, with `result.isError: true`. Sent with
+            `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL`, and with
+            `Retry-After` only for `hitl_approvals_window`.
+
+            Also, on any method (`initialize` included), a tier admission
+            refusal (#4249 row 5682255301): a valid credential whose
+            organization is at its service-principal ceiling
+            (`limit_type: service_principal`), or a validated per-user token
+            past the human-principal ceiling (`limit_type: human_principal`).
+            The envelope's `code` is `ERR_TIER_LIMIT_<DIMENSION>` and its
+            `error` the refusal's message; no `Retry-After`. The REST routes
+            answer the same refusal 402. It is never a 401: the credential
+            was valid.
           content:
             application/json:
               schema:
@@ -2247,6 +2559,16 @@ paths:
           description: Session terminated
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            A tier admission refusal of the caller (#4249 row 5682255301):
+            no body; `X-Axonflow-Tier-Limit` (`service_principal` or
+            `human_principal`) and `X-Axonflow-Upgrade-URL`.
+        '429':
+          description: |
+            The pre-credential per-minute limit (#4261), or a tier admission
+            refusal while the admission ledger cannot be reached (#4249 row
+            5682255301, with `X-Axonflow-Tier-Limit`). No body; `Retry-After`.
 
   # ==========================================================================
   # OTLP Ingest (Enterprise; community returns 501)
@@ -2292,7 +2614,10 @@ paths:
         '415':
           description: Unsupported Content-Type
         '501':
-          description: Community build — OTLP ingest is an Enterprise feature
+          description: |
+            Cowork OTLP ingest is not in this deployment's plane set: the Community
+            build, and the Enterprise build in a core-only deployment mode
+            (community, evaluation, community-saas). Both answer the same body.
           content:
             application/json:
               schema:
@@ -2331,7 +2656,10 @@ paths:
         '415':
           description: Unsupported Content-Type
         '501':
-          description: Community build — OTLP ingest is an Enterprise feature
+          description: |
+            Cowork OTLP ingest is not in this deployment's plane set: the Community
+            build, and the Enterprise build in a core-only deployment mode
+            (community, evaluation, community-saas). Both answer the same body.
           content:
             application/json:
               schema:
@@ -5670,8 +5998,8 @@ components:
         customer-portal use to call agent endpoints without holding a
         customer license. `apiAuthMiddleware` lifts both headers (plus an
         optional `X-Tenant-ID` scope) into `AuthHints`
-        (`platform/agent/auth.go:588-594`) and `Authenticate()` validates
-        them before any mode-specific auth
+        (`internalServiceHints` in `platform/agent/auth.go`) and
+        `Authenticate()` validates them before any mode-specific auth
         (`platform/agent/authenticator.go:120-155`).
 
         Value: the service id, `orchestrator-internal`.
@@ -5716,6 +6044,40 @@ components:
         type: string
         example: "Basic bXktb3JnOkFYT04tVjIteHh4"
 
+    ApprovalId:
+      name: X-Axonflow-Approval-Id
+      in: header
+      required: false
+      description: |
+        The approval a retry spends (#4370). A call held for a person's
+        approval is answered a `pending_approval` naming an id; once a
+        person approves it in the portal, the caller retries the SAME call
+        naming that id here (or in the body's `approval_id` field, for a
+        client that cannot set headers - a header and a field naming
+        different ids are refused `approval_not_found`).
+
+        The retry is decided exactly as the first call was. Only when it is
+        again held for approval, and the approval is approved by a person
+        who is not the caller, before its expiry, unspent, and granted for
+        this very call (the same input, tool, route, requester and
+        requirement), does it pass - and the approval is spent: it admits
+        exactly one call. A call that is allowed anyway spends nothing; no
+        approval lifts a deny. Every other outcome is refused with one of
+        the `ApprovalHoldReason` codes. Enterprise; the Community build has
+        no approval queue and ignores the header.
+
+        WHAT "THE SAME CALL" MEANS. On the MCP routes: the connector, the
+        tool, the operation, the statement and its parameters (and the row
+        limit on `/mcp/resources/query`). On `/api/v1/decide`: the WHOLE
+        request the engine decided - `stage`, `target`, `query` AND
+        `context`. A retry that changes any of it is refused
+        `bound_input_changed`: resend the same `context`, and carry
+        per-request values (request ids, timestamps) in headers, never in
+        `context` - the correlation id is a header.
+      schema:
+        type: string
+        format: uuid
+
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -5756,6 +6118,25 @@ components:
         **Absent is the default and changes nothing.** A caller that omits the
         header takes byte-for-byte the path it took before this header existed.
 
+        **What an absent header means for a redaction depends on the plane, by
+        design (PRD v11 section 1 item 16, #4257).** The MCP passes discharge a
+        redaction of the content they hand back: the request pass
+        (`check-input`, `check_policy`) masks the statement, and a redaction
+        that masks nothing in the statement is refused `unsupported_obligation`
+        to every caller, and one that masks a request parameter to every caller
+        that has not declared `field_redact` at version 2 (on Community, to
+        every caller) (#4264);
+        the response passes (`check-output`, the MCP server's `check_output`)
+        mask the rows or the message. `/api/v1/decide` and the gateway
+        pre-check return a decision rather than content, so a required
+        redaction is a `field_redact` obligation for the enforcement point, and
+        a caller that has not declared `field_redact` is refused
+        `unsupported_obligation`. A caller that declares NO redaction
+        (`capabilities: []`) is refused on each of these planes; on
+        Community the MCP passes still return a checksum validator's masked
+        content to it (reachable only through a directly inserted
+        `detection_action_overrides` row) until #4122.
+
         A header that is PRESENT and cannot be read is **refused**, never
         treated as absent: degrading a malformed declaration to "legacy caller"
         would go on handing an enforcement point obligations it had just said it
@@ -5772,11 +6153,13 @@ components:
         something a lenient parser might accept.
 
         When a decision carries a **mandatory** obligation the declared set does
-        not cover, the request is answered `200` with `verdict: deny` and a
-        reason beginning `pep_capability_unsupported` (ADR-065 invariant 8) - a
-        decision about the request, not a transport error. Enterprise
-        deployments only; a Community deployment records the declaration and
-        emits the obligation as it does today.
+        not cover, the request is answered `200` with `verdict: deny` and the
+        reason `unsupported_obligation` (ADR-065 invariant 8) - a decision about
+        the request, not a transport error. That holds on every edition. An
+        Enterprise deployment adds a second reason beginning
+        `pep_capability_unsupported` naming the gap, and refuses a checksum
+        validator's mask on the MCP passes; a Community deployment hands that
+        masked content over (#4257 split 2, #4122).
       schema:
         type: string
         maxLength: 4096
@@ -5864,6 +6247,19 @@ components:
           $ref: '#/components/schemas/SDKCompatInfo'
         plugin_compatibility:
           $ref: '#/components/schemas/PluginCompatInfo'
+        upstream:
+          type: object
+          description: |
+            Whether the orchestrator has answered this agent since the
+            process started (#4249 row 5681489141): `reached` from its first
+            HTTP response of any status, `unreached` before. Until it is
+            reached, a connection the orchestrator refuses is not counted
+            against the client's circuit breaker. Informational only:
+            `status` and the HTTP code do not read it.
+          properties:
+            orchestrator:
+              type: string
+              enum: [reached, unreached]
 
     PlatformCapability:
       type: object
@@ -5965,7 +6361,7 @@ components:
             codex: "1.9.0"
             claude-desktop: "0.4.0"
             n8n: "1.2.1"
-            google-adk: "1.3.0"
+            google-adk: "1.3.1"
 
     # =========================================================================
     # Static Policies Schemas (ADR-019)
@@ -6541,9 +6937,21 @@ components:
         error:
           type: string
           description: Error message if success is false
+        code:
+          type: string
+          enum:
+            - ERR_TIER_LIMIT_HUMAN_PRINCIPAL
+            - ERR_TIER_LIMIT_SERVICE_PRINCIPAL
+            - ERR_TIER_LIMIT_ORG_ROOT_POLICY
+            - ERR_TIER_LIMIT_NODE
+          description: |
+            The refusal's machine-readable code, present on a licence-ceiling
+            (tier-limit) refusal: one code per admission dimension. On
+            `/api/request` only the two principal codes occur. Omitted on
+            every other response.
         blocked:
           type: boolean
-          description: True if request was blocked by policy
+          description: True if the request was blocked, by policy, a cost budget or the licence's ceiling
         block_reason:
           type: string
           description: Reason for blocking
@@ -6972,12 +7380,93 @@ components:
                   satisfy an obligation at v1.
                 example: 1
 
+    PendingApproval:
+      type: object
+      description: |
+        A call held for a person's approval (#4370, PRD v11 §1.13). Pending
+        is NOT allow: nothing ran, and the enforcement point must not
+        forward. An approver approves the queue entry in the portal
+        (Approvals), and the caller retries the same call naming
+        `approval_id` (see the `X-Axonflow-Approval-Id` parameter).
+
+        The approval expires at `expires_at`: the approval requirement's
+        own deadline, which the engine stamps 15 minutes after the decision
+        on v11. It is never extended; a retry after it is refused
+        `approval_expired`.
+      required: [approval_id, status, plane, retry]
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+          description: The queue entry's id; the retry names it.
+        status:
+          type: string
+          enum: [pending, approved]
+          description: |
+            `pending`: nobody has decided it yet. `approved`: a person
+            approved it and it is waiting for this caller's retry, which
+            must name the id.
+        plane:
+          type: string
+          enum: ["mcp:request", decide]
+        expires_at:
+          type: string
+          format: date-time
+          description: When the approval lapses. Omitted on a retry of a still-pending approval.
+        retry:
+          type: object
+          required: [header]
+          properties:
+            header:
+              type: string
+              enum: [X-Axonflow-Approval-Id]
+            argument:
+              type: string
+              enum: [approval_id]
+              description: The MCP tool argument / MCP route body field that carries the id.
+            body_field:
+              type: string
+              enum: [approval_id]
+              description: The decide request field that carries the id.
+
+    ApprovalHoldReason:
+      type: string
+      description: |
+        The reason code a held call, or its retry, is answered with (#4370).
+        It leads the refusal text (`<code>: ...`) on every route. None admits
+        anything.
+
+        - `approval_pending`: an approval for this call is queued and has not been decided; retry naming it once a person approves.
+        - `approval_rejected`: the approval this retry names was rejected.
+        - `approval_already_consumed`: the approval this retry names has already admitted its one call.
+        - `approval_not_found`: no approval with this id is visible to the caller's organization (another organization's id reads the same).
+        - `bound_input_changed`: the approval this retry names was granted for a different call (other input, tool, route, requester or requirement).
+        - `approval_reviewer_unattributed`: the approval this retry names was approved by a credential, not a person; approve it from a person's portal login.
+        - `approval_reviewer_excluded`: the approval this retry names was approved by the caller itself.
+        - `approval_expired`: the approval this retry names expired before it was spent; timeout is a deny.
+      enum:
+        - approval_pending
+        - approval_rejected
+        - approval_already_consumed
+        - approval_not_found
+        - bound_input_changed
+        - approval_reviewer_unattributed
+        - approval_reviewer_excluded
+        - approval_expired
+
     DecideRequest:
       type: object
       required:
         - stage
         - query
       properties:
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            The approval a retry spends (#4370), for a client that cannot set
+            the `X-Axonflow-Approval-Id` header (see that parameter). Never
+            part of what the approval binds.
         stage:
           type: string
           enum: [llm, tool, agent]
@@ -7004,6 +7493,11 @@ components:
           type: object
           additionalProperties: true
           description: |
+            Part of what an approval binds (#4370): a retry naming an
+            approval must send the same `context`, or it is refused
+            `bound_input_changed` - keep per-request values (request ids,
+            timestamps) in headers.
+
             Optional caller-supplied context (string values) that AxonFlow
             propagates end-to-end into the decision audit record + the OTel
             decision span, so a SIEM can correlate the decision with upstream
@@ -7141,13 +7635,25 @@ components:
         - evaluated_policies
         - expires_at
       properties:
+        pending_approval:
+          $ref: '#/components/schemas/PendingApproval'
+          description: Set when the call is held for a person's approval (#4370); the verdict is `needs_approval` and nothing may run.
+        approval_id:
+          type: string
+          format: uuid
+          description: On an allow, the approval that admitted this call (#4370).
         verdict:
           type: string
-          enum: [allow, deny]
+          enum: [allow, deny, needs_approval]
           description: |
             The PEP MUST enforce this verdict. `allow` = forward;
-            `deny` = block. Since v11 `/api/v1/decide` never holds a request:
-            an anchored CHALLENGE is a refusal (PRD v11 §1.1).
+            `deny` = block; `needs_approval` = block, and the call is held
+            for a person's approval: `pending_approval` names it and the
+            retry spends it (#4370, PRD v11 §1.13). A PEP forwards only on
+            `allow`. On an Enterprise deployment with the approval queue
+            wired, an anchored CHALLENGE answers `needs_approval`; on the
+            Community build, or when no approval could be queued, it is a
+            `deny` whose first reason is `approval_required`.
         decision_id:
           type: string
           format: uuid
@@ -7581,13 +8087,23 @@ components:
               (comma-separated group identifiers), `separation_of_duties`
               (`true`/`false`; any other spelling is REFUSED rather than read
               as `false`), and the optional `expiry_seconds`. Where several
-              policies carry an expiry the SHORTEST wins, together with the
-              evaluator's own stamp: a conjunction is discharged only while all
-              of it is live, and timeout is always deny, so extending it is the
-              permissive direction. Only a **mandatory** obligation may shorten
-              the window — an advisory control that could expire a challenge
-              early would be deciding the request cannot proceed. Bounded to
-              60..604800 seconds, refused rather than clamped at either end.
+              policies carry an expiry the SHORTEST wins (a conjunction is
+              discharged only while all of it is live, and timeout is always
+              deny), and the carried value sets the window whether it is
+              shorter or longer than the deployment's window (#4249). An
+              approval no policy gives an expiry takes the deployment's window,
+              `AXONFLOW_APPROVAL_TTL_SECONDS` (15 minutes when unset). Only a
+              **mandatory** obligation's expiry is read: an advisory control
+              that could set the window would be deciding when the request
+              stops being able to proceed. Bounded to 60..604800 seconds,
+              refused rather than clamped at either end, for the parameter and
+              the deployment variable alike (an out-of-bounds variable refuses
+              the process's boot). The optional `severity` (`low`, `medium`,
+              `high` or `critical`; any other spelling is REFUSED) is the
+              severity the approval's queue row carries; the highest among the
+              mandatory obligations wins, an advisory one's is ignored, and with
+              none stated the queue derives it from the request's risk score
+              (#4249).
             * `route_restriction` — `allowed_destinations` (comma-separated),
               intersected across policies; an empty intersection denies. Route
               properties are namespaced `route.` (`route.tls`, `route.region`,
@@ -8085,6 +8601,13 @@ components:
         - client_id
         - connector
       properties:
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            The approval a retry spends (#4370), for a client that cannot set
+            the `X-Axonflow-Approval-Id` header (see that parameter). Never
+            part of what the approval binds.
         client_id:
           type: string
         license_key:
@@ -8392,6 +8915,13 @@ components:
         - connector
         - action
       properties:
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            The approval a retry spends (#4370), for a client that cannot set
+            the `X-Axonflow-Approval-Id` header (see that parameter). Never
+            part of what the approval binds.
         client_id:
           type: string
         license_key:
@@ -8498,6 +9028,13 @@ components:
         - connector_type
         - statement
       properties:
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            The approval a retry spends (#4370), for a client that cannot set
+            the `X-Axonflow-Approval-Id` header (see that parameter). Never
+            part of what the approval binds.
         client_id:
           type: string
           description: Client identifier (required in Enterprise mode)
@@ -8551,6 +9088,13 @@ components:
     MCPCheckInputResponse:
       type: object
       properties:
+        pending_approval:
+          $ref: '#/components/schemas/PendingApproval'
+          description: Set when the call is held for a person's approval (#4370); `allowed` is false and nothing ran.
+        approval_id:
+          type: string
+          format: uuid
+          description: On an allow, the approval that admitted this call (#4370).
         allowed:
           type: boolean
           description: Whether the input passed all policy checks
@@ -8607,15 +9151,35 @@ components:
         redacted:
           type: boolean
           description: |
-            Whether the engine masked any PII in the request statement.
-            Omitted (false) when nothing was redacted.
+            Whether the engine masked any PII in the request statement or in
+            any parameter. Omitted (false) when nothing was redacted.
         redacted_statement:
           type: string
           description: |
             The request statement with PII fields masked. A PEP fulfilling a
             Decision Mode redact_pii obligation forwards THIS value instead of
-            the original. Omitted when nothing was redacted. Source of truth:
+            the original. Omitted when the statement was not masked, including
+            a redaction of the parameters alone (`redacted: true` with only
+            `redacted_parameters`). Source of truth:
             `platform/agent/mcp_handler.go` (MCPCheckInputResponse).
+        redacted_parameters:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Each request parameter the redaction masked, keyed by parameter,
+            as the text the request pass scanned it as: the string itself, or
+            a map or list parameter's JSON serialisation, masked as one text so
+            a span across the serialisation is masked as it was matched. The
+            caller decodes it where it decodes the parameter and forwards the
+            masked value. A string or number parameter comes back as its text
+            (a number's decimal text) masked in place, unquoted, as a string.
+            Present only for an enforcement point whose PEP handshake declares
+            `field_redact` at version 2, on Enterprise; any other caller whose
+            parameter the redaction masks is refused 403
+            `unsupported_obligation`. Omitted when no parameter was masked, so
+            a caller that never carries PII in its parameters gets a
+            byte-identical response (#4264, since v11.1.0).
         redaction_evaluated:
           type: boolean
           description: |
@@ -9075,10 +9639,14 @@ components:
         Pro-only feature limits). On the REST routes, per-minute 429s use
         a plain `{"error": "..."}` body with only a Retry-After header —
         not this envelope. On `/api/v1/mcp-server` both limits use it
-        (`per_minute` and `daily_quota`), wrapped in a JSON-RPC result
-        (#4261). Accompanied by the
-        `X-Axonflow-Tier-Limit`, `X-Axonflow-Upgrade-URL`, and
-        `Retry-After` headers. Source of truth:
+        (`per_minute` and `daily_quota`, 429, #4261), and so do the
+        `tools/call` tier gates (403, #4274) and the tier admission
+        refusals on every method (403, or 429 while the admission ledger
+        cannot be reached; #4249 row 5682255301), wrapped in a JSON-RPC
+        result.
+        Accompanied by the `X-Axonflow-Tier-Limit` and
+        `X-Axonflow-Upgrade-URL` headers, and by `Retry-After` when the
+        limit has a reset time (not for `feature_pro_only`). Source of truth:
         `platform/agent/community_saas_ratelimit_response.go`
         (rateLimitEnvelope).
       properties:
@@ -9088,8 +9656,9 @@ components:
           type: string
           description: |
             Which limiter fired: `daily_quota`, `per_minute` (MCP server
-            only), `active_policies`, `hitl_approvals_window` or
-            `feature_pro_only`.
+            only), `hitl_approvals_window`,
+            `feature_pro_only`, or the refused admission dimension
+            (`service_principal` / `human_principal`, MCP server only).
         tier:
           type: string
         limit:
@@ -9112,6 +9681,15 @@ components:
               type: string
             buy_url:
               type: string
+              description: |
+                Empty on a tier admission refusal: the V1 buy link is
+                Plugin Pro's, which lifts no edition ceiling.
+        code:
+          type: string
+          description: |
+            The refusal's machine-readable code where it has one: a tier
+            admission refusal's `ERR_TIER_LIMIT_<DIMENSION>` (MCP server).
+            Omitted on every other limit.
 
     # ==========================================================================
     # Decision Chain Tracing (EU AI Act Article 12)
@@ -10054,6 +10632,12 @@ components:
         Access denied. Causes on these routes:
 
         - **Tenant mismatch**, or a connector this tenant may not access.
+        - **A policy refusal**: `error` is `Request blocked: <reason>`, the
+          reason code first.
+        - **A call held for a person's approval** (#4370, Enterprise):
+          `error` is `Request blocked: approval_pending: ...` and
+          `pending_approval` names the approval the retry spends (see the
+          `X-Axonflow-Approval-Id` parameter). Nothing ran.
 
         `segment_resolution_failed` is no longer a cause (it was one from
         #3447). No segment gate stands on these routes any more: the anchored
@@ -10061,7 +10645,12 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  pending_approval:
+                    $ref: '#/components/schemas/PendingApproval'
           example:
             success: false
             error: "Tenant mismatch"

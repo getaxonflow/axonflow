@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,8 +45,8 @@ type Seam struct {
 	// EMPTY IS A REAL ANSWER HERE and is not an oversight: the headers-only
 	// seam discharges no obligation whatever, and since #3704 it can say so.
 	Capabilities []contract.Capability
-	// handshake is the rendered header value, or "" when the adapter is not
-	// configured to present one. Rendered ONCE per process in NewPDP.
+	// handshake is the rendered header value. Rendered ONCE per process in
+	// NewPDP, and never "" on a PDP NewPDP built: every seam presents one.
 	handshake string
 }
 
@@ -83,11 +84,12 @@ var (
 	//
 	// Capabilities is EMPTY, and that is the honest ADR-065 declaration: this
 	// seam cannot discharge field_redact, cannot write an immutable audit
-	// record, and cannot raise an approval challenge. Under the handshake the
-	// platform answers CapabilityDeclaredNone and denies a mandatory obligation
-	// outright, which is the same block the never-fires ObligationBackstop
-	// produces today - reached before the content is held rather than after,
-	// and with a reason an operator can read.
+	// record, and cannot raise an approval challenge. The handshake presents
+	// it on every request, and the platform denies a mandatory obligation
+	// outright (CapabilityDeclaredNone on an Enterprise build), which is the
+	// block the never-fires ObligationBackstop would otherwise produce -
+	// reached before the content is held rather than after, and with a reason
+	// an operator can read.
 	seamHeadersOnly = Seam{
 		Name:         "gateway-headers-only",
 		Fulfillment:  []string{pep.CapabilityRequestHeaderMutation},
@@ -148,9 +150,10 @@ func NewPDP(cfg Config) (*PDP, error) {
 	if err != nil {
 		return nil, err
 	}
-	headersOnly, bodyCapable, err := renderSeams(cfg.PEPAudience)
+	audience, source := cfg.pepAudience()
+	headersOnly, bodyCapable, err := renderSeams(audience)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (the audience came from %s)", err, source)
 	}
 	return &PDP{
 		pep:             client,
@@ -179,22 +182,16 @@ func (p *PDP) SeamBodyCapable() Seam { return p.seamBodyCapable.copy() }
 
 // renderSeams renders each seam's ADR-065 handshake once per process.
 //
-// OPT-IN, and that is what keeps this change dark. An empty PEPAudience leaves
-// both handshakes empty, no header is sent, and the adapters behave byte for
-// byte as they did before #3704.
-//
-// Which matters more than "dark by default" usually does, because the
-// transition it gates is ALLOW -> DENY. Today the headers-only seam's
-// request-body redaction is SUPPRESSED by #2958's gate and the organization's
-// obligation-fallback posture decides, defaulting to `log` - i.e. allowed,
-// minus the obligation. With a handshake presented, the seam's honest ADR-065
-// declaration is an empty capability set, the platform answers
-// CapabilityDeclaredNone, and the request is DENIED - on an ENTERPRISE
-// deployment. On a community one the deny is physically absent from the build,
-// so nothing changes at all. See Config.PEPAudience for
-// the full statement; an earlier version of both comments said "both block",
-// which was wrong: ObligationBackstop never fires precisely because the
-// obligation was already withheld.
+// EVERY SEAM PRESENTS ONE, and an empty audience is refused rather than read as
+// "present nothing". Presenting nothing is what the v11.0.0 Known Issue was: a
+// v11 platform judges a caller with no handshake against the decide plane's
+// own registered profile, which discharges no field_redact, so under an
+// organization's pii=redact the body-capable seams were refused a redaction
+// they can carry out. With the handshake the body-capable seam declares
+// field_redact@1 and is handed the redaction; the headers-only seam declares
+// the honest empty set and is refused unsupported_obligation, before #2958's
+// seam gate and its obligation-fallback posture are reached. See
+// Config.PEPAudience for what that means per platform version.
 //
 // Rendered ONCE rather than per request: a seam's declaration cannot change
 // over the process's life, and Encode is a JSON marshal plus a base64 on the
@@ -206,8 +203,11 @@ func renderSeams(audience string) (headersOnly, bodyCapable Seam, err error) {
 	// corrupt the global for every PDP in the process, which is the hazard the
 	// PDP field's own comment says holding them per-instance removed.
 	headersOnly, bodyCapable = seamHeadersOnly.copy(), seamBodyCapable.copy()
-	if audience == "" {
-		return headersOnly, bodyCapable, nil
+	if strings.TrimSpace(audience) == "" {
+		// Unreachable from NewPDP, whose Config.pepAudience is never empty.
+		// Refused rather than rendered dark, so no future caller can bring back
+		// the seam that presents nothing.
+		return Seam{}, Seam{}, fmt.Errorf("gateway-adapters: every seam presents a capability handshake, and it needs a non-empty audience")
 	}
 	for _, s := range []*Seam{&headersOnly, &bodyCapable} {
 		encoded, refusal := contract.PEPHandshake{
@@ -304,10 +304,12 @@ func (p *PDP) GateRequest(ctx context.Context, req pep.DecideRequest, statement,
 // cannot mutate bodies and therefore never fulfills). Callers must apply
 // requestFailure-equivalent posture themselves via ClassifyDecideErr.
 //
-// It declares the headers-only capability set (#2958), so a >=9.11.0 PDP knows
-// not to emit a request-body redaction on this seam and applies the org's
-// obligation-fallback posture instead of handing us work we cannot do. Callers
-// must still run ObligationBackstop on the verdict — see its doc for why.
+// It declares the headers-only seam on both axes - #2958's capability set and
+// an ADR-065 handshake with an empty capability set - so a >=9.11.0 PDP never
+// hands this seam a request-body redaction: a v11 PDP refuses the request
+// unsupported_obligation, and an older one applies the org's
+// obligation-fallback posture instead. Callers must still run
+// ObligationBackstop on the verdict — see its doc for why.
 func (p *PDP) Decide(ctx context.Context, req pep.DecideRequest, traceparent string) (*pep.DecideResponse, error) {
 	req.FulfillmentCapabilities = pep.AdvertiseCapabilities(p.seamHeadersOnly.Fulfillment)
 	req.Handshake = p.seamHeadersOnly.handshake

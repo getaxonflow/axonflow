@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	logutil "axonflow/platform/shared/logger"
@@ -59,15 +61,19 @@ func (a *AuditLogger) LogMediaAnalysis(requestID string, result *AggregatedMedia
 	record := a.buildAuditRecord(requestID, result, mc)
 
 	// Core audit log (all tiers)
-	a.logger.Printf("request=%s media_index=%d hash=%s mime=%s size=%d analyzers=%d pii=%t safe=%t time_ms=%d",
+	// pii and safe print "unknown" when the capability that measures them did
+	// not run on the item (result.Scanned), never a zero no detector produced
+	// (#4249 row 5705208432); scanned lists what ran.
+	a.logger.Printf("request=%s media_index=%d hash=%s mime=%s size=%d analyzers=%d pii=%s safe=%s scanned=%s time_ms=%d",
 		logutil.Sanitize(record.RequestID),
 		record.MediaIndex,
 		record.SHA256Hash,
 		logutil.Sanitize(record.MIMEType),
 		record.FileSizeBytes,
 		record.AnalyzerCount,
-		record.HasPII,
-		record.ContentSafe,
+		measuredBool(result.Scanned, ScanPII, record.HasPII),
+		measuredBool(result.Scanned, ScanContentSafety, record.ContentSafe),
+		scannedList(result.Scanned),
 		record.AnalysisTimeMs,
 	)
 
@@ -86,6 +92,25 @@ func (a *AuditLogger) LogMediaAnalysis(requestID string, result *AggregatedMedia
 				logutil.Sanitize(record.RequestID), record.MediaIndex, logutil.Sanitize(record.DocumentType))
 		}
 	}
+}
+
+// measuredBool renders a signal for the audit line: its value when capability
+// is in scanned, "unknown" otherwise.
+func measuredBool(scanned []string, capability string, value bool) string {
+	for _, c := range scanned {
+		if c == capability {
+			return strconv.FormatBool(value)
+		}
+	}
+	return "unknown"
+}
+
+// scannedList renders scanned for the audit line, "-" when nothing ran.
+func scannedList(scanned []string) string {
+	if len(scanned) == 0 {
+		return "-"
+	}
+	return strings.Join(scanned, ",")
 }
 
 // buildAuditRecord creates an audit record from analysis results.

@@ -53,7 +53,6 @@ import (
 	"strings"
 	"time"
 
-	"axonflow/platform/agent"
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
@@ -127,7 +126,7 @@ func decideResponse(ctx context.Context, user UserContext, content interface{}) 
 		info.Verdict = responseVerdictBlocked
 		info.DecisionReason = cause
 		info.ValidationError = "response withheld: " + anchoredenforcer.CauseMessages[cause]
-		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, "unavailable", cause)
+		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, cause)
 		return content, info
 	}
 
@@ -174,7 +173,7 @@ func decideResponse(ctx context.Context, user UserContext, content interface{}) 
 		if v.Act != nil {
 			info.PolicyBundle = v.Act.PolicyBundle
 		}
-		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, agent.VerdictDeny, reason)
+		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		return content, info
 	}
 	info.SubjectType, info.PolicyBundle = v.SubjectType, v.Act.PolicyBundle
@@ -183,14 +182,14 @@ func decideResponse(ctx context.Context, user UserContext, content interface{}) 
 	if dec.State != contract.StateAllow {
 		unknown := anchoredenforcer.UnknownConstraints(dec)
 		reason := string(dec.Reason)
-		text := strings.Join(append([]string{reason}, anchoredenforcer.UnknownConstraintReasons(v.Act, unknown)...), "; ")
+		text := strings.Join(append([]string{reason}, anchoredenforcer.UnknownConstraintReasons(v.Act, unknown, v.IdentityDetail)...), "; ")
 		if dec.State == contract.StateChallenge {
 			reason = string(contract.ReasonApprovalRequired)
 			text = anchoredenforcer.ApprovalRequiredReason(orchestratorResponseScope)
 		}
 		info.Verdict, info.DecisionReason, info.ValidationError = responseVerdictBlocked, reason, text
 		info.BlockingPolicyID = anchoredenforcer.BlockingConstraint(dec.Determining, unknown)
-		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, agent.VerdictDeny, reason)
+		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		return content, info
 	}
 
@@ -201,13 +200,13 @@ func decideResponse(ctx context.Context, user UserContext, content interface{}) 
 	if unsupported != "" {
 		reason := string(contract.ReasonUnsupportedObligation)
 		info.Verdict, info.DecisionReason, info.ValidationError = responseVerdictBlocked, reason, unsupported
-		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, agent.VerdictDeny, reason)
+		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		return content, info
 	}
 	reason := string(dec.Reason)
 	if len(ids) == 0 {
 		info.Verdict, info.DecisionReason = responseVerdictAllowed, reason
-		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, agent.VerdictAllow, reason)
+		anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictAllow, reason)
 		return content, info
 	}
 	redacted, err := responseRedactor(ctx, engine, content, opts, ids)
@@ -220,7 +219,7 @@ func decideResponse(ctx context.Context, user UserContext, content interface{}) 
 	for _, field := range redacted.RedactedFields {
 		info.RedactedFields = append(info.RedactedFields, field.Path)
 	}
-	anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, agent.VerdictAllow, reason)
+	anchoredenforcer.RecordEnforcement(orchestratorResponseScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictAllow, reason)
 	return redacted.Content, info
 }
 

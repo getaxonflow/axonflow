@@ -32,12 +32,21 @@ type Handler struct {
 	service        *Service
 	logger         *log.Logger
 	proxyAuthCheck ProxyAuthCheck
+	// oversizedBodyRecorder records a step gate refused for its body's size;
+	// nil records nothing (tests, embedded use).
+	oversizedBodyRecorder func()
 }
 
 // SetProxyAuthCheck installs the agent proxy-auth verification the workflow
 // routes enforce before touching a workflow (see ProxyAuthCheck).
 func (h *Handler) SetProxyAuthCheck(check ProxyAuthCheck) {
 	h.proxyAuthCheck = check
+}
+
+// SetOversizedBodyRecorder installs what records a step gate refused 413 for
+// its body's size, as the anchored planes record a refusal.
+func (h *Handler) SetOversizedBodyRecorder(record func()) {
+	h.oversizedBodyRecorder = record
 }
 
 // requireProxyAuth enforces the agent proxy-auth gate, writing the 403 and
@@ -377,6 +386,11 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The body is the step's content: bounded, and refused whole over the bound
+	// before it is decoded (request_body_cap.go).
+	if !h.boundGateBody(w, r) {
+		return
+	}
 	var req StepGateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
@@ -447,6 +461,17 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 		var mismatchErr *IdempotencyKeyMismatchError
 		if errors.As(err, &mismatchErr) {
 			h.writeIdempotencyKeyMismatch(w, mismatchErr)
+			return
+		}
+		// #4249: 409 APPROVAL_HOLD, before any string match on the message.
+		var holdErr *ApprovalHoldError
+		if errors.As(err, &holdErr) {
+			h.writeApprovalHold(w, holdErr)
+			return
+		}
+		var inputErr *StepInputMismatchError
+		if errors.As(err, &inputErr) {
+			h.writeStepInputMismatch(w, inputErr)
 			return
 		}
 		if strings.Contains(err.Error(), "not found") {
@@ -537,6 +562,33 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeApprovalHold emits the 409 for *ApprovalHoldError (#4249): code
+// APPROVAL_HOLD, and the message naming the step and its hold.
+func (h *Handler) writeApprovalHold(w http.ResponseWriter, e *ApprovalHoldError) {
+	h.writeError(w, http.StatusConflict, ErrorCodeApprovalHold, e.Error())
+}
+
+// writeStepInputMismatch emits the 409 for *StepInputMismatchError, in the
+// idempotency mismatch's shape (#4249 row 5666236540). The keys matched, so
+// both carry the recorded key.
+func (h *Handler) writeStepInputMismatch(w http.ResponseWriter, e *StepInputMismatchError) {
+	resp := APIErrorResponse{
+		Error: APIError{
+			Code:    ErrorCodeStepInputMismatch,
+			Message: "step_input or tool_context differs from the content this step was gated with; send retry_policy reevaluate or a new step_id",
+			Details: APIErrorDetails{
+				WorkflowID:             e.WorkflowID,
+				StepID:                 e.StepID,
+				ExpectedIdempotencyKey: e.IdempotencyKey,
+				ReceivedIdempotencyKey: e.IdempotencyKey,
+			},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // writeIdempotencyKeyMismatch emits the structured 409 response for
@@ -822,31 +874,7 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID, approvedBy, comment); err != nil {
-		// #4254: an approval after its queue row's expiry is refused, and an
-		// expiry that cannot be read refuses rather than approving blind. Each
-		// is named, never answered as an internal error.
-		if errors.Is(err, ErrApprovalExpired) {
-			h.writeError(w, http.StatusConflict, "APPROVAL_EXPIRED", err.Error())
-			return
-		}
-		if errors.Is(err, ErrApprovalStateUnreadable) {
-			h.writeError(w, http.StatusServiceUnavailable, "APPROVAL_STATE_UNREADABLE", err.Error())
-			return
-		}
-		if strings.Contains(err.Error(), "not found") {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
-			return
-		}
-		if strings.Contains(err.Error(), "does not require") {
-			h.writeError(w, http.StatusConflict, "NO_APPROVAL_NEEDED", err.Error())
-			return
-		}
-		if strings.Contains(err.Error(), "not pending") {
-			h.writeError(w, http.StatusConflict, "NOT_PENDING", err.Error())
-			return
-		}
-		h.logger.Printf("[WorkflowControl] ApproveStep error for %s/%s: %v", workflowID, stepID, err)
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to approve step")
+		h.writeApproveStepError(w, workflowID, stepID, err)
 		return
 	}
 
@@ -861,8 +889,51 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	approver := ApproverMeta{ApprovalID: deriveHITLApprovalID(workflowID, stepID)}
+	approver := ApproverMeta{ApprovalID: h.service.CurrentApprovalID(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID)}
 	h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", step, approver, "Step approved", false))
+}
+
+// writeApproveStepError answers a refused ApproveStep: each named refusal with
+// its status and code, anything else as an internal error.
+func (h *Handler) writeApproveStepError(w http.ResponseWriter, workflowID, stepID string, err error) {
+	// #4254: an approval after its queue row's expiry is refused, and an
+	// expiry that cannot be read refuses rather than approving blind. Each
+	// is named, never answered as an internal error.
+	if errors.Is(err, ErrApprovalExpired) {
+		h.writeError(w, http.StatusConflict, "APPROVAL_EXPIRED", err.Error())
+		return
+	}
+	if errors.Is(err, ErrApprovalStateUnreadable) {
+		h.writeError(w, http.StatusServiceUnavailable, "APPROVAL_STATE_UNREADABLE", err.Error())
+		return
+	}
+	// #4249 row 5700138809: the step's new hold was never queued and its
+	// previous hold is decided, so nothing is pending to approve. Matched by
+	// identity; the "not pending" text match below stays as the fallback.
+	if errors.Is(err, ErrApprovalHoldDecided) {
+		h.writeError(w, http.StatusConflict, "NOT_PENDING", err.Error())
+		return
+	}
+	if strings.Contains(err.Error(), "not found") {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
+		return
+	}
+	if strings.Contains(err.Error(), "does not require") {
+		h.writeError(w, http.StatusConflict, "NO_APPROVAL_NEEDED", err.Error())
+		return
+	}
+	if strings.Contains(err.Error(), "not pending") {
+		h.writeError(w, http.StatusConflict, "NOT_PENDING", err.Error())
+		return
+	}
+	// #4249 (from the approval-hold PR): the workflow has ended, and an
+	// approval never lands on it, even on a step still pending.
+	if strings.Contains(err.Error(), "terminal state") {
+		h.writeError(w, http.StatusConflict, "WORKFLOW_TERMINAL", err.Error())
+		return
+	}
+	h.logger.Printf("[WorkflowControl] ApproveStep error for %s/%s: %v", workflowID, stepID, err)
+	h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to approve step")
 }
 
 // RejectStep handles POST /api/v1/workflows/{id}/steps/{step_id}/reject (Enterprise)
@@ -940,7 +1011,7 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	approver := ApproverMeta{ApprovalID: deriveHITLApprovalID(workflowID, stepID)}
+	approver := ApproverMeta{ApprovalID: h.service.CurrentApprovalID(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID)}
 	h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", step, approver, "Step rejected, workflow aborted", false))
 }
 
@@ -1187,6 +1258,12 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 	// verified identity and every segment-scoped policy stops applying.
 	resp, err := h.service.ResumeFromLastCheckpoint(r.Context(), workflowID, tenantID, orgID, r.Header.Get("X-User-Email"))
 	if err != nil {
+		// #4249: 409 APPROVAL_HOLD, before the "not found" string match.
+		var holdErr *ApprovalHoldError
+		if errors.As(err, &holdErr) {
+			h.writeApprovalHold(w, holdErr)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 			return
@@ -1252,6 +1329,12 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 	// step-gate re-evaluation so segment-scoped policies keep applying.
 	resp, err := h.service.ResumeFromCheckpoint(r.Context(), workflowID, checkpointID, tenantID, orgID, r.Header.Get("X-User-Email"))
 	if err != nil {
+		// #4249: 409 APPROVAL_HOLD, before the "not found" string match.
+		var holdErr *ApprovalHoldError
+		if errors.As(err, &holdErr) {
+			h.writeApprovalHold(w, holdErr)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
 			return

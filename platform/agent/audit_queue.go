@@ -8,9 +8,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,7 +121,16 @@ type AuditEntry struct {
 	TenantID string                 `json:"tenant_id"`
 	Details  map[string]interface{} `json:"details"`
 	Retries  int                    `json:"-"`
+	// RecoveryAttempts counts the startups whose RecoverFromFallback failed to
+	// write this entry. It is persisted with the entry, so an entry that can
+	// never be written (a violation with no organization) is dropped, counted,
+	// after maxFallbackRecoveryAttempts instead of being re-pended forever.
+	RecoveryAttempts int `json:"recovery_attempts,omitempty"`
 }
+
+// maxFallbackRecoveryAttempts bounds how many startups retry one fallback
+// entry before it is dropped and counted (#4249 row 5705939628).
+const maxFallbackRecoveryAttempts = 5
 
 // Audit entry types
 const (
@@ -203,6 +215,12 @@ type AuditQueue struct {
 	fallbackFile *os.File
 	mu           sync.Mutex
 	closed       atomic.Bool // Track if channels are closed
+	// sendMu guards every send on queue and metricsBatch against Shutdown
+	// closing them: a sender holds it for reading across its closed check and
+	// its send, and Shutdown takes it for writing to mark the queue closed and
+	// close the channels, so no send can land on a closed channel (#4249 row
+	// 5705939628). Lock order: sendMu before mu.
+	sendMu sync.RWMutex
 
 	// Metrics (use atomic for thread safety)
 	processed uint64
@@ -281,9 +299,28 @@ func (aq *AuditQueue) LogViolation(entry AuditEntry) error {
 	// column type. Same on the three Log* methods below.
 	entry.Timestamp = time.Now().UTC()
 
-	// In compliance mode, violations are synchronous
+	// In compliance mode, violations are synchronous. A write that fails is
+	// kept in the fallback file for RecoverFromFallback, as performance mode's
+	// worker keeps it: a transient failure (a lost connection, a failover), and
+	// a Postgres-permanent one too (a revoked grant, a missing table, a
+	// constraint), because an operator can fix those and recovery's bound
+	// moves an entry that never succeeds to the dead-letter file rather than
+	// deleting it. Only an entry with no organization is returned, since no
+	// fix makes it writable; the adapter counts it (#4249 row 5705939628). The
+	// metrics path's no-retry classification (execMetricsWithRetry) is
+	// unchanged.
 	if aq.mode == AuditModeCompliance {
-		return aq.writeToDBSync(entry)
+		err := aq.writeToDBSync(entry)
+		if err == nil || errors.Is(err, errAuditEntryMissingOrgID) {
+			return err
+		}
+		aq.mu.Lock()
+		defer aq.mu.Unlock()
+		if fallbackErr := aq.writeToFallback(entry); fallbackErr != nil {
+			return fmt.Errorf("%w (and the fallback write failed: %v)", err, fallbackErr)
+		}
+		logAuditRateLimited("violation_kept_in_fallback", "violation write failed (%v); kept in the fallback file for recovery", err)
+		return nil
 	}
 
 	// In performance mode, queue it
@@ -295,14 +332,29 @@ func (aq *AuditQueue) LogMetric(entry AuditEntry) error {
 	entry.Type = AuditTypeMetric
 	entry.Timestamp = time.Now().UTC()
 
+	// After Shutdown the metrics channel is closed, and a send on it panics. A
+	// shared-engine evaluation's metrics are recorded on a goroutine
+	// (RecordEvaluation), so one can arrive during or after Shutdown; it is
+	// dropped, counted. sendMu makes the check and the send one step against
+	// Shutdown's close.
+	aq.sendMu.RLock()
+	defer aq.sendMu.RUnlock()
+	if aq.closed.Load() {
+		recordAuditDrop(auditDropMetricsAfterShutdown, "policy_metrics entry for policy %v dropped: the audit queue has shut down",
+			entry.Details["policy_id"])
+		return nil
+	}
+
 	// Metrics are always async, even in compliance mode
 	select {
 	case aq.metricsBatch <- entry:
 		atomic.AddUint64(&aq.queued, 1)
 		return nil
 	default:
-		// Queue full, drop metric (acceptable for metrics)
-		log.Printf("Metrics queue full, dropping entry")
+		// Queue full: the metric is dropped, counted and logged at a bounded
+		// rate (audit_drop.go), never per entry.
+		recordAuditDrop(auditDropMetricsQueueFull, "policy_metrics entry for policy %v dropped: the metrics queue is full",
+			entry.Details["policy_id"])
 		return nil
 	}
 }
@@ -402,7 +454,10 @@ func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
 
 // queueEntry queues an entry for async processing
 func (aq *AuditQueue) queueEntry(entry AuditEntry) error {
-	// Check if already closed
+	// The closed check and the send are one step against Shutdown's close
+	// (sendMu).
+	aq.sendMu.RLock()
+	defer aq.sendMu.RUnlock()
 	if aq.closed.Load() {
 		aq.mu.Lock()
 		defer aq.mu.Unlock()
@@ -444,7 +499,8 @@ func (aq *AuditQueue) worker(id int) {
 			atomic.AddUint64(&aq.failed, 1)
 			aq.mu.Lock()
 			if fallbackErr := aq.writeToFallback(entry); fallbackErr != nil {
-				log.Printf("Worker %d: Failed to write to fallback: %v", id, fallbackErr)
+				recordAuditDrop(auditDropFallbackWriteFailed, "worker %d: %s entry (org %q) failed its database write (%v) and its fallback write: %v",
+					id, entry.Type, entry.OrgID, err, fallbackErr)
 			}
 			aq.mu.Unlock()
 		}
@@ -488,51 +544,128 @@ func (aq *AuditQueue) metricsBatcher() {
 	}
 }
 
-// flushMetricsBatch writes a batch of metrics to the database
+// flushMetricsBatch writes a batch of metrics to the database.
+//
+// #4249 row 5705939628: the batch is AGGREGATED before it is written, one
+// multi-row UPSERT per organization carrying each policy's hit and block counts
+// for the batch, so a busy agent spends one transaction per organization per
+// flush rather than one per matched policy per evaluation.
+//
+// v9 Phase 8 #2384 PR-C1: policy_metrics is ENABLE-RLS (mig 018), so each
+// organization's statement runs under WithOrgScope with org_id in the column
+// list, and an entry with no organization is dropped, counted.
+//
+// The conflict target is (org_id, policy_id, date) WHERE policy_id IS NOT NULL,
+// the partial unique index migrations/core/186 creates. Before it there was no
+// unique index at all, so this statement failed with 42P10 on every write. The
+// organization is part of the key because policy ids are shared across
+// organizations and the row is RLS-scoped: on a global (policy_id, date) key
+// the first organization to write a policy's row on a day would own it, and
+// every other organization's UPSERT would conflict with a row its UPDATE policy
+// cannot see.
+//
+// A write that fails for a reason a retry can cure is retried; a permanent one
+// (isPermanentAuditWriteError: 42P10, 42501, 22xxx, ...) is not. Either way an
+// organization's entries that were not written are counted as
+// metrics_write_failed, and every log line goes through the rate-limited drop
+// logger.
 func (aq *AuditQueue) flushMetricsBatch(batch []AuditEntry) {
 	if aq.db == nil || len(batch) == 0 {
 		return
 	}
 
-	// Batch INSERT for metrics (policy hit counts)
+	type counts struct{ hits, blocks int }
+	byOrg := map[string]map[string]*counts{}
+	entriesByOrg := map[string]int{}
 	for _, entry := range batch {
-		if policyID, ok := entry.Details["policy_id"].(string); ok {
-			blockCount := 0
-			if blocked, ok := entry.Details["blocked"].(bool); ok && blocked {
-				blockCount = 1
-			}
-
-			// v9 Phase 8 #2384 PR-C1: policy_metrics is ENABLE-RLS (mig 018).
-			// INSERT/ON CONFLICT UPSERT WITH CHECK fires under app_role —
-			// the predicate org_id = current_setting('app.current_org_id')
-			// rejects rows without org_id matching SET LOCAL. We include
-			// org_id in the INSERT column list and pass entry.OrgID into
-			// execWithRetryOrgScope. The ON CONFLICT (policy_id, date)
-			// conflict-target stays as-is; the UPDATE arm doesn't need to
-			// re-set org_id because the conflict-matched row already has
-			// the correct value (any cross-org collision would have been
-			// rejected at INSERT time by FORCE-RLS).
-			updateQuery := `
-				INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date, org_id)
-				VALUES ($1, 'static', 1, $2, CURRENT_DATE, $3)
-				ON CONFLICT (policy_id, date) DO UPDATE SET
-					hit_count = policy_metrics.hit_count + 1,
-					block_count = policy_metrics.block_count + $2
-			`
-
-			if entry.OrgID == "" {
-				log.Printf("[audit] policy_metrics flush dropped (policy_id=%s): entry.OrgID empty — RLS would deny under app_role", policyID)
-				continue
-			}
-			// Use retry for each metric update (they're independent)
-			if err := execWithRetryOrgScope(aq.db, entry.OrgID, updateQuery, policyID, blockCount, entry.OrgID); err != nil {
-				log.Printf("Failed to update metric for policy %s: %v", policyID, err)
-			}
+		policyID, ok := entry.Details["policy_id"].(string)
+		if !ok || policyID == "" {
+			continue
 		}
+		if entry.OrgID == "" {
+			recordAuditDrop(auditDropMetricsNoOrg, "policy_metrics entry for policy %s dropped: it carries no organization, and RLS would refuse the row under app_role", policyID)
+			continue
+		}
+		policies, ok := byOrg[entry.OrgID]
+		if !ok {
+			policies = map[string]*counts{}
+			byOrg[entry.OrgID] = policies
+		}
+		c, ok := policies[policyID]
+		if !ok {
+			c = &counts{}
+			policies[policyID] = c
+		}
+		c.hits++
+		if blocked, ok := entry.Details["blocked"].(bool); ok && blocked {
+			c.blocks++
+		}
+		entriesByOrg[entry.OrgID]++
 	}
 
-	atomic.AddUint64(&aq.processed, uint64(len(batch)))
-	log.Printf("Flushed %d metrics to database", len(batch))
+	orgs := make([]string, 0, len(byOrg))
+	for org := range byOrg {
+		orgs = append(orgs, org)
+	}
+	sort.Strings(orgs)
+	written := 0
+	for _, org := range orgs {
+		policies := byOrg[org]
+		ids := make([]string, 0, len(policies))
+		for id := range policies {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		var values []string
+		args := []interface{}{org}
+		for _, id := range ids {
+			c := policies[id]
+			n := len(args)
+			values = append(values, fmt.Sprintf("($%d, 'static', $%d, $%d, CURRENT_DATE, $1)", n+1, n+2, n+3))
+			args = append(args, id, c.hits, c.blocks)
+		}
+		query := `INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date, org_id)
+			VALUES ` + strings.Join(values, ", ") + `
+			ON CONFLICT (org_id, policy_id, date) WHERE policy_id IS NOT NULL DO UPDATE SET
+				hit_count = policy_metrics.hit_count + EXCLUDED.hit_count,
+				block_count = policy_metrics.block_count + EXCLUDED.block_count`
+
+		if err := aq.execMetricsWithRetry(org, query, args...); err != nil {
+			recordAuditDropN(auditDropMetricsWriteFailed, entriesByOrg[org],
+				"%d policy_metrics entries for org %q (%d policies) were not written: %v", entriesByOrg[org], org, len(ids), err)
+			continue
+		}
+		written += entriesByOrg[org]
+	}
+
+	atomic.AddUint64(&aq.processed, uint64(written))
+	if written > 0 {
+		log.Printf("Flushed %d metrics to database", written)
+	}
+}
+
+// execMetricsWithRetry runs one organization's metrics UPSERT in at most three
+// attempts when the failure is transient (two retries, with backoff), and in
+// one when it is permanent. Each failed attempt is logged through the rate-limited drop logger, not
+// per attempt.
+func (aq *AuditQueue) execMetricsWithRetry(orgID, query string, args ...interface{}) error {
+	const maxAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = WithOrgScope(context.Background(), aq.db, orgID, func(tx *sql.Tx) error {
+			_, exErr := tx.Exec(query, args...)
+			return exErr
+		})
+		if err == nil || isPermanentAuditWriteError(err) {
+			return err
+		}
+		if attempt < maxAttempts {
+			logAuditRateLimited(auditDropMetricsWriteFailed+"_retry", "policy_metrics write for org %q failed (attempt %d/%d), retrying: %v", orgID, attempt, maxAttempts, err)
+			time.Sleep(time.Duration(100*(1<<uint(attempt-1))) * time.Millisecond)
+		}
+	}
+	return err
 }
 
 // writeToDBSync writes synchronously to database (for compliance mode)
@@ -549,7 +682,7 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		// org_id in the INSERT column list so the WITH CHECK predicate
 		// matches.
 		if entry.OrgID == "" {
-			return fmt.Errorf("audit_queue: AuditTypeViolation entry missing OrgID — would fail policy_violations RLS WITH CHECK under app_role")
+			return fmt.Errorf("audit_queue: AuditTypeViolation entry %w — would fail policy_violations RLS WITH CHECK under app_role", errAuditEntryMissingOrgID)
 		}
 		insertQuery := `
 			INSERT INTO policy_violations (violation_type, severity, client_id, user_id, description, details, org_id)
@@ -570,7 +703,7 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		// Same wrap shape as AuditTypeViolation above — org_id column +
 		// execWithRetryOrgScope so SET LOCAL matches the row's value.
 		if entry.OrgID == "" {
-			return fmt.Errorf("audit_queue: AuditTypeAudit entry missing OrgID — would fail agent_audit_logs RLS WITH CHECK under app_role")
+			return fmt.Errorf("audit_queue: AuditTypeAudit entry %w — would fail agent_audit_logs RLS WITH CHECK under app_role", errAuditEntryMissingOrgID)
 		}
 		insertQuery := `
 			INSERT INTO agent_audit_logs (client_id, action, resource, timestamp, org_id)
@@ -732,12 +865,13 @@ func (aq *AuditQueue) writeToFallback(entry AuditEntry) error {
 func (aq *AuditQueue) Shutdown(ctx context.Context) error {
 	log.Println("Shutting down audit queue...")
 
-	// Mark as closed first to prevent new entries
+	// Mark as closed and close the channels under sendMu, so no sender is
+	// between its closed check and its send when a channel closes.
+	aq.sendMu.Lock()
 	aq.closed.Store(true)
-
-	// Close channels
 	close(aq.queue)
 	close(aq.metricsBatch)
+	aq.sendMu.Unlock()
 
 	// Wait for workers to finish
 	done := make(chan struct{})
@@ -781,6 +915,13 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 		return 0, nil
 	}
 
+	// The queue's own fallback writes take aq.mu, and the rewrite below
+	// replaces the file they append to, so recovery holds it throughout: an
+	// entry appended between the read and the rename would otherwise land in
+	// the replaced file and be lost (#4249 row 5705939628).
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+
 	// Open fallback file for reading
 	file, err := os.Open(fallbackPath)
 	if err != nil {
@@ -790,6 +931,7 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 
 	// Read and parse entries line by line
 	var entries []AuditEntry
+	var rawLines []string
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
 	for scanner.Scan() {
@@ -801,10 +943,11 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 
 		var entry AuditEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			log.Printf("[AuditQueue] Failed to parse line %d in fallback: %v", lineNum, err)
+			recordAuditDrop(auditDropFallbackUnparseable, "fallback line %d could not be parsed and is dropped: %v", lineNum, err)
 			continue
 		}
 		entries = append(entries, entry)
+		rawLines = append(rawLines, line)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -826,10 +969,33 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 	recovered := 0
 	var failedEntries []AuditEntry
 
-	for _, entry := range entries {
+	for i, entry := range entries {
 		// Try to write to database with retries
 		if err := aq.writeToDBSync(entry); err != nil {
-			log.Printf("[AuditQueue] Failed to recover entry (type=%s): %v", entry.Type, err)
+			// Only a failure no retry can cure counts toward the bound; a
+			// transient one (the database unreachable, a failover) keeps the
+			// entry pending without spending an attempt.
+			if isPermanentAuditWriteError(err) {
+				entry.RecoveryAttempts++
+			}
+			if entry.RecoveryAttempts >= maxFallbackRecoveryAttempts {
+				// EXHAUSTED IS SET ASIDE, NEVER DELETED. The entry's line
+				// moves, byte for byte, to the dead-letter file beside the
+				// fallback file, where an operator can replay it once the cause
+				// (a grant, a schema) is fixed. It is counted and logged with the
+				// path. If the dead-letter write fails, it stays pending.
+				deadPath := fallbackPath + ".dead.jsonl"
+				if dlErr := appendDeadLetter(deadPath, rawLines[i]); dlErr != nil {
+					log.Printf("[AuditQueue] fallback entry (type=%s, org %q) exhausted its recovery attempts but could not be moved to %s, so it stays pending: %v",
+						entry.Type, entry.OrgID, deadPath, dlErr)
+					failedEntries = append(failedEntries, entry)
+					continue
+				}
+				recordAuditDrop(auditDropRecoveryExhausted, "fallback entry (type=%s, org %q) moved to %s after %d recovery attempts: %v",
+					entry.Type, entry.OrgID, deadPath, entry.RecoveryAttempts, err)
+				continue
+			}
+			log.Printf("[AuditQueue] Failed to recover entry (type=%s, attempt %d/%d): %v", entry.Type, entry.RecoveryAttempts, maxFallbackRecoveryAttempts, err)
 			failedEntries = append(failedEntries, entry)
 			continue
 		}
@@ -841,21 +1007,17 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 	// Rewrite fallback file with only failed entries
 	if len(failedEntries) > 0 {
 		// Write failed entries back to fallback
-		tmpPath := fallbackPath + ".tmp"
-		tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			log.Printf("[AuditQueue] Warning: Failed to create temp fallback: %v", err)
-		} else {
-			for _, entry := range failedEntries {
-				data, _ := json.Marshal(entry)
-				_, _ = fmt.Fprintf(tmpFile, "%s\n", data)
-			}
-			_ = tmpFile.Sync()
-			_ = tmpFile.Close()
-
-			// Atomic rename
-			if err := os.Rename(tmpPath, fallbackPath); err != nil {
-				log.Printf("[AuditQueue] Warning: Failed to rename temp fallback: %v", err)
+		// The rewrite replaces the file only when every pending entry was
+		// written to the temporary file: a partial rewrite would lose the rest.
+		// When it cannot, the original file stays, and the entries this run
+		// recovered are replayed again next time (a duplicate row, not a
+		// lost one).
+		if err := aq.rewriteFallback(fallbackPath, failedEntries); err != nil {
+			var reopenErr *fallbackReopenError
+			if errors.As(err, &reopenErr) {
+				recordAuditDrop(auditDropFallbackReopenFailed, "the fallback file was rewritten but could not be reopened, so later fallback writes go to the replaced file and are lost until restart: %v", err)
+			} else {
+				log.Printf("[AuditQueue] Warning: the fallback file was not rewritten, so recovered entries will be replayed: %v", err)
 			}
 		}
 		log.Printf("[AuditQueue] %d entries still pending in fallback file", len(failedEntries))
@@ -868,6 +1030,111 @@ func (aq *AuditQueue) RecoverFromFallback(fallbackPath string) (int, error) {
 
 	return recovered, nil
 }
+
+// rewriteFallback replaces fallbackPath with entries and, when the queue's own
+// fallback file is that path, reopens it, so the queue's later fallback writes
+// append to the new file rather than to the replaced one. Caller holds aq.mu.
+func (aq *AuditQueue) rewriteFallback(fallbackPath string, entries []AuditEntry) error {
+	tmpPath := fallbackPath + ".tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", tmpPath, err)
+	}
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err == nil {
+			_, err = fmt.Fprintf(tmpFile, "%s\n", data)
+		}
+		if err != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("write %s: %w", tmpPath, err)
+		}
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("sync %s: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, fallbackPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename %s: %w", tmpPath, err)
+	}
+	if aq.fallbackFile != nil && aq.fallbackFile.Name() == fallbackPath {
+		reopened, err := auditFallbackOpen(fallbackPath)
+		if err != nil {
+			return &fallbackReopenError{path: fallbackPath, err: err}
+		}
+		_ = aq.fallbackFile.Close()
+		aq.fallbackFile = reopened
+	}
+	return nil
+}
+
+// fallbackReopenError is rewriteFallback's failure AFTER the rename: the file
+// was rewritten, but the queue's descriptor still names the replaced file.
+type fallbackReopenError struct {
+	path string
+	err  error
+}
+
+func (e *fallbackReopenError) Error() string {
+	return fmt.Sprintf("reopen %s after the rewrite: %v", e.path, e.err)
+}
+
+func (e *fallbackReopenError) Unwrap() error { return e.err }
+
+// auditFallbackOpen opens a fallback file for appending, as NewAuditQueue does.
+// It is a variable so a test can make the reopen fail.
+var auditFallbackOpen = func(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+}
+
+// appendDeadLetter appends one fallback line to the dead-letter file, created
+// with the fallback file's mode (0600), and syncs it.
+func appendDeadLetter(path, line string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(f, "%s\n", line); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// isPermanentAuditWriteError reports whether an audit write failed for a reason
+// no retry can cure: an entry with no organization, or a Postgres data
+// exception (22), integrity violation (23) or syntax/privilege/schema error
+// (42). Anything else - a connection, an admin shutdown, a serialization
+// failure, insufficient resources - may succeed later.
+func isPermanentAuditWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		switch pqErr.Code.Class() {
+		case "22", "23", "42":
+			return true
+		}
+		return false
+	}
+	return errors.Is(err, errAuditEntryMissingOrgID)
+}
+
+// errAuditEntryMissingOrgID is the refusal of an RLS-scoped audit write whose
+// entry names no organization: no retry can cure it.
+var errAuditEntryMissingOrgID = errors.New("missing OrgID")
 
 // GetFallbackPath returns the path to the fallback file
 func (aq *AuditQueue) GetFallbackPath() string {

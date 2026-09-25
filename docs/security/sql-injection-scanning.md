@@ -1,5 +1,5 @@
 # SQL Injection Scanning
-> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v12.0.0.
 
 
 AxonFlow provides built-in SQL injection (SQLi) detection for MCP connector responses to protect against data exfiltration and manipulation attacks.
