@@ -99,7 +99,7 @@ func TestTheSummaryRouteCountsTheImplicitBaselineAndThenTheActivatedDocument(t *
 	}
 
 	rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-		typedAuthoringActivateRequest{Digest: digest, Reason: "count it"}, gatewayHeaders())
+		typedAuthoringActivateRequest{Digest: digest, Reason: "count it", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, doc)}, gatewayHeaders())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("activate: status %d: %s", rr.Code, rr.Body.String())
 	}
@@ -189,7 +189,7 @@ func TestTheSummaryRouteReportsAControlTheDocumentDisabled(t *testing.T) {
 		}
 		digest, _ := decodeBody(t, rr)["digest"].(string)
 		rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-			typedAuthoringActivateRequest{Digest: digest, Reason: "count it"}, gatewayHeaders())
+			typedAuthoringActivateRequest{Digest: digest, Reason: "count it", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, doc)}, gatewayHeaders())
 		if rr.Code != http.StatusOK {
 			t.Fatalf("activate: status %d: %s", rr.Code, rr.Body.String())
 		}

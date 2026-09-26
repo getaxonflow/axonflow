@@ -309,6 +309,13 @@ type DecideRequest struct {
 	// statement.
 	FulfillmentCapabilities *[]string `json:"fulfillment_capabilities,omitempty"`
 
+	// ApprovalID names the approval a retry spends (#4370): the id a
+	// needs_approval answer's PendingApproval carried. The platform also reads
+	// the X-Axonflow-Approval-Id header; a PEP that can set headers may send
+	// either. It is never part of what the approval binds, so the retry must
+	// otherwise be the same request, context included.
+	ApprovalID string `json:"approval_id,omitempty"`
+
 	// Handshake is the ADR-065 capability declaration this call presents,
 	// already rendered by contract.PEPHandshake.Encode.
 	//
@@ -487,6 +494,34 @@ type DecideResponse struct {
 	// detection override, the Indonesia or India validator blocked the request.
 	// Omitted when none did.
 	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
+
+	// PendingApproval is set with Verdict "needs_approval" (#4370): the call is
+	// held for a person's approval, and nothing may be forwarded. Retry the
+	// same request naming PendingApproval.ApprovalID once a person approves.
+	PendingApproval *PendingApproval `json:"pending_approval,omitempty"`
+	// ApprovalID names the approval that admitted this call, on an allow a
+	// spent approval paid for.
+	ApprovalID string `json:"approval_id,omitempty"`
+}
+
+// PendingApproval is a call held for a person's approval (#4370): the
+// `pending_approval` member of a decide answer, and of the agent's MCP
+// answers. Pending is not allow.
+type PendingApproval struct {
+	ApprovalID string `json:"approval_id"`
+	// Status is "pending", or "approved" when a person approved it and it is
+	// waiting for this caller's retry.
+	Status    string               `json:"status"`
+	Plane     string               `json:"plane"`
+	ExpiresAt *time.Time           `json:"expires_at,omitempty"`
+	Retry     PendingApprovalRetry `json:"retry"`
+}
+
+// PendingApprovalRetry says how a retry names the approval.
+type PendingApprovalRetry struct {
+	Header    string `json:"header"`
+	Argument  string `json:"argument,omitempty"`
+	BodyField string `json:"body_field,omitempty"`
 }
 
 // PolicyIdentity is one matched policy as policy_identities names it (PRD v11

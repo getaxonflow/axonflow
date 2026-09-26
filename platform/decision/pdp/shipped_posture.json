@@ -2,15 +2,15 @@
   "schema_version": 1,
   "provenance": {
     "derived_by": "platform/decision/activation TestTheShippedPostureArtifactIsDerivedFromTheCorpus",
-    "system_corpus_digest": "sha256:b1da767c46cf210612f5e8aafacf54be344e7def9fed9f34f814c5f8adcbc303",
+    "system_corpus_digest": "sha256:5b28395be964d2c4158d0c6dd7ee24cc99b4f0d7451d496846fcba5f5dda1138",
     "inputs": [
       {
         "path": "platform/decision/legacycompile/legacy_call_sites.tsv",
-        "sha256": "47a00921b31fb25405315ef7a647c8a170739d5919cc795fbe82999bf4f60a34"
+        "sha256": "96bda20f104d1694911c782f72b9b0d72ae0cd6b3761f08b777e6d911a747e95"
       },
       {
         "path": "platform/decision/pdp/system_corpus.json",
-        "sha256": "0ff800e6696d9166a90786f15b9010c94a7efae04abc9d998fed7136bc61651c"
+        "sha256": "946a02546307f6abe2d56a096818f79aac2a3c4426f202d7c9deaadb98774207"
       },
       {
         "path": "platform/decision/registry/detectors_census.tsv",
@@ -27,52 +27,68 @@
     {
       "scope": "cowork_ingest",
       "kind": "gated",
-      "gated_by": "edition"
+      "gated_by": "edition",
+      "engine": "anchored"
     },
     {
       "scope": "decide",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "gateway_request",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "map",
-      "kind": "gated",
-      "gated_by": "configuration"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "mcp:request",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "mcp:response",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "openai_compatible",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
+    },
+    {
+      "scope": "orchestrator_request",
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "orchestrator_response",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "policy_simulation",
-      "kind": "operator-tool"
+      "kind": "operator-tool",
+      "engine": "legacy"
     },
     {
       "scope": "policy_test",
-      "kind": "operator-tool"
+      "kind": "operator-tool",
+      "engine": "legacy"
     },
     {
       "scope": "proxy_request",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     },
     {
       "scope": "wcp",
-      "kind": "enforcement"
+      "kind": "enforcement",
+      "engine": "anchored"
     }
   ],
   "system": [
@@ -89,6 +105,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -118,6 +135,7 @@
           "action": "block",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -140,6 +158,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -151,6 +170,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -173,6 +193,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -184,6 +205,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -210,6 +232,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -221,6 +244,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -247,6 +271,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -269,6 +294,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -280,6 +306,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -306,6 +333,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -335,6 +363,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -361,6 +390,7 @@
           "action": "block",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -383,6 +413,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -405,6 +436,7 @@
           "action": "block",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -427,6 +459,7 @@
           "action": "block",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -449,6 +482,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -460,6 +494,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -482,6 +517,7 @@
           "action": "warn",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"
@@ -493,6 +529,7 @@
           "action": "log",
           "scopes": [
             "map",
+            "orchestrator_request",
             "policy_simulation",
             "policy_test",
             "wcp"

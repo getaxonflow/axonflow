@@ -28,6 +28,7 @@ import (
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/policypack"
+	"axonflow/platform/shared/edition"
 	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
@@ -466,7 +467,7 @@ func TestARedactionThePassCannotPerformFailsClosed(t *testing.T) {
 			if v.unavailable != "" || v.reasonCode != string(contract.ReasonUnsupportedObligation) {
 				t.Fatalf("got %+v; want a refusal with reason %s, not an outage", v, contract.ReasonUnsupportedObligation)
 			}
-			assertRedactionRefusalNamesTheObligation(t, v.blockReason, row, "it masks nothing in the statement, the only content this wire hands back")
+			assertRedactionRefusalNamesTheObligation(t, v.blockReason, row, "it masks nothing in the statement or in any parameter")
 			// The request carried no parameters, so the refusal must name none:
 			// neither an empty list nor a cause the pass cannot know.
 			if strings.Contains(v.blockReason, "parameters") {
@@ -488,78 +489,49 @@ func assertRedactionRefusalNamesTheObligation(t *testing.T, reason, row, why str
 	}
 }
 
-// TestTheParameterProbeNeverTurnsACertainRefusalIntoAnOutage drives
-// redactionOutcome directly (#4264, R3 round 3). The probe loads the policies
-// per call, so it can fail on its own; when the statement masked nothing the
-// refusal is already certain and the probe's failure must not answer an outage
-// instead, which is the 5xx a fail-open client runs the tool on.
-func TestTheParameterProbeNeverTurnsACertainRefusalIntoAnOutage(t *testing.T) {
+// TestARedactionIsRefusedOnlyWhenItMasksNothing drives redactionOutcome
+// directly (#4264). This wire hands back the masked statement and each masked
+// parameter, so a redaction that masks the statement, the parameters (the ADK
+// plugin's shape A) or both (shape C) is discharged; only one that masked
+// nothing anywhere is refused, naming the obligation.
+func TestARedactionIsRefusedOnlyWhenItMasksNothing(t *testing.T) {
 	dec := &contract.Decision{Obligations: []contract.Obligation{{
 		Type: contract.ObFieldRedact, Target: legacycompile.DefaultContentTarget, Mandatory: true, SourcePolicy: "organization_override:corpus:static_policies:probe:log",
 	}}}
-	probeFailed := errors.New("the decision names requirement sys_probe, which the activated engine does not hold")
 	for _, c := range []struct {
-		name        string
-		didMask     bool
-		params      []string
-		paramsErr   error
-		wantRefusal string
-		wantErr     bool
+		name    string
+		didMask bool
+		params  map[string]string
+		refused bool
 	}{
-		{"nothing masked, the probe found nothing: refused, naming no parameter", false, nil, nil, "it masks nothing in the statement, the only content this wire hands back", false},
-		{"nothing masked, a parameter would be masked: refused, naming it", false, []string{"command"}, nil, "it masks the request's parameters (command)", false},
-		{"nothing masked AND the probe FAILED: still refused, never an outage", false, nil, probeFailed, "it masks nothing in the statement, the only content this wire hands back", false},
-		// The probe returns no parameters WITH its error, so this row cannot
-		// arise in production; it pins that the bare branch reads paramsErr
-		// rather than the emptiness of params (R3 round 4).
-		{"nothing masked, a probe that FAILED after finding one: refused, naming none", false, []string{"command"}, probeFailed, "it masks nothing in the statement, the only content this wire hands back", false},
-		{"the statement masked, a parameter would be masked: refused", true, []string{"card"}, nil, "it also masks the request's parameters (card)", false},
-		{"the statement masked and the probe FAILED: an outage, which is what it is", true, nil, probeFailed, "", true},
-		{"the statement masked, nothing else: a permit", true, nil, nil, "", false},
+		{"nothing masked anywhere: refused", false, nil, true},
+		{"shape A, only a parameter masked: discharged", false, map[string]string{"command": "mail [REDACTED]"}, false},
+		{"shape C, the statement and a parameter masked: discharged", true, map[string]string{"card": "[REDACTED]"}, false},
+		{"only the statement masked: discharged", true, nil, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			refusal, err := redactionOutcome(dec, c.didMask, c.params, c.paramsErr)
-			if c.wantErr {
-				if err == nil || refusal != "" {
-					t.Fatalf("got refusal %q err %v; want the probe's error reported as an outage", refusal, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("got err %v; want none", err)
-			}
-			if c.wantRefusal == "" {
+			refusal := redactionOutcome(dec, c.didMask, c.params)
+			if !c.refused {
 				if refusal != "" {
-					t.Fatalf("got refusal %q; want a permit", refusal)
+					t.Fatalf("got refusal %q; want the redaction discharged", refusal)
 				}
 				return
 			}
-			// The reason code alone survives an empty subject, so hold the
-			// refusal to the obligation it must name, as every other case does.
-			assertRedactionRefusalNamesTheObligation(t, refusal, "probe", c.wantRefusal)
-			// The clause naming parameters appears EXACTLY when the probe
-			// established one to name: never after a probe that failed, and
-			// never when it found none.
-			wantClause := c.paramsErr == nil && len(c.params) > 0
-			if got := strings.Contains(refusal, "parameters ("); got != wantClause {
-				t.Fatalf("the refusal %q names parameters (%v); want %v", refusal, got, wantClause)
-			}
+			assertRedactionRefusalNamesTheObligation(t, refusal, "probe", "it masks nothing in the statement or in any parameter")
 		})
 	}
 }
 
-// TestARedactionOutsideTheStatementIsRefusedOnCheckInput (#4264): under the
+// TestARedactionOfTheParametersIsHandedBackOnCheckInput (#4264): under the
 // organization's pii=redact posture, with no handshake, a check-input whose PII
-// sits in the parameters composes a redaction this wire cannot discharge, since
-// it hands back only the statement. The ADK plugin sends a tool's name as the
-// statement and its arguments as the parameters. The request is REFUSED 403
-// unsupported_obligation naming the obligation; it was answered 503, an outage,
-// and every client that fails open on a 5xx ran the tool on it. A statement and
-// a parameter that BOTH carry PII are refused too: they were answered 200 with
-// the statement masked and the parameter handed back unmasked. The legitimate
-// caller in the same state - the PII in the statement alone, or none - is
-// answered 200.
-func TestARedactionOutsideTheStatementIsRefusedOnCheckInput(t *testing.T) {
+// sits in the parameters - the ADK plugin's shape, a tool's name as the
+// statement and its arguments as the parameters (shape A) - or in the statement
+// AND a parameter (shape C) is ANSWERED 200 with each masked parameter handed
+// back in redacted_parameters, as the text the request pass scanned it as. It
+// used to be refused 403 unsupported_obligation (and before that answered 503
+// or 200 with the parameter unmasked). The PII never reaches the wire in any
+// shape; a request whose redaction masks nothing anywhere is still refused.
+func TestARedactionOfTheParametersIsHandedBackOnCheckInput(t *testing.T) {
 	w := mrsSetup(t)
 	row, probe := mrqRedactWorld(t, w.org)
 	// The probe's detector also matches the probe's digits without their
@@ -572,13 +544,21 @@ func TestARedactionOutsideTheStatementIsRefusedOnCheckInput(t *testing.T) {
 	}
 	enfInstallDetectors(t, map[string]string{row: strings.ReplaceAll(regexp.QuoteMeta(probe), " ", " ?")}, nil)
 	w.mrsWire(t, w.docs)
+	// The enforcement point that declared it substitutes masked parameters
+	// (field_redact@2) as well as the statement (field_redact@1): the only
+	// caller a masked parameter is handed back to, and only on Enterprise
+	// (pepSubstitutesParameters).
+	substitutes := parameterSubstitutingHandshake(t)
 
-	post := func(t *testing.T, statement string, params map[string]interface{}) (int, map[string]interface{}, string) {
+	post := func(t *testing.T, statement string, params map[string]interface{}, handshake string) (int, map[string]interface{}, string) {
 		t.Helper()
 		body, _ := json.Marshal(MCPCheckInputRequest{ConnectorType: "adk-tool", Statement: statement, Parameters: params, Operation: "execute"})
 		req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", utrBasicAuthHeader())
+		if handshake != "" {
+			req.Header.Set(contract.PEPHandshakeHeader, handshake)
+		}
 		rr := httptest.NewRecorder()
 		mcpCheckInputHandler(rr, req)
 		var out map[string]interface{}
@@ -587,109 +567,322 @@ func TestARedactionOutsideTheStatementIsRefusedOnCheckInput(t *testing.T) {
 		}
 		return rr.Code, out, rr.Body.String()
 	}
-	outage := func(cause string) float64 {
-		return testutil.ToFloat64(anchoredEnforceDecisions.WithLabelValues(mcpRequestSeamScope.String(), decisionEngineAnchored, "unavailable", cause))
+	outage := func() float64 {
+		sum := 0.0
+		for _, cause := range []string{enforceCauseObligation, enforceCauseEvaluation, enforceCauseNotWired} {
+			sum += testutil.ToFloat64(anchoredEnforceDecisions.WithLabelValues(mcpRequestSeamScope.String(), decisionEngineAnchored, "unavailable", cause))
+		}
+		return sum
+	}
+	// maskedParams returns redacted_parameters, failing when it is absent.
+	maskedParams := func(t *testing.T, out map[string]interface{}, raw string) map[string]interface{} {
+		t.Helper()
+		m, ok := out["redacted_parameters"].(map[string]interface{})
+		if !ok || len(m) == 0 {
+			t.Fatalf("want redacted_parameters handed back. body=%s", raw)
+		}
+		return m
 	}
 
 	for _, c := range []struct {
 		name      string
 		statement string
 		params    map[string]interface{}
-		why       string
+		// masked names the parameters handed back masked; stmtMasked whether
+		// the statement is.
+		masked     []string
+		stmtMasked bool
 	}{
-		{"the census shape: the tool's name as the statement, the PII in a parameter",
-			"mail", map[string]interface{}{"command": "mail -s statement " + probe}, "masks nothing in the statement, the only content this wire hands back; it masks the request's parameters (command)"},
-		{"the PII in a nested object parameter only",
-			"mail", map[string]interface{}{"options": map[string]interface{}{"to": probe}}, "masks nothing in the statement, the only content this wire hands back; it masks the request's parameters (options)"},
-		{"the PII in the statement AND a parameter",
-			mrsRedactContent(probe), map[string]interface{}{"command": "mail -s statement " + probe, "force": true}, "the request's parameters (command)"},
-		// The scan reads an array as its JSON encoding, and the check reads
-		// the same text.
-		{"the PII in the statement AND an array parameter",
-			mrsRedactContent(probe), map[string]interface{}{"args": []interface{}{"-s", probe}}, "the request's parameters (args)"},
-		// The case a check reading only string leaves would hand back: the
-		// scan reads a JSON number in decimal, so a card number sent as a
-		// number composes the redaction and must be refused.
-		{"the PII in the statement AND a numeric parameter",
-			mrsRedactContent(probe), map[string]interface{}{"card": probeNumber}, "the request's parameters (card)"},
+		{"shape A: the tool's name as the statement, the PII in a parameter", "mail",
+			map[string]interface{}{"command": "mail -s statement " + probe}, []string{"command"}, false},
+		{"shape A: the PII in a nested object parameter, handed back as its masked serialisation", "mail",
+			map[string]interface{}{"options": map[string]interface{}{"to": probe}}, []string{"options"}, false},
+		{"shape C: the PII in the statement AND a parameter", mrsRedactContent(probe),
+			map[string]interface{}{"command": "mail -s statement " + probe, "force": true}, []string{"command"}, true},
+		{"shape C: an array parameter, handed back as its masked serialisation", mrsRedactContent(probe),
+			map[string]interface{}{"args": []interface{}{"-s", probe}}, []string{"args"}, true},
+		// The scan reads a JSON number in decimal, so a card number sent as a
+		// number is masked as the text the scan read.
+		{"shape C: a numeric parameter", mrsRedactContent(probe),
+			map[string]interface{}{"card": probeNumber}, []string{"card"}, true},
 	} {
-		t.Run("REFUSED: "+c.name, func(t *testing.T) {
-			before, outagesBefore := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)), outage(enforceCauseObligation)+outage(enforceCauseEvaluation)+outage(enforceCauseNotWired)
-			// Replayed, the answer is the same: nothing in the request pass
-			// remembers the first one.
-			for attempt := 1; attempt <= 2; attempt++ {
-				code, out, raw := post(t, c.statement, c.params)
-				allowed, present := out["allowed"]
-				if code != http.StatusForbidden || !present || allowed != false {
-					t.Fatalf("attempt %d: HTTP %d allowed=%v (present %v); want 403 with allowed false. body=%s", attempt, code, allowed, present, raw)
-				}
-				reason, _ := out["block_reason"].(string)
-				assertRedactionRefusalNamesTheObligation(t, reason, row, c.why)
-				if out["engine"] != decisionEngineAnchored {
-					t.Fatalf("attempt %d: engine %v; want %s. body=%s", attempt, out["engine"], decisionEngineAnchored, raw)
-				}
-				// Nothing is handed back to forward, and the refusal is a
-				// check-input deny (allowed), not the outage envelope (blocked).
-				if _, has := out["redacted_statement"]; has || strings.Contains(raw, probe) || strings.Contains(raw, digits) {
-					t.Fatalf("attempt %d: the refusal handed content back: %s", attempt, raw)
-				}
-				if _, has := out["blocked"]; has {
-					t.Fatalf("attempt %d: the refusal carries the outage envelope's blocked member: %s", attempt, raw)
+		t.Run("HANDED BACK: "+c.name, func(t *testing.T) {
+			requireParameterHandBack(t)
+			before, outagesBefore := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)), outage()
+			code, out, raw := post(t, c.statement, c.params, substitutes)
+			if code != http.StatusOK || out["allowed"] != true || out["redacted"] != true {
+				t.Fatalf("HTTP %d; want 200 allowed with redacted true. body=%s", code, raw)
+			}
+			// The PII never reaches the wire, in any member.
+			if strings.Contains(raw, probe) || strings.Contains(raw, digits) {
+				t.Fatalf("the answer carries the PII: %s", raw)
+			}
+			// Round 1 UNATTRIBUTED-7: an allow is an anchored decision, so it
+			// names one and says what it evaluated.
+			assertAnAllowNamesItsDecision(t, out, raw)
+			got := maskedParams(t, out, raw)
+			if len(got) != len(c.masked) {
+				t.Fatalf("redacted_parameters %v; want exactly %v", got, c.masked)
+			}
+			for _, k := range c.masked {
+				if text, ok := got[k].(string); !ok || text == "" {
+					t.Fatalf("redacted_parameters[%s] = %v; want its masked scan text. body=%s", k, got[k], raw)
 				}
 			}
-			if after := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)); after != before+2 {
-				t.Fatalf("the mcp:request unsupported_obligation counter moved %v -> %v; want +2", before, after)
+			stmt, hasStmt := out["redacted_statement"].(string)
+			if c.stmtMasked != hasStmt || (hasStmt && stmt == c.statement) {
+				t.Fatalf("redacted_statement present=%v %q; want present=%v masked. body=%s", hasStmt, stmt, c.stmtMasked, raw)
 			}
-			if outagesAfter := outage(enforceCauseObligation) + outage(enforceCauseEvaluation) + outage(enforceCauseNotWired); outagesAfter != outagesBefore {
-				t.Fatalf("an outage was counted for a refusal: %v -> %v", outagesBefore, outagesAfter)
+			if after := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)); after != before {
+				t.Fatalf("an unsupported_obligation refusal was counted for a discharged redaction: %v -> %v", before, after)
+			}
+			if o := outage(); o != outagesBefore {
+				t.Fatalf("an outage was counted for a discharged redaction: %v -> %v", outagesBefore, o)
 			}
 		})
 	}
 
-	// The MCP server's check_policy tool reads parameters too and shares the
-	// projection, so the same request is refused there with a deny result, not
-	// an error result; its legitimate pair is allowed with the statement masked.
-	t.Run("check_policy: the same refusal on the MCP server's tool, and its pair allowed", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), ContextKeyOrgID, w.org)
-		call := func(statement string, params map[string]interface{}) map[string]interface{} {
-			t.Helper()
-			resp, err := mcpToolCheckPolicy(ctx, mrqSession(t, w.org, ""), map[string]interface{}{
-				"connector_type": "adk-tool", "statement": statement, "parameters": params,
-			}, pepHandshakeResolution{})
-			if err != nil {
-				t.Fatalf("check_policy answered an error, not a verdict: %v", err)
-			}
-			return resp.(map[string]interface{})
+	// A MAP OR LIST PARAMETER IS MASKED AS ONE TEXT, its serialisation, so a
+	// span that crosses two of its elements is masked as the scan matched it. A
+	// leaf-by-leaf mask would find neither half and hand the span back.
+	t.Run("HANDED BACK: a span across a list parameter's serialisation", func(t *testing.T) {
+		requireParameterHandBack(t)
+		enfInstallDetectors(t, map[string]string{row: regexp.QuoteMeta(`jane","doe`)}, nil)
+		code, out, raw := post(t, "mail", map[string]interface{}{"to": []interface{}{"jane", "doe"}}, substitutes)
+		if code != http.StatusOK || out["allowed"] != true {
+			t.Fatalf("HTTP %d; want 200 allowed. body=%s", code, raw)
 		}
-		refused := call("mail", map[string]interface{}{"command": "mail -s statement " + probe})
-		reason, _ := refused["block_reason"].(string)
-		if refused["allowed"] != false {
-			t.Fatalf("check_policy got %v; want allowed false", refused)
-		}
-		assertRedactionRefusalNamesTheObligation(t, reason, row, "masks nothing in the statement, the only content this wire hands back; it masks the request's parameters (command)")
-		if refused["engine"] != decisionEngineAnchored {
-			t.Fatalf("check_policy's refusal carries engine %v; want %s, the pass's own stamp", refused["engine"], decisionEngineAnchored)
-		}
-		allowed := call(mrsRedactContent(probe), map[string]interface{}{"command": "ls -la /tmp"})
-		stmt, _ := allowed["redacted_statement"].(string)
-		if allowed["allowed"] != true || allowed["requires_redaction"] != true || stmt == "" || strings.Contains(stmt, probe) {
-			t.Fatalf("check_policy's pair got %v; want allowed with the statement masked", allowed)
+		text, _ := maskedParams(t, out, raw)["to"].(string)
+		if text == "" || strings.Contains(text, `jane","doe`) {
+			t.Fatalf("redacted_parameters[to] = %q; want the span across the serialisation masked. body=%s", text, raw)
 		}
 	})
 
 	// The scan evaluates each parameter's text on its own, so a pattern
-	// anchored to a whole parameter matches there. The check redacts each
-	// parameter on its own too; one that redacted them joined in one row would
-	// find nothing for such a pattern and hand the parameter back.
-	t.Run("REFUSED: a parameter a pattern anchored to its whole text matches", func(t *testing.T) {
+	// anchored to a whole parameter matches there, and the mask does too.
+	t.Run("HANDED BACK: a parameter a pattern anchored to its whole text matches", func(t *testing.T) {
+		requireParameterHandBack(t)
 		enfInstallDetectors(t, map[string]string{row: "^" + digits + "$|" + regexp.QuoteMeta(probe)}, nil)
-		code, out, raw := post(t, mrsRedactContent(probe), map[string]interface{}{"card": digits})
-		allowed, present := out["allowed"]
-		if code != http.StatusForbidden || !present || allowed != false {
-			t.Fatalf("HTTP %d allowed=%v (present %v); want 403 with allowed false. body=%s", code, allowed, present, raw)
+		code, out, raw := post(t, mrsRedactContent(probe), map[string]interface{}{"card": digits}, substitutes)
+		if code != http.StatusOK || out["allowed"] != true || strings.Contains(raw, digits) {
+			t.Fatalf("HTTP %d; want 200 with the whole-text parameter masked. body=%s", code, raw)
+		}
+		if _, ok := maskedParams(t, out, raw)["card"]; !ok {
+			t.Fatalf("want card handed back masked. body=%s", raw)
+		}
+	})
+
+	// A DIGITS-ONLY PARAMETER IS HANDED BACK AS ITS TEXT, MASKED, UNQUOTED
+	// (round 1 M2). A card, phone, NIK or account number sent as a string, and
+	// the same number sent as a JSON number, both scan as the decimal text, and
+	// both come back as that text masked in place: no quote characters, the
+	// same length, every character either the original digit or the mask. A
+	// digits-only text is valid JSON, and the redactor's JSON repair used to
+	// hand it back as a JSON string literal, quotes included.
+	t.Run("HANDED BACK: a digits-only string and the same number, as the same unquoted masked text", func(t *testing.T) {
+		requireParameterHandBack(t)
+		var texts []string
+		for _, card := range []interface{}{digits, probeNumber} {
+			code, out, raw := post(t, "mail", map[string]interface{}{"card": card}, substitutes)
+			if code != http.StatusOK || out["allowed"] != true {
+				t.Fatalf("card %T: HTTP %d; want 200 allowed. body=%s", card, code, raw)
+			}
+			text, _ := maskedParams(t, out, raw)["card"].(string)
+			if len(text) != len(digits) || strings.ContainsAny(text, "\"\\") || !strings.Contains(text, "*") {
+				t.Fatalf("card %T handed back %q; want %q masked in place: same length, unquoted, masked", card, text, digits)
+			}
+			for i := range text {
+				if text[i] != '*' && text[i] != digits[i] {
+					t.Fatalf("card %T handed back %q; character %d is neither the original digit nor the mask", card, text, i)
+				}
+			}
+			texts = append(texts, text)
+		}
+		if texts[0] != texts[1] {
+			t.Fatalf("the string handed back %q and the number %q; want the same masked text", texts[0], texts[1])
+		}
+	})
+
+	// THE AUDIT ROW NAMES WHAT WAS MASKED, ON EACH SURFACE (round 1 M3). The
+	// canonical audit_logs row's redacted_fields is what a compliance reader
+	// sees; check-input writes it from the satellite entry's field list
+	// (mcp_handler.go), check_policy from its own call (mcp_server_handler.go),
+	// so each surface is asserted at its own write.
+	redactedRowArgs := func(requestType string, fields ...string) []driver.Value {
+		args := make([]driver.Value, 20)
+		for i := range args {
+			args[i] = sqlmock.AnyArg()
+		}
+		b, _ := json.Marshal(fields)
+		args[9], args[12], args[15], args[17] = requestType, mcpVerdictRedacted, PlaneMCP, b
+		return args
+	}
+	for _, c := range []struct {
+		name      string
+		statement string
+		fields    []string
+	}{
+		{"shape A", "mail", []string{"parameters.command"}},
+		{"shape C", mrsRedactContent(probe), []string{"statement", "parameters.command"}},
+	} {
+		t.Run("AUDIT: check-input's row names what "+c.name+" masked", func(t *testing.T) {
+			requireParameterHandBack(t)
+			mock := withMockUsageDB(t)
+			mock.MatchExpectationsInOrder(false)
+			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_input", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			if code, _, raw := post(t, c.statement, map[string]interface{}{"command": "mail -s statement " + probe}, substitutes); code != http.StatusOK {
+				t.Fatalf("HTTP %d; want 200. body=%s", code, raw)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("check-input wrote no redacted row naming %v: %v", c.fields, err)
+			}
+		})
+		t.Run("AUDIT: check_policy's row names what "+c.name+" masked", func(t *testing.T) {
+			requireParameterHandBack(t)
+			mock := withMockUsageDB(t)
+			mock.MatchExpectationsInOrder(false)
+			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_policy", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			ctx := context.WithValue(context.Background(), ContextKeyOrgID, w.org)
+			resp, err := mcpToolCheckPolicy(ctx, mrqSession(t, w.org, ""), map[string]interface{}{
+				"connector_type": "adk-tool", "statement": c.statement, "parameters": map[string]interface{}{"command": "mail -s statement " + probe},
+			}, admittedHandshake(t, substitutes))
+			if err != nil || resp.(map[string]interface{})["allowed"] != true {
+				t.Fatalf("check_policy got %v (err %v); want allowed", resp, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("check_policy wrote no redacted row naming %v: %v", c.fields, err)
+			}
+		})
+	}
+
+	// Still refused, a redaction that masks nothing anywhere: the case
+	// TestARedactionThePassCannotPerformFailsClosed drives end to end ("the
+	// redactor masks nothing the decision names"), and the parameter variants
+	// are TestARedactionIsRefusedOnlyWhenItMasksNothing's.
+
+	// The MCP server's check_policy tool shares the projection, so it hands
+	// the same masked parameters back.
+	t.Run("check_policy: the masked parameters handed back, as check-input does", func(t *testing.T) {
+		requireParameterHandBack(t)
+		enfInstallDetectors(t, map[string]string{row: strings.ReplaceAll(regexp.QuoteMeta(probe), " ", " ?")}, nil)
+		ctx := context.WithValue(context.Background(), ContextKeyOrgID, w.org)
+		resp, err := mcpToolCheckPolicy(ctx, mrqSession(t, w.org, ""), map[string]interface{}{
+			"connector_type": "adk-tool", "statement": "mail", "parameters": map[string]interface{}{"command": "mail -s statement " + probe},
+		}, admittedHandshake(t, substitutes))
+		if err != nil {
+			t.Fatalf("check_policy answered an error, not a verdict: %v", err)
+		}
+		got := resp.(map[string]interface{})
+		params, _ := got["redacted_parameters"].(map[string]string)
+		if got["allowed"] != true || got["requires_redaction"] != true || params["command"] == "" || strings.Contains(params["command"], probe) {
+			t.Fatalf("check_policy got %v; want allowed, requires_redaction, and command handed back masked", got)
+		}
+		if _, has := got["redacted_statement"]; has {
+			t.Fatalf("check_policy handed back a redacted_statement for a statement it did not mask: %v", got)
+		}
+	})
+
+	// REFUSED: a masked parameter is never handed back to an enforcement point
+	// that has not declared it substitutes one (field_redact@2): it would run
+	// its tool on the raw parameters while the audit row records them masked.
+	// The Google ADK plugin as shipped presents no handshake. The refusal names
+	// the obligation, the masked parameter's KEY and the missing capability,
+	// and carries no PII in any form: not the value, not its masked text. On
+	// Community a declaration is not honoured (ADR-066 Decision 5), so a
+	// declared @1+@2 is refused there too.
+	handshakes := []struct{ name, value string }{
+		{"no handshake", ""},
+		{"field_redact@1 only", redactionHandshake(t)},
+	}
+	if edition.Current != edition.Enterprise {
+		handshakes = append(handshakes, struct{ name, value string }{"field_redact@1 and @2, on Community", substitutes})
+	}
+	for _, c := range []struct {
+		name      string
+		statement string
+		params    map[string]interface{}
+	}{
+		{"shape A", "mail", map[string]interface{}{"command": "mail -s statement " + probe}},
+		{"shape C", mrsRedactContent(probe), map[string]interface{}{"command": "mail -s statement " + probe, "force": true}},
+	} {
+		for _, h := range handshakes {
+			t.Run("REFUSED: "+c.name+", "+h.name, func(t *testing.T) {
+				before, outagesBefore := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)), outage()
+				code, out, raw := post(t, c.statement, c.params, h.value)
+				if code != http.StatusForbidden || out["allowed"] != false {
+					t.Fatalf("HTTP %d allowed=%v; want 403 allowed false. body=%s", code, out["allowed"], raw)
+				}
+				reason, _ := out["block_reason"].(string)
+				assertRedactionRefusalNamesTheObligation(t, reason, row, "it masks parameters.command, and this enforcement point has not declared that it substitutes masked parameters (field_redact@2 in its PEP handshake)")
+				if strings.Contains(raw, probe) || strings.Contains(raw, digits) || strings.Contains(raw, "mail -s statement") {
+					t.Fatalf("the refusal carries the parameter's value or its masked text: %s", raw)
+				}
+				for _, member := range []string{"redacted_statement", "redacted_parameters"} {
+					if _, has := out[member]; has {
+						t.Fatalf("the refusal hands back %s: %s", member, raw)
+					}
+				}
+				if after := mrqDenyCounter(string(contract.ReasonUnsupportedObligation)); after != before+1 {
+					t.Fatalf("the mcp:request unsupported_obligation counter moved %v -> %v; want +1", before, after)
+				}
+				if o := outage(); o != outagesBefore {
+					t.Fatalf("an outage was counted for a refusal: %v -> %v", outagesBefore, o)
+				}
+			})
+		}
+	}
+	// A PEP that declared it substitutes parameters (@2) but NOT the statement
+	// (@1) is refused, never handed back a statement-only redaction or a
+	// parameter hand-back (round 2 LOW-8). The anchored engine refuses it
+	// before the projection in both editions: on Enterprise its capability
+	// check names the undeclared @1 (pep_capability_unsupported); on Community
+	// its composition refuses the mandatory obligation the declared profile
+	// cannot discharge (unsupported_obligation).
+	t.Run("REFUSED: shape A, field_redact@2 only", func(t *testing.T) {
+		v2only := encodedHandshake(t, "parameters-only-pep", contract.Capability{Type: contract.ObFieldRedact, Version: mcpParameterRedactionSchemaVersion})
+		code, out, raw := post(t, "mail", map[string]interface{}{"command": "mail -s statement " + probe}, v2only)
+		if code != http.StatusForbidden || out["allowed"] != false {
+			t.Fatalf("HTTP %d allowed=%v; want 403 allowed false. body=%s", code, out["allowed"], raw)
 		}
 		reason, _ := out["block_reason"].(string)
-		assertRedactionRefusalNamesTheObligation(t, reason, row, "the request's parameters (card)")
+		want := []string{string(contract.ReasonUnsupportedObligation)}
+		if edition.Current == edition.Enterprise {
+			want = []string{pepCapabilityUnsupportedCode, "at version(s) [2], not at 1"}
+		}
+		for _, w := range want {
+			if !strings.Contains(reason, w) {
+				t.Fatalf("block_reason %q; want it to carry %q. body=%s", reason, w, raw)
+			}
+		}
+		if strings.Contains(raw, probe) || strings.Contains(raw, digits) || strings.Contains(raw, "mail -s statement") {
+			t.Fatalf("the refusal carries the parameter's value or its masked text: %s", raw)
+		}
+		for _, member := range []string{"redacted_statement", "redacted_parameters"} {
+			if _, has := out[member]; has {
+				t.Fatalf("the refusal hands back %s: %s", member, raw)
+			}
+		}
+	})
+	t.Run("REFUSED: check_policy, no handshake", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), ContextKeyOrgID, w.org)
+		resp, err := mcpToolCheckPolicy(ctx, mrqSession(t, w.org, ""), map[string]interface{}{
+			"connector_type": "adk-tool", "statement": "mail", "parameters": map[string]interface{}{"command": "mail -s statement " + probe},
+		}, pepHandshakeResolution{})
+		if err != nil {
+			t.Fatalf("check_policy answered an error, not a verdict: %v", err)
+		}
+		got := resp.(map[string]interface{})
+		reason, _ := got["block_reason"].(string)
+		if got["allowed"] != false {
+			t.Fatalf("check_policy got %v; want allowed false", got)
+		}
+		assertRedactionRefusalNamesTheObligation(t, reason, row, "it masks parameters.command, and this enforcement point has not declared that it substitutes masked parameters (field_redact@2 in its PEP handshake)")
+		if _, has := got["redacted_parameters"]; has {
+			t.Fatalf("check_policy's refusal hands back redacted_parameters: %v", got)
+		}
+		if b, _ := json.Marshal(got); strings.Contains(string(b), probe) || strings.Contains(string(b), "mail -s statement") {
+			t.Fatalf("check_policy's refusal carries the parameter's value or its masked text: %s", b)
+		}
 	})
 
 	for _, c := range []struct {
@@ -705,16 +898,24 @@ func TestARedactionOutsideTheStatementIsRefusedOnCheckInput(t *testing.T) {
 		{"no PII anywhere, a clean parameter", "mail", map[string]interface{}{"command": "ls -la /tmp"}, false},
 	} {
 		t.Run("ALLOWED: "+c.name, func(t *testing.T) {
-			code, out, raw := post(t, c.statement, c.params)
+			// No handshake: a caller that sends no PII in its parameters is
+			// answered as it was before the hand-back existed.
+			code, out, raw := post(t, c.statement, c.params, "")
 			if code != http.StatusOK || out["allowed"] != true {
 				t.Fatalf("HTTP %d; want 200 allowed. body=%s", code, raw)
 			}
+			assertAnAllowNamesItsDecision(t, out, raw)
 			stmt, _ := out["redacted_statement"].(string)
 			if c.masked && (out["redacted"] != true || stmt == "" || strings.Contains(stmt, probe)) {
 				t.Fatalf("want the statement handed back masked. body=%s", raw)
 			}
 			if !c.masked && out["redacted"] == true {
 				t.Fatalf("want nothing redacted. body=%s", raw)
+			}
+			// No parameter carried PII, so the member is absent: the answer is
+			// what it was before redacted_parameters existed.
+			if _, has := out["redacted_parameters"]; has {
+				t.Fatalf("redacted_parameters present where no parameter carried PII. body=%s", raw)
 			}
 		})
 	}
@@ -891,5 +1092,66 @@ func TestTheRequestPassCountsTheVerdictAtEveryEntryPoint(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// TestTheAuditRecordsWhatTheRedactionMasked (#4264): the check-input and
+// check_policy audit rows name what was masked, the statement and each masked
+// parameter, so a parameters-only redaction is not recorded as the statement.
+func TestTheAuditRecordsWhatTheRedactionMasked(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		v    mcpStatementVerdict
+		want []string
+	}{
+		{"the statement only", mcpStatementVerdict{statementRedacted: true}, []string{"statement"}},
+		{"shape A, parameters only", mcpStatementVerdict{redactedParameters: map[string]string{"command": "x", "args": "y"}}, []string{"parameters.args", "parameters.command"}},
+		{"shape C, both", mcpStatementVerdict{statementRedacted: true, redactedParameters: map[string]string{"card": "x"}}, []string{"statement", "parameters.card"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.v.redactedFields(); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("redactedFields = %v; want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// parameterSubstitutingHandshake is the PEP handshake of an enforcement point
+// that substitutes a masked statement (field_redact@1) AND masked parameters
+// (field_redact@2, mcpParameterRedactionObligation).
+func parameterSubstitutingHandshake(t *testing.T) string {
+	t.Helper()
+	return encodedHandshake(t, "parameter-substituting-pep",
+		contract.Capability{Type: contract.ObFieldRedact, Version: 1},
+		contract.Capability{Type: contract.ObFieldRedact, Version: mcpParameterRedactionSchemaVersion})
+}
+
+// admittedHandshake resolves handshake as the harness client presenting it.
+func admittedHandshake(t *testing.T, handshake string) pepHandshakeResolution {
+	t.Helper()
+	res := resolvePEPHandshake(requestWithHandshake(handshake), utrTestClientID)
+	if !res.pep.Admitted() {
+		t.Fatalf("PREMISE: the fixture handshake was not admitted: %+v", res)
+	}
+	return res
+}
+
+// requireParameterHandBack skips a hand-back case on a build that never hands a
+// masked parameter back (Community, ADR-066 Decision 5). The refusal it answers
+// there instead is asserted by the REFUSED cases, which run on both builds.
+func requireParameterHandBack(t *testing.T) {
+	t.Helper()
+	if edition.Current != edition.Enterprise {
+		t.Skip("Community never hands back a masked parameter; its refusal is a REFUSED case")
+	}
+}
+
+// assertAnAllowNamesItsDecision fails an allow that names no decision or carries
+// no policy_info: every check-input allow is an anchored decision (round 1
+// UNATTRIBUTED-7 saw, once, a 200 with neither and nothing masked).
+func assertAnAllowNamesItsDecision(t *testing.T, out map[string]interface{}, raw string) {
+	t.Helper()
+	if id, _ := out["decision_id"].(string); id == "" || out["policy_info"] == nil || out["engine"] != decisionEngineAnchored {
+		t.Fatalf("an allow with decision_id %v, policy_info %v, engine %v; want an anchored decision named. body=%s", out["decision_id"], out["policy_info"], out["engine"], raw)
 	}
 }

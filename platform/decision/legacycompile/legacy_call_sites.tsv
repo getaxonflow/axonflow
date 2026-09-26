@@ -1,14 +1,15 @@
 plane	evaluator	file	function	passes_action_overrides	edition	default_posture	gate
-cowork_ingest	EvaluateResponse	platform/agent/cowork_otel_ingest.go	coworkRedactDefault	yes	enterprise	reachable	-
+cowork_ingest	EvaluateResponse	platform/agent/cowork_ingest_enforcing_seam.go	decideCoworkContent	yes	enterprise	reachable	-
 decide	EvaluateRequest	platform/agent/mcp_handler.go	evaluateInputPolicies	yes	community	reachable	-
 gateway_request	EvaluateRequest	platform/agent/gateway_handlers.go	handlePolicyPreCheck	yes	community	reachable	-
-map	Produce	platform/orchestrator/map_enforcing_seam.go	mapStepDecide	no	community	gated	AXONFLOW_HITL_ENABLED=true AND DEPLOYMENT_MODE not community
+map	Produce	platform/orchestrator/map_enforcing_seam.go	mapStepDecide	no	community	reachable	-
 mcp	EvaluateRequest	platform/agent/mcp_handler.go	evaluateInputPolicies	yes	community	reachable	-
 mcp	EvaluateResponse	platform/agent/mcp_handler.go	evaluateOutputPolicies	yes	community	reachable	-
 openai_compatible	EvaluateRequest	platform/agent/openai_compat_handler.go	handleOpenAICompat	yes	community	reachable	-
+orchestrator_request	Produce	platform/orchestrator/route_request_enforcing_seam.go	decideRouteRequestOnce	no	community	reachable	-
 orchestrator_response	EvaluateResponse	platform/orchestrator/response_enforcing_seam.go	responseDetectorPass	yes	community	reachable	-
 policy_simulation	EvaluateDynamicPolicies	platform/orchestrator/policy_simulation_handler.go	SimulatePolicies	no	community	reachable	-
 policy_test	EvaluateDynamicPolicies	platform/orchestrator/run.go	testPolicyHandler	no	community	reachable	-
 proxy_request	EvaluateRequest	platform/agent/run.go	proxyDetectorPass	yes	community	reachable	-
-wcp	Produce	platform/orchestrator/route_request_enforcing_seam.go	decideRouteRequestOnce	no	community	reachable	-
+wcp	Produce	platform/orchestrator/llm_call_route_effects.go	applyLLMCallRoutes	no	community	reachable	-
 wcp	Produce	platform/orchestrator/wcp_enforcing_seam.go	stepGateFacts	no	community	reachable	-

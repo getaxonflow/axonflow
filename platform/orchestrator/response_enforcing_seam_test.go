@@ -207,7 +207,7 @@ func installResponseEnforcer(t *testing.T, docs anchoredenforcer.ActiveDocumentS
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := anchoredenforcer.New(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch,
+	e, err := anchoredenforcer.New(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{},
 		anchoredenforcer.Options{Overrides: orchestratorRecordedOverrides, Delivers: orchestratorSeamDelivers, EditionBoundary: orchestratorEditionBoundary})
 	if err != nil {
 		t.Fatal(err)

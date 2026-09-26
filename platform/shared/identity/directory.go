@@ -59,6 +59,25 @@ func NewGroupID(realm RealmID, name string) (PrincipalID, error) {
 	return NewPrincipalID(realm, SubjectGroup, name)
 }
 
+// SCIMDirectoryGroupRealm is the qualifier of every group the SCIM directory
+// holds: the SCIM directory's group namespace.
+//
+// GROUP MEMBERSHIP IS A PROPERTY OF THE DIRECTORY, NOT OF THE DOOR. One
+// organization has one SCIM directory, and a person admitted through the minted
+// token realm and the same person admitted through their IdP's OIDC realm are
+// in the same groups; their closure must name the same groups, or a policy an
+// author scoped to a group binds the person through one door and not the other.
+// So a SCIM group is qualified by this constant, never by the realm that
+// admitted the subject (SCIMGroupClosureResolver).
+//
+// It is currently the minted realm's qualifier because the authoring catalog
+// declares no directory realm: its realms are the built-in realms
+// (authoringvocabulary.DeploymentRealms), and the minted realm is the one among
+// them a SCIM group can be authored under. A dedicated directory realm in the
+// catalog, and the document migration it would need, is recorded as a v12.0.0
+// row on #4249. Nothing else in the tree spells this qualifier for a SCIM group.
+const SCIMDirectoryGroupRealm = BuiltinRealmMinted
+
 // MustNewGroupID is NewGroupID for fixtures. It panics on invalid input.
 func MustNewGroupID(realm RealmID, name string) PrincipalID {
 	g, err := NewGroupID(realm, name)
@@ -601,7 +620,40 @@ func (b ClosureBounds) Normalized() ClosureBounds {
 // a state, it travels with the result, and AuthoritativeGroups refuses to hand
 // out a set for it.
 type GroupClosureResolver interface {
-	ResolveClosure(ctx context.Context, orgID string, realm TrustRealm, subject PrincipalID, bounds ClosureBounds) ClosureResult
+	ResolveClosure(ctx context.Context, orgID string, realm TrustRealm, subject ClosureSubject, bounds ClosureBounds) ClosureResult
+}
+
+// ClosureSubject is the subject a closure is resolved for: its canonical
+// principal, and the aliases admission verified for it.
+//
+// The aliases are carried because a directory is not always keyed on the
+// canonical subject. The SCIM projection (SCIMGroupClosureResolver) is keyed on
+// the email, and the email a subject has is the alias its realm mapped and
+// admission verified (VerifiedSubject.Aliases), never a value parsed back out of
+// the principal or taken from the request. They travel as Alias values, with
+// their provenance, rather than as a string, so a resolver cannot be handed an
+// email nobody verified. A resolver keyed on the principal ignores them.
+type ClosureSubject struct {
+	Principal PrincipalID
+	Aliases   []Alias
+}
+
+// SubjectOf is the closure subject for a principal with no verified aliases.
+func SubjectOf(principal PrincipalID) ClosureSubject {
+	return ClosureSubject{Principal: principal}
+}
+
+// Alias returns the value of the first alias of kind bound to this subject's
+// principal with authentication provenance, or "" when there is none. An alias
+// bound to another principal, or asserted by anything but the credential's
+// verification, is not this subject's.
+func (s ClosureSubject) Alias(kind AliasKind) string {
+	for _, a := range s.Aliases {
+		if a.Kind == kind && a.Principal == s.Principal && a.Provenance == ProvenanceAuthentication {
+			return a.Value
+		}
+	}
+	return ""
 }
 
 // closureRealmAdmissible reports whether a realm handed to a resolver is one a
@@ -694,8 +746,9 @@ type NoGraphOnlyResolver struct {
 
 // ResolveClosure implements GroupClosureResolver.
 func (r NoGraphOnlyResolver) ResolveClosure(
-	_ context.Context, orgID string, realm TrustRealm, subject PrincipalID, _ ClosureBounds,
+	_ context.Context, orgID string, realm TrustRealm, in ClosureSubject, _ ClosureBounds,
 ) ClosureResult {
+	subject := in.Principal
 	now := time.Now
 	if r.Now != nil {
 		now = r.Now

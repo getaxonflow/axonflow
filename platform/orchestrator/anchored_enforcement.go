@@ -141,6 +141,11 @@ func installOrchestratorEnforcer(db *sql.DB) error {
 		}),
 		boot.Admitter,
 		boot.Registry.Epoch,
+		// No orchestrator seam admits a user subject: all four present the
+		// authenticated credential (header_credential_principal.go), and the
+		// enforcer resolves a group closure for a user subject only. The
+		// resolver is the one that cannot state a directory's groups.
+		sharedidentity.NoGraphOnlyResolver{},
 		anchoredenforcer.Options{
 			Overrides:       orchestratorRecordedOverrides,
 			Delivers:        orchestratorSeamDelivers,

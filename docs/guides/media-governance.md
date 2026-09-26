@@ -30,8 +30,10 @@ AxonFlow provides governance for images sent to multimodal LLMs (GPT-4o, Claude,
 
 All tiers include:
 - Image type/size/dimension validation
-- Local OCR via Tesseract for text extraction
-- PII detection on extracted text (reuses existing PII pipeline)
+- Local OCR via Tesseract for text extraction (Tesseract must be on the orchestrator host; the shipped orchestrator image does not include it)
+- PII detection on extracted text through the platform's PII detectors (the same policy rows that detect PII in requests); findings are named by detector policy id, e.g. `sys_pii_ssn`
+- Each analysis result lists in `scanned` the capabilities that actually ran; a signal whose capability did not run is treated as unknown by policy decisions, so a block policy over it (for example NSFW blocking when only local OCR is registered) refuses the request rather than assuming the image is safe
+- When extracted text could not be scanned for PII (for example the organization has no enabled PII policy), the result carries the warning `media_pii_scan_not_run` with the reason, and `pii` is absent from `scanned`
 - SHA-256 hash stored in audit trail
 - Aggregate cost estimation
 - 5 system media policies seeded by default (NSFW blocking, violence warning, biometric audit, PII blocking, sensitive document detection)

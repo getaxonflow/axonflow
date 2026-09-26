@@ -34,8 +34,11 @@ var legacyRegistrars = map[string]string{
 	"platform/orchestrator.(*PolicySimulationHandler).RegisterRoutes": "DELEGATE: takes a legacyRouter, as above",
 	"platform/agent.RegisterStaticPolicyHandlers": "STAMPS: mounts policypath.DeprecateLegacy on each prefix's subrouter " +
 		"ahead of apiAuthMiddleware; TestDeprecationSignalIsOnBothSpellings drives every route of both prefixes",
-	"platform/agent.(*ReverseProxyHandler).RegisterProxyRoutes": "FORWARDS to the orchestrator, whose registrar stamps; " +
-		"the reverse proxy copies the header once (runtime-e2e/1431_policy_path_alias asserts it through this hop)",
+	"platform/agent.(*ReverseProxyHandler).RegisterProxyRoutes": "STAMPS: wraps every deprecated family it forwards to the " +
+		"orchestrator in policypath.DeprecateLegacyFunc(oneDeprecationSignal(...)), which keeps the orchestrator's own copy " +
+		"from doubling it; TestAProxiedLegacyRouteCarriesOneDeprecationSignal drives them through this registrar, " +
+		"TestEveryDeprecatedFamilyTheProxyForwardsIsStamped enumerates DeprecatedFamilies() against it, and " +
+		"runtime-e2e/1431_policy_path_alias counts the header through this hop",
 	"platform/orchestrator/rbi.(*RBIModule).RegisterRoutes": "STAMPS: wraps both policy-template reads in " +
 		"policypath.DeprecateLegacyFunc; TestRBIPolicyTemplateReadsCarryTheDeprecationSignal drives them through this registrar",
 	"platform/orchestrator/rbi.(*RBIModule).RegisterRoutesWithMux": "STAMPS: as RegisterRoutes, on the gorilla router; " +

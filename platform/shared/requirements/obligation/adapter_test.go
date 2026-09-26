@@ -381,7 +381,11 @@ func TestAdaptedObligationsValidateAgainstTheInitialRegistry(t *testing.T) {
 	if len(out.AwaitingEvidence) != 1 || out.AwaitingEvidence[0].Type != contract.ObApprovalChallenge {
 		t.Fatalf("awaiting = %v, want the approval challenge", out.AwaitingEvidence)
 	}
-	if out.Plan.Approval == nil || !out.Plan.Approval.SeparationOfDuties || !out.Plan.Approval.ExpiresAt.Equal(testNow.Add(24*time.Hour)) {
-		t.Fatalf("approval = %+v, want SoD on and the adapter's 24h default expiry (shorter than the evaluator's 48h)", out.Plan.Approval)
+	// #4249 row 5774029945: the adapter carries no expiry for a row that states
+	// none, so the evaluator's window stamps it. It used to carry a 24h default,
+	// which a carried expiry now setting the window in both directions would
+	// have turned into a day nobody authored.
+	if out.Plan.Approval == nil || !out.Plan.Approval.SeparationOfDuties || !out.Plan.Approval.ExpiresAt.Equal(testNow.Add(48*time.Hour)) {
+		t.Fatalf("approval = %+v, want SoD on and the evaluator's 48h window (the row states no expiry)", out.Plan.Approval)
 	}
 }

@@ -100,6 +100,9 @@ var (
 		// site in this file passes nil today (no verified per-user identity
 		// available at those disclosure endpoints).
 		ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
+		// ListActivePoliciesForOrgInEverySegment is the row set for a caller
+		// whose segment membership is not established (ADR-067 step 1b).
+		ListActivePoliciesForOrgInEverySegment(orgID string) []DynamicPolicy
 		IsHealthy() bool
 	}
 	// Note: Legacy llmRouter *LLMRouter removed in v2.3.0.
@@ -108,8 +111,7 @@ var (
 	auditLogger             *AuditLogger
 	metricsCollector        *MetricsCollector
 	workflowEngine          *WorkflowEngine
-	hitlWorkflowEngine      *HITLWorkflowEngine                // HITL-aware workflow engine (Issue #1082)
-	hitlEnabled             bool                               // HITL mode flag (Issue #1082)
+	hitlEnabled             bool                               // AXONFLOW_HITL_ENABLED, parsed and ignored since v11.1.0 (#4382)
 	planningEngine          *PlanningEngine                    // Multi-Agent Planning v0.1
 	resultAggregator        *ResultAggregator                  // Multi-Agent Planning v0.1
 	mcpQueryRouter          *MCPQueryRouter                    // MCP query routing to agent
@@ -291,7 +293,8 @@ var (
 	// matching) is otherwise indistinguishable from a legitimate no-match.
 	// reason is one of the sharedpolicy.Reason* constants (a closed set:
 	// unknown_operator, empty_conditions, non_numeric_operand,
-	// non_string_pattern, conditions_unmarshal_failed, field_unresolved) —
+	// non_string_pattern, invalid_pattern, conditions_unmarshal_failed,
+	// field_unresolved) —
 	// never a policy ID, tenant ID, field name, or operator value, so this
 	// stays low-cardinality by construction. plane identifies the call site:
 	// "memory" (DynamicPolicyEngine), "database" (DatabaseDynamicPolicyEngine),
@@ -303,7 +306,7 @@ var (
 	promPolicyConditionUnevaluableTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "axonflow_policy_condition_unevaluable_total",
-			Help: "Count of dynamic-policy conditions that could not be evaluated (unknown operator, non-numeric operand, non-string regex pattern, corrupt/empty conditions, or an unresolved field), labeled by reason and plane. A policy that silently fails to enforce is otherwise invisible (epic #3293).",
+			Help: "Count of dynamic-policy conditions that could not be evaluated (unknown operator, non-numeric operand, non-string or non-compiling regex pattern, corrupt/empty conditions, or an unresolved field), labeled by reason and plane. A policy that silently fails to enforce is otherwise invisible (epic #3293).",
 		},
 		[]string{"reason", "plane"},
 	)
@@ -337,6 +340,15 @@ type OrchestratorRequest struct {
 	// never set it: context.media_analysis is the caller's to send, and a
 	// caller's claim is not a detector finding.
 	mediaAnalysis map[string]interface{}
+
+	// stepCost is what the platform needs to price the step this request will
+	// run, for signal.cost_estimate (#4249 row 5664825929, step_cost_estimate.go).
+	// Unexported for the reason mediaAnalysis is: a caller may send
+	// context.cost_estimate, and a caller's claim is not a detector finding, so
+	// there must be no field, tag or context key by which one can reach this.
+	// The two step adapters fill it from the step's own definition; every other
+	// plane leaves it nil and the fact is unstated.
+	stepCost *stepCostInputs
 }
 
 // MediaContentRequest represents a media item in the API request.
@@ -395,23 +407,27 @@ type MediaAnalysisResponse struct {
 
 // MediaAnalysisItemResponse contains analysis results for a single media item.
 type MediaAnalysisItemResponse struct {
-	MediaIndex          int                  `json:"media_index"`
-	SHA256Hash          string               `json:"sha256_hash"`
-	HasFaces            bool                 `json:"has_faces"`
-	FaceCount           int                  `json:"face_count"`
-	HasBiometricData    bool                 `json:"has_biometric_data"`
-	NSFWScore           float64              `json:"nsfw_score"`
-	ViolenceScore       float64              `json:"violence_score"`
-	ContentSafe         bool                 `json:"content_safe"`
-	DocumentType        string               `json:"document_type,omitempty"`
-	IsSensitiveDocument bool                 `json:"is_sensitive_document"`
-	HasPII              bool                 `json:"has_pii"`
-	PIITypes            []string             `json:"pii_types,omitempty"`
-	HasExtractedText    bool                 `json:"has_extracted_text"`
-	ExtractedTextLength int                  `json:"extracted_text_length"`
-	EstimatedCostUSD    float64              `json:"estimated_cost_usd"`
-	Warnings            []string             `json:"warnings,omitempty"`
-	StructuredWarnings  []media.MediaWarning `json:"structured_warnings,omitempty"`
+	MediaIndex          int      `json:"media_index"`
+	SHA256Hash          string   `json:"sha256_hash"`
+	HasFaces            bool     `json:"has_faces"`
+	FaceCount           int      `json:"face_count"`
+	HasBiometricData    bool     `json:"has_biometric_data"`
+	NSFWScore           float64  `json:"nsfw_score"`
+	ViolenceScore       float64  `json:"violence_score"`
+	ContentSafe         bool     `json:"content_safe"`
+	DocumentType        string   `json:"document_type,omitempty"`
+	IsSensitiveDocument bool     `json:"is_sensitive_document"`
+	HasPII              bool     `json:"has_pii"`
+	PIITypes            []string `json:"pii_types,omitempty"`
+	HasExtractedText    bool     `json:"has_extracted_text"`
+	ExtractedTextLength int      `json:"extracted_text_length"`
+	// Scanned names the capabilities that ran on this item (sorted: content_safety,
+	// document, faces, pii, text). A signal above is a finding only when its
+	// capability is listed: has_pii false without "pii" means not scanned.
+	Scanned            []string             `json:"scanned"`
+	EstimatedCostUSD   float64              `json:"estimated_cost_usd"`
+	Warnings           []string             `json:"warnings,omitempty"`
+	StructuredWarnings []media.MediaWarning `json:"structured_warnings,omitempty"`
 }
 
 type PolicyEvaluationResult struct {
@@ -456,6 +472,13 @@ type PolicyEvaluationResult struct {
 	// EvaluationError, which answers "could the engine evaluate at all?";
 	// this answers "were segments in scope for the answer it gave?".
 	SegmentsResolved bool `json:"segments_resolved,omitempty"`
+
+	// BlockedBy names the layer that refused a request the engine did not
+	// refuse, for the audit row only (policy_details.blocked_by): today the
+	// route layer (blockedByRouteLayer), when the applying rows' route
+	// restrictions permit no provider (#4249 row 5698088094). Empty for every
+	// refusal the engine made. Not on the wire.
+	BlockedBy string `json:"-"`
 
 	// Structured per-policy detail (ADR-044 / ADR-043). Mirror of AppliedPolicies
 	// with risk and override metadata, which the WCP step gate projects onto its
@@ -802,6 +825,7 @@ func Run() {
 		return orchestratorRealmDeployment
 	})
 	typedAuthoringRouteHandler.RegisterRoutes(r)
+	complianceTypedAuthoring = typedAuthoringRouteHandler
 
 	// LLM Provider Management API (ADR-006 - Pluggable LLM Providers)
 	// Register routes only if bootstrap was successful
@@ -1464,6 +1488,10 @@ func initializeComponents() {
 	// has its own instance; the orchestrator needs its own since they're
 	// separate processes.
 	if usageDB != nil {
+		// The nil audit queue is by design: this engine authors no verdict, the
+		// audit_logs decision row records every orchestrator evaluation, and a
+		// queue would write policy_violations rows that duplicate it (#4249
+		// comment 5705939386).
 		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(
 			usageDB, sharedpolicy.DefaultEngineConfig(), nil))
 		log.Println("Shared policy engine initialized for orchestrator response processing")
@@ -1586,29 +1614,9 @@ func initializeComponents() {
 		workflowEngine.InitializeWithDependencies(llmRouterWrapper, amadeusClient)
 		log.Println("Workflow Engine initialized successfully with API call support")
 
-		// Initialize HITL Workflow Engine (Issue #1082)
-		// Check if HITL is enabled via environment variable
-		hitlEnabled = os.Getenv("AXONFLOW_HITL_ENABLED") == "true"
-		if hitlEnabled {
-			log.Println("Initializing HITL Workflow Engine (require_approval support)...")
-			var policyChecker HITLPolicyChecker
-			var approvalService HITLApprovalService
-			if !isCommunityMode() {
-				// Enterprise mode: wire real policy checker and approval adapter
-				policyChecker = &MAPHITLPolicyChecker{}
-				approvalService = &MAPHITLApprovalAdapter{}
-				log.Println("HITL Enterprise adapters initialized (policy checker + approval service)")
-			}
-			hitlWorkflowEngine = NewHITLWorkflowEngine(workflowEngine, policyChecker, approvalService)
-			// Wire the canonical audit writer so block / require_approval gate
-			// decisions on this legacy path are recorded to audit_logs (#2693).
-			if auditLogger != nil {
-				hitlWorkflowEngine.SetAuditLogger(auditLogger)
-			}
-			log.Println("HITL Workflow Engine initialized ✅")
-		} else {
-			log.Println("HITL mode disabled (set AXONFLOW_HITL_ENABLED=true to enable)")
-		}
+		// #4382: every multi-agent step is decided before it runs, on every
+		// deployment and every posture (map_step_gate.go).
+		wireMultiAgentEngines(workflowEngine, auditLogger)
 	}
 
 	// Initialize Planning Engine (Multi-Agent Planning v0.1)
@@ -1764,6 +1772,23 @@ func initializeComponents() {
 		costHandler = cost.NewHandler(costService)
 		log.Println("Cost Controls Service initialized ✅")
 
+		// Wire the deployment's pricing and its routable set into the fact
+		// producer, so the multi-agent plane states signal.cost_estimate from
+		// the platform's own estimate (#4249 row 5664825929). The gate is this
+		// block's own `usageDB != nil` (:1691): LoadPricingFromEnv always
+		// returns a config, so there is nothing further to check here.
+		// A deployment that reaches neither wiring states nothing, which is
+		// what the shipped advisory reads as unknown.
+		setStepCostPricing(pricing.EstimateCostPriced)
+		log.Println("Cost estimation wired to the policy fact producer ✅")
+		if llmProviderRouter != nil {
+			// The router's own registry answers what an unnamed step could be
+			// routed to, so the ceiling follows this deployment's providers and
+			// their configured models (R3 round 1, HIGH-1).
+			setStepCostRoutable(routerRoutableCandidates(llmProviderRouter))
+			log.Println("Routable provider set wired to the policy fact producer ✅")
+		}
+
 		// Wire cost estimation into planning engine for plan cost estimates
 		if planningEngine != nil && pricing != nil {
 			planningEngine.SetPricingConfig(pricing)
@@ -1864,6 +1889,20 @@ func initializeComponents() {
 			workflowControlService.SetAuditLogger(NewWCPAuditAdapter(auditLogger))
 		}
 
+		// #4249 row 5701284807: the upgrade's step-mode first-step backfill,
+		// anchored on migration 187's applied_at. The resume decides its own
+		// plan too, so a pass that finds 187 not yet applied loses nothing.
+		if usageDB != nil {
+			stepModeCutover = sqlStepModeCutover(usageDB)
+			if planService != nil {
+				go func() {
+					if _, err := runStepModeFirstStepBackfill(context.Background(), sqlStepModePlans(usageDB), planService, workflowControlService); err != nil {
+						log.Printf("⚠️  [StepModeBackfill] %v", err)
+					}
+				}()
+			}
+		}
+
 		// #3408: wire the decide-plane mirror resolver so approving or
 		// rejecting a workflow step also resolves the hitl_approval_queue row
 		// that step's gate wrote. Wired UNCONDITIONALLY, not under the same
@@ -1904,6 +1943,7 @@ func initializeComponents() {
 		workflowControlHandler.SetProxyAuthCheck(func(r *http.Request) (bool, string) {
 			return verifyAgentProxyAuth(r, "WCP-StepGate")
 		})
+		workflowControlHandler.SetOversizedBodyRecorder(func() { recordStepBodyRefused(wcpSeamScope) })
 		log.Println("Workflow Control Plane Service initialized ✅")
 
 		// Initialize Webhook Notifications (MAP v1.0 Phase B)
@@ -1937,6 +1977,7 @@ func initializeComponents() {
 		sebiConfig := sebi.SEBIModuleConfig{
 			DB:             usageDB,
 			StorageBackend: auditStorageBackend,
+			ActiveEffects:  complianceActiveEffects,
 		}
 		var sebiErr error
 		sebiModule, sebiErr = sebi.NewSEBIModule(sebiConfig)
@@ -2004,6 +2045,7 @@ func initializeComponents() {
 		ojkConfig := ojk.OJKModuleConfig{
 			DB:             usageDB,
 			StorageBackend: auditStorageBackend,
+			ActiveEffects:  complianceActiveEffects,
 		}
 		var ojkErr error
 		ojkModule, ojkErr = ojk.NewOJKModule(ojkConfig)
@@ -2060,7 +2102,8 @@ func initializeComponents() {
 		// data provider.
 		log.Println("Initializing US Securities Compliance Module...")
 		ussecuritiesConfig := ussecurities.ModuleConfig{
-			DB: usageDB,
+			DB:            usageDB,
+			ActiveEffects: complianceActiveEffects,
 		}
 		var ussecuritiesErr error
 		ussecuritiesModule, ussecuritiesErr = ussecurities.NewModule(ussecuritiesConfig)
@@ -2623,7 +2666,11 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		mediaItems := convertMediaRequestsToMediaContent(req.Media)
 		mediaStart := time.Now()
-		results, mediaErr := mediaPipeline.AnalyzeMedia(ctx, req.RequestID, mediaItems)
+		// The organization extracted text is PII-scanned under (#4300): the
+		// licensed scope bound above, never a caller's claim. A scan with no
+		// organization does not run.
+		analysisCtx := media.WithScanScope(ctx, media.ScanScope{OrgID: scope.OrgID, TenantID: scope.TenantID, UserID: req.User.Email})
+		results, mediaErr := mediaPipeline.AnalyzeMedia(analysisCtx, req.RequestID, mediaItems)
 		if mediaErr != nil {
 			log.Printf("[MEDIA] Analysis failed for request %s: %v", logutil.Sanitize(req.RequestID), mediaErr)
 			if mediaPipeline.GetEnforcementStrategy(ctx) == media.EnforcementFailClosed {
@@ -2647,71 +2694,10 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			if req.Context == nil {
 				req.Context = make(map[string]interface{})
 			}
-			// Flatten first result's signals for policy engine (covers single-image case)
-			// For multi-image, policies can use the aggregated worst-case signals
-			mediaCtx := map[string]interface{}{
-				"has_faces":             false,
-				"face_count":            0,
-				"has_biometric_data":    false,
-				"nsfw_score":            0.0,
-				"violence_score":        0.0,
-				"content_safe":          true,
-				"has_pii":               false,
-				"is_sensitive_document": false,
-				"has_extracted_text":    false,
-				"extracted_text_length": 0,
-				"document_type":         "",
-				"pii_types":             []string{},
-			}
-			// Aggregate worst-case signals across all media items
-			for _, r := range results {
-				if r.HasFaces {
-					mediaCtx["has_faces"] = true
-				}
-				mediaCtx["face_count"] = mediaCtx["face_count"].(int) + r.FaceCount
-				if r.HasBiometricData {
-					mediaCtx["has_biometric_data"] = true
-				}
-				if r.NSFWScore > mediaCtx["nsfw_score"].(float64) {
-					mediaCtx["nsfw_score"] = r.NSFWScore
-				}
-				if r.ViolenceScore > mediaCtx["violence_score"].(float64) {
-					mediaCtx["violence_score"] = r.ViolenceScore
-				}
-				if !r.ContentSafe {
-					mediaCtx["content_safe"] = false
-				}
-				if r.HasPII {
-					mediaCtx["has_pii"] = true
-				}
-				if r.IsSensitiveDocument {
-					mediaCtx["is_sensitive_document"] = true
-				}
-				if r.DocumentType != "" {
-					mediaCtx["document_type"] = r.DocumentType
-				}
-				if len(r.PIITypes) > 0 {
-					piiSet, _ := mediaCtx["_pii_set"].(map[string]bool)
-					if piiSet == nil {
-						piiSet = make(map[string]bool)
-					}
-					for _, pt := range r.PIITypes {
-						piiSet[pt] = true
-					}
-					mediaCtx["_pii_set"] = piiSet
-					piiTypes := make([]string, 0, len(piiSet))
-					for pt := range piiSet {
-						piiTypes = append(piiTypes, pt)
-					}
-					sort.Strings(piiTypes)
-					mediaCtx["pii_types"] = piiTypes
-				}
-				if r.ExtractedText != "" {
-					mediaCtx["has_extracted_text"] = true
-					mediaCtx["extracted_text_length"] = mediaCtx["extracted_text_length"].(int) + len(r.ExtractedText)
-				}
-			}
-			delete(mediaCtx, "_pii_set") // Remove temporary dedup set
+			// Each signal is stated only when the capability producing it ran
+			// on every item; otherwise it is omitted and reads UNKNOWN
+			// (mediaSignalsFromResults, #4249 row 5705208432).
+			mediaCtx := mediaSignalsFromResults(results)
 			req.Context["media_analysis"] = mediaCtx
 			req.mediaAnalysis = mediaCtx
 			log.Printf("[MEDIA] Analysis complete for request %s: %d item(s) analyzed", logutil.Sanitize(req.RequestID), len(results))
@@ -2784,6 +2770,11 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			SubjectType:    decision.subjectType,
 			PolicyBundle:   decision.policyBundle,
 			Verdict:        routeRequestVerdictBlocked,
+			// The media analysis the decision read, so a caller can tell a
+			// refusal on a finding (has_pii true) from one on a signal nothing
+			// measured (the capability absent from scanned). It carries no
+			// extracted text, only its length (#4300).
+			MediaAnalysis: mediaAnalysisResp,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -3995,6 +3986,7 @@ func buildMediaAnalysisResponse(results []*media.AggregatedMediaResult) *MediaAn
 			PIITypes:            r.PIITypes,
 			HasExtractedText:    r.ExtractedText != "",
 			ExtractedTextLength: len(r.ExtractedText),
+			Scanned:             append([]string{}, r.Scanned...),
 			EstimatedCostUSD:    r.EstimatedCostUSD,
 			Warnings:            r.Warnings,
 			StructuredWarnings:  r.StructuredWarnings,
@@ -4018,6 +4010,13 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+// planWorkflowTimeout is a plan execution's timeout for its workflow: sized by
+// the steps it can run, a conditional's branch steps included (#4249 row
+// 5665091860), not by its top-level steps alone.
+func planWorkflowTimeout(workflow Workflow) time.Duration {
+	return planExecutionTimeout((*ConditionalProcessor)(nil).runnableStepCount(workflow.Spec.Steps))
 }
 
 // planExecutionTimeout returns the context timeout for MAP plan execution.
@@ -4313,6 +4312,9 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		User     UserContext            `json:"user"`
 	}
 
+	if !boundStepRequestBody(w, r, mapSeamScope) {
+		return
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -4325,8 +4327,8 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	// body's user.tenant_id / user.org_id — and req.User is what the workflow
 	// engine's replay recorder writes onto execution rows, what
 	// executionTenantID (mcp_connector_processor.go) resolves connectors
-	// under, and what normalizeHITLScope (hitl_execution.go) keys the paused-
-	// execution store on. A body-chosen identity therefore produced either a
+	// under, and what normalizeHITLScope keyed the retired in-memory store on
+	// (#4249 row 5774060413). A body-chosen identity therefore produced either a
 	// row attributed to another tenant or, when the body was silent too, the
 	// unstamped rows #3065's fail-open predicates exposed to everyone.
 	//
@@ -4340,8 +4342,8 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	// than the agent authenticated". That was true of the tenancy and false of
 	// the ACTOR — req.User.Email/.Role/.ID stayed exactly as the body typed
 	// them, and req.User is what the workflow engine stamps onto every
-	// execution and step-gate audit row (hitl_execution.go auditStepGate:
-	// UserEmail: user.Email, UserRole: user.Role). Bound below.
+	// execution and step-gate audit row (map_step_gate.go auditStepGate, via
+	// stepGateEntry: UserEmail: user.Email, UserRole: user.Role). Bound below.
 	applyAuthoritativePrincipal(r, &req.User)
 
 	scope, status, msg := resolveGovernedScope(r, "workflows/execute")
@@ -4369,10 +4371,17 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// #4254: every step this workflow runs is presented to the anchored engine,
-	// and a conditional step's branch steps are not. Refused here, before any
-	// step executes, rather than letting the branches run undecided.
-	if err := refuseUnpresentableSteps(req.Workflow.Spec.Steps); err != nil {
+	// #4249 row 5665091860: a conditional's branch steps are presented, one by
+	// one before each runs, by an engine that presents every step: since #4382,
+	// the declarative engine with the step gate the orchestrator wires on every
+	// deployment.
+	presentsBranches := workflowEngine.PresentsSteps()
+
+	// #4254: every step this workflow runs is presented to the anchored engine.
+	// Where a conditional step's branch steps are not, the workflow is refused
+	// here, before any step executes, rather than letting the branches run
+	// undecided.
+	if err := refuseUnpresentableSteps(req.Workflow.Spec.Steps); err != nil && !presentsBranches {
 		recordUngovernablePlan(r.Context(), OrchestratorRequest{
 			RequestID:   req.Workflow.Metadata.Name,
 			RequestType: "workflow_execute",
@@ -4380,6 +4389,13 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 			Client:      ClientContext{ID: r.Header.Get("X-Client-ID"), OrgID: req.User.OrgID, TenantID: req.User.TenantID},
 		}, err)
 		sendErrorResponse(w, "Workflow cannot be governed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// #4382: the engine decides every step before it runs, on every deployment
+	// and posture. An engine that does not (a boot that did not wire the step
+	// gate) runs nothing.
+	if !presentsBranches {
+		sendErrorResponse(w, "Workflow execution unavailable: the multi-agent step gate is not wired", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -4392,40 +4408,20 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Execute workflow - use HITL engine if enabled (Issue #1082)
-	var execution interface{}
-	var err error
-
-	if hitlEnabled && hitlWorkflowEngine != nil {
-		// HITL-aware execution with pause/resume support
-		// #4254: every step of this execution is decided for the credential the
-		// agent authenticated (map_enforcing_seam.go).
-		mapCtx := withMAPPlaneSubject(r.Context(), headerCredentialSubject(r.Header))
-		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(mapCtx, req.Workflow, req.Input, req.User)
-		if hitlErr != nil {
-			// Check if this is a pause for approval (not an error)
-			if hitlExec != nil && hitlExec.Status == StatusPaused {
-				// Store execution for later resume
-				hitlWorkflowEngine.SaveExecution(hitlExec)
-				// Return paused status with approval ID
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted) // 202 Accepted - pending human approval
-				if err := json.NewEncoder(w).Encode(hitlExec); err != nil {
-					log.Printf("Error encoding response: %v", err)
-				}
-				return
-			}
-			sendErrorResponse(w, "Workflow execution failed: "+hitlErr.Error(), http.StatusInternalServerError)
+	// #4254, #4382: every step of this execution is decided for the credential
+	// the agent authenticated (map_enforcing_seam.go), whatever
+	// AXONFLOW_HITL_ENABLED says.
+	mapCtx := withMAPPlaneSubject(r.Context(), headerCredentialSubject(r.Header))
+	execution, err := workflowEngine.ExecuteWorkflow(mapCtx, req.Workflow, req.Input, req.User)
+	if err != nil {
+		// A step the plane refused is a governance refusal, not a server error.
+		var refusal *mapStepRefusal
+		if errors.As(err, &refusal) {
+			sendStepRefusal(w, refusal)
 			return
 		}
-		execution = hitlExec
-	} else {
-		// Standard execution without HITL
-		execution, err = workflowEngine.ExecuteWorkflow(r.Context(), req.Workflow, req.Input, req.User)
-		if err != nil {
-			sendErrorResponse(w, "Workflow execution failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		sendErrorResponse(w, "Workflow execution failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4434,13 +4430,14 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getHITLExecutionStatusHandler returns the HITL status of an execution (Issue #1082)
+// getHITLExecutionStatusHandler answers GET
+// /api/v1/workflows/executions/{id}/hitl-status (Issue #1082). The in-memory
+// HITL engine whose store it read is retired (#4249 row 5774060413), so no
+// execution id has a status here: it answers 404 "Execution not found" for
+// every id, the body its not-found arm always answered. The route stays
+// until v12.0.0's removal of it (a #4249 row), because it is public, documented,
+// portal-proxied and tier-gated.
 func getHITLExecutionStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if !hitlEnabled || hitlWorkflowEngine == nil {
-		sendErrorResponse(w, "HITL not enabled", http.StatusServiceUnavailable)
-		return
-	}
-
 	vars := mux.Vars(r)
 	executionID := vars["id"]
 
@@ -4449,26 +4446,7 @@ func getHITLExecutionStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// #3067: bind the lookup to the caller's org. The unscoped variant
-	// resolved an execution id across every tenancy, so a caller who knew (or
-	// guessed) an id read another org's approval state. The scope comes from
-	// the identity headers the agent's auth chain stamps, the same source the
-	// MAP approve/reject handlers use.
-	status, err := hitlWorkflowEngine.GetExecutionStatusForScope(
-		r.Context(), normalizeHITLScope(r.Header.Get("X-Org-ID"), r.Header.Get("X-Tenant-ID")), executionID)
-	if err != nil {
-		if err == ErrExecutionNotFound {
-			sendErrorResponse(w, "Execution not found", http.StatusNotFound)
-		} else {
-			sendErrorResponse(w, err.Error(), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(status); err != nil {
-		log.Printf("Error encoding response: %v", err)
-	}
+	sendErrorResponse(w, "Execution not found", http.StatusNotFound)
 }
 
 func getWorkflowExecutionHandler(w http.ResponseWriter, r *http.Request) {
@@ -4707,6 +4685,9 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !boundStepRequestBody(w, r, mapSeamScope) {
+		return
+	}
 	// Parse request
 	var req PlanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -4812,9 +4793,21 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		ClientID:      clientID,
 		RequestID:     planID,
 		Context:       req.Context,
+		// #4249 row 5774077156: the requester's route rows bind the planner's
+		// LLM calls.
+		User:   req.User,
+		Client: ClientContext{OrgID: orgID, TenantID: tenantID},
 	}
 
 	workflow, err := planningEngine.GeneratePlan(r.Context(), planGenReq)
+	var routeRefusal *llmCallRouteRefusal
+	if errors.As(err, &routeRefusal) {
+		// Refused as /api/v1/process refuses the same route: 403, naming the
+		// reason. No provider was called.
+		log.Printf("[GeneratePlan] Plan generation refused by the organization's route rows: %v", err)
+		sendErrorResponse(w, "Planning refused: "+routeRefusal.Error(), http.StatusForbidden)
+		return
+	}
 	if err != nil {
 		log.Printf("[GeneratePlan] Plan generation failed: %v", err)
 		sendErrorResponse(w, "Planning failed: "+err.Error(), http.StatusInternalServerError)
@@ -4921,6 +4914,9 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !boundStepRequestBody(w, r, orchestratorRequestSeamScope) {
+		return
+	}
 	// Parse request
 	var req PlanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5136,10 +5132,21 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// #4254: every step this plan runs is presented to the anchored engine, and
-	// a conditional step's branch steps are not. Refused here, before any step
-	// executes, on every execution mode this handler dispatches to.
-	if err := refuseUnpresentableSteps(workflow.Spec.Steps); err != nil {
+	// Confirm and step mode run their own workflow-control flow, which decides
+	// each step at its gate. Every other mode runs on the declarative engine,
+	// which decides every step before it runs on every deployment (#4382); an
+	// engine that does not (a boot that did not wire the step gate) runs nothing.
+	confirmOrStep := plan.ExecutionMode == "confirm" || plan.ExecutionMode == "step"
+	// #4249 row 5665091860: a conditional's branch steps are presented, one by
+	// one before each runs, only by the declarative engine's step gate; that is
+	// the only execution a conditional carrying branch steps is admitted to.
+	presentsBranches := !confirmOrStep && workflowEngine.PresentsSteps()
+
+	// #4254: every step this plan runs is presented to the anchored engine.
+	// Where a conditional step's branch steps are not (every other execution
+	// mode this handler dispatches to), the plan is refused here, before any
+	// step executes.
+	if err := refuseUnpresentableSteps(workflow.Spec.Steps); err != nil && !presentsBranches {
 		log.Printf("[ExecutePlan] Plan %s cannot be governed: %v", logutil.Sanitize(planID), err)
 		recordUngovernablePlan(r.Context(), policyReq, err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Plan cannot be governed: "+err.Error())
@@ -5149,9 +5156,19 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Plan cannot be governed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// #4382: outside confirm and step mode, an engine that does not decide every
+	// step (a boot that did not wire the step gate) runs nothing.
+	if !confirmOrStep && !workflowEngine.PresentsSteps() {
+		_ = planService.MarkPlanFailed(r.Context(), planID, "the multi-agent step gate is not wired")
+		if mapExecutionTracker != nil && unifiedExecID != "" {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "the multi-agent step gate is not wired")
+		}
+		sendErrorResponse(w, "Plan execution unavailable: the multi-agent step gate is not wired", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Step 3: Execute workflow (with parallel support)
-	ctx, cancel := context.WithTimeout(r.Context(), planExecutionTimeout(len(workflow.Spec.Steps)))
+	ctx, cancel := context.WithTimeout(r.Context(), planWorkflowTimeout(workflow))
 	defer cancel()
 
 	// Merge stored context with request context (request context takes precedence)
@@ -5163,61 +5180,9 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Add policy result to execution context for step snapshots (Issue #1020)
 	execContext["_policy_result"] = policyResult
 
-	// Determine execution strategy based on plan's execution mode (MAP v1.0)
-	// If HITL is enabled and the mode is not confirm/step (which has its own WCP flow),
-	// use the HITL-aware engine for policy-driven pause/resume (#1076)
-	if hitlEnabled && hitlWorkflowEngine != nil && plan.ExecutionMode != "confirm" && plan.ExecutionMode != "step" {
-		// #4254: every step of this plan is decided for the credential the agent
-		// authenticated (map_enforcing_seam.go).
-		mapCtx := withMAPPlaneSubject(ctx, headerCredentialSubject(r.Header))
-		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(mapCtx, workflow, execContext, req.User)
-		if hitlErr != nil {
-			if hitlExec != nil && hitlExec.Status == StatusPaused {
-				// Store execution for later resume via /plans/{id}/steps/{step_id}/approve
-				hitlWorkflowEngine.SaveExecution(hitlExec)
-				log.Printf("[ExecutePlan] Plan %s paused for HITL approval at step %d", logutil.Sanitize(planID), hitlExec.PausedAtStep)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted)
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"plan_id":        planID,
-					"execution_id":   hitlExec.ID,
-					"status":         "paused",
-					"paused_at_step": hitlExec.PausedAtStep,
-					"paused_reason":  hitlExec.PausedReason,
-					"approval_id":    hitlExec.ApprovalID.String(),
-				})
-				return
-			}
-			log.Printf("[ExecutePlan] HITL execution failed for plan %s: %v", logutil.Sanitize(planID), hitlErr)
-			_ = planService.MarkPlanFailed(r.Context(), planID, hitlErr.Error())
-			if mapExecutionTracker != nil && unifiedExecID != "" {
-				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, hitlErr.Error())
-			}
-			sendErrorResponse(w, "Execution failed: "+hitlErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		// HITL execution completed without pause — convert to standard WorkflowExecution
-		if hitlExec != nil && hitlExec.WorkflowExecution != nil {
-			execution := hitlExec.WorkflowExecution
-			log.Printf("[ExecutePlan] HITL execution completed for plan %s: ExecutionID=%s", logutil.Sanitize(planID), execution.ID)
-			var finalResult interface{} = execution.Output
-			if execution.Output != nil {
-				if result, ok := execution.Output["final_result"]; ok {
-					finalResult = result
-				}
-			}
-			_ = planService.MarkPlanCompleted(r.Context(), planID, finalResult)
-			if mapExecutionTracker != nil && unifiedExecID != "" {
-				if err := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); err != nil {
-					log.Printf("[ExecutePlan] Warning: failed to sync HITL step results: %v", logutil.Sanitize(err.Error()))
-				}
-				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "")
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(execution)
-			return
-		}
-	}
+	// #4254, #4382: every step of this plan is decided for the credential the
+	// agent authenticated (map_enforcing_seam.go).
+	ctx = withMAPPlaneSubject(ctx, headerCredentialSubject(r.Header))
 
 	var execution *WorkflowExecution
 	switch plan.ExecutionMode {
@@ -5254,6 +5219,23 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			sendErrorResponse(w, "WCP execution setup failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// #4249 (row 5699811991): bind the workflow the executor created to the
+		// plan, so resume and the plan-level approve/reject act on THIS workflow
+		// and never on one selected by a name or metadata a caller can write. A
+		// plan whose binding cannot be recorded does not run in confirm/step
+		// mode: its workflow is aborted and the plan fails.
+		// The bind and its compensations run on a context the client cannot
+		// cancel: a client that goes away after the workflow exists must not
+		// leave the plan marked with an empty binding and the workflow's hold
+		// in the approval queue.
+		bindCtx := context.WithoutCancel(r.Context())
+		if bindErr := planService.BindExecutionWorkflow(bindCtx, planID, wcpResult.WorkflowID); bindErr != nil {
+			log.Printf("[ExecutePlan] Plan %s: binding workflow %s failed: %v", logutil.Sanitize(planID), wcpResult.WorkflowID, bindErr)
+			_ = workflowControlService.AbortWorkflow(bindCtx, wcpResult.WorkflowID, "the plan's workflow could not be bound", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+			_ = planService.MarkPlanFailed(bindCtx, planID, "the plan's workflow could not be bound")
+			sendErrorResponse(w, "WCP execution setup failed: the plan's workflow could not be bound", http.StatusInternalServerError)
+			return
+		}
 		// Return immediately — client must call POST /plan/{id}/resume to advance steps
 		log.Printf("[ExecutePlan] Plan %s entering %s mode (workflow=%s)", logutil.Sanitize(planID), logutil.Sanitize(plan.ExecutionMode), wcpResult.WorkflowID)
 		w.Header().Set("Content-Type", "application/json")
@@ -5273,6 +5255,8 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", logutil.Sanitize(planID), err)
+		var refusal *mapStepRefusal
+		refused := errors.As(err, &refusal)
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
 		// Sync partial step results on failure (steps may have partial data)
 		if mapExecutionTracker != nil && unifiedExecID != "" && execution != nil {
@@ -5283,6 +5267,12 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// Sync unified tracking on failure (#1075)
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, err.Error())
+		}
+		// A step the plane refused is a governance refusal, not a server error
+		// (#4382).
+		if refused {
+			sendStepRefusal(w, refusal)
+			return
 		}
 		sendErrorResponse(w, "Execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -5654,6 +5644,9 @@ func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !boundStepRequestBody(w, r, mapSeamScope) {
+		return
+	}
 	var req planning.UpdatePlanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
@@ -5791,6 +5784,9 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !boundStepRequestBody(w, r, mapSeamScope) {
+		return
+	}
 	// Parse resume request
 	var req struct {
 		Approved *bool `json:"approved"`
@@ -5825,46 +5821,41 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the WCP workflow associated with this plan by naming convention
-	// Workflows are named "map-confirm-{planID}" or "map-step-{planID}"
+	// #4249 (rows 5699811399, 5699811991): the workflow the resume acts on is
+	// the one bound to the plan when it entered confirm/step mode; a plan
+	// executing from before the binding falls back to the executor's name for
+	// its mode, under its tenant (resolvePlanWorkflow). The mode is the plan's,
+	// never read from a workflow's name.
 	orgID := r.Header.Get("X-Org-ID")
-	mapSource := workflow_control.WorkflowSource("map")
-	listResp, err := workflowControlService.ListWorkflows(r.Context(), workflow_control.ListWorkflowsOptions{
-		Source:   &mapSource,
-		TenantID: r.Header.Get("X-Tenant-ID"),
-		OrgID:    orgID,
-		Limit:    50,
-	})
+	target, refusal, err := resolvePlanWorkflow(r.Context(), workflowControlService, plan, r.Header.Get("X-Tenant-ID"), orgID)
 	if err != nil {
-		sendErrorResponse(w, "Failed to list workflows: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to read the plan's workflow: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	log.Printf("[ResumePlan] Searching workflows: source=map, tenantID=%s, orgID=%s", logutil.Sanitize(r.Header.Get("X-Tenant-ID")), logutil.Sanitize(orgID))
-	log.Printf("[ResumePlan] Found %d workflows", len(listResp.Workflows))
-	for i, wf := range listResp.Workflows {
-		log.Printf("[ResumePlan] Workflow[%d]: id=%s name=%s status=%s steps=%d", i, wf.WorkflowID, logutil.Sanitize(wf.WorkflowName), wf.Status, len(wf.Steps))
-	}
-
-	// Find the active workflow for this plan by matching workflow name
-	var targetWorkflowID string
-	var targetCurrentStep int
-	var targetSteps []workflow_control.StepInfo
-	for _, wf := range listResp.Workflows {
-		if (wf.WorkflowName == "map-confirm-"+planID || wf.WorkflowName == "map-step-"+planID) &&
-			wf.Status != workflow_control.WorkflowStatusCompleted &&
-			wf.Status != workflow_control.WorkflowStatusAborted &&
-			wf.Status != workflow_control.WorkflowStatusFailed {
-			targetWorkflowID = wf.WorkflowID
-			targetCurrentStep = wf.CurrentStepIndex
-			targetSteps = wf.Steps
-			break
+	if refusal != nil {
+		// The plan's workflow has ended (a rejection or an expiry aborted it) and
+		// the caller asks to reject: nothing is left to run or approve, so the
+		// plan is failed, as the reject arm fails it, and nothing runs.
+		if !approved && refusal.Ended {
+			log.Printf("[ResumePlan] Plan %s rejected after its workflow ended: %s", logutil.Sanitize(planID), refusal.Message)
+			_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
+			if mapExecutionTracker != nil {
+				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Step rejected by user")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"plan_id": planID,
+				"status":  "rejected",
+				"message": "The plan's workflow had already ended; plan failed",
+			})
+			return
 		}
-	}
-	if targetWorkflowID == "" {
-		sendErrorResponse(w, "No active WCP workflow found for this plan", http.StatusNotFound)
+		log.Printf("[ResumePlan] Plan %s refused: %s", logutil.Sanitize(planID), refusal.Message)
+		sendErrorResponse(w, refusal.Message, refusal.Status)
 		return
 	}
+	targetWorkflowID := target.WorkflowID
+	stepModeWorkflow := plan.ExecutionMode == "step"
 
 	// #4254 (R3 B-M4): the plan's definition is parsed, and a conditional
 	// carrying branch steps refused, BEFORE the pending step is approved or
@@ -5890,6 +5881,47 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	workflow.Spec.Steps = presentedSteps(workflow.Spec.Steps)
 
+	// #4249 row 5701284807: THE PLAN'S STEPS RUN IN ORDER. The resume acts on the
+	// plan's NEXT step (planNextStep), the lowest of its own steps that has not
+	// run (#4249 row 5713229791: only the plan's own step gates): it approves or
+	// rejects that step's pending gate and no other, so a later step's gate that
+	// another caller of the gate route wrote first is read only at its turn. The
+	// gate rows carry each step's completion, which the status list above does
+	// not. A read that fails acts on nothing.
+	before, readErr := workflowControlService.GetWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+	if readErr != nil {
+		log.Printf("[ResumePlan] Plan %s: the workflow's gate rows could not be read: %v", logutil.Sanitize(planID), readErr)
+		sendErrorResponse(w, "The workflow's gate rows could not be read, so no step is approved, rejected or run", http.StatusInternalServerError)
+		return
+	}
+	// A step-mode plan in flight at the upgrade ran its first step before that
+	// step left a record; its record is written before the order rule reads the
+	// rows, or the resume would run the first step again. While the upgrade's
+	// cut-over is not recorded that state cannot be decided, and it is refused.
+	if stepModeWorkflow {
+		wrote, backfillErr := stepModeFirstStepOnResume(r.Context(), workflowControlService, workflow.Spec.Steps, before)
+		if errors.Is(backfillErr, errStepModeCutoverNotRecorded) {
+			sendErrorResponse(w, backfillErr.Error(), http.StatusConflict)
+			return
+		}
+		if backfillErr != nil {
+			log.Printf("[ResumePlan] Plan %s: the first-step backfill failed: %v", logutil.Sanitize(planID), backfillErr)
+			sendErrorResponse(w, "Whether the plan's first step ran could not be recorded, so no step is run", http.StatusInternalServerError)
+			return
+		}
+		if wrote {
+			if before, readErr = workflowControlService.GetWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID")); readErr != nil {
+				sendErrorResponse(w, "The workflow's gate rows could not be read, so no step is approved, rejected or run", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	nextPendingStepID := ""
+	if _, row, ok := planNextStep(workflow.Spec.Steps, before.Steps); ok && row != nil &&
+		row.ApprovalStatus != nil && *row.ApprovalStatus == workflow_control.ApprovalStatusPending {
+		nextPendingStepID = row.StepID
+	}
+
 	// Handle rejection: reject the pending step (which aborts the workflow and
 	// resolves the decide-plane mirror), then fail the plan.
 	if !approved {
@@ -5909,13 +5941,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// the step_rejected audit row, and resolves the mirror. AbortWorkflow
 		// remains the fallback for a plan with no pending require_approval
 		// step, which is the only shape this arm used to handle correctly.
-		var rejectStepID string
-		for _, step := range targetSteps {
-			if step.ApprovalStatus != nil && *step.ApprovalStatus == workflow_control.ApprovalStatusPending {
-				rejectStepID = step.StepID
-				break
-			}
-		}
+		rejectStepID := nextPendingStepID
 		rejected := false
 		if rejectStepID != "" {
 			if err := workflowControlService.RejectStep(r.Context(), targetWorkflowID, rejectStepID,
@@ -5945,14 +5971,8 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Handle approval: find pending step, approve it, execute it
 	log.Printf("[ResumePlan] Plan %s step approved, executing next step in workflow %s", logutil.Sanitize(planID), targetWorkflowID)
 
-	// Find the pending step from the workflow status response steps
-	var pendingStepID string
-	for _, step := range targetSteps {
-		if step.ApprovalStatus != nil && *step.ApprovalStatus == workflow_control.ApprovalStatusPending {
-			pendingStepID = step.StepID
-			break
-		}
-	}
+	// The next step's pending gate is the only one the resume approves.
+	pendingStepID := nextPendingStepID
 
 	if pendingStepID != "" {
 		// Approve the pending step in WCP. The actor is resolved by
@@ -5961,14 +5981,51 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// #3408 mirror pending.
 		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), resumePlanActorIdentity(r), "Approved by user via plan resume"); err != nil {
 			log.Printf("[ResumePlan] Failed to approve step %s: %v", pendingStepID, err)
-			sendErrorResponse(w, "Failed to approve step: "+err.Error(), http.StatusInternalServerError)
+			// #4249: a refusal is a conflict, not a server error - the step is
+			// no longer pending (a concurrent decision landed) or the workflow
+			// has ended. An approval whose state cannot be read is 503, as the
+			// workflow step approve answers it (#4249 row 5674231306).
+			status := approveErrorStatus(err, http.StatusInternalServerError)
+			if msg := err.Error(); strings.Contains(msg, "not pending approval") || strings.Contains(msg, "terminal state") {
+				status = http.StatusConflict
+			}
+			sendErrorResponse(w, "Failed to approve step: "+err.Error(), status)
 			return
 		}
 	}
 
+	// #4249 (rows 5698298886, 5699398978): the step to run is decided from the
+	// gate rows as they stand after the approve above, keyed on the approved
+	// row's step_id and never on the workflow's current_step_index, and no step
+	// runs past a gate row that is not approved (planResumeStepIndex). A read
+	// that fails runs nothing.
+	// The rows are read again only when the resume approved a row: otherwise
+	// the read above is the state the step is decided from.
+	gated := before
+	if pendingStepID != "" {
+		var err error
+		gated, err = workflowControlService.GetWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+		if err != nil {
+			log.Printf("[ResumePlan] Plan %s: the workflow's gate rows could not be read: %v", logutil.Sanitize(planID), err)
+			sendErrorResponse(w, "The workflow's gate rows could not be read, so no step is run", http.StatusInternalServerError)
+			return
+		}
+	}
+	// Gate rows under step ids that are not the plan's own are not read by the
+	// resume; how many there were is logged and answered.
+	ignoredForeignGateRows := foreignGateRowCount(workflow.Spec.Steps, gated.Steps)
+	if ignoredForeignGateRows > 0 {
+		log.Printf("[ResumePlan] Plan %s: ignored %d gate row(s) under step ids that are not the plan's step gates", logutil.Sanitize(planID), ignoredForeignGateRows)
+	}
+	stepIndex, refusal := planResumeStepIndex(workflow.Spec.Steps, gated, pendingStepID, stepModeWorkflow)
+	if refusal != nil {
+		log.Printf("[ResumePlan] Plan %s refused: %s", logutil.Sanitize(planID), refusal.Message)
+		sendErrorResponse(w, refusal.Message, refusal.Status)
+		return
+	}
+
 	// Execute the step through the engine; the workflow was parsed and refused or
 	// admitted above, before any approval.
-	stepIndex := targetCurrentStep
 	if stepIndex >= len(workflow.Spec.Steps) {
 		// All steps completed — mark plan as completed
 		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
@@ -5984,16 +6041,70 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 			"workflow_id": targetWorkflowID,
 			"status":      "completed",
 			"message":     "All steps completed",
+
+			"ignored_foreign_gate_rows": ignoredForeignGateRows,
 		})
 		return
 	}
 
 	// Execute the current step
+	// A STEP-MODE PLAN'S FIRST STEP RUNS UNGATED, AND LEAVES A RECORD before it
+	// runs (#4249 row 5701284807): with no row for it, "ran" and "never ran" are
+	// the same state, and the order rule above could not tell them apart. The
+	// record is written once; a second write (a doubled resume) is refused and
+	// runs nothing.
+	if _, nextRow, _ := planNextStep(workflow.Spec.Steps, gated.Steps); stepModeWorkflow && stepIndex == 0 && nextRow == nil {
+		first := workflow.Spec.Steps[0]
+		firstType, typeErr := mapStepTypeToWCP(first.Type)
+		if typeErr != nil {
+			sendErrorResponse(w, "The first step cannot be recorded: "+typeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := workflowControlService.RecordStepRun(r.Context(), workflow_control.StepRunRecord{
+			WorkflowID: targetWorkflowID,
+			StepID:     mapStepGateID(0, first),
+			StepIndex:  1,
+			StepName:   first.Name,
+			StepType:   firstType,
+			StepInput:  mapHeldStepInput(first),
+			Reason:     workflow_control.StepRunReasonStepModeFirstStep,
+			TenantID:   r.Header.Get("X-Tenant-ID"),
+			OrgID:      r.Header.Get("X-Org-ID"),
+			UserID:     resumePlanActorIdentity(r),
+			ClientID:   r.Header.Get("X-Client-ID"),
+		}); err != nil {
+			log.Printf("[ResumePlan] Plan %s: the first step's record was not written: %v", logutil.Sanitize(planID), err)
+			if errors.Is(err, workflow_control.ErrStepAlreadyRecorded) {
+				sendErrorResponse(w, "The plan's first step is already recorded, so this resume does not run it: "+err.Error(), http.StatusConflict)
+				return
+			}
+			sendErrorResponse(w, "The plan's first step could not be recorded, so it is not run", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// The step is decided for the credential that resumed it (#4249 row
+	// 5666236540), in the plan's organization and tenant: the plan was read under
+	// this request's organization, and credentials of one organization are peers,
+	// so one may resume a plan another submitted.
+	ctx = withMAPPlaneSubject(ctx, headerCredentialSubject(r.Header))
+	// #4249 row 5701303521: the step's user is the caller that resumed it, bound
+	// as every plan route binds its caller.
+	var resumer UserContext
+	applyAuthoritativePrincipal(r, &resumer)
+	ctx = withResumePrincipal(ctx, resumer)
 	execContext := make(map[string]interface{})
 	stepResult, err := mapWCPExecutor.ExecuteSingleStep(ctx, plan, &workflow, stepIndex, execContext, r.Header.Get("X-User-ID"), workflowEngine)
+	// A step whose processor failed comes back as a failed result with no
+	// error. It is the resume's failure too: the step is not marked completed
+	// and the plan does not advance (#4249, found by row 5701284807's census).
+	// Read as a success, it gated the next step or completed the plan over it.
+	if err == nil && stepResult != nil && stepResult.Status == StepResultFailed {
+		err = fmt.Errorf("step %s failed: %s", stepResult.StepName, stepResult.Error)
+	}
 	if err != nil {
 		log.Printf("[ResumePlan] Step execution failed: %v", err)
 		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error(), r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
@@ -6003,13 +6114,25 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		if mapExecutionTracker != nil {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, err.Error())
 		}
+		var withheld *mapStepWithheldError
+		if errors.As(err, &withheld) {
+			sendErrorResponse(w, "Step withheld by policy: "+err.Error(), http.StatusForbidden)
+			return
+		}
 		sendErrorResponse(w, "Step execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Mark step as completed in WCP
-	stepID := fmt.Sprintf("step_%d_%s", stepIndex, workflow.Spec.Steps[stepIndex].Name)
-	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID, nil, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+	stepID := mapStepGateID(stepIndex, workflow.Spec.Steps[stepIndex])
+	// A lost completion is answered, not discarded (R3 round 2 MEDIUM-1): the
+	// step ran, and with its row still at completion 0 the next resume runs it
+	// again, so the caller is told that is what will happen.
+	if err := workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID, nil, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID")); err != nil {
+		log.Printf("[ResumePlan] Plan %s: step %s ran, but its completion was not recorded: %v", logutil.Sanitize(planID), stepID, err)
+		sendErrorResponse(w, fmt.Sprintf("Step %s ran, but its completion could not be recorded; the next resume runs it again", stepID), http.StatusInternalServerError)
+		return
+	}
 
 	// Check if there are more steps
 	nextStepIndex := stepIndex + 1
@@ -6028,6 +6151,8 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 			"status":      "completed",
 			"step_result": stepResult,
 			"message":     "All steps completed",
+
+			"ignored_foreign_gate_rows": ignoredForeignGateRows,
 		})
 		return
 	}
@@ -6046,10 +6171,11 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	requireApproval := workflow_control.GateDecisionRequireApproval
 	_, _ = workflowControlService.StepGate(r.Context(), targetWorkflowID,
-		fmt.Sprintf("step_%d_%s", nextStepIndex, nextStep.Name),
+		mapStepGateID(nextStepIndex, nextStep),
 		&workflow_control.StepGateRequest{
 			StepName:     nextStep.Name,
 			StepType:     nextGateType,
+			StepInput:    mapHeldStepInput(nextStep),
 			GateOverride: &requireApproval,
 		}, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), r.Header.Get("X-Tenant-ID"))
 
@@ -6062,6 +6188,8 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		"next_step":      nextStepIndex,
 		"next_step_name": nextStep.Name,
 		"total_steps":    len(workflow.Spec.Steps),
+
+		"ignored_foreign_gate_rows": ignoredForeignGateRows,
 	})
 }
 

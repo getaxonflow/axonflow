@@ -28,7 +28,7 @@ func TestNoGraphRealmIsAuthoritativeEmpty(t *testing.T) {
 	resolver := NoGraphOnlyResolver{Now: func() time.Time { return fixtureNow }}
 	agent := MustParsePrincipalID("Workload::gcp-iam:spiffe://acme.example/workload/jira-bot")
 
-	res := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), agent, ClosureBounds{})
+	res := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), SubjectOf(agent), ClosureBounds{})
 
 	if res.State != ClosureStateNoGraph {
 		t.Fatalf("state is %s, want NO_GRAPH", res.State)
@@ -72,7 +72,7 @@ func TestGraphRealmOutageIsUnreachableNotEmpty(t *testing.T) {
 	MarkConformanceCase("AXC-244")
 
 	resolver := NoGraphOnlyResolver{Now: func() time.Time { return fixtureNow }}
-	res := resolver.ResolveClosure(context.Background(), fixtureOrg, workspaceRealm(), fixtureAlice, ClosureBounds{})
+	res := resolver.ResolveClosure(context.Background(), fixtureOrg, workspaceRealm(), SubjectOf(fixtureAlice), ClosureBounds{})
 
 	if res.State != ClosureStateUnreachable {
 		t.Fatalf("state is %s, want UNREACHABLE", res.State)
@@ -96,7 +96,7 @@ func TestGraphRealmOutageIsUnreachableNotEmpty(t *testing.T) {
 	// code path.
 	noGraph := workspaceRealm()
 	noGraph.Directory = DirectorySourceNone
-	sibling := resolver.ResolveClosure(context.Background(), fixtureOrg, noGraph, fixtureAlice, ClosureBounds{})
+	sibling := resolver.ResolveClosure(context.Background(), fixtureOrg, noGraph, SubjectOf(fixtureAlice), ClosureBounds{})
 	if sibling.State != ClosureStateNoGraph {
 		t.Fatalf("flipping only the directory source did not change the state: %s", sibling.State)
 	}
@@ -412,7 +412,7 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	}
 
 	resolver := NoGraphOnlyResolver{Now: func() time.Time { return fixtureNow }}
-	res := resolver.ResolveClosure(context.Background(), fixtureOrg, zeroRealm, fixtureAlice, ClosureBounds{})
+	res := resolver.ResolveClosure(context.Background(), fixtureOrg, zeroRealm, SubjectOf(fixtureAlice), ClosureBounds{})
 
 	if res.State.IsAuthoritative() {
 		t.Fatalf("a zero TrustRealm produced an authoritative closure (state %s); this is EX-47 through the resolver's front door", res.State)
@@ -433,7 +433,7 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	// answer it either.
 	underspecified := cloudIAMRealm()
 	underspecified.Directory = DirectorySourceUnspecified
-	under := resolver.ResolveClosure(context.Background(), fixtureOrg, underspecified, fixtureAlice, ClosureBounds{})
+	under := resolver.ResolveClosure(context.Background(), fixtureOrg, underspecified, SubjectOf(fixtureAlice), ClosureBounds{})
 	if under.State.IsAuthoritative() {
 		t.Fatalf("a realm with an undeclared directory source produced an authoritative closure: %s", under.State)
 	}
@@ -445,7 +445,7 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	// directory is taken out of service.
 	disabled := cloudIAMRealm()
 	disabled.Enabled = false
-	off := resolver.ResolveClosure(context.Background(), fixtureOrg, disabled, fixtureAgentA, ClosureBounds{})
+	off := resolver.ResolveClosure(context.Background(), fixtureOrg, disabled, SubjectOf(fixtureAgentA), ClosureBounds{})
 	if off.State.IsAuthoritative() {
 		t.Fatalf("a disabled realm produced an authoritative closure: %s", off.State)
 	}
@@ -456,7 +456,7 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	// resolves against another's directory.
 	foreign := cloudIAMRealm()
 	foreign.OrgID = fixtureOtherOrg
-	cross := resolver.ResolveClosure(context.Background(), fixtureOrg, foreign, fixtureAgentA, ClosureBounds{})
+	cross := resolver.ResolveClosure(context.Background(), fixtureOrg, foreign, SubjectOf(fixtureAgentA), ClosureBounds{})
 	if cross.State.IsAuthoritative() {
 		t.Fatalf("a realm from another organization produced an authoritative closure: %s", cross.State)
 	}
@@ -467,7 +467,7 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	// default the tri-state exists to abolish.
 	outOfRange := cloudIAMRealm()
 	outOfRange.Directory = DirectorySource(99)
-	oor := resolver.ResolveClosure(context.Background(), fixtureOrg, outOfRange, fixtureAgentA, ClosureBounds{})
+	oor := resolver.ResolveClosure(context.Background(), fixtureOrg, outOfRange, SubjectOf(fixtureAgentA), ClosureBounds{})
 	if oor.State.IsAuthoritative() {
 		t.Fatalf("an out-of-range directory source produced an authoritative closure: %s", oor.State)
 	}
@@ -480,11 +480,11 @@ func TestAZeroRealmNeverProducesAnAuthoritativeClosure(t *testing.T) {
 	// resolver that refused everything, which would break every service account
 	// instead. The subject must be IN that realm: an out-of-realm subject is
 	// its own refusal, which is the next assertion.
-	good := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), fixtureAgentA, ClosureBounds{})
+	good := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), SubjectOf(fixtureAgentA), ClosureBounds{})
 	if !good.State.IsAuthoritative() {
 		t.Fatalf("a correctly declared no-graph realm stopped answering: %s", good.State)
 	}
-	mismatched := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), fixtureAlice, ClosureBounds{})
+	mismatched := resolver.ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), SubjectOf(fixtureAlice), ClosureBounds{})
 	if mismatched.State.IsAuthoritative() {
 		t.Fatalf("a subject from another realm produced an authoritative closure: %s", mismatched.State)
 	}
@@ -567,7 +567,7 @@ func TestNoGraphClosureRecordsAVersionNotProse(t *testing.T) {
 	// Both live callers go through it, so the property holds where it matters
 	// rather than only at the constructor.
 	viaResolver := NoGraphOnlyResolver{Now: func() time.Time { return fixtureNow }}.
-		ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), fixtureAgentA, ClosureBounds{})
+		ResolveClosure(context.Background(), fixtureOrg, cloudIAMRealm(), SubjectOf(fixtureAgentA), ClosureBounds{})
 	if !strings.HasPrefix(viaResolver.SourceVersion, "realm/") {
 		t.Fatalf("the resolver records %q as the source version", viaResolver.SourceVersion)
 	}

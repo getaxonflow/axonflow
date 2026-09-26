@@ -57,7 +57,6 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origWCP := workflowControlService
-	origEngine := hitlWorkflowEngine
 	origEnabled := hitlEnabled
 	origExecutor := mapWCPExecutor
 	origPlanSvc := planService
@@ -66,7 +65,6 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 	wcpSvc := workflow_control.NewService(wcpRepo, &wcpParityPolicyEvaluator{}, nil)
 	workflowControlService = wcpSvc
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	planRepo := planning.NewMockRepository()
 	planSvc := planning.NewService(planRepo)
@@ -104,6 +102,21 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 		StepType:       workflow_control.StepTypeToolCall,
 		IdempotencyKey: "idem-" + caseName,
 	}
+	// #4249: the confirm plan the executor would have bound this workflow to
+	// (resolvePlanWorkflow selects a plan's workflow by that binding).
+	if err := planRepo.SavePlan(context.Background(), &planning.Plan{
+		PlanID: planID, OrgID: "org-1", TenantID: "tenant-1", ExecutionMode: "confirm",
+		Status: planning.PlanStatusPending, WorkflowDefinition: json.RawMessage(`{"spec":{"steps":[]}}`), Version: 1,
+	}); err != nil {
+		t.Fatalf("planRepo.SavePlan: %v", err)
+	}
+	if err := planRepo.MarkExecutingWithPendingBinding(context.Background(), planID); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, workflowID); err != nil {
+		t.Fatalf("BindExecutionWorkflow: %v", err)
+	}
+
 	requireApproval := workflow_control.GateDecisionRequireApproval
 	req.GateOverride = &requireApproval
 	if _, err := wcpSvc.StepGate(context.Background(), workflowID, stepID, req,
@@ -121,7 +134,6 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 		cleanup: func() {
 			workflowControlService = origWCP
 			hitlEnabled = origEnabled
-			hitlWorkflowEngine = origEngine
 			mapWCPExecutor = origExecutor
 			planService = origPlanSvc
 			if origDeployment != "" {

@@ -28,7 +28,9 @@
 // "error", #2643), the agent MCP plane (`mcpVerdict*` via `writeMCPDecisionAudit`,
 // #2641/#2651), and the agent gateway plane (`gatewayAudit*` via
 // `gatewayPreCheckAuditVerdict`, #2642). No forward writer emits the legacy
-// allow/deny anymore — those are now the wire-only Decision-API verdicts, and
+// allow/deny anymore — those are now the wire-only Decision-API verdicts (whose
+// one home is anchoredenforcer.VerdictAllow and its siblings, #4249 row
+// 5666277893; the table above records what the agent spelled then), and
 // migration 122 backfilled the historical allow/deny rows in audit_logs. This
 // package is the SHARED single source of truth those FOUR plane-local copies
 // converge onto, AND the read-time normalizer #2643 explicitly defers to #2638 —

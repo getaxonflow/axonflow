@@ -27,7 +27,7 @@ const captureEnv = "AXONFLOW_LEGACY_CAPTURE_DIR"
 var captureTestsOutsideTheStep = map[string]string{
 	"platform/shared/policy TestDetectorCensusMatchesTheMigratedDatabase": "detectorCaptureDir PRODUCES a capture under TEST_PG_INTEGRATION=1, " +
 		"which test.yml's 'Test platform/ - enterprise tag + real-Postgres integration' step sets for every package in the platform module " +
-		"but compatmutation; that lane does not run on pull_request",
+		"but identitymutation; that lane does not run on pull_request",
 	"platform/shared/policy TestSupersessionLedgerIsCompleteAndHonest": "detectorCaptureDir PRODUCES a capture under TEST_PG_INTEGRATION=1, " +
 		"which the same Real-PG platform step sets; that lane does not run on pull_request",
 	"platform/shared/policy TestGenerateDetectorCensus": "a regeneration tool: it also requires AXONFLOW_DETECTOR_CENSUS_UPDATE=1 and REWRITES " +

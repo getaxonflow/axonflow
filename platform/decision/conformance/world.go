@@ -889,7 +889,7 @@ func NewWorld(ctx context.Context, opts ...WorldOption) (*World, error) {
 		// corpus built to exercise the decision algebra; it is not the shipped
 		// corpus and must not be confused for it.
 		SystemCorpus: pdp.Unanchored("the conformance world is a fixture corpus exercising the decision algebra, not the shipped system corpus"),
-		ApprovalTTL:  15 * time.Minute,
+		ApprovalTTL:  pdp.DefaultApprovalTTL,
 		PEP:          cfg.pep,
 		Registry:     cfg.registry,
 		Compat:       cfg.compat,

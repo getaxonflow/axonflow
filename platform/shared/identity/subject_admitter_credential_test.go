@@ -34,7 +34,7 @@ func TestAdmitCredentialSubjectAdmitsTheCredentialAndNothingThatAssertsAUser(t *
 		},
 	} {
 		t.Run(name+" is admitted as the credential principal", func(t *testing.T) {
-			chain, adm := a.AdmitCredentialSubject(ctx, c.in, DefaultMaxDelegationDepth)
+			chain, _, adm := a.AdmitCredentialSubject(ctx, c.in, DefaultMaxDelegationDepth)
 			if !adm.State.IsAdmitted() {
 				t.Fatalf("refused: %s", adm)
 			}
@@ -45,7 +45,7 @@ func TestAdmitCredentialSubjectAdmitsTheCredentialAndNothingThatAssertsAUser(t *
 			// on the unamended invariant, so the admission above is the door's
 			// and not a relaxed AdmitChain.
 			if c.want.Type == SubjectClient {
-				if _, adm := a.AdmitDecisionSubject(ctx, c.in, DefaultMaxDelegationDepth); adm.State != AdmissionDeny || adm.Reason != ReasonSubjectTypeRejected {
+				if _, _, adm := a.AdmitDecisionSubject(ctx, c.in, DefaultMaxDelegationDepth); adm.State != AdmissionDeny || adm.Reason != ReasonSubjectTypeRejected {
 					t.Fatalf("CONTROL: AdmitDecisionSubject now answers %s %s for a client credential; the invariant moved, not the door", adm.State, adm.Reason)
 				}
 			}
@@ -60,7 +60,7 @@ func TestAdmitCredentialSubjectAdmitsTheCredentialAndNothingThatAssertsAUser(t *
 		"a per-user token that failed verification": HS256Principal(fixtureOrg, mintedClaims(), false, ""),
 	} {
 		t.Run(name+" is refused at the credential door", func(t *testing.T) {
-			chain, adm := a.AdmitCredentialSubject(ctx, in, DefaultMaxDelegationDepth)
+			chain, _, adm := a.AdmitCredentialSubject(ctx, in, DefaultMaxDelegationDepth)
 			if adm.State != AdmissionDeny || adm.Reason != ReasonSubjectTypeRejected || chain != nil {
 				t.Fatalf("got %s %s chain %v; want a Deny for %s and no chain", adm.State, adm.Reason, chain, ReasonSubjectTypeRejected)
 			}
@@ -68,7 +68,7 @@ func TestAdmitCredentialSubjectAdmitsTheCredentialAndNothingThatAssertsAUser(t *
 	}
 
 	t.Run("a credential the legacy path rejected is not admitted", func(t *testing.T) {
-		_, adm := a.AdmitCredentialSubject(ctx, APICredentialPrincipal(fixtureOrg, "client-7", VerificationAPICredential, false, fixtureNow), DefaultMaxDelegationDepth)
+		_, _, adm := a.AdmitCredentialSubject(ctx, APICredentialPrincipal(fixtureOrg, "client-7", VerificationAPICredential, false, fixtureNow), DefaultMaxDelegationDepth)
 		if adm.State.IsAdmitted() {
 			t.Fatalf("a rejected client credential was admitted as %v", adm.Principal)
 		}
@@ -76,7 +76,7 @@ func TestAdmitCredentialSubjectAdmitsTheCredentialAndNothingThatAssertsAUser(t *
 
 	t.Run("a nil admitter is Indeterminate", func(t *testing.T) {
 		var nilAdmitter *SubjectAdmitter
-		if _, adm := nilAdmitter.AdmitCredentialSubject(ctx, CommunityPrincipal(fixtureOrg, "c", fixtureNow), 0); adm.State != AdmissionIndeterminate {
+		if _, _, adm := nilAdmitter.AdmitCredentialSubject(ctx, CommunityPrincipal(fixtureOrg, "c", fixtureNow), 0); adm.State != AdmissionIndeterminate {
 			t.Fatalf("a nil admitter produced state %s", adm.State)
 		}
 	})

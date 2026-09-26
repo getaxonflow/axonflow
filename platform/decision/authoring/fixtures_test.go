@@ -119,6 +119,43 @@ func catalogWithFlatType(t *testing.T) *Catalog {
 	return c
 }
 
+// actionCompletion is a stage action named like the deployment vocabulary's,
+// presented on the orchestrator request plane as /api/v1/process presents it,
+// so the no-hold warning there (CodeBindsOnOrchestratorRequestNoHold) has an
+// action to warn about.
+const actionCompletion = "Action::llm.completion"
+
+// catalogWithPlanes states, per action, the enforcement scopes that present it
+// (pdp.ActionEntry.Planes, #4371), which is what makes the binds_on checks
+// reachable: the base catalog states none, so every scope is undeclared there.
+// It adds a completion action presented on wcp, orchestrator_request and
+// openai_compatible.
+func catalogWithPlanes(t *testing.T) *Catalog {
+	c := baseCatalog(t)
+	planes := map[string][]string{
+		actionRefund: {"decide", "wcp"},
+		actionTicket: {"mcp:request", "mcp:response", "wcp"},
+		actionExport: {"map"},
+	}
+	for id, p := range planes {
+		e := c.Actions[id]
+		e.Planes = p
+		c.Actions[id] = e
+	}
+	c.Actions[actionCompletion] = pdp.ActionEntry{
+		ID:                 aid(t, actionCompletion),
+		Tags:               []string{"llm"},
+		MaxDelegationDepth: 3,
+		Arguments: map[string]pdp.ValueType{
+			"amount_cents": pdp.TypeNumber,
+			"note":         pdp.TypeString,
+		},
+		PayloadLeaves: []string{"completion.text"},
+		Planes:        []string{"openai_compatible", "orchestrator_request", "wcp"},
+	}
+	return c
+}
+
 func baseAttributes() []pdp.AttributeSchema {
 	return []pdp.AttributeSchema{
 		{Path: pdp.PrincipalIDPath, Type: pdp.TypeString},

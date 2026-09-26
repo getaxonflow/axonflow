@@ -60,8 +60,8 @@ func withInternalServiceAuth(t *testing.T) func(*http.Request) {
 
 	gen := serviceauth.NewTokenGenerator(aliasTestSecret, serviceauth.RealClock{})
 	return func(r *http.Request) {
-		r.Header.Set(internalServiceIDHeader, serviceauth.ClientID)
-		r.Header.Set(internalServiceTokenHeader, gen.GenerateToken())
+		r.Header.Set(serviceauth.ServiceIDHeader, serviceauth.ClientID)
+		r.Header.Set(serviceauth.ServiceTokenHeader, gen.GenerateToken())
 		r.Header.Set("X-Tenant-ID", "test-tenant")
 		r.Header.Set("X-Org-ID", "test-org")
 	}
@@ -383,7 +383,7 @@ func compareHeaders(t *testing.T, legacy, successor http.Header) {
 // TestDeprecationSignalIsOnBothSpellings checks the signal itself, on every
 // route of both prefixes. In v11 the whole system family is the deprecated
 // export surface (PRD §1.11), the #1431 successor included, so both spellings
-// name the typed authoring route as their successor and v11.1 as the release
+// name the typed authoring route as their successor and v12.0.0 as the release
 // that removes them. Before v11 the successor carried nothing; that invariant
 // is retired with the model it belonged to.
 func TestDeprecationSignalIsOnBothSpellings(t *testing.T) {
@@ -463,8 +463,8 @@ func assertDeprecationSignal(t *testing.T, what string, h http.Header) {
 	if got, want := h.Get(policypath.HeaderLink), `</api/v1/typed-policies>; rel="successor-version"`; got != want {
 		t.Errorf("%s: Link = %q, want %q", what, got, want)
 	}
-	if got := h.Get(policypath.HeaderRemovedIn); got != "v11.1" {
-		t.Errorf("%s: %s = %q, want v11.1", what, policypath.HeaderRemovedIn, got)
+	if got := h.Get(policypath.HeaderRemovedIn); got != "v12.0" {
+		t.Errorf("%s: %s = %q, want v12.0", what, policypath.HeaderRemovedIn, got)
 	}
 	// Dated only once release prep sets DeprecatedSince; policypath's own
 	// tests pin the RFC 9745 format against a fixed date.
@@ -478,7 +478,7 @@ func assertDeprecationSignal(t *testing.T, what string, h http.Header) {
 		}
 	}
 	if got := h.Get("Sunset"); got != "" {
-		t.Errorf("%s: Sunset = %q - v11.1 has no agreed date", what, got)
+		t.Errorf("%s: Sunset = %q - v12.0.0 has no agreed date", what, got)
 	}
 }
 

@@ -50,7 +50,8 @@ type AuditEntry struct {
 	Root   pdp.Root    `json:"root"`
 	// Digest is the artifact published or activated.
 	Digest string `json:"digest"`
-	// PreviousDigest is what an activation replaced, and empty on a publish.
+	// PreviousDigest is the entry an activation chains onto (Activation's
+	// PreviousDigest), and empty on a publish.
 	PreviousDigest  string `json:"previous_digest,omitempty"`
 	DocumentID      string `json:"document_id"`
 	DocumentVersion int    `json:"document_version"`

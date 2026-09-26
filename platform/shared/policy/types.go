@@ -581,12 +581,14 @@ type EvalOptions struct {
 	// caller is scoped to" or "the value in that column". One of the two is
 	// now gone and the other says what it is.
 	//
-	// It is deliberately NOT collapsed into OrgID. Three call sites set this
-	// without setting OrgID (mcp_handler.go's response-phase and PII-category
-	// paths, cowork_otel_ingest.go), so collapsing them would start populating
-	// OrgID on those paths - which changes what RecordViolation writes to
-	// AuditEntry.OrgID. That may well be a fix; it is not one to smuggle into
-	// a column retirement. Tracked on #3490.
+	// It is deliberately NOT collapsed into OrgID: OrgScope scopes the policy
+	// load, and OrgID names the organization an audit row (a violation, a
+	// policy_metrics row) is written under. An earlier version of this comment
+	// said three call sites set OrgScope without OrgID; since then every
+	// production EvalOptions that sets OrgScope also sets OrgID (mcp_handler.go
+	// twice, run.go, openai_compat_handler.go, gateway_handlers.go,
+	// cowork_otel_ingest.go, and the orchestrator's response_enforcing_seam.go),
+	// read 2026-09-18 for #4249. Tracked on #3490.
 	OrgScope *string
 	UserID   string
 

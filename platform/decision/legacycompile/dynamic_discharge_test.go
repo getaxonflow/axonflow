@@ -196,7 +196,7 @@ func TestADynamicPolicyBindsOnThePlanesThatReadDynamicPolicies(t *testing.T) {
 		got = append(got, s.String())
 	}
 	sort.Strings(got)
-	if want := "map,policy_simulation,policy_test,wcp"; strings.Join(got, ",") != want {
+	if want := "map,orchestrator_request,policy_simulation,policy_test,wcp"; strings.Join(got, ",") != want {
 		t.Errorf("an unbound dynamic policy binds on %v; want %s, the planes that read dynamic_policies", got, want)
 	}
 	if _, err := dynamicPolicyScopes(id, map[string][]string{id: {"no_such_scope"}}); err == nil || !strings.Contains(err.Error(), "not a declared enforcement scope") {

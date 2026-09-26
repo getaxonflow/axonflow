@@ -10,13 +10,9 @@ package orchestrator
 import (
 	"context"
 	"net/http"
-	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/shared/anchoredenforcer"
@@ -24,12 +20,11 @@ import (
 )
 
 func resetMAPFacts() {
-	mapFactsOnce = sync.Once{}
-	mapFacts, mapFactsErr = nil, nil
+	mapFactSource.reset()
 }
 
 // withMAPEngine installs the enforcer double as the process enforcer, and the
-// map plane's no-content fact producer over rows, for the test's lifetime.
+// map plane's step-plane fact producer over rows, for the test's lifetime.
 func withMAPEngine(t *testing.T, verdict anchoredenforcer.Verdict, rows ...DynamicPolicy) *stepGateEnforcerDouble {
 	t.Helper()
 	d := &stepGateEnforcerDouble{verdict: verdict}
@@ -39,13 +34,12 @@ func withMAPEngine(t *testing.T, verdict anchoredenforcer.Verdict, rows ...Dynam
 
 	previousFactory := newMAPFactProducer
 	newMAPFactProducer = func() (*dynamicFactProducer, error) {
-		p, err := newDynamicFactProducer(func(string, []string) []DynamicPolicy { return rows })
+		p, err := newDynamicFactProducer(fixedFactRows(rows))
 		if err != nil {
 			return nil, err
 		}
 		p.segments = func(context.Context, string, string) ([]string, bool) { return nil, true }
-		p.presentsNoContent = true
-		return p, nil
+		return asStepPlane(p), nil
 	}
 	resetMAPFacts()
 	t.Cleanup(func() {
@@ -124,7 +118,7 @@ func TestTheMAPCheckerBlocksEveryCauseItCannotDecideThroughAndNeverErrors(t *tes
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			c.install(t)
-			result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), c.step, mapExecution())
+			result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), c.step, StepContent{}, mapExecution())
 			if err != nil {
 				t.Fatalf("CheckPolicy returned an error (%v): the engine proceeds on an error, so this must be a block", err)
 			}
@@ -145,7 +139,7 @@ func TestTheMAPCheckerBlocksEveryCauseItCannotDecideThroughAndNeverErrors(t *tes
 // never as a guessed action.
 func TestAnUnmappedMAPStepTypeReachesTheEnforcerAsAnActionError(t *testing.T) {
 	d := withMAPEngine(t, anchoredenforcer.Verdict{Unavailable: anchoredenforcer.CauseRequest})
-	_, _ = (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), WorkflowStep{Name: "s", Type: "made-up-type"}, mapExecution())
+	_, _ = (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), WorkflowStep{Name: "s", Type: "made-up-type"}, StepContent{}, mapExecution())
 	call := d.lastCall(t)
 	if call.ActionErr == nil || !strings.Contains(call.ActionErr.Error(), "made-up-type") {
 		t.Errorf("action error = %v, want one naming the unmapped type", call.ActionErr)
@@ -155,7 +149,7 @@ func TestAnUnmappedMAPStepTypeReachesTheEnforcerAsAnActionError(t *testing.T) {
 // A step with no subject installed on its context is refused and never decided.
 func TestAMAPStepWithNoSubjectIsRefusedAndNeverDecided(t *testing.T) {
 	d := withMAPEngine(t, allowedStepVerdict())
-	result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(context.Background(), WorkflowStep{Name: "s", Type: "llm-call"}, mapExecution())
+	result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(context.Background(), WorkflowStep{Name: "s", Type: "llm-call"}, StepContent{}, mapExecution())
 	if err != nil {
 		t.Fatalf("CheckPolicy returned an error: %v", err)
 	}
@@ -167,12 +161,14 @@ func TestAMAPStepWithNoSubjectIsRefusedAndNeverDecided(t *testing.T) {
 	}
 }
 
-// The plane presents the step's action and NO CONTENT: the checker's old query
-// was a label built from the step's name and type, and it is never scanned.
-func TestTheMAPCheckerPresentsItsStepsActionAndNoContent(t *testing.T) {
+// The plane presents the step's action, and a step with no prompt, statement,
+// parameters or input presents EMPTY content: its name, type, provider and
+// model are never content (#4249 row 5666236540 made the plane present what a
+// step carries; see map_step_content_4249_test.go).
+func TestTheMAPCheckerPresentsItsStepsActionAndAnEmptyStepAsEmptyContent(t *testing.T) {
 	d := withMAPEngine(t, allowedStepVerdict())
 	step := WorkflowStep{Name: "MAP step: summarise", Type: "llm-call", Provider: "openai", Model: "gpt"}
-	result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), step, mapExecution())
+	result, err := (&MAPHITLPolicyChecker{}).CheckPolicy(mapSubjectContext(), step, StepContent{}, mapExecution())
 	if err != nil || result == nil || !result.Allowed || result.Action != "allow" {
 		t.Fatalf("an allowed step = (%+v, %v), want an allow result, so it runs and its decision is recorded", result, err)
 	}
@@ -184,16 +180,17 @@ func TestTheMAPCheckerPresentsItsStepsActionAndNoContent(t *testing.T) {
 		t.Errorf("action = (%q, %v), want %q", call.Action, call.ActionErr, authoringcatalog.ActionLLMCompletion)
 	}
 	if call.Query != "" || !call.EmptyContent {
-		t.Errorf("query = %q, empty content = %v; want no content presented", call.Query, call.EmptyContent)
+		t.Errorf("query = %q, empty content = %v; want an empty step presented as empty content", call.Query, call.EmptyContent)
 	}
 	if call.OrgID != "org-map" || call.Subject == nil {
 		t.Errorf("org = %q, subject installed = %v; want org-map and the credential subject", call.OrgID, call.Subject != nil)
 	}
 }
 
-// The production factory is where the plane's no-content contract is set, and
-// every other test here overrides it.
-func TestTheMAPPlanesProductionProducerPresentsNoContent(t *testing.T) {
+// The production factory is where the plane's content contract is set, and
+// every other test here overrides it: the map plane presents the step's content
+// (#4249 row 5666236540).
+func TestTheMAPPlanesProductionProducerPresentsContent(t *testing.T) {
 	previous := dynamicPolicyEngine
 	dynamicPolicyEngine = &mockPolicyEngineForHITL{}
 	t.Cleanup(func() { dynamicPolicyEngine = previous })
@@ -202,25 +199,9 @@ func TestTheMAPPlanesProductionProducerPresentsNoContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newMAPFactProducer: %v", err)
 	}
-	if !p.presentsNoContent {
-		t.Error("the map plane's production producer presents content, so the checker's step label would be scanned")
+	if p.presentsNoContent {
+		t.Error("the map plane's production producer states that the plane presents no content; it presents the step's content")
 	}
-}
-
-// recordingApprovalService records the approval request a pause creates.
-type recordingApprovalService struct {
-	calls   int
-	lastReq *HITLApprovalRequest
-}
-
-func (s *recordingApprovalService) CreateApproval(_ context.Context, req *HITLApprovalRequest) (*HITLApprovalResponse, error) {
-	s.calls++
-	s.lastReq = req
-	return &HITLApprovalResponse{ApprovalID: uuid.New(), Status: "pending"}, nil
-}
-
-func (s *recordingApprovalService) GetApproval(context.Context, uuid.UUID) (*HITLApprovalResponse, error) {
-	return nil, nil
 }
 
 // recordingStepProcessor records that a step ran.
@@ -231,13 +212,17 @@ func (p *recordingStepProcessor) ExecuteStep(context.Context, WorkflowStep, map[
 	return map[string]interface{}{"ok": true}, nil
 }
 
-func mapHITLEngine(approval HITLApprovalService) (*HITLWorkflowEngine, *recordingStepProcessor) {
+// mapGatedEngine is the multi-agent workflow engine deciding every step through
+// the plane's checker, its rows written to audit (nil writes none), over one
+// recording llm-call processor.
+func mapGatedEngine(audit hitlAuditLogger) (*WorkflowEngine, *recordingStepProcessor) {
 	processor := &recordingStepProcessor{}
 	engine := &WorkflowEngine{
 		stepProcessors: map[string]StepProcessor{"llm-call": processor},
 		storage:        NewInMemoryWorkflowStorage(),
 	}
-	return NewHITLWorkflowEngine(engine, &MAPHITLPolicyChecker{}, approval), processor
+	engine.SetStepGate(&MAPHITLPolicyChecker{}, audit)
+	return engine, processor
 }
 
 func oneStepWorkflow() Workflow {
@@ -247,58 +232,36 @@ func oneStepWorkflow() Workflow {
 	}
 }
 
-// A MAP challenge pauses the step with the typed approval, recorded exactly as
-// the workflow step gate's queue row records it, under plane "map".
-func TestAMAPChallengeHoldsTheStepWithTheTypedApproval(t *testing.T) {
+// A MAP challenge carrying a typed approval is WITHHELD (#4382; #4249 row
+// 5670730156): the multi-agent engine keeps no durable queue row and nothing
+// resumes it, so the approval's eligible pools, quorum and separation of duties
+// could never be decided. Nothing runs, and the reason is named.
+func TestAMAPTypedChallengeIsWithheldForWantOfADurableRecord(t *testing.T) {
 	expiresAt := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	withMAPEngine(t, typedHoldVerdict("dec-map-hold", typedApproval(expiresAt)))
-	approval := &recordingApprovalService{}
-	hitl, processor := mapHITLEngine(approval)
+	engine, processor := mapGatedEngine(nil)
 
-	exec, err := hitl.ExecuteWithHITL(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
-	if err != nil {
-		t.Fatalf("ExecuteWithHITL: %v", err)
+	exec, err := engine.ExecuteWorkflow(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
+	if err == nil || exec == nil || exec.Status != "failed" {
+		t.Fatalf("execution = (%+v, %v), want a failed execution", exec, err)
 	}
-	if exec.Status != StatusPaused {
-		t.Fatalf("status = %q, want paused", exec.Status)
+	if !strings.Contains(err.Error(), mapApprovalRequiresDurableRecord) || !strings.Contains(exec.Error, mapApprovalRequiresDurableRecord) {
+		t.Errorf("err = %v, exec.Error = %q; want both to name %s", err, exec.Error, mapApprovalRequiresDurableRecord)
 	}
 	if processor.ran != 0 {
-		t.Errorf("the held step ran %d times, want never before approval", processor.ran)
-	}
-	if approval.calls != 1 || approval.lastReq == nil {
-		t.Fatalf("approvals created = %d, want one", approval.calls)
-	}
-	rc := approval.lastReq.RequestContext
-	want := []map[string]interface{}{
-		{"quorum": 2, "eligible": []string{"Group::mars:finance", "Group::mars:risk"}},
-		{"quorum": 1, "eligible": []string{"Group::mars:compliance"}},
-	}
-	if !reflect.DeepEqual(rc["approval_clauses"], want) {
-		t.Errorf("approval_clauses = %#v, want %#v", rc["approval_clauses"], want)
-	}
-	if rc["plane"] != "map" || rc["decision_id"] != "dec-map-hold" || rc["separation_of_duties"] != true {
-		t.Errorf("plane=%#v decision_id=%#v separation_of_duties=%#v; want map, dec-map-hold, true",
-			rc["plane"], rc["decision_id"], rc["separation_of_duties"])
-	}
-	if !approval.lastReq.ExpiresAt.Equal(expiresAt) {
-		t.Errorf("request expiry = %s, want %s", approval.lastReq.ExpiresAt, expiresAt)
+		t.Errorf("the withheld step ran %d times, want never", processor.ran)
 	}
 }
 
-// A MAP approval that already timed out withholds the step as approval_expired,
-// and no approval is created.
-func TestAMAPApprovalThatAlreadyExpiredWithholdsTheStepAndCreatesNothing(t *testing.T) {
+// A MAP approval that already timed out withholds the step as approval_expired.
+func TestAMAPApprovalThatAlreadyExpiredWithholdsTheStep(t *testing.T) {
 	expiresAt := time.Now().Add(-time.Minute).Truncate(time.Second)
 	withMAPEngine(t, typedHoldVerdict("dec-map-lapsed", typedApproval(expiresAt)))
-	approval := &recordingApprovalService{}
-	hitl, processor := mapHITLEngine(approval)
+	engine, processor := mapGatedEngine(nil)
 
-	exec, err := hitl.ExecuteWithHITL(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
+	exec, err := engine.ExecuteWorkflow(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
 	if err == nil || exec == nil || exec.Status != "failed" {
 		t.Fatalf("execution = (%+v, %v), want a failed execution blocked by policy", exec, err)
-	}
-	if approval.calls != 0 {
-		t.Errorf("approvals created = %d, want none: the approval had already timed out", approval.calls)
 	}
 	if processor.ran != 0 {
 		t.Errorf("the step ran %d times, want never", processor.ran)
@@ -314,9 +277,9 @@ func TestAMAPApprovalThatAlreadyExpiredWithholdsTheStepAndCreatesNothing(t *test
 func TestAMAPStepTheCheckerCannotDecideNeverRuns(t *testing.T) {
 	withMAPEngine(t, allowedStepVerdict())
 	orchestratorEnforcerInstance.Store(nil)
-	hitl, processor := mapHITLEngine(nil)
+	engine, processor := mapGatedEngine(nil)
 
-	exec, _ := hitl.ExecuteWithHITL(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
+	exec, _ := engine.ExecuteWorkflow(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
 	if processor.ran != 0 {
 		t.Fatalf("the step ran %d times with no enforcer: the plane failed open", processor.ran)
 	}

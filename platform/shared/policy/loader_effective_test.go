@@ -13,11 +13,9 @@ import (
 	"github.com/lib/pq"
 )
 
-// #3296 Slice 2 Step B/E tests: ScanEffectivePolicyRows (the single
-// static_policies reader for StaticPolicyRepository.GetEffective) and
-// CountActive (the in-process dynamic_policies count backing the agent's
-// Free-tier active_policies quota, replacing the deleted bespoke read in
-// platform/agent/mcp_v1_pro_tools.go).
+// #3296 Slice 2 Step B tests: ScanEffectivePolicyRows (the single
+// static_policies reader for StaticPolicyRepository.GetEffective). Step E's
+// CountActive went with the quota it backed (#4249 row 5667510887).
 
 func effectivePolicyTestCols() []string {
 	return []string{
@@ -160,73 +158,6 @@ func TestScanEffectivePolicyRows_QueryError(t *testing.T) {
 		t.Fatal("expected an error from ScanEffectivePolicyRows, got nil")
 	}
 	_ = tx.Rollback()
-}
-
-// TestPolicyLoader_CountActive_Success proves CountActive issues the exact
-// query text (and RLS org-scope wrap) the deleted bespoke
-// countActiveTenantPolicies read used, so the Free-tier active_policies quota
-// behaves identically post-convergence.
-func TestPolicyLoader_CountActive_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-		WithArgs("tenant-1").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dynamic_policies WHERE tenant_id = \$1 AND enabled = true`).
-		WithArgs("tenant-1").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
-	mock.ExpectCommit()
-
-	loader := NewPolicyLoader(db, nil)
-	count, err := loader.CountActive(context.Background(), "tenant-1")
-	if err != nil {
-		t.Fatalf("CountActive: %v", err)
-	}
-	if count != 5 {
-		t.Errorf("CountActive() = %d, want 5", count)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
-// TestPolicyLoader_CountActive_NilDB proves the nil-db guard returns an
-// error (not a panic) so the agent-side caller's fail-open path engages.
-func TestPolicyLoader_CountActive_NilDB(t *testing.T) {
-	loader := NewPolicyLoader(nil, nil)
-	if _, err := loader.CountActive(context.Background(), "tenant-1"); err == nil {
-		t.Fatal("expected an error for a nil db, got nil")
-	}
-}
-
-// TestPolicyLoader_CountActive_QueryError proves a query failure surfaces as
-// an error (the agent-side caller decides to fail open and emit its metric;
-// CountActive itself must not swallow the error).
-func TestPolicyLoader_CountActive_QueryError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-		WithArgs("tenant-err").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dynamic_policies WHERE tenant_id = \$1 AND enabled = true`).
-		WithArgs("tenant-err").
-		WillReturnError(errTestScan)
-	mock.ExpectRollback()
-
-	loader := NewPolicyLoader(db, nil)
-	if _, err := loader.CountActive(context.Background(), "tenant-err"); err == nil {
-		t.Fatal("expected an error, got nil")
-	}
 }
 
 var errTestScan = errors.New("simulated query error")

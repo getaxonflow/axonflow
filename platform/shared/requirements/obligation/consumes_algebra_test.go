@@ -364,13 +364,15 @@ func TestApprovalCompositionTakesTheShortestExpiryAndStrictestSoD(t *testing.T) 
 	if !res.Plan.Approval.SeparationOfDuties {
 		t.Error("separation of duties must hold if ANY policy demands it")
 	}
-	// The evaluator's own stamp takes part in the same minimum.
+	// #4249 row 5774029945: a carried expiry sets the window in both
+	// directions. The evaluator's stamp used to take part in the same minimum,
+	// so a carried 86400 under a 90s stamp expired at 90s.
 	stamped := Plan(PlanInput{
 		Registry: reg, Obligations: []Obligation{approval("lax", 1, "Group::r:a", map[string]string{contract.ParamExpirySeconds: "86400"})},
 		PEP: fullPEP(t, reg), Evidence: allSatisfied(reg), ApprovalExpiry: testNow.Add(90 * time.Second), Now: testNow,
 	})
-	if stamped.Outcome != OutcomeAllow || !stamped.Plan.Approval.ExpiresAt.Equal(testNow.Add(90*time.Second)) {
-		t.Errorf("outcome=%q expires_at=%v, want ALLOW at the evaluator's shorter stamp", stamped.Outcome, stamped.Plan.Approval)
+	if stamped.Outcome != OutcomeAllow || !stamped.Plan.Approval.ExpiresAt.Equal(testNow.Add(86400*time.Second)) {
+		t.Errorf("outcome=%q expires_at=%v, want ALLOW at the carried 86400s, past the evaluator's 90s stamp", stamped.Outcome, stamped.Plan.Approval)
 	}
 }
 

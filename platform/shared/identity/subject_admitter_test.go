@@ -67,13 +67,13 @@ func admitterFixture(t *testing.T, dep BuiltinRealmDeployment, opts ...SubjectAd
 
 // admitUser admits in through the user door, AdmitDecisionSubject.
 func admitUser(a *SubjectAdmitter, in CredentialPrincipal) Admission {
-	_, adm := a.AdmitDecisionSubject(context.Background(), in, DefaultMaxDelegationDepth)
+	_, _, adm := a.AdmitDecisionSubject(context.Background(), in, DefaultMaxDelegationDepth)
 	return adm
 }
 
 // admitClient admits in through the credential door, AdmitCredentialSubject.
 func admitClient(a *SubjectAdmitter, in CredentialPrincipal) Admission {
-	_, adm := a.AdmitCredentialSubject(context.Background(), in, DefaultMaxDelegationDepth)
+	_, _, adm := a.AdmitCredentialSubject(context.Background(), in, DefaultMaxDelegationDepth)
 	return adm
 }
 

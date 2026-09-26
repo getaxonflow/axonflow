@@ -139,7 +139,10 @@ func TestLogViolation_ComplianceMode(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "database error",
+			// #4249 row 5705939628: a connection that is gone is a failure a
+			// retry can cure, so the violation is kept in the fallback file
+			// for recovery and the write reports no error.
+			name: "database error is kept in the fallback",
 			entry: AuditEntry{
 				Severity: "MEDIUM",
 				ClientID: "test-client",
@@ -162,7 +165,7 @@ func TestLogViolation_ComplianceMode(t *testing.T) {
 					mock.ExpectRollback()
 				}
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 
@@ -268,25 +271,29 @@ func TestLogViolation_PerformanceMode(t *testing.T) {
 
 // TestLogMetric tests metric logging
 func TestLogMetric(t *testing.T) {
+	// #4249 row 5705939628: a flush is ONE aggregated UPSERT per organization,
+	// so the statements follow the flushes, not the entries: each carries the
+	// organization, the policy, and that flush's hit and block counts.
+	type flush struct{ hits, blocks int }
 	tests := []struct {
-		name         string
-		numMetrics   int
-		expectedLogs int
+		name       string
+		numMetrics int
+		flushes    []flush
 	}{
 		{
-			name:         "single metric",
-			numMetrics:   1,
-			expectedLogs: 1,
+			name:       "single metric",
+			numMetrics: 1,
+			flushes:    []flush{{1, 1}},
 		},
 		{
-			name:         "batch of metrics",
-			numMetrics:   10,
-			expectedLogs: 10,
+			name:       "batch of metrics",
+			numMetrics: 10,
+			flushes:    []flush{{10, 5}},
 		},
 		{
-			name:         "large batch",
-			numMetrics:   150, // Will trigger batch flush at 100
-			expectedLogs: 150,
+			name:       "large batch",
+			numMetrics: 150, // the batcher flushes at 100, then the ticker flushes the rest
+			flushes:    []flush{{100, 50}, {50, 25}},
 		},
 	}
 
@@ -309,12 +316,13 @@ func TestLogMetric(t *testing.T) {
 			// v9 Phase 8 #2384 PR-C1: flushMetricsBatch wraps each
 			// policy_metrics UPSERT in WithOrgScope so the WITH CHECK
 			// predicate under app_role can pin app.current_org_id.
-			for i := 0; i < tt.expectedLogs; i++ {
+			for _, f := range tt.flushes {
 				mock.ExpectBegin()
 				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
 					WithArgs("tenant-1").
 					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_metrics").
+					WithArgs("tenant-1", "policy-123", f.hits, f.blocks).
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectCommit()
 			}

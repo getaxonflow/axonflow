@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
 )
 
@@ -187,6 +188,13 @@ func validatePolicyAgainstCatalog(p pdp.Policy, cat *Catalog, schema map[string]
 			idStrings(p.Actions.Actions), p.Actions.RequiredTags)))
 	}
 
+	// The scopes the control binds on (#4371).
+	out = append(out, validateBindsOn(p, cat, reached, unregistered)...)
+	out = append(out, warnApprovalOnNoHoldScopes(p, reached)...)
+	if !unregistered {
+		out = append(out, validateDetectorScopes(p, reached)...)
+	}
+
 	// Realms named by the scope.
 	for _, id := range realmsScoped(p.Scope) {
 		realm, ok := cat.Realms[id.Qualifier]
@@ -251,6 +259,166 @@ func validatePolicyAgainstCatalog(p pdp.Policy, cat *Catalog, schema map[string]
 		out = append(out, newFinding(CodeBlanketPermission, p.ID,
 			"the permission selects every action (`any`), is scoped to the whole organization, and carries no condition and no resource scope; it would also grant every action registered after it"))
 	}
+	return out
+}
+
+// validateBindsOn checks a control's `binds_on` against the scopes the
+// deployment vocabulary states per action (pdp.ActionEntry.Planes). Absent is
+// every scope and has nothing to check. The deployment's scope set is the
+// union over its actions: a scope no action lists is one this deployment does
+// not enforce.
+//
+// The action check is per scope and ANY over the reached actions, deliberately
+// not ALL: a control selecting llm.completion and tool.call legitimately binds
+// on openai_compatible, where only the completion is presented. It is skipped
+// when the selector names an unregistered action, which is already refused and
+// leaves the reach empty.
+func validateBindsOn(p pdp.Policy, cat *Catalog, reached []pdp.ActionEntry, unregistered bool) Findings {
+	if p.BindsOn == nil {
+		return nil
+	}
+	var out Findings
+	if len(*p.BindsOn) == 0 {
+		return append(out, newFinding(CodeBindsOnEmpty, p.ID,
+			"binds_on is [], which would bind the control on no plane; omit it to bind on every plane"))
+	}
+	declared := map[string]bool{}
+	for _, entry := range cat.Actions {
+		for _, plane := range entry.Planes {
+			declared[plane] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, plane := range *p.BindsOn {
+		if seen[plane] {
+			out = append(out, newFinding(CodeBindsOnDuplicatePlane, p.ID, fmt.Sprintf(
+				"binds_on names %q more than once", plane)))
+			continue
+		}
+		seen[plane] = true
+		if !declared[plane] {
+			out = append(out, newFinding(CodePlaneNotDeclared, p.ID, fmt.Sprintf(
+				"binds_on names %q, which this deployment does not enforce (it enforces %v)", plane, sortedKeys(declared))))
+			continue
+		}
+		if unregistered || len(reached) == 0 {
+			continue
+		}
+		var presented []string
+		for _, a := range reached {
+			if containsString(a.Planes, plane) {
+				presented = append(presented, a.ID.String())
+			}
+		}
+		if len(presented) == 0 {
+			out = append(out, newFinding(CodeActionNotPresentedOnPlane, p.ID, fmt.Sprintf(
+				"binds_on names %q, which presents none of the actions this control selects (%v)", plane, actionIDs(reached))))
+			continue
+		}
+	}
+	return out
+}
+
+// noHoldApprovalScopes are the scopes an approval requirement is WARNED about
+// binding on: each presents actions an approval can select and holds none, so
+// a challenge there is refused approval_required, or on the multi-agent plane
+// withheld, rather than held. What each does with a challenge is not restated
+// here: it is legacycompile's one declaration (ApprovalHandlingOf), which
+// TestEveryNoHoldWarningIsOnAScopeThatHoldsNothing holds this table to. Rendered
+// from the engine's own scopes, never typed, and each names the code and the
+// sentence its warning carries.
+var noHoldApprovalScopes = []struct {
+	scope string
+	code  string
+	what  string
+	// lacks is the clause that says it has no hold, agreeing with what.
+	lacks string
+}{
+	{
+		scope: legacycompile.MustScopeFor(legacycompile.PlaneMCP, legacycompile.PhaseResponse).String(),
+		code:  CodeBindsOnMCPResponse,
+		what:  "the MCP response pass",
+		lacks: "that pass has",
+	},
+	{
+		scope: legacycompile.MustScopeFor(legacycompile.PlaneOrchestratorRequest, "").String(),
+		code:  CodeBindsOnOrchestratorRequestNoHold,
+		what:  "the orchestrator request routes (/api/v1/process, /api/v1/plan/execute)",
+		lacks: "those routes have",
+	},
+	{
+		scope: legacycompile.MustScopeFor(legacycompile.PlaneMAP, "").String(),
+		code:  CodeBindsOnMapNoHold,
+		what:  "the multi-agent plane",
+		lacks: "that plane has",
+	},
+}
+
+// noHoldEffect is what a scope that holds nothing does with a challenge, read
+// from legacycompile's declaration so a warning cannot describe a refusal where
+// the seam withholds.
+func noHoldEffect(scope string) string {
+	for _, s := range legacycompile.AllScopes() {
+		if s.String() != scope {
+			continue
+		}
+		if legacycompile.ApprovalHandlingOf(s) == legacycompile.ApprovalWithheld {
+			return "withholds the step approval_requires_durable_record; confirm and step mode hold steps by their mode, asking no policy, and refuse a challenged step approval_required"
+		}
+	}
+	return "refuses the challenge approval_required"
+}
+
+// attachesApproval reports whether a policy attaches an approval challenge.
+func attachesApproval(p pdp.Policy) bool {
+	for _, o := range p.Obligations {
+		if o.Type == contract.ObApprovalChallenge {
+			return true
+		}
+	}
+	return false
+}
+
+// warnApprovalOnNoHoldScopes warns when an approval requirement binds on a
+// scope that cannot hold a challenge (noHoldApprovalScopes): by naming it, or
+// by leaving binds_on absent, which binds everywhere. It looks only at the
+// actions the scope presents (their Planes list it), so a catalog that states
+// no planes - or a control on no such action - is never warned. An explicit
+// list that does not name the scope is the author's answer.
+func warnApprovalOnNoHoldScopes(p pdp.Policy, reached []pdp.ActionEntry) Findings {
+	if !attachesApproval(p) {
+		return nil
+	}
+	var out Findings
+	for _, s := range noHoldApprovalScopes {
+		if p.BindsOn != nil && !containsString(*p.BindsOn, s.scope) {
+			continue
+		}
+		var presented []string
+		for _, a := range reached {
+			if containsString(a.Planes, s.scope) {
+				presented = append(presented, a.ID.String())
+			}
+		}
+		if presented == nil {
+			continue
+		}
+		how := "binds_on names " + s.scope
+		if p.BindsOn == nil {
+			how = "binds_on is absent, so it binds on every plane, " + s.scope + " among them"
+		}
+		out = append(out, newFinding(s.code, p.ID, fmt.Sprintf(
+			"%s, and the control selects %v, which %s presents; %s no approval hold and %s", how, presented, s.what, s.lacks, noHoldEffect(s.scope))))
+	}
+	return out
+}
+
+func actionIDs(entries []pdp.ActionEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.ID.String())
+	}
+	sort.Strings(out)
 	return out
 }
 

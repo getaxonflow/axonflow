@@ -5,6 +5,7 @@ package authoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -42,8 +43,15 @@ type Activation struct {
 	// never a version, so "which policy produced this decision" survives the
 	// next edit.
 	Digest string `json:"digest"`
-	// PreviousDigest is what was active before, empty for the first
-	// activation. It is what makes the history a chain rather than a list.
+	// PreviousDigest is the entry this activation chains onto: the digest the
+	// previous activation named, empty for the first activation. It is what
+	// makes the history a chain rather than a list. A promotion and a rollback
+	// chain onto the ledger's TIP; a withdrawal names the document it removes,
+	// which is the active one. The tip and the active digest differ only after
+	// a withdrawal, which appends an entry naming the shipped organization
+	// template while leaving nothing active, so the promotion after a
+	// withdrawal chains onto that entry rather than onto a document
+	// (docs/api/orchestrator-api.yaml, previous_digest).
 	PreviousDigest  string      `json:"previous_digest,omitempty"`
 	DocumentID      string      `json:"document_id"`
 	DocumentVersion int         `json:"document_version"`
@@ -185,12 +193,12 @@ func (s *Store) Admit(ctx context.Context, a *Artifact) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.backend.PutArtifact(ctx, a.provenance.Root, a)
+	return storeFailure(s.backend.PutArtifact(ctx, a.provenance.Root, a))
 }
 
 // Get returns an admitted artifact by root and digest.
 func (s *Store) Get(ctx context.Context, root pdp.Root, digest string) (*Artifact, bool, error) {
-	return s.backend.GetArtifact(ctx, root, digest)
+	return storeRead2(s.backend.GetArtifact(ctx, root, digest))
 }
 
 // BySourceDigest returns an admitted artifact by the digest of the authoring
@@ -202,25 +210,47 @@ func (s *Store) Get(ctx context.Context, root pdp.Root, digest string) (*Artifac
 // digest is unchanged. Anything that must be idempotent across runs keys on
 // this.
 func (s *Store) BySourceDigest(ctx context.Context, root pdp.Root, sourceDigest string) (*Artifact, bool, error) {
-	return s.backend.ArtifactBySourceDigest(ctx, root, sourceDigest)
+	return storeRead2(s.backend.ArtifactBySourceDigest(ctx, root, sourceDigest))
 }
 
 // Count returns how many artifacts are admitted under a root.
 func (s *Store) Count(ctx context.Context, root pdp.Root) (int, error) {
-	return s.backend.CountArtifacts(ctx, root)
+	return storeRead(s.backend.CountArtifacts(ctx, root))
 }
 
 // List returns up to limit admitted artifacts under a root, newest document
-// version first. A limit of zero or less returns them all.
+// version first. A limit of zero or less returns them all. When some stored
+// artifacts did not load, it returns the ones that did AND an *ArtifactsSkipped
+// naming the rest.
 //
 // This is the enumeration a durable deployment needs and an in-process one did
 // not: a portal listing what one process happens to remember is a list of that
 // process's history, not the organization's.
 func (s *Store) List(ctx context.Context, root pdp.Root, limit int) ([]*Artifact, error) {
-	return s.backend.ListArtifacts(ctx, root, limit)
+	return storeRead(s.backend.ListArtifacts(ctx, root, limit))
 }
 
-// Active returns the currently active artifact for a root.
+// ActiveDigest returns the digest of the document that is ACTIVE under root,
+// WITHOUT loading its artifact, and "" when none is.
+//
+// Active answers with the artifact, which is the right answer for every caller
+// that decides with it - but a caller that only has to NAME the active
+// document must not be defeated by an artifact that no longer verifies. The
+// portal's artifact list is that caller: the active artifact failing to load
+// is exactly when an operator needs the page (master R3 round 1 on #4397,
+// MEDIUM-1). A backend failure is marked as the store's, as everywhere else.
+func (s *Store) ActiveDigest(ctx context.Context, root pdp.Root) (string, error) {
+	digest, err := s.backend.ActiveDigest(ctx, root)
+	if err != nil {
+		return "", storeFailure(err)
+	}
+	return digest, nil
+}
+
+// Active returns the currently active artifact for a root: false when
+// nothing is active, and the store's failure (ErrStoreUnavailable) when the
+// ledger names an active digest the store does not hold, never "nothing
+// active" (#4249 row 5797853828).
 //
 // It re-loads the artifact through the backend, so a backend that re-derives
 // an artifact's claims on read - the durable one does, on every load - reports
@@ -235,23 +265,32 @@ func (s *Store) List(ctx context.Context, root pdp.Root, limit int) ([]*Artifact
 func (s *Store) Active(ctx context.Context, root pdp.Root) (*Artifact, bool, error) {
 	digest, err := s.backend.ActiveDigest(ctx, root)
 	if err != nil {
-		return nil, false, err
+		return nil, false, storeFailure(err)
 	}
 	if digest == "" {
 		return nil, false, nil
 	}
-	return s.backend.GetArtifact(ctx, root, digest)
+	// A digest the ledger names active and the store does not hold is the
+	// store's failure, never "nothing active": every reader of Active (the
+	// active document, the compliance effects, diff and render) would
+	// otherwise report the organization's own controls as absent (#4249 row
+	// 5797853828).
+	a, err := s.loadArtifact(ctx, root, digest, activeArtifact)
+	if err != nil {
+		return nil, false, err
+	}
+	return a, true, nil
 }
 
 // History returns the activation history for a root, oldest first.
 func (s *Store) History(ctx context.Context, root pdp.Root) ([]Activation, error) {
-	return s.backend.Activations(ctx, root)
+	return storeRead(s.backend.Activations(ctx, root))
 }
 
 // AuditTrail returns the audit entries for a root, oldest first: one per
 // publish, promote and rollback (PRD v11 §1.12).
 func (s *Store) AuditTrail(ctx context.Context, root pdp.Root) ([]AuditEntry, error) {
-	return s.backend.AuditTrail(ctx, root)
+	return storeRead(s.backend.AuditTrail(ctx, root))
 }
 
 // Promote activates a newly published digest.
@@ -288,12 +327,9 @@ func (s *Store) promote(ctx context.Context, root pdp.Root, digest string, actor
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a, ok, err := s.backend.GetArtifact(ctx, root, digest)
+	a, err := s.loadArtifact(ctx, root, digest, candidateArtifact)
 	if err != nil {
 		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("authoring: digest %s is not admitted under root %q; a digest is activated only after it has been verified", digest, root)
 	}
 	if err := a.verify(s.trust.Current()); err != nil {
 		return nil, fmt.Errorf("authoring: refusing to activate %s: %w", digest, err)
@@ -307,19 +343,16 @@ func (s *Store) promote(ctx context.Context, root pdp.Root, digest string, actor
 	// active (PRD v11 §1.15) and still chains onto the withdrawal.
 	prev, err := s.backend.ActiveDigest(ctx, root)
 	if err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	tip, err := s.tipDigest(ctx, root)
 	if err != nil {
 		return nil, err
 	}
 	if prev != "" {
-		current, ok, err := s.backend.GetArtifact(ctx, root, prev)
+		current, err := s.loadArtifact(ctx, root, prev, activeArtifact)
 		if err != nil {
 			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("authoring: the active digest %s for root %q is not in the store", prev, root)
 		}
 		if a.provenance.DocumentID != current.provenance.DocumentID {
 			return nil, fmt.Errorf(
@@ -348,7 +381,7 @@ func (s *Store) promote(ctx context.Context, root pdp.Root, digest string, actor
 		Actor: actor, At: at.UTC(), Reason: reason,
 	}
 	if err := s.backend.AppendActivation(ctx, root, act, tip); err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	return &act, nil
 }
@@ -360,7 +393,7 @@ func (s *Store) promote(ctx context.Context, root pdp.Root, digest string, actor
 func (s *Store) tipDigest(ctx context.Context, root pdp.Root) (string, error) {
 	history, err := s.backend.Activations(ctx, root)
 	if err != nil {
-		return "", err
+		return "", storeFailure(err)
 	}
 	if len(history) == 0 {
 		return "", nil
@@ -398,12 +431,9 @@ func (s *Store) rollback(ctx context.Context, root pdp.Root, digest string, acto
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a, ok, err := s.backend.GetArtifact(ctx, root, digest)
+	a, err := s.loadArtifact(ctx, root, digest, candidateArtifact)
 	if err != nil {
 		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("authoring: digest %s is not admitted under root %q", digest, root)
 	}
 	if err := a.verify(s.trust.Current()); err != nil {
 		return nil, fmt.Errorf("authoring: refusing to roll back to %s: %w", digest, err)
@@ -413,7 +443,7 @@ func (s *Store) rollback(ctx context.Context, root pdp.Root, digest string, acto
 	}
 	history, err := s.backend.Activations(ctx, root)
 	if err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	activated := false
 	for _, h := range history {
@@ -442,7 +472,7 @@ func (s *Store) rollback(ctx context.Context, root pdp.Root, digest string, acto
 		Actor: actor, At: at.UTC(), Reason: reason,
 	}
 	if err := s.backend.AppendActivation(ctx, root, act, prev); err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	return &act, nil
 }
@@ -490,7 +520,7 @@ func (s *Store) withdraw(ctx context.Context, root pdp.Root, actor contract.ID, 
 	defer s.mu.Unlock()
 	active, err := s.backend.ActiveDigest(ctx, root)
 	if err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	if active == "" {
 		return nil, fmt.Errorf("authoring: nothing is active under root %q, so there is no document to withdraw", root)
@@ -522,12 +552,9 @@ func (s *Store) withdraw(ctx context.Context, root pdp.Root, actor contract.ID, 
 		// migrations/core/181 created the audit table, which no release carries.
 		// Fall back to the artifact and REFUSE if it does not load - a withdrawal
 		// is never admitted without the actor rule.
-		current, ok, err := s.backend.GetArtifact(ctx, root, active)
+		current, err := s.loadArtifact(ctx, root, active, activeArtifact)
 		if err != nil {
 			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("authoring: the active digest %s for root %q is not in the store", active, root)
 		}
 		author, approvers, version = current.provenance.Author, current.provenance.Approvers, current.provenance.DocumentVersion
 	}
@@ -540,7 +567,7 @@ func (s *Store) withdraw(ctx context.Context, root pdp.Root, actor contract.ID, 
 		Actor: actor, At: at.UTC(), Reason: reason,
 	}
 	if err := s.backend.AppendActivation(ctx, root, act, active); err != nil {
-		return nil, err
+		return nil, storeFailure(err)
 	}
 	return &act, nil
 }
@@ -554,7 +581,7 @@ func (s *Store) withdraw(ctx context.Context, root pdp.Root, actor contract.ID, 
 func (s *Store) admittedAuthorship(ctx context.Context, root pdp.Root, digest string) (contract.ID, []contract.ID, int, bool, error) {
 	trail, err := s.backend.AuditTrail(ctx, root)
 	if err != nil {
-		return contract.ID{}, nil, 0, false, err
+		return contract.ID{}, nil, 0, false, storeFailure(err)
 	}
 	for _, e := range trail {
 		if e.Action == AuditPublish && e.Digest == digest {
@@ -686,4 +713,112 @@ func checkActor(actor contract.ID) error {
 		return fmt.Errorf("authoring: activation actor %q is a %q, and an activator is a principal", actor, actor.Kind)
 	}
 	return nil
+}
+
+// ErrStoreUnavailable marks an error the typed-authoring STORE returned: a
+// database the process could not read or write, rather than a refusal of what
+// the caller asked for (#4283, #4249 row 5666781792). Every backend call a
+// Store makes wraps its error with it, beside the cause (so
+// authoringstore.ErrSigningKeyNotLoaded and ErrArtifactUnverifiable still
+// classify), except ErrActivationRaced, which is a refusal. The routes answer
+// it through their store-refusal writer: 503 storage_unavailable (or
+// key_not_loaded / unverifiable), with the store's error in the log and never
+// in a body. Before, publish answered it 422 publication_refused and promote,
+// rollback and withdraw 409 activation_refused, each echoing the database's
+// error, so an outage read to the caller as a refusal of their own action.
+var ErrStoreUnavailable = errors.New("authoring: the typed-authoring store could not be read or written")
+
+// ErrLedgerInconsistent marks the one store failure a retry cannot heal: the
+// root's ledger names an active digest the store does not hold (#4249 row
+// 5797853828). It is always wrapped beside ErrStoreUnavailable, so every
+// errors.Is(err, ErrStoreUnavailable) keeps holding and every reader that
+// answers a store failure still answers this one as the store's. What it adds
+// is the distinction a route can put in its reason: storage_unavailable says
+// "retry once the database is reachable", and here the database is reachable
+// and disagrees with itself. Promote and withdraw load the active document
+// too, so they refuse the same way: the store needs an operator's repair.
+var ErrLedgerInconsistent = errors.New("authoring: the store's ledger and its artifacts disagree")
+
+// SkippedArtifact names one stored artifact a listing left out because it did
+// not load: Reason is "artifact_unverifiable" (it no longer verifies) or
+// "key_not_loaded" (its signing key is not loaded on this replica). The
+// portal's artifact list also names an artifact whose detail read failed,
+// "storage_unavailable", or that the listing or history names and the store
+// does not hold, "ledger_inconsistent" (#4249 row 5802669229). Err is the
+// load's own error, for the log; it is never rendered.
+type SkippedArtifact struct {
+	Digest string `json:"digest"`
+	Reason string `json:"reason"`
+	Err    error  `json:"-"`
+}
+
+// ArtifactsSkipped is what Backend.ListArtifacts returns BESIDE the artifacts
+// that loaded when some did not (#4283 item 3). One artifact that does not
+// verify is that artifact's problem, named here, not the page's: before, the
+// first one failed the whole listing with a 500. A store that could not be read
+// at all is still an error of its own, never this.
+type ArtifactsSkipped struct {
+	Skipped []SkippedArtifact
+}
+
+func (e *ArtifactsSkipped) Error() string {
+	return fmt.Sprintf("authoring: %d stored artifact(s) did not load and were left out of the listing", len(e.Skipped))
+}
+
+// artifactRole is which artifact a load is for, and so which sentence a
+// missing one is refused with.
+type artifactRole int
+
+const (
+	// candidateArtifact is a digest a caller asked to activate. Missing, it
+	// was never admitted: the caller's to fix.
+	candidateArtifact artifactRole = iota
+	// activeArtifact is the digest the root's ledger names active. Missing,
+	// the store disagrees with its own ledger: that is the store's failure,
+	// marked ErrStoreUnavailable like any other, never the caller's refusal.
+	activeArtifact
+)
+
+// loadArtifact is the one artifact-load block (#4249 row 5666782153):
+// promote's candidate and active document, rollback's target, withdraw's
+// fallback, the API's activator and Active all load through it. A backend
+// error is a store failure (storeFailure). A missing artifact is refused with
+// its role's one sentence: a missing candidate as the caller's refusal, a
+// missing active digest as the store's failure, so a route answers the second
+// as an outage and never tells the caller they asked for something that does
+// not exist.
+func (s *Store) loadArtifact(ctx context.Context, root pdp.Root, digest string, role artifactRole) (*Artifact, error) {
+	a, ok, err := s.backend.GetArtifact(ctx, root, digest)
+	if err != nil {
+		return nil, storeFailure(err)
+	}
+	if !ok {
+		if role == activeArtifact {
+			return nil, storeFailure(fmt.Errorf("%w: the active digest %s for root %q is not in the store", ErrLedgerInconsistent, digest, root))
+		}
+		return nil, fmt.Errorf("authoring: digest %s is not admitted under root %q; a digest is activated only after it has been verified", digest, root)
+	}
+	return a, nil
+}
+
+// storeFailure marks a backend error ErrStoreUnavailable. nil, an error already
+// marked, ErrActivationRaced and a listing's ArtifactsSkipped pass through
+// unchanged: the last two are not outages.
+func storeFailure(err error) error {
+	var skipped *ArtifactsSkipped
+	if err == nil || errors.Is(err, ErrStoreUnavailable) || errors.Is(err, ErrActivationRaced) || errors.As(err, &skipped) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrStoreUnavailable, err)
+}
+
+// storeRead is storeFailure for a backend call that returns one value.
+func storeRead[T any](v T, err error) (T, error) {
+	return v, storeFailure(err)
+}
+
+// storeRead2 is storeFailure for a backend call that returns a value and a
+// presence flag.
+func storeRead2[T any](v T, ok bool, err error) (T, bool, error) {
+	return v, ok, storeFailure(err)
 }

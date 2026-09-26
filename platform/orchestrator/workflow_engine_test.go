@@ -169,7 +169,10 @@ func TestConditionalProcessor(t *testing.T) {
 func TestConditionalBranchExecution(t *testing.T) {
 	engine := NewWorkflowEngine()
 	processor := NewConditionalProcessor(engine)
-	ctx := context.Background()
+	// #4249 row 5665091860: branch steps run only under a gate that presents
+	// each one; this test is about the branch mechanics, so every step is
+	// allowed (the gate itself is tested in conditional_branch_gate_4249_test.go).
+	ctx := withConditionalPath(withConditionalGate(context.Background(), (&recordingBranchGate{}).gate()), "0")
 
 	tests := []struct {
 		name                  string
@@ -379,6 +382,9 @@ func TestFunctionCallProcessor(t *testing.T) {
 
 // TestLLMCallProcessor tests LLM step execution with mock router
 func TestLLMCallProcessor(t *testing.T) {
+	// An llm-call step takes the organization's route rows; none apply here
+	// (#4249 row 5701303521).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	// Create mock router
 	mockRouter := NewMockLLMRouter()
 	mockRouter.RouteResponse = &LLMResponse{

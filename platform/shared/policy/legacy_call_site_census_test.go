@@ -90,6 +90,21 @@ var evaluatorMethods = []string{
 	"Produce",                 // the dynamic condition matcher as a fact producer
 }
 
+// signalProducerCallSites are evaluations that produce a MEDIA SIGNAL for the
+// anchored engine rather than a verdict, and so are neither a legacy verdict
+// path nor a plane: they get no row in legacy_call_sites.tsv and move no planes
+// column of the detectors they run.
+//
+//   - media/pii_scan.go NewEnginePIIDetector (#4300): scans OCR-extracted text
+//     with the text PII detectors and ignores the engine's own verdict; the
+//     finding is stated as signal.media.has_pii, which the wcp route seam's
+//     anchored decision reads (sys_media_pii_block).
+//
+// Each entry must still exist in the tree: a stale exemption fails.
+var signalProducerCallSites = map[string]string{
+	"platform/orchestrator/media/pii_scan.go\tEvaluateRequest\tNewEnginePIIDetector": "media signal producer (#4300)",
+}
+
 // TestLegacyCallSiteCensusIsComplete pins the ADR-065 plane model to the tree.
 //
 // # Why this exists, stated plainly because it was learned the hard way
@@ -121,6 +136,17 @@ func TestLegacyCallSiteCensusIsComplete(t *testing.T) {
 		t.Fatalf("resolving the repository root: %v", err)
 	}
 	mirror := treeIsCommunityMirror(root)
+	// Every exempted producer is Community source, so a stale exemption fails
+	// on the mirror too.
+	for k := range signalProducerCallSites {
+		if _, found := got[k]; !found {
+			t.Fatalf("signal-producer exemption %q names no call site in the tree; remove it", k)
+		}
+		if _, censused := want[k]; censused {
+			t.Fatalf("%q is both censused and exempted as a signal producer; it is one or the other", k)
+		}
+		delete(got, k)
+	}
 
 	if len(want) == 0 {
 		t.Fatalf("%s is empty; an empty census would let this test pass while asserting nothing", callSiteCensusPath)

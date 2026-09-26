@@ -105,6 +105,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"axonflow/platform/agent/approletest"
 	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
@@ -338,7 +339,7 @@ func assertEnforcingScopesBindTheActionsTheMigratedRowsStore(t *testing.T, db *s
 		if err != nil {
 			t.Fatalf("%s: %v", seam.scope, err)
 		}
-		split, unsplit := 0, 0
+		split, unsplit, coerced := 0, 0, 0
 		retired := map[string]bool{}
 		for _, p := range doc.Policies {
 			control, variantAction, ok := legacycompile.CorpusControlOf(p.ID)
@@ -355,13 +356,18 @@ func assertEnforcingScopesBindTheActionsTheMigratedRowsStore(t *testing.T, db *s
 				t.Errorf("%s binds %s, and the migrated database holds no enabled system row %q", seam.scope, p.ID, policyID)
 				continue
 			}
-			if forced, coerces := spec.Forces(row.category); coerces {
-				t.Fatalf("%s coerces category %q to %q, which this reconciliation does not model; extend it before trusting it", seam.scope, row.category, forced)
-			}
 			want := string((&sharedpolicy.CompiledPolicy{
 				Category: sharedpolicy.PolicyCategory(row.category), Severity: sharedpolicy.Severity(row.severity),
 				ActionRequest: sharedpolicy.Action(row.request), ActionResponse: sharedpolicy.Action(row.response),
 			}).GetActionForPhase(phase))
+			// A plane that COERCES an action for a category (PlaneSpec.Forces:
+			// the cowork ingest storage plane masks every pii-* category, #4259)
+			// binds that action whatever the row stores, so the migrated row's
+			// phase resolution is not what the corpus binds there.
+			if forced, coerces := spec.Forces(row.category); coerces {
+				want = string(forced)
+				coerced++
+			}
 			// A plane that keeps the retired tier pass's read
 			// (PlaneSpec.EnforcesRetiredTierPassRead, #4253) binds a system
 			// row's STORED block wherever the phase resolution is less: that
@@ -391,7 +397,16 @@ func assertEnforcingScopesBindTheActionsTheMigratedRowsStore(t *testing.T, db *s
 					seam.scope, policyID, got, want, phase, row.request, row.response, row.category, row.severity)
 			}
 		}
-		if split == 0 || unsplit == 0 {
+		switch {
+		case spec.ForcedAction != "":
+			// Every control a forcing plane keeps is coerced, and each is a
+			// split variant: the corpus compiles the coerced action as its own
+			// variant (#4259 keeps seventeen pii-* redact variants on
+			// cowork_ingest, and no unsplit control).
+			if split == 0 || unsplit != 0 || coerced != split {
+				t.Errorf("%s judged %d split, %d unsplit and %d coerced controls; a forcing plane keeps split variants only, every one coerced", seam.scope, split, unsplit, coerced)
+			}
+		case split == 0 || unsplit == 0:
 			t.Errorf("%s judged %d split and %d unsplit controls; the reconciliation must read both kinds", seam.scope, split, unsplit)
 		}
 		// The population by id, which is also the anti-vacuity check: on
@@ -407,6 +422,9 @@ func assertEnforcingScopesBindTheActionsTheMigratedRowsStore(t *testing.T, db *s
 		}
 		if spec.EnforcesRetiredTierPassRead {
 			t.Logf("%s: %d system rows bind their stored block over the phase resolution (the retired tier pass's read, #4253): %v", seam.scope, len(gotRetired), gotRetired)
+		}
+		if coerced > 0 {
+			t.Logf("%s: %d of them are coerced by the plane (PlaneSpec.Forces) rather than resolved from the row", seam.scope, coerced)
 		}
 		t.Logf("%s: %d split and %d unsplit static controls bind the action the migrated rows store for the %s phase", seam.scope, split, unsplit, phase)
 	}
@@ -689,21 +707,20 @@ func hasThreeDigitPrefix(s string) bool {
 func startCountTestPostgres(t *testing.T) (string, func()) {
 	t.Helper()
 	containerName := fmt.Sprintf("axonflow-test-polcount-pg-%d", time.Now().UnixNano())
-	out, err := exec.Command("docker", "run", "-d",
+	out, err := exec.Command("docker", approletest.DockerRunArgs(t,
 		"--name", containerName,
 		// tmpfs at the declared VOLUME path: postgres creates an ANONYMOUS
 		// volume there otherwise, and `docker rm -fv` only reclaims it if the
 		// cleanup actually runs - which it does not on a -timeout kill, a
 		// Ctrl-C or a panic. With the mount there is nothing to leak at all.
-		// Label so an orphaned container is reapable by exact match rather
-		// than by a name glob, which collides on a shared daemon.
-		"--label", "axonflow.test.ephemeral=1",
+		// The labels (approletest.DockerRunArgs) make an orphan reapable by
+		// exact match, never by a name glob, which collides on a shared daemon.
 		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
 		"-e", "POSTGRES_PASSWORD=testpass",
 		"-e", "POSTGRES_DB=axonflow_test",
 		"-p", "0:5432",
 		"postgres:15",
-	).CombinedOutput()
+	)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %v\n%s", err, string(out))
 	}

@@ -69,9 +69,11 @@ import (
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
+	"axonflow/platform/decision/registry"
 	"axonflow/platform/shared/anchoredenforcer"
 	"axonflow/platform/shared/authoringedition"
 	"axonflow/platform/shared/authoringvocabulary"
+	"axonflow/platform/shared/deploymode"
 	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
@@ -135,13 +137,56 @@ type enforcingSeam struct {
 // hands a declaring caller, which the corpus build's template split, this list
 // and both authoring dry runs all read. TestEverySeamDeliversWhatScopeDeliveriesStates
 // holds each entry to it by value, whatever the spelling.
-var enforcingSeams = []enforcingSeam{
+//
+// The Enterprise build adds its own seams (editionSeams: the cowork ingest
+// storage pass, #4259). A seam serves only where this process's plane edition
+// registers its plane (seamServes), so an Enterprise binary in a core-only
+// deployment mode lists and decides on the others alone.
+var enforcingSeams = append([]enforcingSeam{
 	{scope: decideSeamScope, delivers: legacycompile.ScopeDeliveries(decideSeamScope)},
 	{scope: gatewayRequestSeamScope, delivers: legacycompile.ScopeDeliveries(gatewayRequestSeamScope)},
 	{scope: mcpRequestSeamScope, delivers: legacycompile.ScopeDeliveries(mcpRequestSeamScope)},
 	{scope: mcpResponseSeamScope, delivers: legacycompile.ScopeDeliveries(mcpResponseSeamScope)},
 	{scope: proxyRequestSeamScope, delivers: legacycompile.ScopeDeliveries(proxyRequestSeamScope)},
 	{scope: openaiCompatibleSeamScope, delivers: legacycompile.ScopeDeliveries(openaiCompatibleSeamScope)},
+}, editionSeams...)
+
+// planeInThisPlaneSet reports whether this process's plane edition
+// (deploymode.PlaneEdition) registers plane (registry/legacy_plane_peps.tsv).
+// A plane it does not register is not in this process's plane set: the
+// activation refuses it, so nothing may be decided or served on it here.
+func planeInThisPlaneSet(plane legacycompile.Plane) bool {
+	edition, recognised := deploymode.PlaneEdition()
+	if !recognised {
+		return false
+	}
+	rows, err := registry.ParseLegacyPlanes(registry.LegacyPlaneFile)
+	if err != nil {
+		return false
+	}
+	for _, r := range rows {
+		if r.Edition == edition && r.Plane == string(plane) {
+			return true
+		}
+	}
+	return false
+}
+
+// seamServes reports whether s decides in this process: its plane is in this
+// process's plane set. Every seam but an edition seam serves on every
+// recognised deployment mode.
+func seamServes(s enforcingSeam) bool { return planeInThisPlaneSet(s.scope.Plane) }
+
+// servingSeams is enforcingSeams narrowed to the seams that serve in this
+// process (seamServes): what /health and the boot log report.
+func servingSeams() []enforcingSeam {
+	var out []enforcingSeam
+	for _, s := range enforcingSeams {
+		if seamServes(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // seamFor is the enforcing seam registered for scope in this binary.
@@ -187,10 +232,6 @@ const enforceReasonBudgetExceeded = "budget_exceeded"
 // (anchoredenforcer.CauseMessages).
 var enforceCauseMessages = anchoredenforcer.CauseMessages
 
-// anchoredEnforceDecisions counts every decision on an enforcing scope
-// (anchoredenforcer.Decisions, registered by that package).
-var anchoredEnforceDecisions = anchoredenforcer.Decisions
-
 // --- the organization's active document ---
 
 // activeDocumentSource is the seam's read of an organization's ACTIVE typed
@@ -220,8 +261,9 @@ func newAnchoredEnforcer(
 	vocabulary func() (*authoringcatalog.Snapshot, error),
 	identity *sharedidentity.SubjectAdmitter,
 	identityEpoch func() int64,
+	groups sharedidentity.GroupClosureResolver,
 ) (*anchoredEnforcer, error) {
-	e, err := anchoredenforcer.New(documents, vocabulary, identity, identityEpoch, anchoredenforcer.Options{
+	e, err := anchoredenforcer.New(documents, vocabulary, identity, identityEpoch, groups, anchoredenforcer.Options{
 		Overrides:       recordedAnchoredOverrides,
 		Delivers:        seamDelivers,
 		EditionBoundary: seamEditionBoundary,
@@ -285,6 +327,7 @@ func installAnchoredEnforcer(db *sql.DB, boot *sharedidentity.AdmissionBootstrap
 		memoizedDeploymentVocabulary(resolveDeploymentVocabulary),
 		boot.Admitter,
 		boot.Registry.Epoch,
+		groupClosureResolver(),
 	)
 	if err != nil {
 		return err
@@ -325,13 +368,22 @@ type anchoredCall struct {
 	// emptyContent says the content is empty, so a content detector's answer is
 	// determined without running it (see anchoredRequest).
 	emptyContent bool
-	// pep is the admitted handshake's profile, nil when none was admitted.
+	// pep is the profile this request is judged against, always from
+	// pepHandshakeResolution.requestProfile: the admitted handshake's, or nil
+	// for a caller that presented none, which is judged against the plane's
+	// registered profile.
 	pep *contract.PEPProfile
 	// facts are attributes the seam's own reader of the request states
 	// (anchoredenforcer.Call.Facts). No agent seam states any: each hands the
 	// engine its detector facts through the observation alone
 	// (TestNoAgentSeamStatesFactsOnItsCall).
 	facts contract.AttributeSet
+	// admittedFacts states the facts that need the ADMITTED principal
+	// (anchoredenforcer.Call.AdmittedFacts): the Engine B risk score, and
+	// nothing else. decideRequestPass is the one place it is set
+	// (TestOnlyTheRequestPassStatesAdmittedFacts), and the enforcer takes
+	// nothing from it outside signal.scorer.*.
+	admittedFacts func(context.Context, anchoredenforcer.AdmittedFactsInput) contract.AttributeSet
 }
 
 // decisionSubject is the credential a request presents to the identity plane
@@ -370,6 +422,12 @@ type anchoredVerdict struct {
 	// subjectType is the admitted principal's type (User, Client, Service),
 	// set whenever the identity plane admitted one.
 	subjectType string
+	// principal is the admitted root principal in the contract's wire form
+	// (anchoredenforcer.Verdict.Principal): the requester a hold names (#4370).
+	principal string
+	// identityDetail is the directory's account of why the subject's group
+	// closure is unknown (anchoredenforcer.Verdict.IdentityDetail).
+	identityDetail string
 }
 
 // requestSubject is the credential a request authenticated by this agent
@@ -410,7 +468,7 @@ func failClosed(scope legacycompile.EnforcementScope, orgID, cause string, err e
 // of shapes to the same fields.
 func (e *anchoredEnforcer) evaluate(ctx context.Context, call anchoredCall) anchoredVerdict {
 	v := e.Evaluate(ctx, sharedCall(call))
-	return anchoredVerdict{unavailable: v.Unavailable, act: v.Act, refusal: v.Refusal, decision: v.Decision, subjectType: v.SubjectType}
+	return anchoredVerdict{unavailable: v.Unavailable, act: v.Act, refusal: v.Refusal, decision: v.Decision, subjectType: v.SubjectType, principal: v.Principal, identityDetail: v.IdentityDetail}
 }
 
 // sharedCall is the shared enforcer's call for this package's: every field
@@ -420,7 +478,7 @@ func sharedCall(call anchoredCall) anchoredenforcer.Call {
 		Scope: call.scope, OrgID: call.orgID, RequestID: call.requestID,
 		Action: call.action, ActionErr: call.actionErr,
 		Query: call.query, Observation: call.observation, EmptyContent: call.emptyContent, PEP: call.pep,
-		Facts: call.facts,
+		Facts: call.facts, AdmittedFacts: call.admittedFacts,
 	}
 	if call.subject != nil {
 		shared.Subject = func(now time.Time) (anchoredenforcer.Subject, bool) {
@@ -457,7 +515,10 @@ type requestPassInput struct {
 	// observation is the pass's detector facts; nil when the shared engine
 	// evaluated nothing, and then every detector is ABSENT.
 	observation *sharedpolicy.Observation
-	// pep is the admitted handshake's profile, nil when none was admitted.
+	// pep is the profile this request is judged against, always from
+	// pepHandshakeResolution.requestProfile: the admitted handshake's, or nil
+	// for a caller that presented none, which is judged against the plane's
+	// registered profile.
 	pep *contract.PEPProfile
 	// validatorRedactions names the pre-seam checksum validators that require
 	// this request's content redacted: a critical identifier no shipped control
@@ -469,6 +530,10 @@ type requestPassInput struct {
 	// principal is the per-user token a validator accepted when the session was
 	// created, or its client credential (sessionSubject).
 	subject func(time.Time) (decisionSubject, bool)
+	// finCrime is the request's documented fincrime objects
+	// (finCrimeParametersFromContext): what the Engine B scorer is asked about
+	// (riskScoreFacts). Nil when the request declares none.
+	finCrime map[string]interface{}
 }
 
 // requestPassEnforcement is the seam's answer for one request, rendered on the
@@ -481,6 +546,14 @@ type requestPassEnforcement struct {
 	// subjectType is the admitted principal's type, empty when the request was
 	// refused before a subject was admitted.
 	subjectType string
+	// principal is the admitted root principal in the contract's wire form
+	// (anchoredenforcer.Verdict.Principal): the requester a hold names (#4370).
+	principal string
+	// validatorRedactions and pep are the pass's inputs an ALLOW is finished
+	// with (finishAnchoredAllow), kept so an approval's permit is finished
+	// exactly as a plain allow is.
+	validatorRedactions []string
+	pep                 *contract.PEPProfile
 	// unavailable is non-empty when the anchored engine could not produce a
 	// verdict; the handler answers 503 and decides nothing.
 	unavailable string
@@ -523,6 +596,11 @@ type requestPassEnforcement struct {
 	// what to mask off them, never off the rendering above.
 	decision *contract.Decision
 	act      *activation.Activation
+
+	// riskScore is what the pass stated for the Engine B risk score and why,
+	// for the audit record (#3330); zero - so omitted - where no control read
+	// the score.
+	riskScore riskScoreRecord
 }
 
 // enforceRequestPass is THE ONE PATH a single-phase request pass's verdict is
@@ -557,8 +635,17 @@ func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacyco
 	} else {
 		call.actionErr = fmt.Errorf("stage %q maps to no registered action", in.stage)
 	}
+	// THE ONE PLACE A SEAM STATES AN ADMITTED-PRINCIPAL FACT: every request
+	// pass asks, so no entry point on a scope the FinCrime pack binds on can
+	// leave the score UNSTATED (which its mandatory control would read as
+	// unknown and refuse on). Where no control reads the score, nothing is
+	// asked and nothing is stated.
+	var risk riskScoreRecord
+	call.admittedFacts = riskScoreFacts(currentRiskScorer(), in, riskScorePlane(string(scope.Plane)), &risk)
 	v := e.evaluate(ctx, call)
+	out.riskScore = risk
 	out.subjectType = v.subjectType
+	out.principal = v.principal
 	if v.act != nil {
 		out.actionName = v.act.ActionName(call.action)
 	}
@@ -575,22 +662,41 @@ func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacyco
 		return out
 	}
 	dec := v.decision
-	if len(in.validatorRedactions) > 0 && dec.State == contract.StateAllow {
-		attached, records, refused, refusal := attachValidatorRedactions(dec, v.act, in.pep, in.validatorRedactions)
+	// The pass's inputs an ALLOW is finished with are kept on the enforcement,
+	// so a permit released later - an approval spent for a challenge (#4370) -
+	// is finished by the SAME function as a plain allow (finishAnchoredAllow).
+	out.validatorRedactions, out.pep = in.validatorRedactions, in.pep
+	if dec.State == contract.StateAllow {
+		return finishAnchoredAllow(out, dec, v.act, v.identityDetail)
+	}
+	out.decision, out.act = dec, v.act
+	return mapAnchoredDecision(out, dec, v.act, v.identityDetail)
+}
+
+// finishAnchoredAllow is the one way an anchored ALLOW becomes the pass's
+// answer: the pre-seam checksum validators' redactions attached (and refused
+// unsupported_obligation where the enforcement point cannot discharge them),
+// then the decision mapped. decideRequestPass finishes a plain allow with it,
+// and the approval hold finishes the permit an approval released with it, so
+// the two cannot differ in what an allow carries (#4370: a spent approval
+// once dropped the validator redaction by mapping the permit on its own).
+func finishAnchoredAllow(out requestPassEnforcement, dec *contract.Decision, act *activation.Activation, identityDetail string) requestPassEnforcement {
+	if len(out.validatorRedactions) > 0 {
+		attached, records, refused, refusal := attachValidatorRedactions(dec, act, out.pep, out.validatorRedactions)
 		out.legacyValidators = records
 		if refusal != "" {
 			out.verdict = VerdictDeny
 			out.reasonCode = string(contract.ReasonUnsupportedObligation)
 			out.reasons = []string{refusal}
 			out.undischarged = []contract.Obligation{refused}
-			out.carryActivation(v.act, anchoredEvaluatedPolicies(dec.Determining))
+			out.carryActivation(act, anchoredEvaluatedPolicies(dec.Determining))
 			out.blockingPolicyID, out.blockingPolicyTier = refused.SourcePolicy, "system"
 			return out
 		}
 		dec = attached
 	}
-	out.decision, out.act = dec, v.act
-	return mapAnchoredDecision(out, dec, v.act)
+	out.decision, out.act = dec, act
+	return mapAnchoredDecision(out, dec, act, identityDetail)
 }
 
 // attachValidatorRedactions carries a pre-seam checksum validator's redaction
@@ -680,19 +786,27 @@ func decideActionForStage(stage string) (string, bool) {
 // mapAnchoredDecision renders an anchored decision onto the Decision API.
 //
 // A CHALLENGE IS A DENY WITH REASON approval_required, NAMING THE PLANE (PRD v11
-// §1.13). No plane rendered here holds a request for approval, so the engine's
-// challenge answers the reason that says an approval is what is missing, and
-// the plane it arrived on, so a caller can tell a missing approval from a
-// policy refusal. Answering needs_approval with no queue entry would be the
-// invisible dead end #3509 removed from the legacy path, strictly worse than a
-// refusal a caller can see.
+// §1.13). This rendering holds nothing itself: the engine's challenge answers
+// the reason that says an approval is what is missing, and the plane it arrived
+// on, so a caller can tell a missing approval from a policy refusal. On an
+// Enterprise deployment mcp:request and decide then HOLD it
+// (applyApprovalHold, #4370): one pending approval is queued, decide answers
+// needs_approval and mcp:request approval_pending, each with the
+// pending_approval its retry names. Every other plane, the community build and
+// a challenge the hold cannot queue keep this refusal. Answering needs_approval
+// with no queue entry would be the invisible dead end #3509 removed from the
+// legacy path, strictly worse than a refusal a caller can see.
 //
 // AN UNKNOWN CONSTRAINT IS NAMED (#4227, PRD v11 §1.14). A refusal because a
 // constraint could not be evaluated lists that constraint first in the evaluated
 // policies, the binding one first, and adds a reason per constraint naming
 // whose it is and the attribute it could not establish. The first reason stays
 // the bare code.
-func mapAnchoredDecision(out requestPassEnforcement, dec *contract.Decision, act *activation.Activation) requestPassEnforcement {
+//
+// AN ADMISSION REFUSAL IS NAMED TOO (#4249): a refusal before any policy ran
+// adds the engine's detail (which realm, action, argument or depth) after the
+// bare code.
+func mapAnchoredDecision(out requestPassEnforcement, dec *contract.Decision, act *activation.Activation, identityDetail string) requestPassEnforcement {
 	out.reasonCode = string(dec.Reason)
 	unknown := unknownConstraints(dec)
 	out.carryActivation(act, decidingPolicies(dec))
@@ -714,7 +828,12 @@ func mapAnchoredDecision(out requestPassEnforcement, dec *contract.Decision, act
 		out.reasons = []string{approvalRequiredReason(act.Scope)}
 	default:
 		out.verdict = VerdictDeny
-		out.reasons = append([]string{string(dec.Reason)}, unknownConstraintReasons(act, unknown)...)
+		out.reasons = append([]string{string(dec.Reason)}, unknownConstraintReasons(act, unknown, identityDetail)...)
+		// A refusal before any policy ran names what could not be admitted
+		// (#4249): "unknown_realm" alone does not say which realm.
+		if detail := admissionDetail(dec); detail != "" {
+			out.reasons = append(out.reasons, detail)
+		}
 		if dec.Reason == contract.ReasonUnsupportedObligation && dec.Trace != nil {
 			out.undischarged = dec.Trace.Undischarged
 		}
@@ -771,8 +890,12 @@ func blockingConstraint(d contract.Determining, unknown []contract.UnknownPolicy
 	return anchoredenforcer.BlockingConstraint(d, unknown)
 }
 
-func unknownConstraintReasons(act *activation.Activation, unknown []contract.UnknownPolicy) []string {
-	return anchoredenforcer.UnknownConstraintReasons(act, unknown)
+func unknownConstraintReasons(act *activation.Activation, unknown []contract.UnknownPolicy, identityDetail string) []string {
+	return anchoredenforcer.UnknownConstraintReasons(act, unknown, identityDetail)
+}
+
+func admissionDetail(dec *contract.Decision) string {
+	return anchoredenforcer.AdmissionDetail(dec)
 }
 
 func anchoredEvaluatedPolicies(d contract.Determining) []string {
@@ -1035,6 +1158,14 @@ func (d requestPassEnforcement) staticPolicyResult(scope legacycompile.Enforceme
 // The deny itself is unchanged: the caller still gets its reason and the
 // site's audit row still records it; only the breaker feed stops.
 func violationFeedsCircuitBreaker(reasonCode string) bool {
+	// The pending-approval outcomes (#4370) carry their rule in their one
+	// table (approvalHoldReasons): a call still waiting for a person, an
+	// approval a credential gave, or one that lapsed while nobody acted is not
+	// the caller's doing; retrying a rejected, spent, unknown or altered
+	// approval, or one the caller gave itself, is.
+	if r, ok := approvalHoldReasonFor(reasonCode); ok {
+		return r.feedsBreaker
+	}
 	switch contract.ReasonCode(reasonCode) {
 	case contract.ReasonUnsupportedObligation, contract.ReasonUnknownConstraint, contract.ReasonUnknownRequirement,
 		contract.ReasonApprovalRequired, contract.ReasonObligationConflict, contract.ReasonEvaluationError:
@@ -1053,8 +1184,9 @@ func decisionPostureHealth() map[string]interface{} {
 	if anchoredEnforcerInstance.Load() == nil {
 		return nil
 	}
-	names := make([]string, 0, len(enforcingSeams))
-	for _, s := range enforcingSeams {
+	serving := servingSeams()
+	names := make([]string, 0, len(serving))
+	for _, s := range serving {
 		names = append(names, s.scope.String())
 	}
 	sort.Strings(names)

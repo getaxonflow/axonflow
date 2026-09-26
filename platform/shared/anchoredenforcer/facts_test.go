@@ -20,6 +20,7 @@ import (
 	"axonflow/platform/decision/registry"
 	"axonflow/platform/shared/activationinputs"
 	"axonflow/platform/shared/authoringvocabulary"
+	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -83,7 +84,7 @@ func factsRequest(t *testing.T, act *activation.Activation, call Call) (*contrac
 	action, entry := factsEntry(t, act)
 	principal := contract.MustParseID(contract.KindPrincipal, "User::axonflow-trusted-header:alice")
 	call.OrgID, call.RequestID, call.Query = "org-a", "req-1", "hello there"
-	return anchoredRequest(act, entry, action, principal, call, 1, 1, factsNow)
+	return anchoredRequest(act, entry, action, principal, call, 1, 1, nil, factsNow)
 }
 
 func mustFactsRequest(t *testing.T, act *activation.Activation, call Call) *contract.Request {
@@ -260,5 +261,96 @@ func TestAPrincipalFactGoesOntoTheRootActor(t *testing.T) {
 	}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("the merged request is one the contract refuses: %v", err)
+	}
+}
+
+// principal.groups (#4249): the enforcer states the admitted subject's group
+// closure on the root actor, as the closure's tri-state, with directory
+// provenance and the identity epoch; nil states nothing.
+func TestTheGroupClosureIsStatedOnTheRootActorAsItsTriState(t *testing.T) {
+	act := factsActivation(t)
+	action, entry := factsEntry(t, act)
+	principal := contract.MustParseID(contract.KindPrincipal, "User::axonflow-minted:alice@corp.example")
+	const identityEpoch = 42
+	build := func(t *testing.T, closure *sharedidentity.ClosureAttribute) contract.AttributeSet {
+		t.Helper()
+		req, err := anchoredRequest(act, entry, action, principal, Call{OrgID: "org-a", RequestID: "req-1", Query: "q"}, 1, identityEpoch, closure, factsNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := req.Validate(); err != nil {
+			t.Fatalf("the request is one the contract refuses: %v", err)
+		}
+		if _, shared := req.Attributes[pdp.PrincipalGroupsPath]; shared {
+			t.Fatal("principal.groups was put in the shared set")
+		}
+		return req.Context.ActorChain[0].Attributes
+	}
+
+	t.Run("nil states nothing, so the engine reads it as not supplied", func(t *testing.T) {
+		actor := build(t, nil)
+		if _, stated := actor[pdp.PrincipalGroupsPath]; stated {
+			t.Fatal("principal.groups was stated with no closure")
+		}
+		if got := actor.Lookup(pdp.PrincipalGroupsPath); got.State != contract.StateUnknown || got.Reason != contract.ReasonNotSupplied {
+			t.Fatalf("lookup = %s %s; want unknown %s", got.State, got.Reason, contract.ReasonNotSupplied)
+		}
+	})
+	for _, c := range []struct {
+		name   string
+		groups []string
+		want   []any
+	}{
+		{"known empty", nil, []any{}},
+		{"known one", []string{"Group::axonflow-minted:g-1"}, []any{"Group::axonflow-minted:g-1"}},
+		{"known several", []string{"Group::axonflow-minted:g-1", "Group::axonflow-minted:g-2"}, []any{"Group::axonflow-minted:g-1", "Group::axonflow-minted:g-2"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := build(t, &sharedidentity.ClosureAttribute{Known: true, Groups: c.groups})[pdp.PrincipalGroupsPath]
+			if got.State != contract.StateKnown || !reflect.DeepEqual(got.Value, c.want) {
+				t.Fatalf("principal.groups = %s %#v; want known %#v", got.State, got.Value, c.want)
+			}
+			if got.Source != contract.ProvDirectory || got.SourceVersion != identityEpoch || !got.ObservedAt.Equal(factsNow) || got.Reason != "" {
+				t.Fatalf("principal.groups provenance %s version %d observed %s reason %q; want directory at the identity epoch %d, now, no reason",
+					got.Source, got.SourceVersion, got.ObservedAt, got.Reason, identityEpoch)
+			}
+		})
+	}
+	for _, c := range []struct {
+		closure sharedidentity.AdmissionReason
+		want    contract.UnknownReason
+	}{
+		{sharedidentity.ReasonClosureUnavailable, contract.ReasonClosureUnavailable},
+		{sharedidentity.ReasonClosureTruncated, contract.ReasonClosureTruncated},
+		{sharedidentity.ReasonClaimMappingFailed, contract.ReasonResolutionFailed},
+		{sharedidentity.ReasonCredentialRevoked, contract.ReasonResolutionFailed},
+	} {
+		t.Run("unknown "+string(c.closure), func(t *testing.T) {
+			got := build(t, &sharedidentity.ClosureAttribute{UnknownReason: c.closure})[pdp.PrincipalGroupsPath]
+			if got.State != contract.StateUnknown || got.Reason != c.want || got.Value != nil {
+				t.Fatalf("principal.groups = %s %s %#v; want unknown %s with no value", got.State, got.Reason, got.Value, c.want)
+			}
+			if got.Source != contract.ProvDirectory || got.SourceVersion != identityEpoch {
+				t.Fatalf("principal.groups provenance %s version %d; want directory at %d", got.Source, got.SourceVersion, identityEpoch)
+			}
+		})
+	}
+}
+
+// The enforcer is the one writer of principal.groups: a seam's fact at that
+// path is refused naming it, and the allowlisted principal.region still lands.
+func TestASeamStatedGroupsFactIsRefused(t *testing.T) {
+	act := factsActivation(t)
+	_, err := factsRequest(t, act, Call{Facts: contract.AttributeSet{
+		pdp.PrincipalGroupsPath: contract.Known([]any{"Group::axonflow-minted:g-1"}, contract.ProvDirectory, 1, factsNow),
+	}})
+	if err == nil || !strings.Contains(err.Error(), pdp.PrincipalGroupsPath) || !strings.Contains(err.Error(), "a path the enforcer builds itself") {
+		t.Fatalf("a seam-stated principal.groups = %v; want the refusal naming the path as one the enforcer builds", err)
+	}
+	req := mustFactsRequest(t, act, Call{Facts: contract.AttributeSet{
+		"principal.region": contract.Absent(contract.ProvAuthentication, 1, factsNow),
+	}})
+	if _, onActor := req.Context.ActorChain[0].Attributes["principal.region"]; !onActor {
+		t.Error("CONTROL: the allowlisted principal.region did not land on the actor")
 	}
 }

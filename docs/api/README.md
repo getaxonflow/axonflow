@@ -297,7 +297,7 @@ In v11 the legacy policy routes are a **read-only, deprecated export surface**
 (PRD §1.11): policy is read, authored and activated through
 `/api/v1/typed-policies`, writes on the legacy routes answer
 `409 LEGACY_POLICY_WRITE_FROZEN`, and the reads stay so an organization can see
-and export its legacy rows after upgrading. v11.1 removes them once the SDKs
+and export its legacy rows after upgrading. v12.0.0 removes them once the SDKs
 have moved to the typed route. The surface is every spelling of every legacy
 family:
 
@@ -318,7 +318,7 @@ authentication failure and a `409`:
 
 ```
 Link: </api/v1/typed-policies>; rel="successor-version"
-X-AxonFlow-Removed-In: v11.1
+X-AxonFlow-Removed-In: v12.0
 Deprecation: @<unix time of the v11.0.0 tag>
 ```
 
@@ -328,7 +328,7 @@ Deprecation: @<unix time of the v11.0.0 tag>
 - `Link` (RFC 8288) names the typed authoring route for every family.
 - `X-AxonFlow-Removed-In` names the release that removes the surface. No
   registered header carries a release, and RFC 8594's `Sunset` is a date, so
-  there is no `Sunset` until v11.1 has one.
+  there is no `Sunset` until v12.0.0 has one.
 
 All three headers are CORS-exposed on the agent, the orchestrator and the
 portal, so a browser client can read them. Two responses do **not** carry the

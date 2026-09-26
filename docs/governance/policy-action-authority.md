@@ -1,5 +1,5 @@
 # Policy Actions and Detection-Posture Overrides
-> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v12.0.0.
 
 
 **Status:** documents shipped behavior as of v11 (#3961). This page answers one operator question precisely: *when a policy row stores an `action`, what actually decides the runtime outcome on each enforcement plane?* Before v11 the answer was a deployment-wide environment "posture lever"; that lever is gone (see [Removed in v11](#removed-in-v11-environment-variables-and-profiles)).

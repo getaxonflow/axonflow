@@ -33,7 +33,8 @@ import (
 // false-positive bug this engine had). See the shared type's doc comment for
 // the full convergence record. Slice 2 removed the last knob, the per-caller
 // unknown-operator log hook — this engine's unevaluable conditions (unknown
-// operator, non-numeric operand, non-string regex pattern, and a conditions
+// operator, non-numeric operand, non-string regex pattern, a string pattern
+// that does not compile, and a conditions
 // JSON that fails to unmarshal in cachedPolicyToDynamicPolicy below) now
 // report through dbUnevaluableRecorder (condition_unevaluable_metrics.go),
 // passed into Match per call instead of configured on the struct. A
@@ -95,8 +96,9 @@ type DatabaseDynamicPolicyEngine struct {
 	// deployment). Retained (rather than discarded after the constructor's
 	// initial attempt) so a later refresh tick can lazily open the pools
 	// itself when db is still nil — see connectDB and refreshPolicies.
-	// That lazy retry, running on the SAME 30s cadence as every other
-	// refresh, is what makes a process that booted with no reachable
+	// That lazy retry, running on the refresh loop's own schedule (every 2s
+	// for the catch-up's cap while no load has succeeded, then every 30s;
+	// #4249 row 5714565017), is what makes a process that booted with no reachable
 	// database able to reach the database-loaded state without a restart
 	// (#3319).
 	dbURL        string
@@ -104,9 +106,18 @@ type DatabaseDynamicPolicyEngine struct {
 	mu           sync.RWMutex
 	lastRefresh  time.Time
 	cacheTimeout time.Duration
-	refreshing   bool
-	refreshMu    sync.Mutex
 	stopCh       chan struct{}
+	// catchUpInterval and catchUpMaxTicks override policyCacheCatchUpInterval
+	// and policyCacheCatchUpMaxTicks when positive (#4249). Zero, which every
+	// construction path leaves them at (including this package's struct
+	// literals), means the constants.
+	catchUpInterval time.Duration
+	catchUpMaxTicks int
+	// capMarkReader reads the schema_migrations mark for the one re-read at
+	// the cap (scheduleNextRefresh, #4249 row 5683228870). nil, which every
+	// construction path leaves it at, reads it through crossOrgDB like the
+	// refresh does; a test sets it to put the read on a virtual clock.
+	capMarkReader func(context.Context) (schemaMigrationMark, error)
 	// connectMu serializes connectDB attempts. Without it, two concurrent
 	// refresh triggers (backgroundRefresh's tick and a manually invoked
 	// RefreshPolicies()) racing while e.db is still nil could each open a
@@ -124,6 +135,12 @@ type DatabaseDynamicPolicyEngine struct {
 	// (refreshPolicies) and must never be observed out of sync with each
 	// other.
 	policySetSource string
+
+	// catchUp (#4249) is what the successful loads left for the refresh
+	// schedule. Guarded by mu, and written on refreshPolicies' success path
+	// together with policies, so a schedule is never chosen from a trigger
+	// that disagrees with the rows the cache holds.
+	catchUp policyCacheCatchUp
 }
 
 // policySetSource values (#3319). "Fallback" describes the policy SET, not
@@ -146,6 +163,204 @@ const (
 	policySetSourceDatabase = "database"
 )
 
+// THE POLICY CACHE CATCH-UP (#4249: the v11.0.0 Known Issue "the orchestrator's
+// policy cache loads before the migrations").
+//
+// A stack that boots agent and orchestrator together can take its first load
+// while the agent is still migrating. Between core/031 and core/153 the shipped
+// dynamic rows carry no org_id and apply to nobody (the org key in
+// refreshPolicies); between core/153 and core/173 the five sys_media_* rows do
+// not exist yet. Either way the fact producer states nothing for those
+// controls, every constraint that reads them answers unknown_constraint, and
+// governed requests are refused until the next refresh. The catch-up shortens
+// that wait after a successful load that finds either trigger:
+//
+//   - the load resolved at least one row to org_id "" (the first window), or
+//   - schema_migrations moved: its mark differs from the previous successful
+//     load's, or this is the process's first read of it (the second window,
+//     which holds no unkeyed row). A first load has no previous mark to
+//     compare, and on a co-booted stack it can land inside the gap between two
+//     migrations of a burst.
+//
+// The migration trigger is STICKY. Once a load finds it, it stays armed until
+// the loop has spent policyCacheCatchUpMaxTicks consecutive short waits without
+// the mark advancing, and each advance starts that count again: a trigger that
+// disarmed between two migrations of one burst would leave exactly the window
+// the Known Issue describes. So a migration recorded within 30 s of the
+// previous advance is seen within 2 s; longer gaps fall back to the 30 s
+// cadence. Seen within 2 s means by the next short refresh, which starts 2 s
+// after the previous one finished. These bounds assume each load succeeds: a
+// failed load records nothing and still spends a short wait. A load credits an
+// advance only when its mark read succeeds and shows a mark different from the
+// last one read, or is the process's first; a mark read that runs before the
+// agent records a migration cannot show that migration (the agent records each
+// migration after executing it, and the refresh reads the mark before the
+// policies).
+//
+// A FAILED LOAD WHILE THE ENGINE SERVES THE BUILT-IN DEFAULTS ARMS THE SHORT
+// RETRY TOO (#4249 row 5714565017). The defaults carry none of the shipped
+// sys_* rows, so until a load succeeds every constraint that reads them answers
+// unknown_constraint; with a database configured (dbURL set) the next attempt
+// comes after 2 s, not 30 s, until a load succeeds or the cap is spent. A load
+// that succeeds is the process's first mark read, which arms the catch-up
+// above. The swap stays success-only: nothing here serves a cache no load
+// filled.
+//
+// AT THE CAP THE MARK IS READ ONCE MORE before the migration trigger clears
+// (#4249 row 5683228870). A refresh that loaded a migration's rows but credited
+// no advance (its mark read failed, or ran before the agent recorded the
+// migration) would otherwise let the cap end the burst when it was the last
+// short refresh; the re-read credits that advance and the count restarts. A
+// re-read that also fails leaves the cap to clear the trigger as before. Two
+// residuals are left. A burst that begins while the catch-up is not armed, such
+// as a rolling upgrade under a running orchestrator, waits for the next 30 s
+// refresh that credits its advance, which then arms the rest of the burst
+// (#4249 row 5681211056). And a refresh on the 30 s cadence that loads a
+// migration's rows but credits no advance, for the same two reasons, does not
+// arm, so the next migration waits one more 30 s refresh (#4249 row
+// 5683228870, its cadence form, closed by the probe on row 5681211056).
+//
+// It is BOUNDED: at the cap the migration trigger clears and the loop returns
+// to the ordinary cacheTimeout, as "steady", or as "exhausted" (logged once)
+// while the last load still held an unkeyed row or no load has yet succeeded on
+// an engine with a database configured. Rows that stay unkeyed (a pre-165 row
+// mid-upgrade, see refreshPolicies) and a database whose load keeps failing
+// cost that many extra refreshes once, never a fast loop for the life of the
+// process, and an advance of the mark re-arms the catch-up.
+const (
+	// policyCacheCatchUpInterval is the short wait while a trigger holds. The
+	// loop never waits longer than cacheTimeout, so it cannot make a refresh
+	// less frequent.
+	policyCacheCatchUpInterval = 2 * time.Second
+	// policyCacheCatchUpMaxTicks bounds consecutive short waits without the
+	// schema_migrations mark advancing: 15 x 2s is one ordinary 30s interval.
+	// It is also how long the migration trigger stays armed after an advance.
+	policyCacheCatchUpMaxTicks = 15
+)
+
+// refreshMode* are the schedules scheduleNextRefresh puts the refresh on, and
+// the label values of axonflow_policy_cache_refresh_mode.
+const (
+	refreshModeSteady    = "steady"
+	refreshModeCatchUp   = "catch_up"
+	refreshModeExhausted = "exhausted"
+)
+
+// schemaMigrationMarkQuery reads how far the agent's migration runner has got,
+// in one round trip. schema_migrations is the agent's table (migrations/core/001,
+// platform/agent/migration_helpers.go); this is the orchestrator's only read of
+// it. The table carries no RLS, and core/098 grants SELECT on it to both the
+// app role and the platform-admin pool, so it reads the same through either of
+// crossOrgDB's pools. version is VARCHAR, so MAX(version) is a string max and
+// is not used.
+const schemaMigrationMarkQuery = `SELECT COUNT(*) FILTER (WHERE success), MAX(applied_at) FILTER (WHERE success) FROM schema_migrations`
+
+// schemaMigrationMark is the runner's progress: its successful rows and the
+// latest applied_at among them. A re-run of an applied file (ON CONFLICT ...
+// DO UPDATE applied_at) moves lastApplied without moving applied.
+type schemaMigrationMark struct {
+	applied     int64
+	lastApplied time.Time
+}
+
+func (m schemaMigrationMark) equal(o schemaMigrationMark) bool {
+	return m.applied == o.applied && m.lastApplied.Equal(o.lastApplied)
+}
+
+// readSchemaMigrationMark returns the mark, with a zero lastApplied when there
+// is no successful row.
+func readSchemaMigrationMark(ctx context.Context, db *sql.DB) (schemaMigrationMark, error) {
+	if db == nil {
+		return schemaMigrationMark{}, errors.New("no database handle")
+	}
+	var mark schemaMigrationMark
+	var last sql.NullTime
+	if err := db.QueryRowContext(ctx, schemaMigrationMarkQuery).Scan(&mark.applied, &last); err != nil {
+		return schemaMigrationMark{}, err
+	}
+	if last.Valid {
+		mark.lastApplied = last.Time
+	}
+	return mark, nil
+}
+
+// policyCacheCatchUp is what the successful loads left for the refresh
+// schedule. Guarded by DatabaseDynamicPolicyEngine.mu.
+type policyCacheCatchUp struct {
+	// unkeyedRows is how many rows the last successful load resolved to
+	// org_id "".
+	unkeyedRows int
+	// mark is the latest mark a successful load read; markSeen says it holds
+	// one.
+	mark     schemaMigrationMark
+	markSeen bool
+	// moving is the migration trigger. A successful load that read a mark
+	// differing from the previous one, or the process's first mark, sets it;
+	// it stays set until scheduleNextRefresh spends the cap without an
+	// advance. A load that cannot read the mark leaves it as it was.
+	moving bool
+	// advanced: some load read a different mark, or the process's first mark,
+	// since the loop last scheduled, or a load promoted the engine off the
+	// built-in defaults. It resets the loop's count of short waits, so a
+	// migration landing after the cap was spent re-arms the catch-up, and the
+	// cap a failed-load burst spent is not charged to whatever trigger the
+	// first successful load leaves (#4249 row 5714565017).
+	advanced bool
+	// unreadable: the last attempt to read the mark failed. Kept only so the
+	// change is logged once each way.
+	unreadable bool
+	// mode is the schedule the loop last chose ("" before it has chosen).
+	mode string
+}
+
+func (c policyCacheCatchUp) armed() bool { return c.unkeyedRows > 0 || c.moving }
+
+// markSummary names the mark for a log line.
+func (c policyCacheCatchUp) markSummary() string {
+	if !c.markSeen {
+		return "schema_migrations not read"
+	}
+	if c.mark.lastApplied.IsZero() {
+		return fmt.Sprintf("schema_migrations %d applied", c.mark.applied)
+	}
+	return fmt.Sprintf("schema_migrations %d applied, latest at %s", c.mark.applied, c.mark.lastApplied.UTC().Format(time.RFC3339Nano))
+}
+
+// observe records one successful load's triggers. It returns the log line a
+// change in the mark's readability earns, or "". A transient read failure must
+// never move a safety posture to the less-safe side, so an unreadable mark
+// leaves the trigger exactly as it was: it cannot arm (an error sets neither
+// advanced nor markSeen) and the cap still bounds an armed one, so nothing is
+// unbounded either way. It cannot credit an advance either (#4249 row
+// 5683228870). Clearing it instead left a migration recorded 3s after
+// the arming load, behind a failed read, waiting 29s (#4249). The last mark
+// read is kept across it, so reading again compares against a real value. The
+// first successful read arms the trigger: a process has no previous mark to
+// compare, and its first load can land between two migrations of a burst.
+func (c *policyCacheCatchUp) observe(unkeyedRows int, mark schemaMigrationMark, markErr error) string {
+	c.unkeyedRows = unkeyedRows
+	if markErr != nil {
+		if c.unreadable {
+			return ""
+		}
+		c.unreadable = true
+		return fmt.Sprintf("[dynamic-policy-engine] schema_migrations could not be read (%v): the cache catch-up's migration trigger cannot arm or re-arm until it reads again (one already armed still ends at its cap); the policy refresh itself is unaffected (#4249)", markErr)
+	}
+	// The first successful read counts as an advance. Sticky: a load that finds
+	// the mark unchanged leaves the trigger as it was; only the cap
+	// (scheduleNextRefresh) clears it.
+	if !c.markSeen || !c.mark.equal(mark) {
+		c.moving = true
+		c.advanced = true
+	}
+	c.mark, c.markSeen = mark, true
+	if c.unreadable {
+		c.unreadable = false
+		return "[dynamic-policy-engine] schema_migrations reads again: the cache catch-up's migration trigger can re-arm (#4249)"
+	}
+	return ""
+}
+
 // NewDatabaseDynamicPolicyEngine always constructs and returns a usable
 // engine (#3319) — it does not require a reachable database, or even a
 // configured one, to exist. It begins serving the built-in default fallback
@@ -155,7 +370,8 @@ const (
 // attempt succeeds or fails, construction itself does not fail because of
 // it: a boot-time database blip (or booting entirely without a database, a
 // legitimate community-mode deployment) is not a permanent condition —
-// backgroundRefresh's ordinary 30s tick keeps retrying, and the engine
+// backgroundRefresh keeps retrying (with a database configured, every 2s for
+// the catch-up's cap and then every 30s, #4249 row 5714565017), and the engine
 // reaches PolicySetSource() == "database" on its own the moment a load
 // finally succeeds, without reconstruction.
 //
@@ -204,8 +420,9 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 // pre-#3319 constructor's blocking budget) and by refreshPolicies' lazy
 // reconnect on a later tick when e.db is still nil (maxRetries=1, so a
 // still-unreachable database costs this tick one ~5s ping instead of a
-// multi-attempt stall — the NEXT tick, 30s later, is the next retry, and
-// that ticking IS the retry loop; see the dbURL field comment).
+// multi-attempt stall — the NEXT tick, 2s later while the catch-up's cap lasts
+// and 30s after that (#4249 row 5714565017), is the next retry, and that
+// ticking IS the retry loop; see the dbURL field comment).
 func (e *DatabaseDynamicPolicyEngine) connectDB(maxRetries int) error {
 	e.connectMu.Lock()
 	defer e.connectMu.Unlock()
@@ -667,8 +884,9 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		// unreachable, or an earlier tick's lazy reconnect failed. Try
 		// once more now with a single attempt (see connectDB's doc for why
 		// maxRetries=1 here specifically): this tick's job is to notice
-		// recovery, not to block waiting for it — the NEXT tick, 30s from
-		// now, is the next retry.
+		// recovery, not to block waiting for it — the NEXT tick is the next
+		// retry (2s from now while the catch-up's cap lasts, then 30s;
+		// scheduleNextRefresh, #4249 row 5714565017).
 		if err := e.connectDB(1); err != nil {
 			recordPolicyRefreshFailure(reasonDatabaseUnreachable)
 			return fmt.Errorf("database unreachable: %w", err)
@@ -688,6 +906,12 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	// this call site owns pool selection (e.crossOrgDB()) and the
 	// missing-column retry decision, not the query text.
 	ctx := context.Background()
+	// THE MIGRATION MARK IS READ BEFORE THE POLICIES (#4249). A migration that
+	// commits between the two reads then shows as an advance on the next
+	// load, which arms the catch-up; read after, it would be recorded beside
+	// rows that predate it and the next load would see nothing move. Its
+	// failure never fails this refresh (policyCacheCatchUp.observe).
+	mark, markErr := readSchemaMigrationMark(ctx, e.crossOrgDB())
 	rows, err := sharedpolicy.RefreshDynamicPolicies(ctx, e.crossOrgDB(), true)
 	if err != nil {
 		var riErr *sharedpolicy.RowIterationError
@@ -716,6 +940,7 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	}
 
 	newPolicies := make(map[string]interface{})
+	unkeyedRows := 0
 
 	for _, row := range rows {
 		// Handle NULL tenant_id
@@ -736,6 +961,11 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		orgIDStr := ""
 		if row.OrgID.Valid {
 			orgIDStr = strings.TrimSpace(row.OrgID.String)
+		}
+		if orgIDStr == "" {
+			// The catch-up's first trigger (#4249): a row that applies to
+			// nobody until a migration keys it.
+			unkeyedRows++
 		}
 
 		// ADR-060 (#2989 P3b): "" (not present, or SQL NULL, or simply not
@@ -849,7 +1079,23 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	e.lastRefresh = time.Now()
 	promoted := e.policySetSource != policySetSourceDatabase
 	e.policySetSource = policySetSourceDatabase
+	markLog := e.catchUp.observe(unkeyedRows, mark, markErr)
+	if promoted {
+		// THE FALLBACK BURST ENDS HERE, SO ITS SPENT CAP IS NOT CHARGED TO THE
+		// NEXT TRIGGER (#4249 row 5714565017). While the engine served the
+		// defaults with a database configured, the loop spent short waits on
+		// that trigger and, at the cap, kept the count. This load ends it. Its
+		// own triggers are a different armed period and get the whole cap: an
+		// unkeyed row here, with a mark read that failed so observe could credit
+		// no advance, would otherwise be capped the moment it arrived. A
+		// successful mark read credits the advance itself (the first read
+		// always does), so this only matters when that read failed.
+		e.catchUp.advanced = true
+	}
 	e.mu.Unlock()
+	if markLog != "" {
+		log.Println(markLog)
+	}
 
 	if promoted {
 		log.Println("[dynamic-policy-engine] first successful load — policy-set source promoted defaults -> database (#3319)")
@@ -883,33 +1129,210 @@ func (e *DatabaseDynamicPolicyEngine) RefreshPolicies() error {
 	return e.refreshPolicies()
 }
 
+// isClosedDatabase reports whether err says the *sql.DB is closed. database/sql
+// exports no sentinel for it: the message is the literal errDBClosed
+// ("sql: database is closed"), so it is recognised by that literal at the end
+// of the chain, wrapped or not (pinned against the toolchain by
+// TestIsClosedDatabase). A closed handle is terminal for a refresh loop -
+// no retry can ever succeed on it (#3798).
+func isClosedDatabase(err error) bool {
+	return err != nil && strings.HasSuffix(err.Error(), "sql: database is closed")
+}
+
 func (e *DatabaseDynamicPolicyEngine) backgroundRefresh() {
-	ticker := time.NewTicker(e.cacheTimeout)
-	defer ticker.Stop()
+	// ONE REFRESH AT A TIME, AND THE NEXT WAIT IS CHOSEN WHEN IT HAS FINISHED
+	// (#4249). scheduleNextRefresh reads what that load left, so the choice
+	// between cacheTimeout and the catch-up interval is made from the rows the
+	// cache now holds, never from a load one tick older. The loop also sees
+	// each refresh's error itself, so a closed handle ends it on the refresh
+	// that found it (#3798).
+	fastTicks := 0
+	timer := time.NewTimer(e.scheduleNextRefresh(&fastTicks))
+	defer timer.Stop()
+	// Buffered, so a refresh still running when stopCh closes finishes without
+	// a reader instead of leaking its goroutine.
+	done := make(chan error, 1)
 
 	for {
 		select {
 		case <-e.stopCh:
 			return
-		case <-ticker.C:
-			// Non-blocking refresh
-			e.refreshMu.Lock()
-			if !e.refreshing {
-				e.refreshing = true
-				e.refreshMu.Unlock()
-
-				go func() {
-					if err := e.refreshPolicies(); err != nil {
-						log.Printf("Background policy refresh failed: %v", err)
-					}
-					e.refreshMu.Lock()
-					e.refreshing = false
-					e.refreshMu.Unlock()
-				}()
-			} else {
-				e.refreshMu.Unlock()
+		case <-timer.C:
+			go func() { done <- e.refreshPolicies() }()
+		case err := <-done:
+			if err != nil {
+				if isClosedDatabase(err) {
+					// Nothing this loop can do will ever succeed again.
+					log.Printf("Background policy refresh stopped: %v (the handle is closed; no retry can succeed on it - #3798)", err)
+					// No refresh runs from here, so no catch-up does either:
+					// the gauge, and every reportMetricsTick after it, says
+					// steady rather than the schedule the loop last chose.
+					e.mu.Lock()
+					e.catchUp.mode = refreshModeSteady
+					setPolicyCacheRefreshModeMetric(refreshModeSteady)
+					e.mu.Unlock()
+					return
+				}
+				log.Printf("Background policy refresh failed: %v", err)
 			}
+			timer.Reset(e.scheduleNextRefresh(&fastTicks))
 		}
+	}
+}
+
+// scheduleNextRefresh returns the wait before backgroundRefresh's next
+// refresh, chosen from the catch-up state the successful loads left, and
+// publishes the schedule that wait puts the cache on. fastTicks is the loop's
+// count of consecutive short waits:
+//
+//   - no trigger holds and the engine is not serving the built-in defaults
+//     with a database configured: cacheTimeout, "steady", and the count resets;
+//   - a trigger holds, or the engine serves the defaults with a database
+//     configured (no load has succeeded, #4249 row 5714565017), and the cap is
+//     not spent: the catch-up interval (never longer than cacheTimeout),
+//     "catch_up";
+//   - the cap is spent: the mark is read once more (reReadMarkAtCap), and an
+//     advance it credits restarts the count; otherwise the migration trigger
+//     clears and the wait is cacheTimeout, "exhausted" while the last load
+//     still held an unkeyed row or the engine still serves the defaults with a
+//     database configured, and otherwise "steady", with the count reset.
+//
+// A load that advanced the schema_migrations mark since the previous call
+// resets the count first, so a migration inside a burst keeps the catch-up
+// armed and one that lands after the cap was spent re-arms it. The schedule is
+// logged once per change, not per call, and "exhausted" names the unkeyed row
+// count and the mark. The gauge is published under e.mu, the lock the mode
+// changes under, so reportMetricsTick cannot republish a mode that has since
+// changed.
+func (e *DatabaseDynamicPolicyEngine) scheduleNextRefresh(fastTicks *int) time.Duration {
+	interval := policyCacheCatchUpInterval
+	if e.catchUpInterval > 0 {
+		interval = e.catchUpInterval
+	}
+	if interval > e.cacheTimeout {
+		interval = e.cacheTimeout
+	}
+	maxTicks := policyCacheCatchUpMaxTicks
+	if e.catchUpMaxTicks > 0 {
+		maxTicks = e.catchUpMaxTicks
+	}
+	e.reReadMarkAtCap(*fastTicks, maxTicks)
+
+	e.mu.Lock()
+	c := &e.catchUp
+	if c.advanced {
+		*fastTicks = 0
+		c.advanced = false
+	}
+	fallback := e.servingDefaultsWithDatabase()
+	prev := c.mode
+	delay := e.cacheTimeout
+	capped := false
+	switch {
+	case !c.armed() && !fallback:
+		*fastTicks = 0
+		c.mode = refreshModeSteady
+	case *fastTicks < maxTicks:
+		*fastTicks++
+		c.mode, delay = refreshModeCatchUp, interval
+	default:
+		// The cap is spent without an advance: the migration trigger is over.
+		capped = true
+		c.moving = false
+		if c.unkeyedRows > 0 || fallback {
+			c.mode = refreshModeExhausted
+		} else {
+			*fastTicks = 0
+			c.mode = refreshModeSteady
+		}
+	}
+	state := *c
+	setPolicyCacheRefreshModeMetric(state.mode)
+	e.mu.Unlock()
+
+	if state.mode == prev || (prev == "" && state.mode == refreshModeSteady) {
+		return delay
+	}
+	switch state.mode {
+	case refreshModeCatchUp:
+		log.Printf("[dynamic-policy-engine] policy cache catch-up: refreshing every %v while a trigger holds (unkeyed rows=%d, schema_migrations moving=%t, %s, serving the built-in defaults with a database configured=%t), at most %d consecutive refreshes without schema_migrations advancing (#4249)",
+			interval, state.unkeyedRows, state.moving, state.markSummary(), fallback, maxTicks)
+	case refreshModeExhausted:
+		if fallback && state.unkeyedRows == 0 {
+			log.Printf("[dynamic-policy-engine] policy cache catch-up EXHAUSTED after %d consecutive refreshes with no successful policy load: still serving the built-in default policies with a database configured (%s); back to every %v until a load succeeds (#4249 row 5714565017)",
+				maxTicks, state.markSummary(), e.cacheTimeout)
+			break
+		}
+		log.Printf("[dynamic-policy-engine] policy cache catch-up EXHAUSTED after %d consecutive refreshes with an unkeyed row still loaded (unkeyed rows=%d, %s): back to every %v until the row is keyed or schema_migrations advances (#4249)",
+			maxTicks, state.unkeyedRows, state.markSummary(), e.cacheTimeout)
+	default:
+		if capped {
+			log.Printf("[dynamic-policy-engine] policy cache catch-up over: no unkeyed row, and schema_migrations has not advanced in %d consecutive refreshes (%s); back to every %v (#4249)",
+				maxTicks, state.markSummary(), e.cacheTimeout)
+		} else {
+			log.Printf("[dynamic-policy-engine] policy cache catch-up over: no unkeyed row and the migration trigger is off (%s); back to every %v (#4249)",
+				state.markSummary(), e.cacheTimeout)
+		}
+	}
+	return delay
+}
+
+// servingDefaultsWithDatabase reports that the engine still serves the built-in
+// default policies although a database is configured: no load has succeeded
+// (or a later one demoted it). The defaults carry none of the shipped sys_*
+// rows, so every constraint that reads them answers unknown_constraint until a
+// load succeeds, and scheduleNextRefresh retries on the catch-up interval
+// (#4249 row 5714565017). The caller holds e.mu.
+func (e *DatabaseDynamicPolicyEngine) servingDefaultsWithDatabase() bool {
+	return e.policySetSource == policySetSourceDefaults && e.dbURL != ""
+}
+
+// reReadMarkAtCap reads the schema_migrations mark once more when the loop is
+// about to leave the catch-up at its cap, and credits an advance if the mark
+// moved since the last one a load credited (#4249 row 5683228870). A refresh
+// that loaded a migration's rows without crediting its advance (its mark read
+// failed, or ran before the agent recorded the migration) would otherwise let
+// the cap end the burst. The advance goes through the same field a load sets,
+// so scheduleNextRefresh restarts the count exactly as it does for a load.
+//
+// It runs only on the call that spends the cap from the catch_up schedule, so an
+// armed period costs one extra read and an exhausted loop reads nothing more;
+// only after some load has credited a mark, since there is nothing to have
+// moved from before that; and not when a load already credited an advance since
+// the loop last scheduled. The read runs without e.mu. A read that fails
+// changes nothing, so the cap clears the trigger as it did before, and a mark
+// that a concurrent RefreshPolicies credited first is not overwritten.
+func (e *DatabaseDynamicPolicyEngine) reReadMarkAtCap(fastTicks, maxTicks int) {
+	e.mu.RLock()
+	c := e.catchUp
+	due := fastTicks >= maxTicks && c.mode == refreshModeCatchUp && !c.advanced && c.markSeen
+	reader := e.capMarkReader
+	e.mu.RUnlock()
+	if !due {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var mark schemaMigrationMark
+	var err error
+	if reader != nil {
+		mark, err = reader(ctx)
+	} else {
+		mark, err = readSchemaMigrationMark(ctx, e.crossOrgDB())
+	}
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	credited := false
+	if cur := &e.catchUp; !cur.advanced && cur.markSeen && !cur.mark.equal(mark) {
+		cur.mark, cur.moving, cur.advanced = mark, true, true
+		credited = true
+	}
+	summary := e.catchUp.markSummary()
+	e.mu.Unlock()
+	if credited {
+		log.Printf("[dynamic-policy-engine] policy cache catch-up: schema_migrations advanced by the cap (%s), read once more before the catch-up would have ended: the count restarts (#4249 row 5683228870)", summary)
 	}
 }
 
@@ -946,6 +1369,9 @@ func (e *DatabaseDynamicPolicyEngine) reportMetricsTick() {
 	policyCount := len(e.policies)
 	lastRefresh := e.lastRefresh
 	source := e.policySetSource
+	// Published under the lock scheduleNextRefresh changes the mode under, so
+	// this tick cannot republish a mode read before a change.
+	setPolicyCacheRefreshModeMetric(e.catchUp.mode)
 	e.mu.RUnlock()
 
 	setPolicySetSourceMetric(source)
@@ -1278,6 +1704,11 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	// priority as intended.
 	sortedEntries := sortedDynamicPolicyEntries(policies)
 
+	// The route effects accumulate across every applying row in ONE value, so
+	// the restriction state survives an intersection that comes out empty (the
+	// result's AllowedProviders alone cannot say it; routeEffects.Restricted).
+	var routes routeEffects
+
 	for _, entry := range sortedEntries {
 		cacheKey := entry.cacheKey
 		policyMap := entry.policyMap
@@ -1489,11 +1920,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			case "route":
 				// #883 routing hints, merged by the ONE merge the fact producer also
 				// calls (routeEffects.apply), so the two cannot drift (#4254).
-				routes := routeEffects{
-					PreferredProvider: result.PreferredProvider,
-					RoutingReason:     result.RoutingReason,
-					AllowedProviders:  result.AllowedProviders,
-				}
 				routes.apply(actionConfig)
 				result.PreferredProvider = routes.PreferredProvider
 				result.RoutingReason = routes.RoutingReason
@@ -1637,6 +2063,18 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		result.AppliedPolicies = append(result.AppliedPolicies, name)
 	}
 
+	// A preview answers restrictions that permit no provider the way the
+	// route-request seam does: refused, with the reason (#4249 row 5698088094).
+	if routes.NothingPermitted() {
+		// Named as the route layer's only when nothing else had refused: a
+		// block action that already refused is not the route layer's refusal.
+		if result.Allowed {
+			result.BlockedBy = blockedByRouteLayer
+		}
+		result.Allowed = false
+		result.RequiredActions = append(result.RequiredActions, "blocked: "+reasonNoCompliantProvider)
+	}
+
 	// Clamp RiskScore to the documented [0,1] range AFTER the loop, not
 	// inside it. Nothing re-clamped following a "modify_risk" action's
 	// additive result.RiskScore += add (above) or the legacy
@@ -1736,9 +2174,10 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 // short-circuited on field resolvability the way the MCP handler and
 // policy-test evaluator do).
 //
-// The shared evaluator's matchRegexCondition deliberately discards a regex
-// compile error rather than logging it (condition_evaluator.go: "outside
-// this pure-function evaluator's job") — legacy evaluateCondition logged
+// The shared evaluator's matchRegexCondition RECORDS a regex compile error
+// as unevaluable (condition_evaluator.go, ReasonInvalidPattern, #4249 row
+// 5674229132) rather than logging it; it discarded it silently until then.
+// Legacy evaluateCondition logged
 // "[POLICY_EVAL] Regex error for pattern %s: %v" on a bad, string-typed
 // pattern (never for a non-string Value, which legacy never attempted to
 // compile at all). Reproduced here with a side-effect-free pre-check so that
@@ -2225,14 +2664,19 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(orgID string, segmentIDs []string) []DynamicPolicy {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	return listActivePoliciesForOrgLocked(sortedDynamicPolicyEntries(e.policies), orgID, segmentIDs)
+}
 
-	scoped := make([]DynamicPolicy, 0, len(e.policies))
+// listActivePoliciesForOrgLocked is the walk both organization-scoped lists
+// share, over entries the caller sorted under e.mu.
+func listActivePoliciesForOrgLocked(entries []dynamicPolicyCacheEntry, orgID string, segmentIDs []string) []DynamicPolicy {
+	scoped := make([]DynamicPolicy, 0, len(entries))
 	// IN THE ORDER EVALUATION WALKS THEM (sortedDynamicPolicyEntries), never Go's
 	// randomized map order. The fact producer merges route effects from these
 	// rows, and that merge is order-dependent exactly as EvaluateDynamicPolicies'
 	// is, so an unordered list would change the preferred provider between
 	// identical requests (#4254).
-	for _, entry := range sortedDynamicPolicyEntries(e.policies) {
+	for _, entry := range entries {
 		cacheKey, policyMap := entry.cacheKey, entry.policyMap
 		if !dbCachedPolicyAppliesToOrg(policyMap, orgID, segmentIDs, cacheKey) {
 			continue
@@ -2244,6 +2688,44 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(orgID string, 
 		scoped = append(scoped, dp)
 	}
 	return scoped
+}
+
+// ListActivePoliciesForOrgInEverySegment is ListActivePoliciesForTenant for a
+// caller whose segment membership is NOT ESTABLISHED (ADR-067 Decision 4 step
+// 1b, #4249 row 5697957634): the caller is treated as possibly in EVERY segment,
+// so the organization's segment-scoped rows apply together with its unsegmented
+// ones. "Not established" never reads as "in no segment": a segment-scoped row
+// carrying a route restriction that stopped applying would be a widening.
+//
+// It is the SAME predicate over the same walk, not a second one: under one read
+// lock it collects, once each, the segment ids the organization's own cached
+// rows name (the organization half through dbCachedPolicyBelongsToOrg, not
+// restated), then hands that set to dbCachedPolicyAppliesToOrg as the caller's
+// segments, so a row of another organization still never applies. One lock, so
+// a row added by a refresh cannot fall between the collection and the walk.
+func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForOrgInEverySegment(orgID string) []DynamicPolicy {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	entries := sortedDynamicPolicyEntries(e.policies)
+	every := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, entry := range entries {
+		metadata, _ := entry.policyMap["_metadata"].(map[string]interface{})
+		segment, _ := metadata["segment_id"].(string)
+		if segment == "" {
+			continue
+		}
+		if _, dup := seen[segment]; dup {
+			continue
+		}
+		if !dbCachedPolicyBelongsToOrg(entry.policyMap, orgID, entry.cacheKey) {
+			continue
+		}
+		seen[segment] = struct{}{}
+		every = append(every, segment)
+	}
+	return listActivePoliciesForOrgLocked(entries, orgID, every)
 }
 
 // PolicySetSource returns whether this engine is currently enforcing a

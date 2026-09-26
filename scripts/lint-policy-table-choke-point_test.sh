@@ -181,14 +181,19 @@ echo ""
 echo "Test 3: an allow-listed file at its exact expected count passes"
 T3="$TEST_TMPDIR/t3"
 mk_loader_stub "$T3"
-mk_go_file "$T3" "platform/orchestrator/ojk/readiness.go" 'package ojk
+mk_go_file "$T3" "platform/agent/mcp_richer_context.go" 'package agent
 
-func (s *svc) countIndonesiaPIIPolicies() {
-	const q = `SELECT COUNT(*) FROM static_policies WHERE enabled = true`
+func (s *svc) lookupPolicyMeta() {
+	const q = `SELECT risk_level FROM static_policies WHERE policy_id = $1`
+	_ = q
+}
+
+func (s *svc) lookupPolicyVersionsByID() {
+	const q = `SELECT version FROM static_policies WHERE policy_id = ANY($1)`
 	_ = q
 }
 '
-assert_pass "readiness.go at its allow-listed count (1) passes" "$T3"
+assert_pass "mcp_richer_context.go at its allow-listed count (2) passes" "$T3"
 
 # --- Test 4: an allow-listed file whose count went UP fails -----------------
 # A new query silently added to an already-allow-listed file must not sail
@@ -198,10 +203,15 @@ echo ""
 echo "Test 4: an allow-listed file with an ADDED query fails"
 T4="$TEST_TMPDIR/t4"
 mk_loader_stub "$T4"
-mk_go_file "$T4" "platform/orchestrator/ojk/readiness.go" 'package ojk
+mk_go_file "$T4" "platform/agent/mcp_richer_context.go" 'package agent
 
-func (s *svc) countIndonesiaPIIPolicies() {
-	const q = `SELECT COUNT(*) FROM static_policies WHERE enabled = true`
+func (s *svc) lookupPolicyMeta() {
+	const q = `SELECT risk_level FROM static_policies WHERE policy_id = $1`
+	_ = q
+}
+
+func (s *svc) lookupPolicyVersionsByID() {
+	const q = `SELECT version FROM static_policies WHERE policy_id = ANY($1)`
 	_ = q
 }
 
@@ -210,21 +220,21 @@ func (s *svc) countSomethingElse() {
 	_ = q2
 }
 '
-assert_fail_containing "readiness.go with a second query (count 1 -> 2) fails" "$T4" \
-  "expected 1, found 2"
+assert_fail_containing "mcp_richer_context.go with a third query (count 2 -> 3) fails" "$T4" \
+  "expected 2, found 3"
 
 # --- Test 5: an allow-listed file whose count went DOWN (stale entry) fails -
 echo ""
 echo "Test 5: an allow-listed file with a REMOVED query fails (stale entry)"
 T5="$TEST_TMPDIR/t5"
 mk_loader_stub "$T5"
-mk_go_file "$T5" "platform/orchestrator/ojk/readiness.go" 'package ojk
+mk_go_file "$T5" "platform/agent/mcp_richer_context.go" 'package agent
 
-func (s *svc) countIndonesiaPIIPolicies() {
+func (s *svc) lookupPolicyMeta() {
 	// migrated off static_policies entirely
 }
 '
-assert_fail_containing "readiness.go with its only query removed (count 1 -> 0) fails" "$T5" \
+assert_fail_containing "mcp_richer_context.go with both queries removed (count 2 -> 0) fails" "$T5" \
   "found 0"
 
 # --- Test 6: the loader file is COUNTED like every other entry, not exempt -
@@ -368,8 +378,9 @@ assert_fail_containing "an unlisted reader under ee/ is caught" "$T13" \
 # status, and `if !` reported "found 0" for a file grep had just found. Measured
 # against that line with this fixture: the false "found 0" on every run.
 #
-# Both directions, so neither half can pass by the other breaking: readiness.go
-# is PRESENT with its one read and must NOT be reported stale; overrides_handler.go
+# Both directions, so neither half can pass by the other breaking:
+# mcp_richer_context.go is PRESENT with its two reads and must NOT be reported
+# stale; overrides_handler.go
 # is present with NO read and MUST be. The 1200 unlisted files exist only to
 # make SEEN_FILES large - they fail the lint on purpose, under ee/ so they are
 # scanned after both allow-listed files.
@@ -377,10 +388,15 @@ echo ""
 echo "Test 14: an allow-listed file seen early in a SEEN_FILES larger than a pipe buffer is not reported stale (#4072)"
 T14="$TEST_TMPDIR/t14"
 mk_loader_stub "$T14"
-mk_go_file "$T14" "platform/orchestrator/ojk/readiness.go" 'package ojk
+mk_go_file "$T14" "platform/agent/mcp_richer_context.go" 'package agent
 
-func (s *svc) countIndonesiaPIIPolicies() {
-	const q = `SELECT COUNT(*) FROM static_policies WHERE enabled = true`
+func (s *svc) lookupPolicyMeta() {
+	const q = `SELECT risk_level FROM static_policies WHERE policy_id = $1`
+	_ = q
+}
+
+func (s *svc) lookupPolicyVersionsByID() {
+	const q = `SELECT version FROM static_policies WHERE policy_id = ANY($1)`
 	_ = q
 }
 '
@@ -402,9 +418,9 @@ if [ "$T14_BYTES" -le 65536 ]; then
 elif run_lint_in "$T14"; then
   echo "  FAIL: Test 14 (expected the unlisted bulk files to fail the lint, got pass)" >> "$RESULTS_FILE"
   echo "  ❌ FAIL: Test 14 (expected fail, got pass)"
-elif grep -qF "platform/orchestrator/ojk/readiness.go: expected 1, found 0" "$TEST_TMPDIR/last_output.txt"; then
-  echo "  FAIL: Test 14 reported readiness.go stale although its read is present (#4072)" >> "$RESULTS_FILE"
-  echo "  ❌ FAIL: readiness.go reported 'found 0' although it was found (#4072)"
+elif grep -qF "platform/agent/mcp_richer_context.go: expected 2, found" "$TEST_TMPDIR/last_output.txt"; then
+  echo "  FAIL: Test 14 reported mcp_richer_context.go stale although its reads are present (#4072)" >> "$RESULTS_FILE"
+  echo "  ❌ FAIL: mcp_richer_context.go reported stale although it was found (#4072)"
 elif ! grep -qF "platform/orchestrator/overrides_handler.go: expected 2, found 0" "$TEST_TMPDIR/last_output.txt"; then
   echo "  FAIL: Test 14 did not report overrides_handler.go stale although it has no read" >> "$RESULTS_FILE"
   echo "  ❌ FAIL: the genuinely stale overrides_handler.go entry was not reported"

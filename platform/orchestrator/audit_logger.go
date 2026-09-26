@@ -655,6 +655,9 @@ func (l *AuditLogger) LogBlockedMedia(ctx context.Context, req OrchestratorReque
 
 // LogBlockedRequest logs a blocked request. decided is the anchored decision a
 // route seam refused it with, stamped on the row (PRD v11 §5.7); nil writes none.
+// When a layer after the engine refused it (policyResult.BlockedBy), decided is
+// the engine's ALLOW, kept as provenance, and the row states the layer in
+// policy_details.blocked_by beside policy_decision=blocked.
 func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorRequest,
 	policyResult *PolicyEvaluationResult, decided *anchoredDecision) {
 
@@ -680,6 +683,9 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 		}, policyResult.AppliedPoliciesDetail),
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
+	}
+	if policyResult.BlockedBy != "" {
+		entry.PolicyDetails["blocked_by"] = policyResult.BlockedBy
 	}
 	stampAnchoredDecision(entry, decided)
 
@@ -792,6 +798,11 @@ func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowA
 
 	// Map the workflow-control decision onto the canonical audit vocabulary.
 	policyDecision := workflowAuditDecision(entry.Decision)
+
+	// #4312: counted, never refused - the row below is still written.
+	if strings.TrimSpace(entry.OrgID) == "" {
+		recordWorkflowAuditEmptyOrg(entry.Operation, entry.WorkflowID)
+	}
 
 	auditEntry := &AuditEntry{
 		ID:             generateAuditID(),

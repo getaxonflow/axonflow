@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -26,6 +27,9 @@ func TestSharedPolicyAuditAdapter_LogViolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create audit queue: %v", err)
 	}
+	// Shut down before the next test: a running batcher flushing this test's
+	// entries later would move another test's drop counters (#4249).
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
 
 	adapter := &SharedPolicyAuditAdapter{queue: queue}
 
@@ -58,6 +62,9 @@ func TestSharedPolicyAuditAdapter_LogMetric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create audit queue: %v", err)
 	}
+	// Shut down before the next test: a running batcher flushing this test's
+	// entries later would move another test's drop counters (#4249).
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
 
 	adapter := &SharedPolicyAuditAdapter{queue: queue}
 
@@ -86,6 +93,9 @@ func TestSharedPolicyAuditAdapter_LogPolicyEvaluation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create audit queue: %v", err)
 	}
+	// Shut down before the next test: a running batcher flushing this test's
+	// entries later would move another test's drop counters (#4249).
+	t.Cleanup(func() { _ = queue.Shutdown(context.Background()) })
 
 	adapter := &SharedPolicyAuditAdapter{queue: queue}
 

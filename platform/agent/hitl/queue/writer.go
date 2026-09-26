@@ -72,6 +72,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"axonflow/platform/agent/rls"
 )
@@ -585,6 +586,288 @@ func ApprovalExpiry(ctx context.Context, db *sql.DB, orgID string, requestID uui
 		return time.Time{}, false, false, fmt.Errorf("read approval expiry: %w", err)
 	}
 	return expiresAt, status == "expired", true, nil
+}
+
+// HoldAtIDSQL reads the queue row one hold id names: its status, its expiry,
+// and the workflow step its request_context says it belongs to.
+const HoldAtIDSQL = `
+	SELECT status, expires_at,
+	       COALESCE(request_context->>'workflow_id', ''), COALESCE(request_context->>'step_id', '')
+	  FROM hitl_approval_queue
+	 WHERE request_id = $1`
+
+// HoldOwnerSQL reads which workflow step a queue row belongs to.
+const HoldOwnerSQL = `
+	SELECT COALESCE(request_context->>'workflow_id', ''), COALESCE(request_context->>'step_id', '')
+	  FROM hitl_approval_queue
+	 WHERE request_id = $1`
+
+// UnnamedStepRowSQL finds a PENDING row that names the step in its
+// request_context but is not one of the step's hold ids: a row written before
+// holds were named (the pre-v10 Evaluation adapter minted uuid.New() per gate),
+// or one a caller created before the step-gate type was reserved. It is read
+// only to refuse, never to find a hold: before writing a NEW hold (so a step
+// never has two live holds), and by the expiry read of a step with no hold.
+//
+// Pending only: a decided stray is not a live hold, and refusing on it would
+// wedge the step for good. The status predicate also lets the read use
+// idx_hitl_org_status instead of scanning the organization's whole queue
+// history.
+const UnnamedStepRowSQL = `
+	SELECT request_id
+	  FROM hitl_approval_queue
+	 WHERE status = 'pending'
+	   AND request_type = $1
+	   AND request_context->>'workflow_id' = $2
+	   AND request_context->>'step_id' = $3
+	   AND NOT (request_id = ANY($4::uuid[]))
+	 ORDER BY id
+	 LIMIT 1`
+
+// maxHoldsPerStep bounds the walk. A step is held again only after each hold
+// is decided, so a real step stays in single digits; reaching this is a
+// defect, and the walk refuses rather than reading on.
+const maxHoldsPerStep = 1000
+
+// ErrHoldNotPending reports that a step has holds but none is pending and the
+// newest is decided (approved, rejected or overridden): there is no live hold
+// whose window an approval could be judged by.
+var ErrHoldNotPending = errors.New("hitl: the step's newest approval hold is already decided")
+
+// ErrHoldUnnamedRow refuses a new hold for a step that has a pending queue row
+// outside the hold numbering: writing hold 1 beside such a row could leave two
+// live holds for one step. The expiry read of a step with no hold refuses on it
+// too: that step is held (its gate's enqueue was refused), and a row that is not
+// its hold must not let an approval skip the hold's deadline.
+var ErrHoldUnnamedRow = errors.New("hitl enqueue: the step has a queue row that is not one of its hold ids")
+
+// holdWalk is what walkHolds learned about a step's holds.
+type holdWalk struct {
+	Holds       int // the number of consecutive holds found, 1..n
+	IDs         []uuid.UUID
+	Last        uuid.UUID
+	LastStatus  string
+	LastExpires time.Time
+	// LastConsumed is the newest hold's consumed_at being set. Only a
+	// call-binding hold reads it (#4370); a step hold is never consumed.
+	LastConsumed bool
+	HasPending   bool
+	Pending      uuid.UUID
+	PendingExp   time.Time
+}
+
+// walkHolds reads a step's holds BY ID: hold 1, hold 2, ... on the unique
+// index over request_id, stopping at the first id with no visible row.
+//
+// MEMBERSHIP IS THE DERIVED ID, NEVER request_context (#4249 row 5700138809,
+// R3 round 1). A lookup keyed on request_context let any row that merely
+// NAMED the step - a caller could write one through the decide-plane create
+// before the type was reserved - become the step's current hold, and an
+// approval was then judged by that row's expiry. Only the platform writes a
+// row under a hold id, so walking the ids cannot pick up a row it did not
+// write. request_context is read here only to REFUSE: a row under one of this
+// step's ids that names another step (step "a#2"'s hold 1 is step "a"'s hold
+// 2) is ErrHoldOwnership.
+//
+// This is not the unbounded probe over guessed ids (request_id =
+// ANY(hold1, hold2, ...)) that the brief ruled out: it is a sequential walk
+// that stops at the step's own first missing hold, so it costs the step's hold
+// count plus one point lookups on the unique index, bounded by maxHoldsPerStep.
+//
+// The holds must be consecutive with at most one pending, the newest; anything
+// else is ErrHoldSequence. The walk itself is walkHoldIDs, which a call-binding
+// hold (#4370, BindingHold) walks too; this is the step's reader over it.
+func walkHolds(ctx context.Context, tx *sql.Tx, h *StepHold) (holdWalk, error) {
+	subject := h.WorkflowID + "/" + h.StepID
+	return walkHoldIDs(subject, func(k int) (uuid.UUID, error) { return holdID(h, k) },
+		func(id uuid.UUID) (holdAt, bool, error) {
+			var at holdAt
+			var wf, step string
+			err := tx.QueryRowContext(ctx, HoldAtIDSQL, id).Scan(&at.status, &at.expires, &wf, &step)
+			if errors.Is(err, sql.ErrNoRows) {
+				return holdAt{}, false, nil
+			}
+			if err != nil {
+				return holdAt{}, false, err
+			}
+			at.owned = wf == h.WorkflowID && step == h.StepID
+			return at, true, nil
+		}, "step")
+}
+
+// holdAt is one hold row as a walk reads it.
+type holdAt struct {
+	status   string
+	expires  time.Time
+	consumed bool
+	// owned says the row under this id names the hold's own subject (the
+	// step, or the call binding); a row that does not is ErrHoldOwnership.
+	owned bool
+}
+
+// walkHoldIDs is the hold numbering's one walk: derive hold k's id, read the
+// row under it, stop at the first id with no visible row. It carries every
+// sequence rule - the bound, a derivation that repeats an id, a row that
+// belongs to another subject, a hold after a pending one - so a step hold and
+// a call-binding hold number their holds by the same rules and cannot drift.
+// subject names the hold's owner in a refusal; kind is "step" or "call".
+func walkHoldIDs(subject string, idFor func(k int) (uuid.UUID, error), read func(uuid.UUID) (holdAt, bool, error), kind string) (holdWalk, error) {
+	var w holdWalk
+	for k := 1; ; k++ {
+		if k > maxHoldsPerStep {
+			return holdWalk{}, fmt.Errorf("%w (%s has more than %d holds)", ErrHoldSequence, subject, maxHoldsPerStep)
+		}
+		id, err := idFor(k)
+		if err != nil {
+			return holdWalk{}, err
+		}
+		for _, seen := range w.IDs {
+			if seen == id {
+				// A derivation that names two holds alike would walk the same
+				// row for ever; it is a defect, and refusing names it.
+				return holdWalk{}, fmt.Errorf("%w (hold %d of %s has the same id as an earlier hold, %s)", ErrHoldSequence, k, subject, id)
+			}
+		}
+		at, found, err := read(id)
+		if err != nil {
+			return holdWalk{}, fmt.Errorf("read hold %d of the %s: %w", k, kind, err)
+		}
+		if !found {
+			break
+		}
+		if !at.owned {
+			return holdWalk{}, fmt.Errorf("%w (hold %d's id %s names a row of another %s)", ErrHoldOwnership, k, id, kind)
+		}
+		if w.HasPending {
+			return holdWalk{}, fmt.Errorf("%w (hold %d follows pending hold %s)", ErrHoldSequence, k, w.Pending)
+		}
+		w.Holds, w.Last, w.LastStatus, w.LastExpires, w.LastConsumed = k, id, at.status, at.expires, at.consumed
+		w.IDs = append(w.IDs, id)
+		if at.status == "pending" {
+			w.HasPending, w.Pending, w.PendingExp = true, id, at.expires
+		}
+	}
+	return w, nil
+}
+
+// refuseUnnamedStepRow refuses when the step has a pending row outside its
+// hold ids (ErrHoldUnnamedRow).
+func refuseUnnamedStepRow(ctx context.Context, tx *sql.Tx, requestType string, h *StepHold, named []uuid.UUID) error {
+	ids := make([]string, len(named))
+	for i, id := range named {
+		ids[i] = id.String()
+	}
+	var stray uuid.UUID
+	err := tx.QueryRowContext(ctx, UnnamedStepRowSQL, requestType, h.WorkflowID, h.StepID, pq.Array(ids)).Scan(&stray)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the step's other queue rows: %w", err)
+	}
+	return fmt.Errorf("%w (%s/%s has pending row %s; the step cannot be held until that row expires or an operator removes it)", ErrHoldUnnamedRow, h.WorkflowID, h.StepID, stray)
+}
+
+// checkHoldOwner refuses when the row requestID names belongs to a step other
+// than h's (ErrHoldOwnership). A row the org cannot see refuses too.
+func checkHoldOwner(ctx context.Context, tx *sql.Tx, requestID uuid.UUID, h *StepHold) error {
+	var wf, step string
+	err := tx.QueryRowContext(ctx, HoldOwnerSQL, requestID).Scan(&wf, &step)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w (request %s is not visible to this organization)", ErrHoldOwnership, requestID)
+	}
+	if err != nil {
+		return fmt.Errorf("read the owner of request %s: %w", requestID, err)
+	}
+	if wf != h.WorkflowID || step != h.StepID {
+		return fmt.Errorf("%w (request %s)", ErrHoldOwnership, requestID)
+	}
+	return nil
+}
+
+// readHolds runs walkHolds in its own org-scoped transaction, for the read
+// paths. The transaction is READ COMMITTED (rls.WithOrgScope opens it with
+// default options and sets the org before any caller statement, so the
+// isolation level cannot be raised inside it), and each point lookup sees the
+// latest committed rows: a hold decided and followed by the next hold between
+// two lookups reads as a hold after a pending one. ErrHoldSequence is therefore
+// read once more before it is reported; a sequence that is still broken on the
+// second walk is real. The enqueue path does not retry: it refuses, and the
+// gate's caller re-gates.
+func readHolds(ctx context.Context, db *sql.DB, orgID string, h *StepHold, extra func(context.Context, *sql.Tx, holdWalk) error) (holdWalk, error) {
+	var w holdWalk
+	walk := func(tx *sql.Tx) error {
+		var walkErr error
+		if w, walkErr = walkHolds(ctx, tx, h); walkErr != nil {
+			return walkErr
+		}
+		if extra != nil {
+			return extra(ctx, tx, w)
+		}
+		return nil
+	}
+	err := rls.WithOrgScope(ctx, db, orgID, walk)
+	if errors.Is(err, ErrHoldSequence) {
+		err = rls.WithOrgScope(ctx, db, orgID, walk)
+	}
+	return w, err
+}
+
+// CurrentHoldID reads, under orgID's scope, the request id a WCP step's
+// approve/reject acts on and projects: its pending hold, else its newest hold.
+// found is false when the step has no hold - no adapter was wired when the
+// gate fired, or the enqueue was refused.
+func CurrentHoldID(ctx context.Context, db *sql.DB, orgID string, h StepHold) (requestID uuid.UUID, found bool, err error) {
+	if orgID == "" {
+		return uuid.Nil, false, fmt.Errorf("CurrentHoldID: OrgID must be non-empty (RLS on hitl_approval_queue)")
+	}
+	w, err := readHolds(ctx, db, orgID, &h, nil)
+	switch {
+	case err != nil:
+		return uuid.Nil, false, err
+	case w.HasPending:
+		return w.Pending, true, nil
+	case w.Holds > 0:
+		return w.Last, true, nil
+	default:
+		return uuid.Nil, false, nil
+	}
+}
+
+// CurrentHoldExpiry is ApprovalExpiry for the hold an approval of a WCP step
+// would decide, read in ONE org-scoped transaction:
+//
+//   - a pending hold: its own expiry;
+//   - no pending hold, and the newest was expired by the queue: expired;
+//   - no pending hold, and the newest is otherwise decided: ErrHoldNotPending.
+//     An approval is never judged by a decided hold's window;
+//   - no hold, but a pending row that names the step outside its hold ids:
+//     ErrHoldUnnamedRow. The step's gate was refused its hold because of that
+//     row, and the step is still held, so reporting no expiry would let a late
+//     approval skip the hold's deadline;
+//   - no hold at all: found is false, which declares no expiry.
+func CurrentHoldExpiry(ctx context.Context, db *sql.DB, orgID string, h StepHold) (expiresAt time.Time, expired bool, found bool, err error) {
+	if orgID == "" {
+		return time.Time{}, false, false, fmt.Errorf("CurrentHoldExpiry: OrgID must be non-empty (RLS on hitl_approval_queue)")
+	}
+	w, err := readHolds(ctx, db, orgID, &h, func(ctx context.Context, tx *sql.Tx, w holdWalk) error {
+		if w.Holds > 0 {
+			return nil
+		}
+		return refuseUnnamedStepRow(ctx, tx, RequestTypeWCPStepGate, &h, nil)
+	})
+	switch {
+	case err != nil:
+		return time.Time{}, false, false, fmt.Errorf("read approval expiry: %w", err)
+	case w.HasPending:
+		return w.PendingExp, false, true, nil
+	case w.Holds == 0:
+		return time.Time{}, false, false, nil
+	case w.LastStatus == "expired":
+		return w.LastExpires, true, true, nil
+	default:
+		return time.Time{}, false, true, fmt.Errorf("%w (hold %s is %s)", ErrHoldNotPending, w.Last, w.LastStatus)
+	}
 }
 
 // capLockKey derives the advisory-lock key that serialises cap accounting for

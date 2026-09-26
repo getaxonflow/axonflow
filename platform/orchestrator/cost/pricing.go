@@ -203,6 +203,20 @@ func LoadPricingFromFile(path string) (*PricingConfig, error) {
 
 // CalculateCost calculates the cost for a request based on tokens and model
 func (p *PricingConfig) CalculateCost(provider, model string, tokensIn, tokensOut int) float64 {
+	cost, _ := p.EstimateCostPriced(provider, model, tokensIn, tokensOut)
+	return cost
+}
+
+// EstimateCostPriced is CalculateCost and whether this deployment PRICES the
+// provider and model at all.
+//
+// THE SECOND RETURN IS THE WHOLE POINT. CalculateCost answers 0 both for a
+// request that costs nothing and for a provider or model this deployment has no
+// price for, and those are different facts: a policy over the estimate reads 0
+// as "cheap", which is a fabricated finding about a deployment that simply
+// cannot price the step (#4249 row 5664825929). Every lookup lives here, so the
+// two answers cannot drift.
+func (p *PricingConfig) EstimateCostPriced(provider, model string, tokensIn, tokensOut int) (float64, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -211,7 +225,7 @@ func (p *PricingConfig) CalculateCost(provider, model string, tokensIn, tokensOu
 
 	providerPricing, ok := p.Providers[provider]
 	if !ok {
-		return 0
+		return 0, false
 	}
 
 	// Try exact model match first
@@ -223,7 +237,7 @@ func (p *PricingConfig) CalculateCost(provider, model string, tokensIn, tokensOu
 			// Fall back to wildcard
 			modelPricing, ok = providerPricing["*"]
 			if !ok {
-				return 0
+				return 0, false
 			}
 		}
 	}
@@ -231,7 +245,7 @@ func (p *PricingConfig) CalculateCost(provider, model string, tokensIn, tokensOu
 	inputCost := float64(tokensIn) / 1000.0 * modelPricing.InputPer1K
 	outputCost := float64(tokensOut) / 1000.0 * modelPricing.OutputPer1K
 
-	return inputCost + outputCost
+	return inputCost + outputCost, true
 }
 
 // GetModelPricing returns pricing for a specific model

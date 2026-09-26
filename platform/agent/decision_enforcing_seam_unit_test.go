@@ -158,7 +158,7 @@ func enfSeamUnit(t *testing.T, docs activeDocumentSource) (func(t *testing.T) *a
 	}
 	enforcer := func(t *testing.T) *anchoredEnforcer {
 		t.Helper()
-		e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch)
+		e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,7 +622,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 	for _, scope := range wiredSeamScopes {
 		scopeAct := &activation.Activation{PolicyBundle: act.PolicyBundle, Scope: scope}
 		t.Run("CHALLENGE on "+scope.String()+" is a deny that names the plane it cannot be held on", func(t *testing.T) {
-			got := mapAnchoredDecision(base, &contract.Decision{State: contract.StateChallenge, Reason: contract.ReasonApprovalRequired}, scopeAct)
+			got := mapAnchoredDecision(base, &contract.Decision{State: contract.StateChallenge, Reason: contract.ReasonApprovalRequired}, scopeAct, "")
 			if got.verdict != VerdictDeny || got.reasonCode != string(contract.ReasonApprovalRequired) {
 				t.Fatalf("verdict %q reason %q; want deny approval_required", got.verdict, got.reasonCode)
 			}
@@ -642,7 +642,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 			State: contract.StateAllow, Reason: contract.ReasonPermitted,
 			Obligations: []contract.Obligation{redact, {Type: contract.ObNotification, Mandatory: true, SourcePolicy: "grant.page-oncall"}},
 			Determining: contract.Determining{MatchedPermissions: []string{"grant.x"}},
-		}, act)
+		}, act, "")
 		if got.verdict != VerdictDeny || got.reasonCode != string(contract.ReasonUnsupportedObligation) || len(got.obligations) != 0 {
 			t.Fatalf("verdict %q reason %q obligations %+v; want deny unsupported_obligation with no obligations", got.verdict, got.reasonCode, got.obligations)
 		}
@@ -653,7 +653,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 			State: contract.StateAllow, Reason: contract.ReasonPermitted,
 			Obligations: []contract.Obligation{redact},
 			Determining: contract.Determining{MatchedPermissions: []string{"grant.x"}},
-		}, act)
+		}, act, "")
 		if got.verdict != VerdictAllow || got.reasonCode != string(contract.ReasonPermitted) || len(got.obligations) != 1 {
 			t.Fatalf("verdict %q reason %q obligations %+v; want allow permitted with the redaction", got.verdict, got.reasonCode, got.obligations)
 		}
@@ -674,7 +674,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 			got := mapAnchoredDecision(base, &contract.Decision{
 				State: contract.StateDeny, Reason: contract.ReasonExplicitConstraint,
 				Determining: contract.Determining{MatchedConstraints: []string{id}},
-			}, act)
+			}, act, "")
 			if got.verdict != VerdictDeny || got.blockingPolicyID != id || got.blockingPolicyTier != tier {
 				t.Fatalf("%s: verdict %q blocking %q tier %q; want deny blocking %q tier %q", id, got.verdict, got.blockingPolicyID, got.blockingPolicyTier, id, tier)
 			}
@@ -685,7 +685,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 	})
 
 	t.Run("an ERROR is a deny under its own reason, with nothing named as blocking", func(t *testing.T) {
-		got := mapAnchoredDecision(base, &contract.Decision{State: contract.StateError, Reason: contract.ReasonUnknownConstraint}, act)
+		got := mapAnchoredDecision(base, &contract.Decision{State: contract.StateError, Reason: contract.ReasonUnknownConstraint}, act, "")
 		if got.verdict != VerdictDeny || !reflect.DeepEqual(got.reasons, []string{string(contract.ReasonUnknownConstraint)}) || got.blockingPolicyID != "" {
 			t.Fatalf("verdict %q reasons %v blocking %q; want deny [unknown_constraint] with no blocking policy", got.verdict, got.reasons, got.blockingPolicyID)
 		}
@@ -702,7 +702,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 					{PolicyID: "ceiling.stale", Authority: contract.AuthorityConstraint, Reason: contract.ReasonStale},
 				},
 			},
-		}, act)
+		}, act, "")
 		want := []string{
 			string(contract.ReasonUnknownConstraint),
 			"ceiling.by-department could not be evaluated: no value was supplied for principal.department, resource.owner",
@@ -730,7 +730,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 				{PolicyID: "ceiling.b", Authority: contract.AuthorityConstraint, Reason: contract.ReasonNotSupplied},
 			}},
 			Trace: &contract.Trace{BindingPolicy: "ceiling.b"},
-		}, act)
+		}, act, "")
 		if !reflect.DeepEqual(got.evaluatedPolicies, []string{"ceiling.b", "ceiling.a"}) || got.blockingPolicyID != "ceiling.b" ||
 			len(got.reasons) != 3 || !strings.HasPrefix(got.reasons[1], "ceiling.b could not be evaluated: ") {
 			t.Fatalf("evaluated %v blocking %q reasons %q; want the trace's binding ceiling.b first everywhere", got.evaluatedPolicies, got.blockingPolicyID, got.reasons)
@@ -744,7 +744,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 				MatchedConstraints: []string{"ceiling.matched"},
 				Unknown:            []contract.UnknownPolicy{{PolicyID: "ceiling.unknown", Authority: contract.AuthorityConstraint, Reason: contract.ReasonNotSupplied}},
 			},
-		}, act)
+		}, act, "")
 		if !reflect.DeepEqual(got.reasons, []string{string(contract.ReasonExplicitConstraint)}) ||
 			!reflect.DeepEqual(got.evaluatedPolicies, []string{"ceiling.matched"}) || got.blockingPolicyID != "ceiling.matched" {
 			t.Fatalf("reasons %v evaluated %v blocking %q; want only the matched constraint", got.reasons, got.evaluatedPolicies, got.blockingPolicyID)
@@ -760,7 +760,7 @@ func TestAnAnchoredChallengeOrAnUnexpressibleObligationIsNeverAnAllow(t *testing
 			got := mapAnchoredDecision(base, &contract.Decision{
 				State: contract.StateError, Reason: contract.ReasonUnknownRequirement,
 				Determining: contract.Determining{MatchedPermissions: []string{first}},
-			}, act)
+			}, act, "")
 			if got.verdict != VerdictDeny || got.blockingPolicyID != "" || got.blockingPolicyTier != tier {
 				t.Fatalf("%s: verdict %q blocking %q tier %q; want a deny naming no blocking policy, keyed at tier %q", first, got.verdict, got.blockingPolicyID, got.blockingPolicyTier, tier)
 			}
@@ -828,23 +828,26 @@ func TestNewDecideEnforcerRefusesAMissingDependency(t *testing.T) {
 
 	for name, build := range map[string]func() (*anchoredEnforcer, error){
 		"no active-document source": func() (*anchoredEnforcer, error) {
-			return newAnchoredEnforcer(nil, vocabulary, boot.Admitter, boot.Registry.Epoch)
+			return newAnchoredEnforcer(nil, vocabulary, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 		},
 		"no vocabulary": func() (*anchoredEnforcer, error) {
-			return newAnchoredEnforcer(docs, nil, boot.Admitter, boot.Registry.Epoch)
+			return newAnchoredEnforcer(docs, nil, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 		},
 		"no identity adapter": func() (*anchoredEnforcer, error) {
-			return newAnchoredEnforcer(docs, vocabulary, nil, boot.Registry.Epoch)
+			return newAnchoredEnforcer(docs, vocabulary, nil, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 		},
 		"no realm epoch": func() (*anchoredEnforcer, error) {
-			return newAnchoredEnforcer(docs, vocabulary, boot.Admitter, nil)
+			return newAnchoredEnforcer(docs, vocabulary, boot.Admitter, nil, sharedidentity.NoGraphOnlyResolver{})
+		},
+		"no group-closure resolver": func() (*anchoredEnforcer, error) {
+			return newAnchoredEnforcer(docs, vocabulary, boot.Admitter, boot.Registry.Epoch, nil)
 		},
 	} {
 		if e, err := build(); err == nil || e != nil {
 			t.Errorf("%s: got enforcer %v and error %v; want a refusal and no enforcer", name, e, err)
 		}
 	}
-	if e, err := newAnchoredEnforcer(docs, vocabulary, boot.Admitter, boot.Registry.Epoch); err != nil || e == nil {
+	if e, err := newAnchoredEnforcer(docs, vocabulary, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{}); err != nil || e == nil {
 		t.Fatalf("CONTROL: with every dependency present got (%v, %v); the refusals above prove nothing", e, err)
 	}
 }

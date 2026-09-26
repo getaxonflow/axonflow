@@ -4,7 +4,6 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log"
@@ -18,14 +17,16 @@ import (
 // captureLog redirects the standard logger into a buffer for the duration of
 // the test so log emission can be asserted, mirroring
 // platform/agent/identity_trust_test.go's helper of the same name (same
-// technique, not shared across packages).
-func captureLog(t *testing.T) *bytes.Buffer {
+// technique, not shared across packages). The buffer is a lockedBuffer
+// (db_dynamic_policies_test.go), so a test can read it while a background
+// goroutine such as the policy refresh loop is still logging.
+func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &lockedBuffer{}
 	prev := log.Writer()
-	log.SetOutput(&buf)
+	log.SetOutput(buf)
 	t.Cleanup(func() { log.SetOutput(prev) })
-	return &buf
+	return buf
 }
 
 // fakeOrchestratorSegmentResolver is a call-counting
@@ -38,6 +39,15 @@ type fakeOrchestratorSegmentResolver struct {
 	calls    int
 	resolved sharedidentity.ResolvedIdentity
 	err      error
+}
+
+// ResolveSegments completes the resolver interface; it counts nothing, so the
+// Resolve call count stays the observability resolve's own.
+func (f *fakeOrchestratorSegmentResolver) ResolveSegments(_ context.Context, _, _ string) ([]sharedidentity.Segment, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resolved.Segments, nil
 }
 
 func (f *fakeOrchestratorSegmentResolver) Resolve(_ context.Context, _, _ string) (sharedidentity.ResolvedIdentity, error) {

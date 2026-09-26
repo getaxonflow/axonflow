@@ -87,6 +87,10 @@ func initSegmentPolicyGate(db *sql.DB) {
 		log.Println("[Policy] ADR-060 (#2989 P3b) segment resolver NOT wired: usageDB unavailable — dynamic policies stay segment-unaware (org-only) until the database is available")
 		return
 	}
+	// #4249: whether the deployment wires the enterprise OIDC realm source is
+	// settled here too, beside the directory, before anything reads the
+	// vocabulary.
+	noteOrchestratorOIDCWiring(db)
 	resolver, err := sharedidentity.NewIdentityAttributeResolver(db)
 	if err == nil {
 		setOrchestratorSegmentResolver(resolver)

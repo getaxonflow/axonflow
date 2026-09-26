@@ -90,6 +90,9 @@ func TestExecuteWorkflowBalanced_NilStepProcessors(t *testing.T) {
 // We use function-call steps (which always succeed) combined with an llm-call
 // step (via mock router) to verify the end-to-end path.
 func TestExecuteWorkflowBalanced_MixedStepTypes(t *testing.T) {
+	// An llm-call step takes the organization's route rows; none apply here
+	// (#4249 row 5701303521).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	engine := NewWorkflowEngine()
 	mockRouter := NewMockLLMRouter()
 	engine.InitializeWithDependencies(mockRouter, nil)
@@ -152,6 +155,9 @@ func TestExecuteWorkflowBalanced_MixedStepTypes(t *testing.T) {
 // only llm-call steps. In balanced mode, these should all run sequentially
 // (rate-limit sensitive).
 func TestExecuteWorkflowBalanced_OnlySequentialLLMSteps(t *testing.T) {
+	// An llm-call step takes the organization's route rows; none apply here
+	// (#4249 row 5701303521).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	engine := NewWorkflowEngine()
 	mockRouter := NewMockLLMRouter()
 	engine.InitializeWithDependencies(mockRouter, nil)

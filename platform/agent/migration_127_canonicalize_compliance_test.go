@@ -23,8 +23,8 @@ package agent
 //     asserts every row canonicalised, plus a down/up round-trip.
 //
 //   - TestMigration127_IndustrySeedsCanonical_RealPostgres: applies core, then
-//     the four canonicalised industry seeds in version order (travel/200 +
-//     banking/300/302/401), reproducing the real apply ordering (core/127 runs
+//     the industry seeds in version order (travel/200, a no-op since #4180,
+//     and banking/300/302/401), reproducing the real apply ordering (core/127 runs
 //     BEFORE the industry seeds). Asserts each compliance category has its
 //     seeded rows live under the canonical spelling and IsComplianceCategory
 //     accepts it. Red-on-revert: un-canonicalising any seed leaves drifted rows
@@ -45,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/agent/approletest"
 	sharedpolicy "axonflow/platform/shared/policy"
 
 	_ "github.com/lib/pq"
@@ -180,7 +181,7 @@ func TestMigration127_IndustrySeedsCanonical_RealPostgres(t *testing.T) {
 	// expected seeded row count. Red-on-revert: un-canonicalising a seed leaves
 	// those rows under the drifted spelling, which 127 ran too early to fix.
 	wantMin := map[sharedpolicy.PolicyCategory]int{
-		sharedpolicy.CategoryComplianceEUAIAct: 4, // core/014 + travel/200 (same policy_ids, deduped)
+		sharedpolicy.CategoryComplianceEUAIAct: 4, // core/014's rows; travel/200 is a no-op (#4180)
 		sharedpolicy.CategoryComplianceSEBI:    6, // banking/300
 		sharedpolicy.CategoryComplianceRBI:     5, // banking/302
 		sharedpolicy.CategoryComplianceMASFEAT: 7, // banking/401
@@ -350,21 +351,20 @@ func threeDigitPrefix127(s string) bool {
 func startMig127Postgres(t *testing.T) (string, func()) {
 	t.Helper()
 	containerName := fmt.Sprintf("axonflow-test-mig127-pg-%d", time.Now().UnixNano())
-	out, err := exec.Command("docker", "run", "-d",
+	out, err := exec.Command("docker", approletest.DockerRunArgs(t,
 		"--name", containerName,
 		// tmpfs at the declared VOLUME path: postgres creates an ANONYMOUS
 		// volume there otherwise, and `docker rm -fv` only reclaims it if the
 		// cleanup actually runs - which it does not on a -timeout kill, a
 		// Ctrl-C or a panic. With the mount there is nothing to leak at all.
-		// Label so an orphaned container is reapable by exact match rather
-		// than by a name glob, which collides on a shared daemon.
-		"--label", "axonflow.test.ephemeral=1",
+		// The labels (approletest.DockerRunArgs) make an orphan reapable by
+		// exact match, never by a name glob, which collides on a shared daemon.
 		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
 		"-e", "POSTGRES_PASSWORD=testpass",
 		"-e", "POSTGRES_DB=axonflow_test",
 		"-p", "0:5432",
 		"postgres:15",
-	).CombinedOutput()
+	)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %v\n%s", err, string(out))
 	}

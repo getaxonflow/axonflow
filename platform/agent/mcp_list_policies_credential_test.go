@@ -171,8 +171,8 @@ func TestListPoliciesReadsBothListsWithTheirCredentials(t *testing.T) {
 			req.Header.Set("X-Tenant-ID", "tenant-4265")
 			req.Header.Set("X-Org-ID", "org-4265")
 			if token != "" {
-				req.Header.Set(internalServiceIDHeader, serviceauth.ClientID)
-				req.Header.Set(internalServiceTokenHeader, token)
+				req.Header.Set(serviceauth.ServiceIDHeader, serviceauth.ClientID)
+				req.Header.Set(serviceauth.ServiceTokenHeader, token)
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

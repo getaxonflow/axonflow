@@ -14,13 +14,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/tenantscope"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -31,65 +29,8 @@ type MAPHITLPolicyChecker struct{}
 // CheckPolicy decides one step. It NEVER RETURNS AN ERROR: the engine that calls
 // it proceeds on an error, so every cause the plane cannot decide through is a
 // block that names it (mapStepPolicyCheck).
-func (c *MAPHITLPolicyChecker) CheckPolicy(ctx context.Context, step WorkflowStep, execution *WorkflowExecution) (*PolicyCheckResult, error) {
-	return mapStepPolicyCheck(ctx, step, execution), nil
-}
-
-// MAPHITLApprovalAdapter provides in-memory approval tracking for MAP steps.
-// In production enterprise deployments, this delegates to the HITL queue service.
-type MAPHITLApprovalAdapter struct{}
-
-// CreateApproval creates a new HITL approval request for a MAP step.
-func (a *MAPHITLApprovalAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRequest) (*HITLApprovalResponse, error) {
-	approvalID := uuid.New()
-
-	log.Printf("[MAP-HITL] Created approval request %s for step %s (policy: %s)",
-		approvalID, logutil.Sanitize(req.StepName), logutil.Sanitize(req.PolicyName))
-
-	return &HITLApprovalResponse{
-		ApprovalID: approvalID,
-		Status:     "pending",
-		// #4254: the typed approval's expiry travels onto the paused execution,
-		// where the approve path refuses after it.
-		ExpiresAt: req.ExpiresAt,
-	}, nil
-}
-
-// approvalTimedOut reports whether an approval expiring at expiresAt has timed
-// out at now. A zero expiry declares none.
-func approvalTimedOut(expiresAt, now time.Time) bool {
-	return !expiresAt.IsZero() && !expiresAt.After(now)
-}
-
-// GetApproval retrieves the status of an HITL approval request.
-//
-// #3067 (S-4): the scan is bound to the caller's org scope, carried on the
-// context by WithHITLScope. The HITLApprovalService interface signature is
-// shared with the WCP-backed implementations, so the scope travels on ctx
-// rather than as a parameter. A context with no scope asserted matches
-// nothing — fail-closed, same shape as the store accessors.
-func (a *MAPHITLApprovalAdapter) GetApproval(ctx context.Context, approvalID uuid.UUID) (*HITLApprovalResponse, error) {
-	executionStoreMutex.RLock()
-	defer executionStoreMutex.RUnlock()
-
-	if exec := findHITLExecutionByApproval(hitlScopeFromContext(ctx), approvalID); exec != nil {
-		return &HITLApprovalResponse{
-			ApprovalID: approvalID,
-			Status:     exec.ApprovalStatus,
-		}, nil
-	}
-
-	return nil, fmt.Errorf("approval %s not found", approvalID)
-}
-
-// mapHITLCallerScope resolves the org scope of a MAP plan approve/reject
-// request from the identity headers the agent's auth chain stamps
-// authoritatively (apiAuthMiddleware does `r.Header.Set` on X-Tenant-ID and
-// X-Org-ID, overwriting anything the client sent) — the same source
-// tryApproveViaWCP has always used for its tenantID/orgID arguments. An empty
-// result is refused by every consumer rather than matching everything.
-func mapHITLCallerScope(r *http.Request) string {
-	return normalizeHITLScope(r.Header.Get("X-Org-ID"), r.Header.Get("X-Tenant-ID"))
+func (c *MAPHITLPolicyChecker) CheckPolicy(ctx context.Context, step WorkflowStep, content StepContent, execution *WorkflowExecution) (*PolicyCheckResult, error) {
+	return mapStepPolicyCheck(ctx, step, content, execution), nil
 }
 
 // mapHITLActorIdentity resolves WHO is approving or rejecting a MAP plan step.
@@ -152,21 +93,13 @@ func mapHITLResolveRefusal(action string) string {
 
 // mapStepApproveHandler handles POST /api/v1/plans/{id}/steps/{step_id}/approve
 //
-// Two code paths, same response shape (Issue #1677):
-//
-//  1. WCP-backed flow (MAP confirm / step modes): the plan has an underlying
-//     WCP workflow that was created by MAPWCPExecutor and written to
-//     workflow_steps. We delegate to workflowControlService.ApproveStep then
-//     fetch the step + project via workflow_control.ProjectStepGateToHTTP —
-//     identical to what the WCP /approve endpoint returns, with plan_id added.
-//
-//  2. Legacy in-memory flow (policy-driven pause/resume): the plan has no WCP
-//     workflow; approval state lives in executionStore. We project a minimal
-//     StepGateHTTPResponse with workflow_id empty, retry_context zero-valued,
-//     and approval metadata sourced from the in-memory execution record.
-//
-// Both paths return StepGateHTTPResponse so clients don't have to branch on
-// which mode the plan ran in.
+// The plan's confirm / step mode workflow (MAP confirm / step modes, created
+// by MAPWCPExecutor in workflow_steps) is approved through
+// workflowControlService.ApproveStep, and the step is projected via
+// workflow_control.ProjectStepGateToHTTP - identical to what the WCP /approve
+// endpoint returns, with plan_id added (Issue #1677). A plan no such workflow
+// backs answers 404: the legacy in-memory pause that used to answer it was
+// unreachable since #4382 and is retired (#4249 row 5774060413).
 func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 	// #3135: the approver identity this handler stamps is only as good as the
 	// hop that set the header, so require the same agent proxy-auth gate the
@@ -199,11 +132,6 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !hitlEnabled || hitlWorkflowEngine == nil {
-		sendErrorResponse(w, "HITL not enabled", http.StatusServiceUnavailable)
-		return
-	}
-
 	vars := mux.Vars(r)
 	planID := vars["id"]
 	stepID := vars["step_id"]
@@ -213,9 +141,9 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the optional body for the approval comment. Comment validation
-	// mirrors WCP /approve (min 10 chars) only when WCP-backed path is taken;
-	// legacy in-memory path accepts empty body for back-compat.
+	// Parse the optional body for the approval comment. An empty body is
+	// accepted; a comment shorter than WCP /approve's 10 characters is
+	// replaced by a generated audit message (tryApproveViaWCP).
 	//
 	// #3135: `approved_by` is deliberately NOT a field here. The struct is the
 	// enforcement — an identity the caller can type cannot be read back out by
@@ -242,12 +170,12 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 	// Path 1 — try WCP-backed flow. If a WCP workflow is registered for this
 	// plan_id (MAP confirm/step mode), delegate so the response matches the
 	// WCP approve response byte-for-byte. Returns (resp, true, nil) on success,
-	// (_, false, nil) when no WCP workflow matches (fall through to legacy),
+	// (_, false, nil) when no WCP workflow matches (the caller answers 404),
 	// or (_, false, err) when the WCP-backed path hit a real error (surface it).
 	if workflowControlService != nil {
 		resp, wcpBacked, wcpErr := tryApproveViaWCP(r.Context(), planID, stepID, r, approvedBy, body.Comment)
 		if wcpErr != nil {
-			sendErrorResponse(w, wcpErr.Error(), http.StatusConflict)
+			sendErrorResponse(w, wcpErr.Error(), approveErrorStatus(wcpErr, http.StatusConflict))
 			return
 		}
 		if wcpBacked {
@@ -257,88 +185,54 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Path 2 — legacy in-memory flow. Locate the paused execution, mark it
-	// approved, and project a best-effort StepGateHTTPResponse. No WCP step
-	// row exists, so retry_context stays zero-valued; ApprovalID is surfaced
-	// from the execution record when available.
-	//
-	// #3067 (S-4, CRITICAL): this scan matched on plan id ALONE across a
-	// process-global store and then flipped ApprovalStatus to approved and
-	// Status to running — so any tenant could release another tenant's
-	// paused, human-gated workflow. A foreign plan reliably reached this path
-	// because path 1 (GetWorkflowByPlanID) returns not-found under the
-	// caller's own tenancy. The lookup is now bound to the caller's org
-	// scope; a caller that asserts no scope matches nothing.
-	callerScope := mapHITLCallerScope(r)
-
-	//
-	// #4254: a timed-out approval is a deny. An approval after the hold's expiry
-	// is refused and the execution stays paused; the check and the release run
-	// under the one lock, so nothing can release it in between.
-	executionStoreMutex.Lock()
-	targetExec := findPausedHITLExecutionForPlan(callerScope, planID)
-	var lapsedAt time.Time
-	if targetExec != nil {
-		if approvalTimedOut(targetExec.approvalExpiresAt, time.Now()) {
-			lapsedAt = targetExec.approvalExpiresAt
-		} else {
-			targetExec.ApprovalStatus = StatusApproved
-			targetExec.Status = "running"
-		}
-	}
-	executionStoreMutex.Unlock()
-
-	if targetExec == nil {
-		sendErrorResponse(w, "No paused execution found for this plan", http.StatusNotFound)
-		return
-	}
-	if !lapsedAt.IsZero() {
-		log.Printf("[MAP-HITL] Step approval refused for plan %s: the approval timed out at %s",
-			logutil.Sanitize(planID), lapsedAt.UTC().Format(time.RFC3339))
-		sendErrorResponse(w, "approval_expired: the approval for this step timed out at "+
-			lapsedAt.UTC().Format(time.RFC3339)+", and a timed-out approval is a deny", http.StatusConflict)
-		return
-	}
-
-	log.Printf("[MAP-HITL] Execution %s approved and resumed for plan %s, step %s",
-		targetExec.ID, logutil.Sanitize(planID), logutil.Sanitize(stepID))
-
-	resp := workflow_control.ProjectStepGateToHTTP(
-		"", // no WCP workflow_id in legacy path
-		planID,
-		nil, // no WCP step row
-		workflow_control.ApproverMeta{ApprovalID: targetExec.ApprovalID.String()},
-		"Step approved",
-		false,
-	)
-	resp.StepID = stepID
-	approved := workflow_control.ApprovalStatusApproved
-	resp.ApprovalStatus = &approved
-	resp.Status = string(approved) // legacy `status` mirror
-	resp.ApprovedBy = approvedBy
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[MAP-HITL] Error encoding response: %v", err)
-	}
+	// No confirm/step workflow backs this plan. The legacy in-memory pause that
+	// used to answer here was unreachable since #4382 (every multi-agent step is
+	// decided, and a challenge is withheld) and is retired (#4249 row
+	// 5774060413); its store was always empty, so this is the answer it gave.
+	sendErrorResponse(w, "No paused execution found for this plan", http.StatusNotFound)
 }
 
-// tryApproveViaWCP delegates to the WCP service for plans backed by a WCP
-// workflow (MAP confirm / step modes). Returns (response, true) on success,
-// (_, false) when no WCP workflow exists for this plan (caller should fall
-// back to the legacy flow). Errors other than not-found short-circuit the
-// HTTP response via the caller's ResponseWriter.
+// planWorkflowForDecision finds the workflow a plan-level approve or reject
+// acts on (#4249, row 5700138487). It used to be the newest workflow of ANY
+// source or name whose caller-writable metadata named the plan
+// (GetWorkflowByPlanID), so a lookalike took a reviewer's decision while the
+// executor's hold stayed pending. A confirm/step plan's workflow is now the one
+// resolvePlanWorkflow establishes (the bound id, or the pre-release fallback),
+// and a refusal is returned as the error, carrying its status.
+//
+// Returns (_, false, nil) when the plan is not a confirm/step plan this caller
+// can load: no workflow backs it, and the caller answers 404 (the in-memory
+// pause it used to fall back to is retired, #4249 row 5774060413).
+func planWorkflowForDecision(ctx context.Context, planID, tenantID, orgID string) (*workflow_control.WorkflowStatusResponse, bool, error) {
+	if planService == nil {
+		return nil, false, nil
+	}
+	plan, err := planService.GetPlan(ctx, planID, orgID)
+	if err != nil || (plan.ExecutionMode != "confirm" && plan.ExecutionMode != "step") {
+		return nil, false, nil
+	}
+	wf, refusal, err := resolvePlanWorkflow(ctx, workflowControlService, plan, tenantID, orgID)
+	if err != nil {
+		log.Printf("[MAP-HITL] resolving the workflow of plan %s: %v", logutil.Sanitize(planID), err)
+		return nil, false, err
+	}
+	if refusal != nil {
+		return nil, false, refusal
+	}
+	return wf, true, nil
+}
+
 // tryApproveViaWCP delegates to the WCP service for plans backed by a WCP
 // workflow (MAP confirm / step modes).
 //
 // Return semantics:
 //   - (resp, true,  nil)  — WCP path succeeded, resp is the rich projection
-//   - (_,    false, nil)  — no WCP workflow exists for this plan (caller must
-//     fall back to the legacy in-memory flow)
+//   - (_,    false, nil)  — no WCP workflow exists for this plan (the caller
+//     answers 404 "No paused execution found for this plan")
 //   - (_,    false, err)  — plan IS WCP-backed but the subsequent operation
-//     failed; caller should surface the error rather than silently falling
-//     through to legacy (which would mask "step not pending approval" type
-//     errors as generic "No paused execution found")
+//     failed; the caller surfaces the error rather than the 404 (which would
+//     mask "step not pending approval" type errors as generic "No paused
+//     execution found")
 func tryApproveViaWCP(
 	ctx context.Context,
 	planID, stepID string,
@@ -352,13 +246,9 @@ func tryApproveViaWCP(
 	tenantID := r.Header.Get("X-Tenant-ID")
 	orgID := r.Header.Get("X-Org-ID")
 
-	wf, err := workflowControlService.GetWorkflowByPlanID(ctx, planID, tenantID, orgID)
-	if err != nil {
-		if errors.Is(err, workflow_control.ErrWorkflowNotFound) {
-			return workflow_control.StepGateHTTPResponse{}, false, nil
-		}
-		log.Printf("[MAP-HITL] GetWorkflowByPlanID error for plan %s: %v", logutil.Sanitize(planID), err)
-		return workflow_control.StepGateHTTPResponse{}, false, nil
+	wf, backed, err := planWorkflowForDecision(ctx, planID, tenantID, orgID)
+	if err != nil || !backed {
+		return workflow_control.StepGateHTTPResponse{}, false, err
 	}
 
 	effectiveComment := comment
@@ -386,7 +276,7 @@ func tryApproveViaWCP(
 	}
 
 	approver := workflow_control.ApproverMeta{
-		ApprovalID: workflow_control.DeriveHITLApprovalID(wf.WorkflowID, stepID),
+		ApprovalID: workflowControlService.CurrentApprovalID(ctx, wf.WorkflowID, stepID, tenantID, orgID),
 	}
 	return workflow_control.ProjectStepGateToHTTP(
 		wf.WorkflowID, planID, step, approver, "Step approved", false,
@@ -394,8 +284,9 @@ func tryApproveViaWCP(
 }
 
 // mapStepRejectHandler handles POST /api/v1/plans/{id}/steps/{step_id}/reject.
-// Symmetric to mapStepApproveHandler — two paths (WCP-backed, legacy in-memory)
-// that share the same StepGateHTTPResponse shape (Issue #1677).
+// Symmetric to mapStepApproveHandler: the WCP-backed path, answering the same
+// StepGateHTTPResponse shape (Issue #1677), or 404 when no workflow backs the
+// plan.
 func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 	// #3135: same agent proxy-auth gate as the approve path — see
 	// mapStepApproveHandler for why it is here and what it is (and is not)
@@ -408,11 +299,6 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 	// Resolution, not creation - see mapStepApproveHandler and hitlResolveAllowed.
 	if isCommunityMode() && !hitlResolveAllowed(tierChecker) {
 		sendErrorResponse(w, mapHITLResolveRefusal("MAP step rejection"), http.StatusForbidden)
-		return
-	}
-
-	if !hitlEnabled || hitlWorkflowEngine == nil {
-		sendErrorResponse(w, "HITL not enabled", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -449,7 +335,12 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 	if workflowControlService != nil {
 		resp, wcpBacked, wcpErr := tryRejectViaWCP(r.Context(), planID, stepID, r, rejectedBy, body.Reason)
 		if wcpErr != nil {
-			sendErrorResponse(w, wcpErr.Error(), http.StatusConflict)
+			status := http.StatusConflict
+			var refusal *planResumeRefusal
+			if errors.As(wcpErr, &refusal) {
+				status = refusal.Status
+			}
+			sendErrorResponse(w, wcpErr.Error(), status)
 			return
 		}
 		if wcpBacked {
@@ -459,43 +350,9 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Path 2 — legacy in-memory flow. Bound to the caller's org scope for the
-	// same reason as the approve path (#3067 S-4): rejecting another tenant's
-	// paused execution aborts their workflow.
-	callerScope := mapHITLCallerScope(r)
-
-	executionStoreMutex.Lock()
-	targetExec := findPausedHITLExecutionForPlan(callerScope, planID)
-	executionStoreMutex.Unlock()
-
-	if targetExec == nil {
-		sendErrorResponse(w, "No paused execution found for this plan", http.StatusNotFound)
-		return
-	}
-
-	reason := body.Reason
-	if reason == "" {
-		reason = "Step rejected"
-	}
-	// Carry the caller's scope so the approval-status lookup AbortExecution
-	// performs is bound too.
-	_, _ = hitlWorkflowEngine.AbortExecution(WithHITLScope(r.Context(), callerScope), targetExec, reason)
-
-	resp := workflow_control.ProjectStepGateToHTTP(
-		"", planID, nil,
-		workflow_control.ApproverMeta{ApprovalID: targetExec.ApprovalID.String()},
-		"Step rejected, workflow aborted",
-		false,
-	)
-	resp.StepID = stepID
-	rejected := workflow_control.ApprovalStatusRejected
-	resp.ApprovalStatus = &rejected
-	resp.Status = string(rejected) // legacy `status` mirror
-	resp.RejectedBy = rejectedBy
-	resp.Reason = reason
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	// No confirm/step workflow backs this plan: the retired in-memory pause's
+	// answer (#4249 row 5774060413), as for approve.
+	sendErrorResponse(w, "No paused execution found for this plan", http.StatusNotFound)
 }
 
 // mapPendingApprovalsHandler handles GET /api/v1/plans/approvals/pending.
@@ -632,13 +489,9 @@ func tryRejectViaWCP(
 	tenantID := r.Header.Get("X-Tenant-ID")
 	orgID := r.Header.Get("X-Org-ID")
 
-	wf, err := workflowControlService.GetWorkflowByPlanID(ctx, planID, tenantID, orgID)
-	if err != nil {
-		if errors.Is(err, workflow_control.ErrWorkflowNotFound) {
-			return workflow_control.StepGateHTTPResponse{}, false, nil
-		}
-		log.Printf("[MAP-HITL] GetWorkflowByPlanID error for plan %s: %v", logutil.Sanitize(planID), err)
-		return workflow_control.StepGateHTTPResponse{}, false, nil
+	wf, backed, err := planWorkflowForDecision(ctx, planID, tenantID, orgID)
+	if err != nil || !backed {
+		return workflow_control.StepGateHTTPResponse{}, false, err
 	}
 
 	effectiveReason := reason
@@ -663,10 +516,28 @@ func tryRejectViaWCP(
 	}
 
 	approver := workflow_control.ApproverMeta{
-		ApprovalID: workflow_control.DeriveHITLApprovalID(wf.WorkflowID, stepID),
+		ApprovalID: workflowControlService.CurrentApprovalID(ctx, wf.WorkflowID, stepID, tenantID, orgID),
 	}
 	return workflow_control.ProjectStepGateToHTTP(
 		wf.WorkflowID, planID, step, approver,
 		"Step rejected, workflow aborted", false,
 	), true, nil
+}
+
+// approveErrorStatus is the status an approval refused by the plan routes
+// answers: a plan refusal carries its own; an approval state that could not be
+// read is 503 and an expired approval 409, as the workflow step approve answers
+// them (#4249 row 5674231306); anything else is fallback.
+func approveErrorStatus(err error, fallback int) int {
+	var refusal *planResumeRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Status
+	}
+	if errors.Is(err, workflow_control.ErrApprovalStateUnreadable) {
+		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, workflow_control.ErrApprovalExpired) {
+		return http.StatusConflict
+	}
+	return fallback
 }

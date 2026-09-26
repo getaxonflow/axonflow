@@ -81,25 +81,45 @@ import (
 const EnvCatalog = authoringcatalog.Env
 
 // DeploymentRealms is the authoring view of the trust realms this deployment
-// mints principals in.
+// mints principals in. The same map is the anchored engine's admission realm
+// set (registry.Catalog.PDPRegistry), so a realm missing here is refused both
+// at publication (REALM_NOT_DECLARED) and on every request (unknown_realm).
 //
-// DERIVED FROM identity.BuiltinRealms, never listed here. Both attributes an
-// authoring catalog needs come off the realm's own declaration -
-// InteractiveClass.CanAnswer and DirectorySource.HasGroupGraph - so a realm
-// added to the identity plane arrives here without anybody remembering to add
-// it, and a realm whose directory wiring changes changes its authoring
-// attributes with it. A hand-kept map would be one entry short the day the
-// sixth realm lands, which is #3877's shape.
+// DERIVED FROM THE IDENTITY PLANE, never listed here, from two declarations:
+//
+//   - the five built-in realms, from identity.BuiltinRealms;
+//   - the tenant OIDC realm, from identity.DeclaredOIDCRealm, when the
+//     deployment wires the enterprise OIDC realm source (HasOIDC).
+//
+// Both attributes an authoring catalog needs come off the identity plane's own
+// derivation - InteractiveClass.CanAnswer and DirectorySource.HasGroupGraph -
+// so a realm whose directory wiring changes changes its authoring attributes
+// with it. A hand-kept map would be one entry short the day another realm
+// lands, which is #3877's shape.
+//
+// THE OIDC REALM CANNOT COME THROUGH BuiltinRealms. That list is what the
+// runtime registers for every organization, and the OIDC realm's canonical
+// issuer is each organization's own IdP: a sixth entry would fail validation
+// or collide with the realm the OIDC source registers. Before #4249 it came
+// from nowhere, so every OIDC-admitted user was refused unknown_realm before
+// any policy ran (oidc_realm_deployment.go).
 //
 // THE ORGANIZATION ARGUMENT IS EMPTY, DELIBERATELY. A realm's IDENTIFIER and
 // its two authoring attributes are deployment facts: BuiltinRealms fills OrgID
-// on each realm and changes nothing else per organization, and the authoring
-// catalog is a deployment vocabulary rather than a per-tenant one. Resolving
-// it per organization would make the set of realms an author may scope to
-// depend on which tenant's request built the catalog first.
+// on each realm and changes nothing else per organization, the OIDC realm is
+// registered under one constant identifier in every organization, and the
+// authoring catalog is a deployment vocabulary rather than a per-tenant one.
+// Resolving it per organization would make the set of realms an author may
+// scope to depend on which tenant's request built the catalog first.
 func DeploymentRealms(dep identity.BuiltinRealmDeployment) map[string]authoring.RealmEntry {
 	out := map[string]authoring.RealmEntry{}
 	for _, r := range identity.BuiltinRealms("", dep) {
+		out[string(r.RealmID)] = authoring.RealmEntry{
+			Interactive:   r.Interactive.CanAnswer(),
+			HasGroupGraph: r.Directory.HasGroupGraph(),
+		}
+	}
+	if r, ok := identity.DeclaredOIDCRealm(dep); ok {
 		out[string(r.RealmID)] = authoring.RealmEntry{
 			Interactive:   r.Interactive.CanAnswer(),
 			HasGroupGraph: r.Directory.HasGroupGraph(),
@@ -115,22 +135,30 @@ func DeploymentRealms(dep identity.BuiltinRealmDeployment) map[string]authoring.
 // input.
 type CatalogDeployment = identity.BuiltinRealmDeployment
 
-// DeploymentFromDatabase derives what a process wired from the one fact the
+// DeploymentFromDatabase derives what a process wired from the two facts the
 // authoring catalog depends on: whether a SCIM-backed directory resolver can
-// be built over this database.
+// be built over this database, and whether the enterprise OIDC realm source
+// can be.
 //
-// IT IS THE ORCHESTRATOR'S OWN DERIVATION, reused rather than restated -
-// initSegmentPolicyGate declares HasDirectory from exactly this constructor
-// succeeding, and the community build of it returns ErrEnterpriseOnly, so a
-// community binary correctly declares no directory. It is cheap and does no
-// I/O: it assembles a role resolver and a cache.
+// THEY ARE THE AGENT'S AND THE ORCHESTRATOR'S OWN DERIVATIONS, reused rather
+// than restated. HasDirectory: initSegmentPolicyGate declares it from exactly
+// this constructor succeeding, and the community build of it returns
+// ErrEnterpriseOnly, so a community binary correctly declares no directory. It
+// is cheap and does no I/O: it assembles a role resolver and a cache. HasOIDC:
+// identity.OIDCRealmSourceWiring is the one predicate every process takes it
+// from (the agent builds its OIDC realm source over the provider it returns);
+// it too does no I/O, and it answers false on a community build and on any
+// deployment mode that does not apply the enterprise schema. It reads the
+// PROCESS's DEPLOYMENT_MODE, so the portal and the importer declare the realm
+// by their own mode, which a licence-transition deployment sets differently
+// from the enforcement plane (see OIDCRealmSourceWiring).
 //
-// THE OTHER TWO FIELDS ARE LEFT FALSE ON PURPOSE, and that is not an omission.
-// An authoring catalog needs exactly two attributes per realm - can a person
-// answer here, and does this realm have a group graph - and neither is moved
-// by revocation or by CAEP: those decide RevocationSource, which the authoring
-// plane does not read. A process that filled them in from a guess would be
-// declaring capabilities it had not checked.
+// HasRevocation AND HasCAEP ARE LEFT FALSE ON PURPOSE, and that is not an
+// omission. An authoring catalog needs exactly three facts per realm - is it
+// declared, can a person answer here, and does it have a group graph - and
+// neither of those two moves any of them: they decide RevocationSource, which
+// the authoring plane does not read. A process that filled them in from a
+// guess would be declaring capabilities it had not checked.
 func DeploymentFromDatabase(db *sql.DB) CatalogDeployment {
 	dep := CatalogDeployment{}
 	if db == nil {
@@ -138,6 +166,9 @@ func DeploymentFromDatabase(db *sql.DB) CatalogDeployment {
 	}
 	if _, err := identity.NewIdentityAttributeResolver(db); err == nil {
 		dep.HasDirectory = true
+	}
+	if _, wired, _ := identity.OIDCRealmSourceWiring(db); wired {
+		dep.HasOIDC = true
 	}
 	return dep
 }

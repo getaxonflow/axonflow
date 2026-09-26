@@ -16,6 +16,7 @@ import (
 
 	"axonflow/platform/agent/license"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // ClientAuth represents authentication configuration for a known client.
@@ -707,14 +708,6 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// The internal-service credential pair: internalServiceHints reads it, and
-// the customer portal and the agent's own loopback reads (mcpProxyToLocal)
-// send it.
-const (
-	internalServiceIDHeader    = "X-Internal-Service-ID"
-	internalServiceTokenHeader = "X-Internal-Service-Token"
-)
-
 // internalServiceHints lifts the customer-portal's signed internal-service
 // credentials off the request headers.
 //
@@ -729,13 +722,13 @@ const (
 // Returns nil when no internal-service id is present, which is exactly what
 // Authenticate() expects for an ordinary caller.
 func internalServiceHints(r *http.Request) *AuthHints {
-	svcID := r.Header.Get(internalServiceIDHeader)
+	svcID := r.Header.Get(serviceauth.ServiceIDHeader)
 	if svcID == "" {
 		return nil
 	}
 	return &AuthHints{
 		ClientID:  svcID,
-		UserToken: r.Header.Get(internalServiceTokenHeader),
+		UserToken: r.Header.Get(serviceauth.ServiceTokenHeader),
 		TenantID:  r.Header.Get("X-Tenant-ID"),
 	}
 }

@@ -7,7 +7,7 @@
 //
 //   axonflow_get_tenant_id       — Free + Pro, no gate; returns tenant identity + tier + upgrade prompt
 //   axonflow_request_approval    - Free=2 per rolling 7d, Pro=20; wraps HITL queue create
-//   axonflow_create_tenant_policy - Free=4 active max, Pro=50; wraps dynamic-policies create
+//   axonflow_create_tenant_policy - retired in v11 (PRD v11 §1.2): refuses on every deployment and writes nothing
 //   axonflow_get_cost_estimate   — Pro only; wraps cost_estimation_handler
 //   axonflow_list_pro_features   — Free + Pro, pure data tool; surfaces locked Pro feature list
 //
@@ -21,70 +21,17 @@ package agent
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/legacyfreeze"
-	sharedpolicy "axonflow/platform/shared/policy"
 )
-
-// activePolicyCountErrorsTotal counts countActiveTenantPolicies failures that
-// fell back to the fail-open default (count=0), per #3296 Step E / epic #3293
-// item #22 (folds in the #3039/#2230 family): the Free-tier active_policies
-// quota gate deliberately fails OPEN on a count error (a transient DB blip
-// must not block a legitimate Free user), but a silent fail-open is a silent
-// quota bypass if the underlying read is failing systematically (e.g. an
-// RLS-blind read on a mis-provisioned deployment, mirroring #3039). A
-// sustained nonzero rate on this counter means the quota is not actually
-// being enforced and needs operator attention.
-var activePolicyCountErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
-	Name: "axonflow_active_policy_count_errors_total",
-	Help: "Count of Free-tier active_policies quota checks (countActiveTenantPolicies) that failed and fell back to fail-open (count=0). A nonzero rate means the quota may be silently bypassed.",
-})
-
-// activePolicyCountLoader and activePolicyCountLoaderDB memoize the
-// sharedpolicy.PolicyLoader countActiveTenantPolicies uses, keyed on the
-// *sql.DB pointer it was built from. Every production call site passes the
-// same process-wide db handle (authDB), so this constructs the loader
-// exactly once and reuses it for the life of the process — the same
-// "construct once, not per-request" discipline as the other lazily-built
-// singletons in this package (e.g. gateway_handlers.go's
-// getRBIKillSwitchChecker). It is keyed on the db pointer, rather than a bare
-// sync.Once, only because countActiveTenantPolicies takes db as an explicit
-// parameter (unlike those singletons, which close over a package-level
-// handle directly) — a plain Once would permanently pin the loader to
-// whichever db happened to make the first call, which is also what makes
-// this function testable against an independent mock db per test case.
-var (
-	activePolicyCountLoaderMu sync.Mutex
-	activePolicyCountLoader   *sharedpolicy.PolicyLoader
-	activePolicyCountLoaderDB *sql.DB
-)
-
-// activePolicyCountLoaderFor returns the memoized PolicyLoader for db,
-// constructing (or replacing) it only when db differs from the last one
-// seen.
-func activePolicyCountLoaderFor(db *sql.DB) *sharedpolicy.PolicyLoader {
-	activePolicyCountLoaderMu.Lock()
-	defer activePolicyCountLoaderMu.Unlock()
-	if activePolicyCountLoader == nil || activePolicyCountLoaderDB != db {
-		activePolicyCountLoader = sharedpolicy.NewPolicyLoader(db, nil)
-		activePolicyCountLoaderDB = db
-	}
-	return activePolicyCountLoader
-}
 
 // V1 Plugin Pro MCP tool names. Used for switch-dispatch in handleMCPToolsCall
 // and as the canonical identifiers in tools/list. DO NOT rename without
@@ -147,7 +94,7 @@ func v1ProMCPTools() []mcpTool {
 		},
 		{
 			Name:        mcpToolNameCreateTenantPolicy,
-			Description: "Create a custom tenant-scoped governance policy. Free tier supports 4 active policies (delete one to make room); Pro raises the cap to 50. Useful for rules like 'block writes to ~/.ssh/' or 'require approval for any rm -rf'. On a deployment whose legacy policy tables are read-only (v11.0.0 application-role deployments, including Community SaaS), this tool refuses and names the typed authoring route (" + legacyfreeze.TypedAuthoringRoute + ") to author the policy through instead.",
+			Description: "Retired in v11 (PRD v11 §1.2): answers LEGACY_POLICY_WRITE_FROZEN and writes nothing on any deployment, because a tenant dynamic policy decides nothing in v11. A policy is authored in the organization's typed document through the typed authoring route (" + legacyfreeze.TypedAuthoringRoute + "), or the portal's policy editor on Enterprise.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -161,7 +108,7 @@ func v1ProMCPTools() []mcpTool {
 					},
 					"connector_type": map[string]interface{}{
 						"type":        "string",
-						"description": "Tool / connector this policy documents an intent for (e.g. 'claude_code.Bash', '*' for all). NOTE: this is recorded in the policy description and is NOT yet enforced as a scope (#3061) — the policy matches its pattern on every governed connector regardless of this value.",
+						"description": "Tool / connector the policy was meant for (e.g. 'claude_code.Bash', '*' for all).",
 					},
 					"pattern": map[string]interface{}{
 						"type":        "string",
@@ -175,11 +122,10 @@ func v1ProMCPTools() []mcpTool {
 				},
 				"required": []string{"name", "connector_type", "pattern", "action"},
 			},
-			RequiredTier: "",
-			FreeUsageLimit: &FreeUsageLimit{
-				MaxCount:  4,
-				LimitType: LimitTypeActivePolicies,
-			},
+			// No FreeUsageLimit: the active_policies quota counted legacy rows
+			// this tool no longer writes, and a retired tool has nothing to cap.
+			RequiredTier:   "",
+			FreeUsageLimit: nil,
 		},
 		{
 			Name:        mcpToolNameGetCostEstimate,
@@ -267,8 +213,9 @@ func saasPluginTierRank(tier string) int {
 //  2. RequiredTier non-empty + SaaS caller below it → emit feature_pro_only envelope
 //  3. FreeUsageLimit non-nil + SaaS caller is Free + count check fails → emit graduated envelope
 //
-// All envelope writes go through writeFreeLimitError so the wire shape
-// matches the 429 daily_quota path locked in PR1 + umbrella #1958.
+// Every refusal goes through writeMCPGateError, which answers the gate's
+// status (403) with the envelope in the JSON-RPC result and the headers the
+// REST twin writeFreeLimitError sets (#4274).
 func enforceMCPToolGate(ctx context.Context, w http.ResponseWriter, req *jsonRPCRequest, session *mcpSession, tool mcpTool, db *sql.DB) bool {
 	if session.tier == "" {
 		// Self-hosted (Community / Evaluation / Paid) and internal
@@ -288,21 +235,12 @@ func enforceMCPToolGate(ctx context.Context, w http.ResponseWriter, req *jsonRPC
 	}
 
 	// Gate 2: Graduated usage caps. Resolve limits from the caller's
-	// tier (Free=4 policies/2 HITL, Pro=50/20, Enterprise=-1 unlimited).
+	// tier (Free=2 HITL, Pro=20, Enterprise=-1 unlimited).
 	// Self-hosted tiers (Community/Evaluation/Enterprise) have -1 for
 	// SaaS-specific fields and skip this gate.
 	if tool.FreeUsageLimit != nil {
 		tierLimits := license.GetTierLimits(license.Tier(session.tier))
 		switch tool.FreeUsageLimit.LimitType {
-		case LimitTypeActivePolicies:
-			cap := tierLimits.MaxActiveCustomPolicies
-			if cap >= 0 {
-				count := countActiveTenantPolicies(ctx, db, session.tenantID)
-				if count >= cap {
-					writeMCPGateError(w, req, LimitTypeActivePolicies, session.tier, cap, 0, "", nil)
-					return true
-				}
-			}
 		case LimitTypeHITLApprovalsWindow:
 			cap := tierLimits.MaxHITLApprovalsPerWeek
 			if cap >= 0 {
@@ -314,21 +252,28 @@ func enforceMCPToolGate(ctx context.Context, w http.ResponseWriter, req *jsonRPC
 					return true
 				}
 			}
+		default:
+			// A limit type this gate does not enforce refuses, so a tool that
+			// declares one is never called ungated.
+			writeMCPGateError(w, req, tool.FreeUsageLimit.LimitType, session.tier, 0, 0, "", nil)
+			return true
 		}
 	}
 
 	return false
 }
 
-// writeMCPGateError emits a JSON-RPC result with isError=true and the V1
-// Plugin Pro envelope as JSON text content. Plugins parse the content
-// text as JSON to extract the envelope and surface the upgrade prompt.
+// writeMCPGateError answers a tier-gate refusal with the V1 Plugin Pro
+// envelope as JSON text in a JSON-RPC result (isError=true). Plugins parse
+// the content text as JSON to extract the envelope and surface the upgrade
+// prompt.
 //
-// This is the JSON-RPC analog of writeFreeLimitError (which wraps the
-// envelope in an HTTP 403 for non-MCP paths). Same envelope shape, same
-// locked URLs, same headers conceptually — but JSON-RPC doesn't have HTTP
-// status codes inside its result, so the envelope semantics are carried
-// in the body alone.
+// This is the JSON-RPC analog of writeFreeLimitError, and answers what it
+// answers (#4274): the status for the limit type (mcpGateStatus), the
+// X-Axonflow-Tier-Limit and X-Axonflow-Upgrade-URL headers, and Retry-After
+// only when the limit has a reset time. Before #4274 it answered 200 with no
+// headers, so a client that reads the status or the headers, and the csaas
+// telemetry row, saw an ordinary result.
 func writeMCPGateError(w http.ResponseWriter, req *jsonRPCRequest, limitType, tier string, limit, remaining int, window string, resetsAt *time.Time) {
 	wording := renderWording(limitType, resetsAt)
 	envelope := rateLimitEnvelope{
@@ -346,47 +291,28 @@ func writeMCPGateError(w http.ResponseWriter, req *jsonRPCRequest, limitType, ti
 			BuyURL:     v1ProUpgradeBuyURL,
 		},
 	}
-	envelopeJSON, _ := json.MarshalIndent(envelope, "", "  ")
-	writeJSONRPCResult(w, req.ID, mcpToolCallResult{
-		Content: []mcpContent{{Type: "text", Text: string(envelopeJSON)}},
-		IsError: true,
-	})
+	retrySecs := 0
+	if resetsAt != nil {
+		retrySecs = retryAfterSeconds(*resetsAt)
+	}
+	writeEnvelopeJSONRPC(w, req.ID, "", envelope, mcpGateStatus(limitType), retrySecs)
 }
 
-// countActiveTenantPolicies counts the active custom dynamic_policies
-// rows for a tenant. Used by the active_policies FreeUsageLimit on
-// axonflow_create_tenant_policy.
+// mcpGateStatus is the HTTP status a limit type is answered with: 429 for the
+// rate limits (daily_quota, per_minute), 403 for the tier gates
+// (feature_pro_only, hitl_approvals_window), as the /health
+// saas.upgrade_envelope capability states.
 //
-// Active = enabled boolean (per migrations/core/010_policy_tables.sql).
-// PR2's initial query used a non-existent `deleted_at` column —
-// runtime-e2e/v1_pro_full_matrix caught the drift in matrix C5.
-//
-// #3296 Step E (epic #3293 item #22): delegates to the shared substrate's
-// PolicyLoader.CountActive (platform/shared/policy/loader.go) — an
-// IN-PROCESS call, never a cross-service RPC, since the substrate is a
-// library shared by the agent and orchestrator. The RLS org-scoping (mig 018)
-// that fixed #3039 is preserved verbatim inside CountActive.
-//
-// Returns 0 on DB error so a transient failure doesn't accidentally
-// block a Free user — the fail-open contract is UNCHANGED from the pre-#3296
-// bespoke read. What changed: an error now increments
-// activePolicyCountErrorsTotal before returning 0, so a systematically
-// failing count (which silently bypasses the quota, same bug class as
-// #3039) is observable instead of indistinguishable from "tenant has zero
-// active policies."
-func countActiveTenantPolicies(ctx context.Context, db *sql.DB, tenantID string) int {
-	if db == nil {
-		return 0
+// The default arm still answers 403 for any other tier gate, active_policies
+// among them; no caller reaches that one since #4356 retired
+// axonflow_create_tenant_policy, the only tool it gated.
+func mcpGateStatus(limitType string) int {
+	switch limitType {
+	case LimitTypeDailyQuota, LimitTypePerMinute:
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusForbidden
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	count, err := activePolicyCountLoaderFor(db).CountActive(queryCtx, tenantID)
-	if err != nil {
-		activePolicyCountErrorsTotal.Inc()
-		log.Printf("[V1Pro] active_policies count failed, fail-open to 0 (quota not enforced this check): %v", err)
-		return 0 // fail open
-	}
-	return count
 }
 
 // countHITLApprovalsInWindow counts HITL approval requests created within
@@ -405,8 +331,8 @@ func countHITLApprovalsInWindow(ctx context.Context, db *sql.DB, tenantID string
 	cutoff := time.Now().Add(-window)
 	var count int
 	var oldest time.Time
-	// Org-scoped: hitl_approval_queue is RLS-enabled (mig 025) — same
-	// fail-open-through-RLS hole as countActiveTenantPolicies (#3039).
+	// Org-scoped: hitl_approval_queue is RLS-enabled (mig 025) — the
+	// fail-open-through-RLS hole of #3039.
 	err := rls.WithOrgScope(queryCtx, db, tenantID, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(queryCtx,
 			`SELECT COUNT(*), COALESCE(MIN(created_at), NOW()) FROM hitl_approval_queue
@@ -559,260 +485,36 @@ func resolveHITLServiceForMCP() *hitl.Service {
 	return mcpHITLService
 }
 
-// mcpToolCreateTenantPolicy — Tool 3: creates a tenant-scoped governance
-// policy by routing through the orchestrator's authoritative policy API
-// (POST /api/v1/policies). The orchestrator's policy_api_service
-// enforces the IsPaidTier gate for tenant-tier policies — so this tool
-// honors the same self-hosted license tier rules every other CRUD path
-// already enforces. The MCP-tool layer's FreeUsageLimit cap (Free=2
-// active policies max) has already fired at enforceMCPToolGate, before
-// this function runs.
+// errTenantPolicyWriteRetired is what axonflow_create_tenant_policy answers
+// from v11.1.0, on every edition and every database role (#4249 row
+// 5667510887). The tool created a tenant dynamic policy, and in v11 a tenant
+// dynamic policy decides nothing (PRD v11 §1.2): the anchored engine decides
+// the planes it would have governed. Until v11.1.0 the tool still wrote that
+// row wherever the agent's database role could write the legacy table (an
+// owner-role deployment) and answered created:true about it, and refused only
+// where core/172's freeze reached it (an application-role deployment). It now refuses before any orchestrator
+// call, so no deployment writes a row that nothing reads.
 //
-// Action mapping from user-facing names to engine action types:
-//   - block            -> block             (deny the request)
-//   - warn             -> alert             (engine handles `alert`,
-//     not `warn`, as the
-//     "log + surface" action)
-//   - audit            -> log               (enhanced audit logging)
-//   - require_approval -> require_approval  (HITL gate)
+// The answer follows the retired override tools (errOverrideWriteRetired): the
+// freeze's code, rendered here rather than proxied, so the caller reads the code
+// and the remedy on every deployment. No closing full stop, as there (ST1005).
 //
-// The user's `connector_type` is recorded in the policy DESCRIPTION and is
-// deliberately NOT emitted as a {field:"connector"} condition — see
-// buildTenantPolicyConditions for the evidence and the follow-up issue.
-// A policy therefore governs the pattern on EVERY connector, not just the
-// one named; the tool says so rather than implying scoping it cannot deliver.
-func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
-	name, _ := args["name"].(string)
-	connectorType, _ := args["connector_type"].(string)
-	pattern, _ := args["pattern"].(string)
-	action, _ := args["action"].(string)
-	description, _ := args["description"].(string)
-	if strings.TrimSpace(name) == "" || strings.TrimSpace(connectorType) == "" ||
-		strings.TrimSpace(pattern) == "" || strings.TrimSpace(action) == "" {
-		return nil, fmt.Errorf("name, connector_type, pattern, and action are required")
-	}
-	engineAction, ok := mapTenantPolicyAction(action)
-	if !ok {
-		return nil, fmt.Errorf("action must be one of: block, warn, audit, require_approval")
-	}
+// The typed re-point is not this answer's to make. A typed document has no
+// tenant scope, one of the tool's actions cannot be published on any edition
+// through the typed route, and a publish replaces the organization's document;
+// those questions are the row's v12.0.0 remainder.
+var errTenantPolicyWriteRetired = errors.New(legacyfreeze.ErrCode + ": " +
+	"axonflow_create_tenant_policy is retired in v11 and writes nothing on any deployment: " +
+	"it created a tenant dynamic policy, and a tenant dynamic policy decides nothing in v11 (PRD v11 §1.2). " +
+	"Author the rule in the organization's typed document through the typed authoring route at " + legacyfreeze.TypedAuthoringRoute +
+	" (the portal's policy editor on Enterprise); re-pointing this tool at typed authoring is tracked on #4249 (row 5667510887)")
 
-	// The `[connector=...]` description prefix remains the ONLY record of the
-	// connector the user named (see buildTenantPolicyConditions).
-	combinedDescription := fmt.Sprintf("[connector=%s] %s", connectorType, description)
-
-	body := map[string]interface{}{
-		"name":        name,
-		"description": combinedDescription,
-		"type":        "content",
-		"tier":        "tenant", // triggers IsPaidTier gate at policy_api_service
-		"conditions":  buildTenantPolicyConditions(pattern),
-		"actions": []map[string]interface{}{
-			{
-				"type": engineAction,
-				"config": map[string]interface{}{
-					"reason": fmt.Sprintf("Tenant policy %q matched", name),
-				},
-			},
-		},
-		"priority": 100,
-		"enabled":  true,
-	}
-
-	resp, err := mcpProxyToOrchestrator(session, "POST", "/api/v1/policies", body)
-	if err != nil {
-		// Map the orchestrator's IsPaidTier rejection to a clearer
-		// MCP-side message so the caller (a Pro buyer running a Pro
-		// tool) understands the deployment-level cause vs the
-		// SaaS Plugin tier cap that fires at enforceMCPToolGate.
-		if isOrchestratorPaidTierReject(err) {
-			return nil, fmt.Errorf("tenant-policy creation rejected by the deployment's license tier (Community caps at 20 tenant policies; Evaluation at 50; paid tiers unlimited) — upgrade at https://getaxonflow.com/evaluation-license — orchestrator detail: %w", err)
-		}
-		// v11.0.0 legacy write freeze (PRD v11 §5 item 5). On a deployment whose
-		// application role lost write access to the legacy policy tables
-		// (migrations/core/172), the orchestrator refuses this create with 409 and
-		// legacyfreeze.ErrCode: before it reads the body when its privilege probe
-		// answers, and on the database's own refusal when it does not. The freeze is
-		// CONDITIONAL: an owner-role deployment still writes, so this branch is
-		// decided by the orchestrator's answer and never by the agent guessing the
-		// database role. Checked after the paid-tier branch, which keys on its own
-		// status and words, and before the generic wrap that used to bury the
-		// answer inside a JSON blob. No fallback write and no retry.
-		if isOrchestratorLegacyWriteFrozen(err) {
-			return nil, fmt.Errorf("tenant-policy creation through this tool is frozen on this deployment in v11.0.0 because the legacy policy tables are read-only for the application role; "+
-				"author the policy through the typed authoring route (%s) instead; "+
-				"re-pointing this tool at typed authoring is tracked on #4249; orchestrator detail: %w",
-				legacyfreeze.TypedAuthoringRoute, err)
-		}
-		return nil, fmt.Errorf("could not create tenant policy: %w", err)
-	}
-
-	// Translate orchestrator's PolicyResponse{policy: {...}} to the
-	// MCP tool's response shape. We pull a few key fields back up to
-	// the top level so LLM consumers see the same surface they did
-	// when this tool used direct DB writes.
-	policyMap := extractPolicyFromResponse(resp)
-
-	// #3061 and v11: report the enforcement the MCP tool-governance plane
-	// actually applies, instead of promising "It will apply to subsequent
-	// governed calls". The anchored engine decides that plane's requests, and
-	// an organization's tenant dynamic policies no longer decide there, so the
-	// stored policy is not enforced on it.
-	message := fmt.Sprintf(
-		"Created tenant-scoped policy %q, but it is STORED AND NOT ENFORCED on the MCP tool-governance plane: %s. "+
-			"To govern MCP tool calls, publish the rule as a typed policy.",
-		name, tenantPolicyNotEnforcedReason)
-
-	created := map[string]interface{}{
-		// Explicit positive signal for LLM consumers (#1986). Without
-		// `success: true` + `created: true`, models can misread the
-		// presence of `enabled: true` (which describes the policy
-		// state, not the operation outcome) as ambiguous.
-		"success":        true,
-		"created":        true,
-		"name":           name,
-		"connector_type": connectorType,
-		"pattern":        pattern,
-		"action":         action,
-		"enabled":        true,
-		// Machine-readable sibling of `message` so an LLM consumer does not
-		// have to parse prose to learn the policy is inert on this plane.
-		// `enabled` describes the stored row; `enforced` the MCP plane.
-		"enforced":                   false,
-		"enforcement_blocked_reason": tenantPolicyNotEnforcedReason,
-		// #3061: the stored policy carries no connector condition, so the
-		// connector the caller named is descriptive only. Machine-readable so an
-		// LLM consumer does not have to infer it from prose.
-		"connector_scope_enforced": false,
-		"applies_to_connectors":    "all",
-		"message":                  message,
-	}
-	if policyID, ok := policyMap["id"].(string); ok && policyID != "" {
-		created["id"] = policyID
-	}
-	if policyKey, ok := policyMap["policy_id"].(string); ok && policyKey != "" {
-		created["policy_id"] = policyKey
-	}
-	return created, nil
-}
-
-// tenantPolicyNotEnforcedReason says why a tenant policy created through this
-// tool is stored but not enforced on the MCP tool-governance plane.
-const tenantPolicyNotEnforcedReason = "in v11 the anchored engine decides the MCP tool-governance plane's requests, and tenant dynamic policies no longer decide there (PRD v11 §1.2)"
-
-// buildTenantPolicyConditions builds the condition list for a tenant policy:
-// the pattern, and ONLY the pattern.
-//
-// #3061 DOCUMENTED DEFERRAL — why connector_type is not a condition here.
-//
-// The obvious fix for "the user's connector is discarded into the description"
-// is to emit {field:"connector", operator:"equals", value:connectorType}. That
-// was correct only for the MCP dynamic-policy plane, whose evaluator resolved
-// `connector` from the request's connector name until v11 retired it, and it
-// BREAKS the planes where these policies work today. These rows are
-// policy_type='content', and the orchestrator content engine that governs the
-// LLM / MAP / WCP planes has no `connector` field at all: getFieldValue
-// (db_dynamic_policies.go) falls through to its default arm and returns nil,
-// `equals` then compares "<nil>" against the real connector name and yields
-// false, and with conditions present ALL must match — so the entire policy is
-// skipped. Adding the condition would therefore lose enforcement where it
-// works, for a plane that no longer evaluates these rows: the same defect
-// class #3061 exists to fix, inverted.
-//
-// Making `connector` resolvable on the orchestrator content engine is the real
-// fix, and it belongs in db_dynamic_policies.go — a file owned by another
-// in-flight workstream, so it is NOT touched here. Tracked as the follow-up
-// filed against #3061; until it lands, a tenant policy governs its pattern on
-// EVERY connector rather than the one named. That is over-broad rather than
-// under-broad (it fails toward more governance, not less), it matches the
-// pre-#3061 stored shape so no existing row changes meaning, and the tool's
-// response says so plainly instead of promising scoping it cannot deliver.
-func buildTenantPolicyConditions(pattern string) []map[string]interface{} {
-	return []map[string]interface{}{
-		{
-			"field":    "query",
-			"operator": "regex",
-			"value":    pattern,
-		},
-	}
-}
-
-// mapTenantPolicyAction translates the user-facing tenant-policy
-// action names to the engine's action types. Returns false if the
-// action is not in the supported set.
-func mapTenantPolicyAction(userAction string) (engineAction string, ok bool) {
-	switch userAction {
-	case "block":
-		return "block", true
-	case "warn":
-		// Engine handles "alert"; "warn" is the user-friendly name.
-		return "alert", true
-	case "audit":
-		return "log", true
-	case "require_approval":
-		return "require_approval", true
-	default:
-		return "", false
-	}
-}
-
-// isOrchestratorPaidTierReject reports whether the orchestrator's
-// error is a tier-validation rejection that the user should see
-// re-worded with deployment-license context. Matches:
-//   - The Organization-root policy scale limit (#3593:
-//     policy_api_service.validateTierForCreate -> admitOrgRootPolicies,
-//     code ERR_TIER_LIMIT_ORG_ROOT_POLICY, 0 on Community and Evaluation)
-//   - The Tenant-tier policy-count cap for non-paid tiers
-//     (policy_api_service.validateTierForCreate, ErrCodePolicyLimitExceeded)
-//
-// The orchestrator returns 403 with these codes/wordings. We match
-// conservatively on the recognizable phrase to keep the classifier
-// robust against minor message tweaks.
-func isOrchestratorPaidTierReject(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	if !strings.Contains(msg, "orchestrator returned 403") {
-		return false
-	}
-	return strings.Contains(msg, "err_tier_limit_") ||
-		strings.Contains(msg, "enterprise license") ||
-		strings.Contains(msg, "evaluation or enterprise") ||
-		strings.Contains(msg, "evaluation license") ||
-		strings.Contains(msg, "tier_validation") ||
-		strings.Contains(msg, "policy limit") ||
-		strings.Contains(msg, "policy_limit_exceeded")
-}
-
-// isOrchestratorLegacyWriteFrozen reports whether the orchestrator refused
-// the create with the v11.0.0 legacy write freeze: a 409 carrying
-// legacyfreeze.ErrCode. BOTH keys are required. A 409 without the code is some
-// other conflict and stays generic, and the code under any other status is not
-// the freeze. The status text is the one mcpProxyToOrchestrator writes for
-// every non-2xx answer ("orchestrator returned %d: %s").
-func isOrchestratorLegacyWriteFrozen(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "orchestrator returned 409") &&
-		strings.Contains(msg, legacyfreeze.ErrCode)
-}
-
-// extractPolicyFromResponse pulls the inner `policy` object from the
-// orchestrator's PolicyResponse{policy: {...}} envelope. Returns an
-// empty map if the response shape doesn't match (the response is
-// still valid; we just have no fields to lift up).
-func extractPolicyFromResponse(resp interface{}) map[string]interface{} {
-	envelope, ok := resp.(map[string]interface{})
-	if !ok {
-		return map[string]interface{}{}
-	}
-	policy, ok := envelope["policy"].(map[string]interface{})
-	if !ok {
-		return map[string]interface{}{}
-	}
-	return policy
+// mcpToolCreateTenantPolicy answers errTenantPolicyWriteRetired for every
+// caller. It reads no argument, as mcpToolCreateOverride reads none: a retired
+// tool refuses whatever it is given, so a caller missing a field is told where
+// the write went rather than which field to add to a write that cannot happen.
+func mcpToolCreateTenantPolicy(_ *mcpSession, _ map[string]interface{}) (interface{}, error) {
+	return nil, errTenantPolicyWriteRetired
 }
 
 // mcpToolGetCostEstimate — Tool 4: proxies to the orchestrator's
@@ -942,12 +644,6 @@ func mcpToolListProFeatures(session *mcpSession) (interface{}, error) {
 				"capability": "Audit retention",
 				"free":       "3 days",
 				"pro":        "30 days (10× Free)",
-			},
-			{
-				"id":         "active_policies",
-				"capability": "Custom tenant policies",
-				"free":       "4 active max",
-				"pro":        "Up to 50",
 			},
 			{
 				"id":         "hitl_approvals",

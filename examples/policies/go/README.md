@@ -12,7 +12,7 @@ Examples demonstrating policy CRUD operations using the AxonFlow Go SDK.
 
 ```bash
 # Install SDK
-go get github.com/getaxonflow/axonflow-sdk-go/v9@v9.0.0
+go get github.com/getaxonflow/axonflow-sdk-go/v9
 ```
 
 ## Environment Variables
@@ -44,7 +44,7 @@ go run test_pattern.go
 ### Static Policies
 
 ```go
-import axonflow "github.com/getaxonflow/axonflow-sdk-go"
+import axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
 
 client := axonflow.NewClient("http://localhost:8080")
 

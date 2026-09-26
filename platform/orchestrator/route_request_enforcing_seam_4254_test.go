@@ -17,13 +17,14 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/shared/anchoredenforcer"
+
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // recordingRouteFacts is a route fact source that records every request the
@@ -40,8 +41,7 @@ func (r *recordingRouteFacts) Produce(_ context.Context, req OrchestratorRequest
 }
 
 func resetRouteRequestFacts() {
-	routeRequestFactsOnce = sync.Once{}
-	routeRequestFacts, routeRequestFactsErr = nil, nil
+	routeRequestFactSource.reset()
 }
 
 // withRouteRequestEngine installs the enforcer double and a recording route fact
@@ -80,26 +80,14 @@ func routeDenyVerdict(ids ...string) anchoredenforcer.Verdict {
 	return stepGateVerdict(contract.StateDeny, contract.ReasonExplicitConstraint, contract.Determining{MatchedConstraints: ids})
 }
 
-// withRecordingHITL installs an HITL workflow engine whose approvals are
-// recorded, so a test can read back that nothing was queued.
-func withRecordingHITL(t *testing.T) *recordingApprovalService {
-	t.Helper()
-	previousEnabled, previousEngine := hitlEnabled, hitlWorkflowEngine
-	approval := &recordingApprovalService{}
-	hitlEnabled = true
-	hitlWorkflowEngine = NewHITLWorkflowEngine(NewWorkflowEngine(), &MAPHITLPolicyChecker{}, approval)
-	t.Cleanup(func() { hitlEnabled, hitlWorkflowEngine = previousEnabled, previousEngine })
-	return approval
-}
-
 // A challenge on /api/v1/process refuses the request by the contract's reason,
-// with the engine envelope, and queues nothing: the route cannot hold.
-func TestAProcessChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testing.T) {
+// with the engine envelope: the route cannot hold.
+func TestAProcessChallengeIsRefusedApprovalRequired(t *testing.T) {
 	previousAudit := auditLogger
 	auditLogger = NewAuditLogger("")
 	t.Cleanup(func() { auditLogger = previousAudit })
 	_, src := withRouteRequestEngine(t, heldStepVerdict())
-	approval := withRecordingHITL(t)
+	withHITLFlag(t, true)
 
 	handler := gs3066ServedHandler(t, "/api/v1/process", processRequestHandler)
 	rr := gs3066Post(t, handler, "/api/v1/process",
@@ -122,11 +110,11 @@ func TestAProcessChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testing.T
 	if resp.PolicyInfo == nil || resp.PolicyInfo.Allowed {
 		t.Fatalf("policy_info = %+v, want a withheld result", resp.PolicyInfo)
 	}
-	if want := []string{"blocked: " + anchoredenforcer.ApprovalRequiredReason(wcpSeamScope)}; !reflect.DeepEqual(resp.PolicyInfo.RequiredActions, want) {
+	if want := []string{"blocked: " + anchoredenforcer.ApprovalRequiredReason(orchestratorRequestSeamScope)}; !reflect.DeepEqual(resp.PolicyInfo.RequiredActions, want) {
 		t.Errorf("required_actions = %v, want %v: the refusal names the contract's reason, then the plane (PRD v11 §1 item 13)", resp.PolicyInfo.RequiredActions, want)
 	}
-	if got := resp.PolicyInfo.RequiredActions; len(got) != 1 || !strings.HasPrefix(got[0], "blocked: approval_required:") || !strings.Contains(got[0], "the wcp plane") {
-		t.Errorf("required_actions = %v, want the reason code first and the wcp plane named", got)
+	if got := resp.PolicyInfo.RequiredActions; len(got) != 1 || !strings.HasPrefix(got[0], "blocked: approval_required:") || !strings.Contains(got[0], "the orchestrator_request plane") {
+		t.Errorf("required_actions = %v, want the reason code first and the orchestrator_request plane named", got)
 	}
 	if want := []string{"wsp-approval-policy"}; !reflect.DeepEqual(resp.PolicyInfo.AppliedPolicies, want) {
 		t.Errorf("applied_policies = %v, want the policy that required approval %v", resp.PolicyInfo.AppliedPolicies, want)
@@ -134,14 +122,11 @@ func TestAProcessChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testing.T
 	if resp.Engine != anchoredenforcer.EngineAnchored || resp.Verdict != routeRequestVerdictBlocked {
 		t.Errorf("envelope engine=%q verdict=%q, want %q and %q", resp.Engine, resp.Verdict, anchoredenforcer.EngineAnchored, routeRequestVerdictBlocked)
 	}
-	if approval.calls != 0 {
-		t.Errorf("approvals created = %d, want none: /api/v1/process cannot hold", approval.calls)
-	}
 }
 
 // A challenge on plan execute refuses the plan by the contract's reason, keeps
-// the route's refusal text, and queues nothing.
-func TestAPlanExecuteChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testing.T) {
+// the route's refusal text: the route cannot hold.
+func TestAPlanExecuteChallengeIsRefusedApprovalRequired(t *testing.T) {
 	previousPlans, previousWorkflow, previousAudit := planService, workflowEngine, auditLogger
 	t.Cleanup(func() { planService, workflowEngine, auditLogger = previousPlans, previousWorkflow, previousAudit })
 	repo := planning.NewMockRepository()
@@ -163,7 +148,7 @@ func TestAPlanExecuteChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testi
 	workflowEngine = NewWorkflowEngine()
 	auditLogger = NewAuditLogger("")
 	_, src := withRouteRequestEngine(t, heldStepVerdict())
-	approval := withRecordingHITL(t)
+	withHITLFlag(t, true)
 
 	body, _ := json.Marshal(PlanRequest{
 		Query:   "run it",
@@ -190,11 +175,8 @@ func TestAPlanExecuteChallengeIsRefusedApprovalRequiredAndQueuesNothing(t *testi
 	if resp.Error != "Policy blocked MAP execution" {
 		t.Errorf("error = %q, want the route's unchanged refusal text", resp.Error)
 	}
-	if want := []string{"blocked: " + anchoredenforcer.ApprovalRequiredReason(wcpSeamScope)}; resp.PolicyInfo == nil || !reflect.DeepEqual(resp.PolicyInfo.RequiredActions, want) {
+	if want := []string{"blocked: " + anchoredenforcer.ApprovalRequiredReason(orchestratorRequestSeamScope)}; resp.PolicyInfo == nil || !reflect.DeepEqual(resp.PolicyInfo.RequiredActions, want) {
 		t.Errorf("policy_info = %+v, want required_actions %v: the reason code, then the plane (PRD v11 §1 item 13)", resp.PolicyInfo, want)
-	}
-	if approval.calls != 0 {
-		t.Errorf("approvals created = %d, want none: plan execute cannot hold", approval.calls)
 	}
 }
 
@@ -215,8 +197,8 @@ func TestTheRoutesPresentTheirQueryTheirActionAndTheCredentialSubject(t *testing
 				t.Fatalf("an allowed verdict withheld the request: %+v", decision.result)
 			}
 			call := d.lastCall(t)
-			if call.Scope != wcpSeamScope || call.Action != action || call.OrgID != "org-route" {
-				t.Errorf("call scope=%v action=%q org=%q, want %v %q org-route", call.Scope, call.Action, call.OrgID, wcpSeamScope, action)
+			if call.Scope != orchestratorRequestSeamScope || call.Action != action || call.OrgID != "org-route" {
+				t.Errorf("call scope=%v action=%q org=%q, want %v %q org-route", call.Scope, call.Action, call.OrgID, orchestratorRequestSeamScope, action)
 			}
 			if call.Query != "the caller's query" || call.EmptyContent {
 				t.Errorf("query=%q empty content=%v, want the request's query presented", call.Query, call.EmptyContent)
@@ -249,6 +231,44 @@ func TestAnAllowedRouteRequestCarriesTheRoutingHints(t *testing.T) {
 	withheld := decideRouteRequest(context.Background(), http.Header{}, OrchestratorRequest{Client: ClientContext{OrgID: "o"}}, processRouteAction).result
 	if withheld.PreferredProvider != "" || len(withheld.AllowedProviders) != 0 {
 		t.Errorf("a withheld request carried routing hints: %+v", withheld)
+	}
+}
+
+// AN ALLOW WHOSE ROUTE RESTRICTIONS PERMIT NO PROVIDER IS REFUSED BY THE SEAM,
+// naming no_compliant_provider, and carries no hints: an empty allow-list that
+// reached the router would read as "unrestricted" (#4249 row 5698088094). The
+// control beside it is the same allow with a restriction that permits one
+// provider.
+func TestAnAllowWhoseRouteRestrictionsPermitNothingIsRefused(t *testing.T) {
+	routeLayerDenies := func() float64 {
+		return promtestutil.ToFloat64(anchoredenforcer.Decisions.WithLabelValues(orchestratorRequestSeamScope.String(), anchoredenforcer.EngineAnchored, "deny", reasonNoCompliantProvider))
+	}
+	denies := routeLayerDenies()
+	_, src := withRouteRequestEngine(t, allowedStepVerdict())
+	src.routes = routeEffects{PreferredProvider: "openai", Restricted: true, AllowedProviders: []string{}}
+	refused := decideRouteRequest(context.Background(), http.Header{}, OrchestratorRequest{Client: ClientContext{OrgID: "o"}}, processRouteAction).result
+	if refused.Allowed {
+		t.Fatal("restrictions that permit no provider admitted the request")
+	}
+	if !reflect.DeepEqual(refused.AppliedPolicies, []string{reasonNoCompliantProvider}) ||
+		!reflect.DeepEqual(refused.RequiredActions, []string{"blocked: " + reasonNoCompliantProvider}) {
+		t.Errorf("refusal = policies %v actions %v, want the reason %q named", refused.AppliedPolicies, refused.RequiredActions, reasonNoCompliantProvider)
+	}
+	if refused.EvaluationError || refused.PreferredProvider != "" || len(refused.AllowedProviders) != 0 {
+		t.Errorf("refusal carried an evaluation error or routing hints: %+v", refused)
+	}
+	if refused.BlockedBy != blockedByRouteLayer {
+		t.Errorf("refusal BlockedBy = %q, want %q: the engine allowed, so the row must name the layer that refused", refused.BlockedBy, blockedByRouteLayer)
+	}
+	if got := routeLayerDenies() - denies; got != 1 {
+		t.Errorf("deny/%s enforcement metric moved by %v, want 1", reasonNoCompliantProvider, got)
+	}
+
+	_, src = withRouteRequestEngine(t, allowedStepVerdict())
+	src.routes = routeEffects{Restricted: true, AllowedProviders: []string{"ollama"}}
+	admitted := decideRouteRequest(context.Background(), http.Header{}, OrchestratorRequest{Client: ClientContext{OrgID: "o"}}, processRouteAction).result
+	if !admitted.Allowed || !reflect.DeepEqual(admitted.AllowedProviders, []string{"ollama"}) || admitted.BlockedBy != "" {
+		t.Errorf("CONTROL: a restriction permitting one provider = %+v, want admitted with [ollama]", admitted)
 	}
 }
 
@@ -307,7 +327,7 @@ func TestTheRouteRequestsProductionSourcePresentsContent(t *testing.T) {
 	dynamicPolicyEngine = &mockPolicyEngineForHITL{}
 	t.Cleanup(func() { dynamicPolicyEngine = previous })
 
-	src, err := newRouteRequestFactProducer()
+	src, err := productionRouteRequestFactProducer()
 	if err != nil {
 		t.Fatalf("newRouteRequestFactProducer: %v", err)
 	}

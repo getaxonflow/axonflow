@@ -37,6 +37,12 @@ type ActionEntry struct {
 	Irreversible bool `json:"irreversible"`
 	DataEgress   bool `json:"data_egress"`
 	Privileged   bool `json:"privileged"`
+	// Planes are the enforcement scopes that present this action
+	// (legacycompile.ScopesPresenting, narrowed to the planes this build
+	// registers), sorted: the scopes a control selecting it may name in
+	// `binds_on` (#4371). Empty in a catalog that states none, where no
+	// `binds_on` is admitted; omitempty keeps such a catalog's digest as it was.
+	Planes []string `json:"planes,omitempty"`
 }
 
 // Registry is the action, tool and realm registry consulted at admission.
@@ -59,6 +65,21 @@ type AdmissionResult struct {
 	Detail string
 	// Entry is the resolved action registry entry when admission succeeded.
 	Entry ActionEntry
+}
+
+// AdmissionRefusalReasons are the reason codes Admit refuses a request with
+// against a configured registry, before any policy runs. A seam that names an
+// admission refusal's Detail to the caller keys on exactly this list, and a
+// test holds it equal to what Admit produces (#4249). A nil registry's
+// evaluation_error is not in it: that is a deployment defect, not something
+// about the request.
+func AdmissionRefusalReasons() []contract.ReasonCode {
+	return []contract.ReasonCode{
+		contract.ReasonUnknownAction,
+		contract.ReasonUnknownRealm,
+		contract.ReasonDelegationDepth,
+		contract.ReasonSchemaViolation,
+	}
 }
 
 // Admit runs the checks that precede policy evaluation.
@@ -116,19 +137,23 @@ func validateArguments(entry ActionEntry, attrs contract.AttributeSet) string {
 		if attrs[p].State == contract.StateKnown {
 			present[name] = attrs[p]
 		}
+		// EVERY CALLER-SUPPLIED NAME IS QUOTED (#4249). The detail is carried to
+		// the wire and the audit row after the bare reason code, joined by "; ",
+		// and an argument name may itself contain "; " and spaces, so an
+		// unquoted name could read as a second reason the engine never gave.
 		declared, ok := entry.Arguments[name]
 		if !ok {
-			unknown = append(unknown, name)
+			unknown = append(unknown, fmt.Sprintf("%q", name))
 			continue
 		}
 		a := attrs[p]
 		if a.State == contract.StateKnown && !valueMatchesType(a.Value, declared) {
-			mistyped = append(mistyped, fmt.Sprintf("%s (declared %s)", name, declared))
+			mistyped = append(mistyped, fmt.Sprintf("%q (declared %s)", name, declared))
 		}
 	}
 	for _, req := range entry.RequiredArguments {
 		if _, ok := present[req]; !ok {
-			missing = append(missing, req)
+			missing = append(missing, fmt.Sprintf("%q", req))
 		}
 	}
 	sort.Strings(unknown)

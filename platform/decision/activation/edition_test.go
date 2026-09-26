@@ -204,12 +204,19 @@ func templateArtifact(t *testing.T, w *world, ed authoring.Edition, rename func(
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc.Version = 1
 	for i := range doc.Policies {
 		if rename != nil {
 			doc.Policies[i].ID = rename(i, doc.Policies[i].ID)
 		}
 	}
+	return templateArtifactOf(t, w, ed, doc)
+}
+
+// templateArtifactOf publishes doc, a document derived from the organization
+// template, as templateArtifact does.
+func templateArtifactOf(t *testing.T, w *world, ed authoring.Edition, doc *pdp.Document) (*authoring.Artifact, authoring.Findings, error) {
+	t.Helper()
+	doc.Version = 1
 	profile, err := authoring.ProfileFor(ed)
 	if err != nil {
 		t.Fatal(err)

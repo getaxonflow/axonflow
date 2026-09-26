@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"sync"
@@ -161,6 +162,48 @@ func requireInternalProxyAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// THE ONE READ OF THE AGENT'S IDENTITY-SOURCE MARKER, and it is here, after
+		// the proxy token validated, so no request that did not come through the
+		// agent can establish anything (ADR-067 Decision 4 step 1b, #4249 row
+		// 5697957634). The agent strips any client-sent value and sets it only for
+		// an email a verified token supplied (sharedidentity.HeaderIdentitySource).
+		// Carried on the context, not on a request struct: every plane that
+		// selects dynamic rows (the route request, the WCP step gate and its
+		// checkpoint resume, MAP) hands the fact producer this request's context,
+		// and a struct field would be one more thing a JSON body could set.
+		next.ServeHTTP(w, r.WithContext(withIdentityEstablished(r.Context(),
+			sharedidentity.IdentityIsEstablished(r.Header.Get(sharedidentity.HeaderIdentitySource)))))
 	})
+}
+
+// identityEstablishedKey carries whether the agent vouched that the request's
+// X-User-Email came from a verified token.
+type identityEstablishedKey struct{}
+
+func withIdentityEstablished(ctx context.Context, established bool) context.Context {
+	return context.WithValue(ctx, identityEstablishedKey{}, established)
+}
+
+// identityEstablishedFrom reports whether ctx carries the proxy-authenticated
+// "validated_token" marker. Anything else, including a context that never
+// passed requireInternalProxyAuth (an exempt path, a background context a
+// future async hop starts from), is not established: the fail-closed reading,
+// under which the caller gets every segment's route restrictions.
+func identityEstablishedFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	established, _ := ctx.Value(identityEstablishedKey{}).(bool)
+	return established
+}
+
+// segmentMembershipEstablished is the ONE rule for whether a request's segment
+// membership is established: it is when the request carries no email (the
+// anonymous baseline: only unsegmented rows apply, and the caller names nothing
+// that could move it) or the agent vouched the email came from a verified token.
+// A non-empty email without that is NOT established, whatever the trust gate
+// says: a synthesised email reaches here with the gate off too, and applying
+// the rule regardless only ever adds rows.
+func segmentMembershipEstablished(ctx context.Context, req OrchestratorRequest) bool {
+	return req.User.Email == "" || identityEstablishedFrom(ctx)
 }

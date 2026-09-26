@@ -24,32 +24,30 @@ import (
 // A CONDITIONAL CARRYING NO BRANCH STEPS IS NOT PRESENTED, ON EVERY MODE (R3 B-H1).
 //
 // It invokes nothing, so no gate is taken, no row is written and nothing runs for
-// it, and the execution continues past it: in the HITL engine, in confirm mode,
-// in step mode and on plan resume.
+// it, and the execution continues past it: in the multi-agent workflow engine,
+// in confirm mode, in step mode and on plan resume.
 
 func branchlessConditional() WorkflowStep {
 	return WorkflowStep{Name: "check", Type: "conditional", Condition: "true"}
 }
 
-func TestABranchlessConditionalIsNotPresentedInTheHITLEngine(t *testing.T) {
+func TestABranchlessConditionalIsNotPresentedInTheWorkflowEngine(t *testing.T) {
 	d := withMAPEngine(t, allowedStepVerdict())
 	rows := responsePlaneLogger()
-	hitl, processor := mapHITLEngine(&recordingApprovalService{})
-	hitl.SetAuditLogger(rows)
-	conditional := &recordingStepProcessor{}
-	hitl.engine.stepProcessors["conditional"] = conditional
+	engine, processor := mapGatedEngine(rows)
+	engine.stepProcessors["conditional"] = NewConditionalProcessor(engine)
 	wf := Workflow{
 		Metadata: WorkflowMetadata{Name: "branchless"},
 		Spec:     WorkflowSpec{Steps: []WorkflowStep{{Name: "a", Type: "llm-call"}, branchlessConditional(), {Name: "b", Type: "llm-call"}}},
 	}
 
-	exec, err := hitl.ExecuteWithHITL(mapSubjectContext(), wf, map[string]interface{}{}, UserContext{OrgID: "org-map"})
+	exec, err := engine.ExecuteWorkflow(mapSubjectContext(), wf, map[string]interface{}{}, UserContext{OrgID: "org-map"})
 
 	if err != nil || exec == nil || exec.Status != "completed" {
 		t.Fatalf("execution = (%+v, %v), want completed past the conditional", exec, err)
 	}
-	if processor.ran != 2 || conditional.ran != 0 {
-		t.Errorf("ran %d llm-call steps and %d conditional steps, want 2 and 0", processor.ran, conditional.ran)
+	if processor.ran != 2 {
+		t.Errorf("ran %d llm-call steps, want 2", processor.ran)
 	}
 	if n := d.callCount(); n != 2 {
 		t.Errorf("the engine decided %d steps, want the 2 presented ones", n)
@@ -103,6 +101,8 @@ func TestPlanResumeSkipsABranchlessConditional(t *testing.T) {
 	cleanup := setupResumeTestWCPWithWorkflow(t, "plan_branchless_resume", "confirm", branchlessResumeWorkflow)
 	defer cleanup()
 	processor := withRecordingWorkflowEngine(t)
+	// The approved step is decided before it runs (#4249 row 5666236540).
+	withMAPEngine(t, allowedStepVerdict())
 
 	w := resumeThePlan(t, "plan_branchless_resume")
 

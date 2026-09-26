@@ -86,7 +86,22 @@ func withoutRow(rows []DynamicPolicy, id string) []DynamicPolicy {
 
 func testFactProducer(t *testing.T, rows []DynamicPolicy) *dynamicFactProducer {
 	t.Helper()
-	p, err := newDynamicFactProducer(func(string, []string) []DynamicPolicy { return rows })
+	return testFactProducerOver(t, fixedFactRows(rows))
+}
+
+// fixedFactRows is a row source answering both of its lists with the same rows,
+// for a test that does not read which list was asked.
+type fixedFactRows []DynamicPolicy
+
+func (f fixedFactRows) ListActivePoliciesForTenant(string, []string) []DynamicPolicy { return f }
+
+func (f fixedFactRows) ListActivePoliciesForOrgInEverySegment(string) []DynamicPolicy { return f }
+
+// testFactProducerOver is testFactProducer over any rows source, such as a
+// live engine's ListActivePoliciesForTenant (#4249).
+func testFactProducerOver(t *testing.T, rows dynamicFactRows) *dynamicFactProducer {
+	t.Helper()
+	p, err := newDynamicFactProducer(rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,9 +199,12 @@ func TestTheProducerStatesEveryFactTheShippedDynamicControlsRead(t *testing.T) {
 		}
 		for path := range read {
 			if path == "signal.cost_estimate" {
-				// Never stated: its only source is a caller claim, which the
-				// contract does not admit as a signal
-				// (TestTheCostEstimateIsNotStatedBecauseItsOnlySourceIsACallerClaim).
+				// Not stated for THIS request, which carries no step to price:
+				// the platform states the fact from the step a step plane is
+				// about to run (#4249 row 5664825929,
+				// step_cost_estimate_4249_test.go), and never from the caller's
+				// context, which the contract does not admit as a signal
+				// (TestTheCostEstimateIsNeverTheCallersClaim).
 				continue
 			}
 			f, stated := facts[path]
@@ -208,7 +226,12 @@ func TestTheProducerStatesEveryFactTheShippedDynamicControlsRead(t *testing.T) {
 // route effects of the rows that apply, and an error, and nothing else. The
 // route effects are fact-layer output (PRD v11 §1.2 ruling R2, #4254): they
 // steer which provider serves an admitted request and carry no verdict, which
-// the second half of this test pins field by field.
+// the second half of this test pins field by field. Restricted is the
+// restriction's own state, not a verdict: it says whether any applying row
+// restricted the providers, so an empty list can say "nothing permitted"; the
+// route-request seam and the preview decide the refusal from it (#4249 row
+// 5698088094). SegmentNotEstablished only names that refusal's cause (#4249 row
+// 5697957634).
 func TestTheProducerHoldsNoVerdict(t *testing.T) {
 	typ := reflect.TypeOf(&dynamicFactProducer{})
 	if typ.NumMethod() != 1 {
@@ -230,7 +253,7 @@ func TestTheProducerHoldsNoVerdict(t *testing.T) {
 	for i := 0; i < effects.NumField(); i++ {
 		fields = append(fields, effects.Field(i).Name)
 	}
-	if want := []string{"PreferredProvider", "RoutingReason", "AllowedProviders"}; !reflect.DeepEqual(fields, want) {
+	if want := []string{"PreferredProvider", "RoutingReason", "AllowedProviders", "Restricted", "SegmentNotEstablished"}; !reflect.DeepEqual(fields, want) {
 		t.Errorf("routeEffects carries %v; want only the routing hints %v, so no verdict rides beside the facts", fields, want)
 	}
 }
@@ -350,16 +373,29 @@ func TestTheRiskScoreFactIsThePlatformFloorAndNothingRaisesIt(t *testing.T) {
 	wantKnown(t, produceFacts(t, testFactProducer(t, seedDynamicRows(t)), req), "signal.risk_score", floor)
 }
 
-// #4254 ruling (a): signal.cost_estimate is never stated. Its only source is the
-// caller's context, and the decision contract states a signal only as a
-// detector's finding; a caller's claim does not become one by relabelling.
-func TestTheCostEstimateIsNotStatedBecauseItsOnlySourceIsACallerClaim(t *testing.T) {
+// THE CALLER'S CLAIM IS NEVER THE SOURCE of signal.cost_estimate, which is
+// #4254 ruling (a)'s durable half: the decision contract states a signal only
+// as a detector's finding, and a caller's context value does not become one by
+// relabelling.
+//
+// RESTATED BY #4249 row 5664825929: that ruling also said the fact is never
+// stated AT ALL, because the caller's context was its only source. The platform
+// now computes it from the step it will run, so a request that carries a step
+// and a deployment that prices it DO state it - step_cost_estimate_4249_test.go
+// holds that half, including that the caller's claim never becomes the value.
+// Here the request carries no step, which is every plane but the two step
+// planes, and there the fact is unstated whatever the caller sends.
+func TestTheCostEstimateIsNeverTheCallersClaim(t *testing.T) {
 	p := testFactProducer(t, seedDynamicRows(t))
 	if _, declared := p.types["signal.cost_estimate"]; !declared {
 		t.Fatal("PREMISE: the shipped documents declare no signal.cost_estimate, so not stating it proves nothing")
 	}
 	for _, ctx := range []map[string]interface{}{{"cost_estimate": 150.0}, nil} {
-		if f, stated := produceFacts(t, p, stepFactRequest("", ctx))["signal.cost_estimate"]; stated {
+		req := stepFactRequest("", ctx)
+		if req.stepCost != nil {
+			t.Fatal("PREMISE: this request carries step cost inputs, so an unstated fact would prove nothing about the caller's claim")
+		}
+		if f, stated := produceFacts(t, p, req)["signal.cost_estimate"]; stated {
 			t.Errorf("with context %v, signal.cost_estimate is stated %s %v; want not stated", ctx, f.State, f.Value)
 		}
 	}
@@ -461,7 +497,20 @@ func TestEveryFactTheProducerStatesIsAdmittedByTheContract(t *testing.T) {
 		"media_analysis":         map[string]interface{}{"nsfw_score": 0.93, "has_pii": true},
 	})
 	req.RequestType = "llm_chat"
-	facts := produceFacts(t, testFactProducer(t, seedDynamicRows(t)), req)
+	// The step this request runs, so signal.cost_estimate is stated and its
+	// admission is checked with the rest (#4249 row 5664825929): the census
+	// would otherwise never see the fact, because a request with no step
+	// states none.
+	req.stepCost = mapStepCostInputs(WorkflowStep{Type: "llm-call", Provider: "openai", Model: "gpt-4o", Prompt: "please debug the patient ssn ledger", MaxTokens: 256}, "please debug the patient ssn ledger")
+	p := testFactProducer(t, seedDynamicRows(t))
+	p.estimateCost = func(string, string, int, int) (float64, bool) { return 150.25, true }
+	// The step names openai/gpt-4o, and since master R3 round 2 a declared pair
+	// is priced only where this deployment has that provider registered.
+	p.routable = func() []stepCostCandidate { return []stepCostCandidate{{provider: "openai", model: "gpt-4o"}} }
+	facts := produceFacts(t, p, req)
+	if _, stated := facts["signal.cost_estimate"]; !stated {
+		t.Error("PREMISE: the producer stated no signal.cost_estimate, so its admission is not checked")
+	}
 	for _, family := range []string{"signal.detector.", "signal.media.", "signal.risk_score", "args.", "env.", "principal."} {
 		stated := false
 		for path := range facts {
@@ -564,7 +613,13 @@ func wcpActivation(t *testing.T) *activation.Activation {
 // reads the action from.
 func decideStep(t *testing.T, act *activation.Activation, query string, facts contract.AttributeSet) *contract.Decision {
 	t.Helper()
-	action := contract.MustParseID(contract.KindAction, "Action::"+authoringcatalog.ActionToolCall)
+	return decideOn(t, act, wcpSeamScope, authoringcatalog.ActionToolCall, query, facts)
+}
+
+// decideOn is decideStep on any orchestrator scope, as action.
+func decideOn(t *testing.T, act *activation.Activation, scope legacycompile.EnforcementScope, local, query string, facts contract.AttributeSet) *contract.Decision {
+	t.Helper()
+	action := contract.MustParseID(contract.KindAction, "Action::"+local)
 	if _, ok := act.Snapshot.Catalog.Actions[action.String()]; !ok {
 		t.Fatalf("PREMISE: %s is not in the activated deployment vocabulary", action)
 	}
@@ -572,10 +627,10 @@ func decideStep(t *testing.T, act *activation.Activation, query string, facts co
 	h.Set("X-Org-ID", "org-a")
 	h.Set("X-Client-ID", "client-a")
 	v := stepDecisionEnforcer(t).Evaluate(context.Background(), anchoredenforcer.Call{
-		Scope:     wcpSeamScope,
+		Scope:     scope,
 		OrgID:     "org-a",
 		RequestID: "wf_1_step_1",
-		Action:    authoringcatalog.ActionToolCall,
+		Action:    local,
 		Subject:   headerCredentialSubject(h),
 		Query:     query,
 		Facts:     facts,
@@ -609,7 +664,7 @@ func stepDecisionEnforcer(t *testing.T) anchoredEnforcement {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := anchoredenforcer.New(respDocuments{}, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch,
+	e, err := anchoredenforcer.New(respDocuments{}, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{},
 		anchoredenforcer.Options{Overrides: orchestratorRecordedOverrides, Delivers: orchestratorSeamDelivers, EditionBoundary: orchestratorEditionBoundary})
 	if err != nil {
 		t.Fatal(err)
@@ -685,4 +740,196 @@ func TestTheEngineDecidesAStepFromTheProducedFacts(t *testing.T) {
 			t.Fatalf("decision %s %s, unknown %v; want ERROR unknown_constraint naming %s", dec.State, dec.Reason, dec.Determining.Unknown, tenant)
 		}
 	})
+}
+
+// #4249 row 5674229132: a content condition the matcher cannot evaluate (a
+// non-string pattern) makes its row's detector UNKNOWN malformed_value, never
+// false, whatever the row's other conditions say; an evaluable row is KNOWN as
+// before; and the process-wide recorder still counts the occurrence.
+func TestAnUnevaluableContentConditionStatesItsDetectorUnknown(t *testing.T) {
+	const id = "sys_dyn_unevaluable_fixture"
+	path := legacycompile.DynamicContentDetectorPath(id)
+	cases := []struct {
+		name  string
+		conds []PolicyCondition
+		query string
+	}{
+		{"a non-string pattern", []PolicyCondition{{Field: "query", Operator: "regex", Value: 5}}, "tenant_id = 42"},
+		{"a non-string pattern beside a condition that holds", []PolicyCondition{
+			{Field: "query", Operator: "contains", Value: "ledger"},
+			{Field: "query", Operator: "regex", Value: []int{1}},
+		}, "export the ledger"},
+		{"a non-string pattern beside a condition that does not hold", []PolicyCondition{
+			{Field: "query", Operator: "contains", Value: "nowhere"},
+			{Field: "query", Operator: "regex", Value: map[string]int{"x": 1}},
+		}, "export the ledger"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testFactProducer(t, []DynamicPolicy{{ID: id, Name: id, Enabled: true, Conditions: tc.conds}})
+			p.types[path] = pdp.TypeBoolean
+			rec := &countingUnevaluable{}
+			prev := dbUnevaluableRecorder
+			dbUnevaluableRecorder = rec
+			t.Cleanup(func() { dbUnevaluableRecorder = prev })
+
+			f, stated := produceFacts(t, p, stepFactRequest(tc.query, nil))[path]
+			if !stated || f.State != contract.StateUnknown || f.Reason != contract.ReasonMalformedValue || f.Source != contract.ProvDetector {
+				t.Fatalf("%s is stated=%v %s %v (%s, %s); want UNKNOWN malformed_value from the detector",
+					path, stated, f.State, f.Value, f.Reason, f.Source)
+			}
+			if rec.n == 0 {
+				t.Error("the process-wide recorder counted nothing: the metric must still see the occurrence")
+			}
+		})
+	}
+	// CONTROL: the same row with an evaluable pattern is KNOWN.
+	p := testFactProducer(t, []DynamicPolicy{{ID: id, Name: id, Enabled: true, Conditions: []PolicyCondition{{Field: "query", Operator: "contains", Value: "ledger"}}}})
+	p.types[path] = pdp.TypeBoolean
+	wantKnown(t, produceFacts(t, p, stepFactRequest("export the ledger", nil)), path, true)
+	wantKnown(t, produceFacts(t, p, stepFactRequest("export the report", nil)), path, false)
+}
+
+type countingUnevaluable struct{ n int }
+
+func (c *countingUnevaluable) RecordUnevaluable(string) { c.n++ }
+
+// Through the engine: the shipped tenant-isolation row with its pattern made
+// unevaluable is answered unknown_constraint naming the constraint that reads
+// its detector, where the known-false statement let the row not apply.
+func TestAnUnevaluableShippedRowIsDecidedUnknownConstraint(t *testing.T) {
+	const tenant = "corpus:dynamic_policies:sys__dyn__tenant__isolation"
+	t.Setenv("ENVIRONMENT", "production")
+	act := wcpActivation(t)
+	rows := seedDynamicRows(t)
+	const query = "hello there"
+	if clean := decideStep(t, act, query, produceFacts(t, testFactProducer(t, rows), stepFactRequest(query, nil))); clean.State == contract.StateError {
+		t.Fatalf("PREMISE: the clean request is %s %s (%v)", clean.State, clean.Reason, clean.Determining.Unknown)
+	}
+	broken := make([]DynamicPolicy, 0, len(rows))
+	found := false
+	for _, r := range rows {
+		if r.ID == "sys_dyn_tenant_isolation" {
+			found = true
+			conds := make([]PolicyCondition, len(r.Conditions))
+			copy(conds, r.Conditions)
+			for i := range conds {
+				if legacycompile.IsContentOperator(conds[i].Operator) {
+					conds[i].Value = 7 // a non-string pattern: the matcher cannot evaluate it
+				}
+			}
+			r.Conditions = conds
+		}
+		broken = append(broken, r)
+	}
+	if !found {
+		t.Fatal("PREMISE: no seeded sys_dyn_tenant_isolation row")
+	}
+	dec := decideStep(t, act, query, produceFacts(t, testFactProducer(t, broken), stepFactRequest(query, nil)))
+	if dec.State != contract.StateError || dec.Reason != contract.ReasonUnknownConstraint || !namesUnknown(dec, tenant) {
+		t.Fatalf("decision %s %s, unknown %v; want ERROR unknown_constraint naming %s", dec.State, dec.Reason, dec.Determining.Unknown, tenant)
+	}
+}
+
+// #4249 row 5674229132, the sibling case: a STRING pattern that does not
+// compile cannot be evaluated either, so its row's detector is UNKNOWN too.
+func TestANonCompilingPatternStatesItsDetectorUnknown(t *testing.T) {
+	const id = "sys_dyn_invalid_pattern_fixture"
+	path := legacycompile.DynamicContentDetectorPath(id)
+	p := testFactProducer(t, []DynamicPolicy{{ID: id, Name: id, Enabled: true, Conditions: []PolicyCondition{
+		{Field: "query", Operator: "regex", Value: "tenant_id\\s*[!=<>+"},
+	}}})
+	p.types[path] = pdp.TypeBoolean
+	f, stated := produceFacts(t, p, stepFactRequest("tenant_id = 42", nil))[path]
+	if !stated || f.State != contract.StateUnknown || f.Reason != contract.ReasonMalformedValue {
+		t.Fatalf("%s is stated=%v %s %v (%s); want UNKNOWN malformed_value", path, stated, f.State, f.Value, f.Reason)
+	}
+}
+
+// A ROUTE ROW'S RESTRICTION SURVIVES A CONDITION THE MATCHER CANNOT EVALUATE
+// (master R3 round 1 on #4395, MEDIUM-1). The same "unevaluable is not a known
+// false" claim, one arm further on: `applies` decides whether a row's route
+// action joins the merge, so reading an unevaluable condition as "does not
+// apply" took the row out and left applyLLMCallRoutes routing UNRESTRICTED -
+// the organization's own restriction, dropped by a malformed condition. The
+// fail-closed reading of a restriction is to apply it.
+func TestARouteRowsRestrictionSurvivesAnUnevaluableCondition(t *testing.T) {
+	const id = "org_route_restriction"
+	route := []PolicyAction{{Type: "route", Config: map[string]interface{}{"allowed_providers": []interface{}{"openai"}}}}
+	cases := []struct {
+		name  string
+		conds []PolicyCondition
+	}{
+		{"a non-numeric comparison", []PolicyCondition{{Field: "user.role", Operator: "greater_than", Value: 3}}},
+		{"a regex that does not compile", []PolicyCondition{{Field: "query", Operator: "regex", Value: "("}}},
+		{"a non-string pattern", []PolicyCondition{{Field: "query", Operator: "regex", Value: 5}}},
+		{"an unknown operator", []PolicyCondition{{Field: "user.role", Operator: "orbits", Value: "analyst"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testFactProducer(t, []DynamicPolicy{{ID: id, Name: id, Enabled: true, Conditions: tc.conds, Actions: route}})
+			_, effects, err := p.Produce(context.Background(), stepFactRequest("export the ledger", nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !effects.Restricted {
+				t.Fatalf("Restricted=false: the row's restriction was DROPPED by a condition that could not be evaluated; every provider would be routable")
+			}
+			if !reflect.DeepEqual(effects.AllowedProviders, []string{"openai"}) {
+				t.Errorf("AllowedProviders = %v, want [openai]: the restriction applied must be the row's own", effects.AllowedProviders)
+			}
+		})
+	}
+	// CONTROL 1: an evaluable condition that HOLDS restricts, as before.
+	p := testFactProducer(t, []DynamicPolicy{{ID: id, Name: id, Enabled: true,
+		Conditions: []PolicyCondition{{Field: "query", Operator: "contains", Value: "ledger"}}, Actions: route}})
+	_, held, err := p.Produce(context.Background(), stepFactRequest("export the ledger", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !held.Restricted || !reflect.DeepEqual(held.AllowedProviders, []string{"openai"}) {
+		t.Fatalf("the evaluable holding control is Restricted=%v Allowed=%v; want true [openai]", held.Restricted, held.AllowedProviders)
+	}
+	// CONTROL 2: an evaluable condition that does NOT hold still takes the row
+	// out of the merge - this fix does not make every row apply.
+	_, missed, err := p.Produce(context.Background(), stepFactRequest("export the report", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missed.Restricted {
+		t.Fatalf("an evaluable condition that does not hold left the row applying (Restricted=%v Allowed=%v)", missed.Restricted, missed.AllowedProviders)
+	}
+}
+
+// THE ROUTES' SIBLING (#4249 row 5706695827). The split moves /api/v1/process
+// and /api/v1/plan/execute to the orchestrator request plane; the shipped
+// dynamic controls bind there exactly as on wcp (the corpus derives both from
+// the dynamic substrate), so the debug constraint the step test above proves on
+// wcp still decides a route request - blocked outside development, unknown with
+// no deployment environment, not refused in development - under the routes' own
+// scope, for each action a route presents.
+func TestTheEngineDecidesARouteRequestFromTheProducedFactsUnderItsOwnPlane(t *testing.T) {
+	const debug = "corpus:dynamic_policies:sys__dyn__debug__restrict"
+	act := wcpActivation(t)
+	rows := seedDynamicRows(t)
+	const query = "please debug the parser"
+	for _, action := range []string{processRouteAction, planExecuteRouteAction} {
+		t.Run(action, func(t *testing.T) {
+			t.Setenv("ENVIRONMENT", "production")
+			dec := decideOn(t, act, orchestratorRequestSeamScope, action, query, produceFacts(t, testFactProducer(t, rows), stepFactRequest(query, nil)))
+			if dec.State != contract.StateDeny || !slices.Contains(dec.Determining.MatchedConstraints, debug) {
+				t.Fatalf("production: decision %s %s, matched %v; want DENY by %s on orchestrator_request", dec.State, dec.Reason, dec.Determining.MatchedConstraints, debug)
+			}
+			t.Setenv("ENVIRONMENT", "")
+			dec = decideOn(t, act, orchestratorRequestSeamScope, action, query, produceFacts(t, testFactProducer(t, rows), stepFactRequest(query, nil)))
+			if dec.State != contract.StateError || dec.Reason != contract.ReasonUnknownConstraint || !namesUnknown(dec, debug) {
+				t.Fatalf("unset: decision %s %s, unknown %v; want ERROR unknown_constraint naming %s", dec.State, dec.Reason, dec.Determining.Unknown, debug)
+			}
+			t.Setenv("ENVIRONMENT", "development")
+			dec = decideOn(t, act, orchestratorRequestSeamScope, action, query, produceFacts(t, testFactProducer(t, rows), stepFactRequest(query, nil)))
+			if slices.Contains(dec.Determining.MatchedConstraints, debug) || dec.State == contract.StateError {
+				t.Fatalf("development: decision %s %s, matched %v; want %s unmatched and a decided request", dec.State, dec.Reason, dec.Determining.MatchedConstraints, debug)
+			}
+		})
+	}
 }

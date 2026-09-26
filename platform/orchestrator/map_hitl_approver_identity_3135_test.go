@@ -48,7 +48,7 @@ import (
 // mapHITLTestProxyToken mints an internal-service token that validates against
 // the validator installProxyTokenValidator(t, proxyGuardTestSecret) installs.
 // It takes no *testing.T so request builders that predate this change (e.g.
-// approveRequest in map_hitl_tenant_isolation_test.go) can use it unchanged.
+// mapHITLRequest below) can use it unchanged.
 func mapHITLTestProxyToken() string {
 	return serviceauth.GetInternalServiceToken(serviceauth.NewTokenGenerator(proxyGuardTestSecret, nil))
 }
@@ -90,7 +90,6 @@ func setupMAPApproverEnv(t *testing.T, caseName string) *mapApproverEnv {
 	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origWCP := workflowControlService
-	origEngine := hitlWorkflowEngine
 	origEnabled := hitlEnabled
 	origExecutor := mapWCPExecutor
 	origPlanSvc := planService
@@ -102,7 +101,6 @@ func setupMAPApproverEnv(t *testing.T, caseName string) *mapApproverEnv {
 
 	workflowControlService = svc
 	hitlEnabled = true
-	hitlWorkflowEngine = &HITLWorkflowEngine{}
 
 	planRepo := planning.NewMockRepository()
 	planSvc := planning.NewService(planRepo)
@@ -132,6 +130,21 @@ func setupMAPApproverEnv(t *testing.T, caseName string) *mapApproverEnv {
 		t.Fatalf("repo.Create: %v", err)
 	}
 
+	// #4249: the confirm plan the executor would have bound this workflow to
+	// (resolvePlanWorkflow selects a plan's workflow by that binding).
+	if err := planRepo.SavePlan(context.Background(), &planning.Plan{
+		PlanID: planID, OrgID: "org-1", TenantID: "tenant-1", ExecutionMode: "confirm",
+		Status: planning.PlanStatusPending, WorkflowDefinition: json.RawMessage(`{"spec":{"steps":[]}}`), Version: 1,
+	}); err != nil {
+		t.Fatalf("planRepo.SavePlan: %v", err)
+	}
+	if err := planRepo.MarkExecutingWithPendingBinding(context.Background(), planID); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, wfID); err != nil {
+		t.Fatalf("BindExecutionWorkflow: %v", err)
+	}
+
 	requireApproval := workflow_control.GateDecisionRequireApproval
 	if _, err := svc.StepGate(context.Background(), wfID, stepID, &workflow_control.StepGateRequest{
 		StepName:       "step-name",
@@ -151,7 +164,6 @@ func setupMAPApproverEnv(t *testing.T, caseName string) *mapApproverEnv {
 		cleanup: func() {
 			workflowControlService = origWCP
 			hitlEnabled = origEnabled
-			hitlWorkflowEngine = origEngine
 			mapWCPExecutor = origExecutor
 			planService = origPlanSvc
 		},

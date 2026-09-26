@@ -47,7 +47,7 @@ func TestBootstrapAdmissionWiresTheRevocationOracle(t *testing.T) {
 		t.Fatalf("BootstrapAdmission: %v", err)
 	}
 	adm.Admitter.now = func() time.Time { return fixtureNow }
-	chain, got := adm.Admitter.AdmitDecisionSubject(context.Background(),
+	chain, _, got := adm.Admitter.AdmitDecisionSubject(context.Background(),
 		HS256Principal(fixtureOrg, mintedClaims(), true, ""), DefaultMaxDelegationDepth)
 	if chain != nil || got.Reason != ReasonCredentialRevoked {
 		t.Fatalf("admission = %s %s (chain %v), want a refusal for %s", got.State, got.Reason, chain, ReasonCredentialRevoked)

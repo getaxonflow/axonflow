@@ -346,6 +346,17 @@ func (o Obligation) Validate() error {
 			return fmt.Errorf("obligation %q from policy %q: %w", o.Type, o.SourcePolicy, err)
 		}
 	}
+	// severity on an approval is the severity its queue row carries (#4249 row
+	// 5667311128). It is checked on the APPROVAL family only: audit_notify
+	// declares its own `severity` key, so refusing the key elsewhere would be a
+	// widening this change does not make. A spelling outside the queue's four
+	// is refused rather than read as a default the author did not choose.
+	if raw, carried := o.Params[ParamApprovalSeverity]; carried && fam == FamilyApproval {
+		if _, ok := approvalSeverityRank[raw]; !ok {
+			return fmt.Errorf("obligation %q from policy %q: %s is %q; the declared severities are low, medium, high and critical",
+				o.Type, o.SourcePolicy, ParamApprovalSeverity, raw)
+		}
+	}
 	// THE STEP-UP FAMILY'S PARAMETER SET IS CLOSED, and an undeclared key is
 	// REFUSED rather than dropped.
 	//
@@ -483,10 +494,42 @@ func parseLimit(raw string) (int64, error) {
 }
 
 // ParamExpirySeconds is the optional approval_challenge parameter carrying the
-// attaching policy's challenge lifetime in seconds. When several policies carry
-// one, the shortest wins; when none does, the evaluator's ApprovalExpiry stamps
-// the requirement, exactly as before the parameter existed.
+// attaching policy's challenge lifetime in seconds. When several mandatory
+// policies carry one, the shortest wins, and it sets the window whether it is
+// shorter or longer than the evaluator's ApprovalExpiry (#4249 row 5774029945);
+// when none does, the evaluator's ApprovalExpiry (the deployment's window)
+// stamps the requirement.
 const ParamExpirySeconds = "expiry_seconds"
+
+// ParamApprovalSeverity is the optional approval_challenge parameter naming the
+// severity of the approval the challenge creates: the severity its queue row
+// carries, instead of one derived from the request's risk score (#4249 row
+// 5667311128). It rides on the composed obligations rather than on the
+// approval requirement, because the requirement is a member of the AuthZEN
+// response closure and a new member there is a wire change for every SDK.
+const ParamApprovalSeverity = "severity"
+
+// approvalSeverityRank orders the declared severities; the highest wins.
+var approvalSeverityRank = map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+// ApprovalSeverity is the severity a challenge's approval carries: the highest
+// ParamApprovalSeverity among the MANDATORY approval_challenge obligations of a
+// composed set, or "" when none states one. An advisory obligation contributes
+// nothing, as it contributes nothing else to the requirement (composeApproval).
+// A spelling Validate would refuse is ignored here rather than trusted.
+func ApprovalSeverity(obligations []Obligation) string {
+	best, bestRank := "", 0
+	for _, o := range obligations {
+		if o.Type != ObApprovalChallenge || !o.Mandatory {
+			continue
+		}
+		raw := o.Params[ParamApprovalSeverity]
+		if r := approvalSeverityRank[raw]; r > bestRank {
+			best, bestRank = raw, r
+		}
+	}
+	return best
+}
 
 // MaxApprovalExpirySeconds is the outer bound an approval hold can be
 // coordinated with a budget reservation (ADR-065 "coordinated approval and
@@ -1052,7 +1095,8 @@ type ComposeInput struct {
 	// PEP is the advertised enforcement profile.
 	PEP *PEPProfile
 	// ApprovalExpiry is the evaluator's challenge expiry: the requirement is
-	// stamped with it unless a policy carried a shorter expiry_seconds.
+	// stamped with it unless a mandatory policy carried an expiry_seconds, which
+	// then sets the window in either direction (#4249 row 5774029945).
 	ApprovalExpiry time.Time
 	// Now is the evaluation instant, read only to convert a carried
 	// expiry_seconds into an instant. A carried expiry with a zero Now is
@@ -1495,13 +1539,18 @@ func chooseLeastDisclosing(cov []Obligation, leaf string, rules *SubsumptionRule
 
 // composeApproval takes the conjunction of every approval clause contributed by
 // every matched policy, deduplicating identical clauses without flattening
-// pools, and stamps the earliest expiry.
+// pools, and stamps the requirement's expiry.
 //
-// THE SHORTEST EXPIRY WINS. A conjunction of requirements is discharged only
-// while all of them are live, and taking the longest would keep a challenge
-// open past the point one policy said it should have timed out - and timeout
-// is always deny, so extending it is the permissive direction. The evaluator's
-// own stamp (the caller's ApprovalExpiry) takes part in the same minimum.
+// THE SHORTEST CARRIED EXPIRY WINS, AND IT SETS THE WINDOW IN BOTH DIRECTIONS
+// (#4249 row 5774029945). Among the mandatory policies that carry
+// expiry_seconds the shortest wins: a conjunction of requirements is
+// discharged only while all of them are live, and taking the longest would keep
+// a challenge open past the point one policy said it should have timed out.
+// That value sets the window whether it is shorter or longer than the
+// evaluator's own stamp (the caller's ApprovalExpiry, the deployment's
+// window), which applies only when no mandatory policy carries one. Every
+// carried value is bounded (MinApprovalExpirySeconds..MaxApprovalExpirySeconds)
+// and refused outside it at Validate.
 func composeApproval(set []Obligation, expiry, now time.Time) (*ApprovalRequirement, ObligationOutcome) {
 	req := &ApprovalRequirement{ExpiresAt: expiry}
 	seen := map[string]struct{}{}
@@ -1541,7 +1590,7 @@ func composeApproval(set []Obligation, expiry, now time.Time) (*ApprovalRequirem
 		if sod {
 			req.SeparationOfDuties = true
 		}
-		// ONLY A MANDATORY OBLIGATION MAY SHORTEN THE WINDOW.
+		// ONLY A MANDATORY OBLIGATION SETS THE WINDOW, in either direction.
 		//
 		// The advisory rule in ComposeObligations protects exactly one
 		// property - an advisory control must not produce a DENIAL - and it
@@ -1586,9 +1635,15 @@ func composeApproval(set []Obligation, expiry, now time.Time) (*ApprovalRequirem
 			return nil, ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation,
 				Detail: fmt.Sprintf("policy %q carries %s but the evaluator supplied no clock, so the shortest expiry cannot be established", shortestFrom, ParamExpirySeconds)}
 		}
-		if candidate := now.Add(shortest); expiry.IsZero() || candidate.Before(expiry) {
-			req.ExpiresAt = candidate
-		}
+		// THE CARRIED VALUE SETS THE WINDOW IN BOTH DIRECTIONS (#4249 row
+		// 5774029945). The evaluator's stamp is the deployment's window for an
+		// approval no policy gave one; a policy's expiry_seconds is its author's,
+		// and it used to count only when shorter, so any value above the
+		// deployment window (15 minutes unless configured) was accepted at
+		// publish and then ignored. Every carried value is bounded by
+		// MinApprovalExpirySeconds..MaxApprovalExpirySeconds at Validate, and
+		// among carried values the shortest still wins.
+		req.ExpiresAt = now.Add(shortest)
 	}
 	sort.Slice(req.AllOf, func(i, j int) bool { return req.AllOf[i].key() < req.AllOf[j].key() })
 	if err := req.Validate(); err != nil {

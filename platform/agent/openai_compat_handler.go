@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/shared/anchoredenforcer"
 	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
@@ -389,7 +390,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		// FAIL CLOSED, NEVER BACK TO LEGACY, for decide's reason: answering with
 		// the legacy engine's verdict because a dependency failed would turn
 		// enforcement off during exactly the incidents it exists for.
-		recordAnchoredEnforcement(openaiCompatibleSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		recordAnchoredEnforcement(openaiCompatibleSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, enforced.unavailable)
 		recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, AuditVerdictError,
 			[]string{"decision_enforcement_unavailable"}, time.Since(startTime).Milliseconds(), []string{enforced.unavailable},
 			traceID, nil, false,

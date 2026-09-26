@@ -33,6 +33,10 @@ type Repository interface {
 
 	// Step operations
 	AddStep(ctx context.Context, step *WorkflowStep) error
+	// InsertStepRunRecord writes step as a NEW row and never touches an
+	// existing one: inserted is false when the step already has a row
+	// (Service.RecordStepRun, #4249 row 5701284807).
+	InsertStepRunRecord(ctx context.Context, step *WorkflowStep) (inserted bool, err error)
 	GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
 	// GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
 	// Returns nil (not error) if the step has not been evaluated yet.
@@ -446,6 +450,12 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		argNum++
 	}
 
+	if opts.WorkflowName != "" {
+		conditions = append(conditions, fmt.Sprintf("workflow_name = $%d", argNum))
+		args = append(args, opts.WorkflowName)
+		argNum++
+	}
+
 	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
@@ -547,6 +557,18 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 	return workflows, total, nil
 }
 
+// upsertKeepsHold is AddStep's ON CONFLICT condition under which the existing
+// row keeps its hold and every field of the evaluation that made it (#4249):
+// the row holds rejected or expired (whatever the write carries), or pending
+// against a write that is not itself a pending hold. Every SET expression reads
+// the row as it was before the statement. Each operand is COALESCEd, so the
+// condition is never NULL: a NULL would fall through every CASE to its ELSE.
+const upsertKeepsHold = `(COALESCE(workflow_steps.approval_status, '') IN ('rejected', 'expired') OR (COALESCE(workflow_steps.approval_status, '') = 'pending' AND COALESCE(EXCLUDED.approval_status, '') <> 'pending'))`
+
+// upsertLandsNewHold is AddStep's ON CONFLICT condition under which the write
+// lands a new pending hold, so the previous decision's approver is cleared.
+const upsertLandsNewHold = `(NOT ` + upsertKeepsHold + ` AND COALESCE(EXCLUDED.approval_status, '') = 'pending')`
+
 // AddStep records a new step gate decision and atomically maintains the
 // retry_context counters (Issue #1673 Phase 1).
 //
@@ -565,6 +587,21 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 //
 // Idempotency-key validation (mismatch ⇒ 409) lives in the service layer —
 // repository only enforces immutability via COALESCE.
+//
+// #4249: the upsert never moves a hold. A row holding rejected or expired is
+// never replaced by AddStep, whatever the write carries; a row holding pending
+// is replaced only by another pending hold (a re-gate that holds again). A
+// decision moves a hold through UpdateStepApproval, which moves only a pending
+// row (the HITL expiry sweeper writes expired over pending with its own
+// statement). When the row
+// keeps its hold it keeps every field of the evaluation that made it, so it
+// never reports a decision, reason or policies from an evaluation that did not
+// land. Service.StepGate refuses those re-evaluations first (ApprovalHoldError);
+// this is the same rule in the statement, for a caller that reaches AddStep
+// without that check or races past it. A write that lands a NEW hold clears
+// the previous decision's approver, so a re-held step never shows an approval
+// it has not had. On a kept hold the trailing current_step_index UPDATE still
+// runs with the refused write's step index.
 func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) error {
 	now := time.Now()
 	step.GateCheckedAt = now
@@ -605,20 +642,24 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 			$18
 		)
 		ON CONFLICT (workflow_id, step_id) DO UPDATE SET
-			step_name = EXCLUDED.step_name,
-			step_type = EXCLUDED.step_type,
-			step_input = EXCLUDED.step_input,
-			model = EXCLUDED.model,
-			provider = EXCLUDED.provider,
+			-- #4249: see upsertKeepsHold; every evaluation field stays with a kept hold.
+			step_name = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.step_name ELSE EXCLUDED.step_name END,
+			step_type = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.step_type ELSE EXCLUDED.step_type END,
+			step_input = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.step_input ELSE EXCLUDED.step_input END,
+			model = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.model ELSE EXCLUDED.model END,
+			provider = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.provider ELSE EXCLUDED.provider END,
 			-- Snapshot OLD decision as last_decision BEFORE we overwrite decision.
 			-- This is the value the next gate response will report as
 			-- retry_context.last_decision (= "decision of the prior gate call").
-			last_decision = workflow_steps.decision,
-			decision = EXCLUDED.decision,
-			decision_reason = EXCLUDED.decision_reason,
-			policies_evaluated = EXCLUDED.policies_evaluated,
-			policies_matched = EXCLUDED.policies_matched,
-			approval_status = EXCLUDED.approval_status,
+			last_decision = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.last_decision ELSE workflow_steps.decision END,
+			decision = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.decision ELSE EXCLUDED.decision END,
+			decision_reason = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.decision_reason ELSE EXCLUDED.decision_reason END,
+			policies_evaluated = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.policies_evaluated ELSE EXCLUDED.policies_evaluated END,
+			policies_matched = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.policies_matched ELSE EXCLUDED.policies_matched END,
+			approval_status = CASE WHEN ` + upsertKeepsHold + ` THEN workflow_steps.approval_status ELSE EXCLUDED.approval_status END,
+			approved_by = CASE WHEN ` + upsertLandsNewHold + ` THEN NULL ELSE workflow_steps.approved_by END,
+			approved_at = CASE WHEN ` + upsertLandsNewHold + ` THEN NULL ELSE workflow_steps.approved_at END,
+			approval_comment = CASE WHEN ` + upsertLandsNewHold + ` THEN NULL ELSE workflow_steps.approval_comment END,
 			tokens_in = EXCLUDED.tokens_in,
 			tokens_out = EXCLUDED.tokens_out,
 			cost_usd = EXCLUDED.cost_usd,
@@ -860,7 +901,7 @@ func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID,
 	query := `
 		UPDATE workflow_steps
 		SET approval_status = $1, approved_by = $2, approved_at = $3, approval_comment = $4
-		WHERE workflow_id = $5 AND step_id = $6
+		WHERE workflow_id = $5 AND step_id = $6 AND approval_status = 'pending'
 	`
 	var commentVal interface{}
 	if comment != "" {
@@ -876,7 +917,11 @@ func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID,
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+		// #4249: the statement moves only a PENDING row. Two decisions that
+		// both read pending (an approve and a reject racing) cannot both land:
+		// the second finds no pending row and is refused, so a rejection that
+		// aborted the workflow is never overwritten by an approval.
+		return fmt.Errorf("step is not pending approval: %s/%s", workflowID, stepID)
 	}
 
 	return nil

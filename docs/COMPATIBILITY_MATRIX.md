@@ -79,13 +79,29 @@ Patch releases within a line (e.g. 9.14.1, 9.16.1, 9.2.1/9.2.2, 9.3.1, 8.5.1/8.5
 `/api/v1/mcp/check-output` and the `/api/v1/mcp-server` governance tools
 (#3766). **Older platforms ignore the header entirely and behave exactly as
 before**, so a client listed here is safe to deploy against any platform
-version.
+version, with one exception: the gateway adapters from v11.1.0, whose changes in
+what callers see on a v10.4.0-v10.x Enterprise platform and on a v11.0.x
+platform are stated below.
 
-**Every client below is OPT-IN and off by default.** The declaration is
-presented only when `AXONFLOW_PEP_AUDIENCE` is set, because the audience is
-what a decision proof gets bound to and only the deployment knows it. Unset
-sends no header at all, and the client behaves byte for byte as its previous
-release did.
+**Every client below except `platform/gateway-adapters` is OPT-IN and off by
+default.** The declaration is presented only when `AXONFLOW_PEP_AUDIENCE` is
+set, because the audience is what a decision proof gets bound to and only the
+deployment knows it. Unset sends no header at all, and the client behaves byte
+for byte as its previous release did.
+
+**The gateway adapters present it by default from v11.1.0**, with the adapter's
+`AXONFLOW_GATEWAY_ID` (default `agentgateway`) as the audience when
+`AXONFLOW_PEP_AUDIENCE` is unset. A v11 platform judges a caller that presents
+no declaration against the decide plane's own registered profile, which
+discharges no `field_redact`, so under an organization's `pii=redact` the
+adapters' seams that can redact were refused (#4249 row 5675016368). The
+headers-only seam declares the empty set and is still refused there; against a
+v10.4.0-v10.x Enterprise platform that refusal replaces the #2958 `log`
+posture's allow. Against a v11.0.x platform the body-capable seams go from
+refused to redacted, and on Enterprise a request an organization's policy sends
+for approval is refused `unsupported_obligation`, naming the approval capability
+gap, where it was refused `approval_required`, because neither seam can raise an
+approval challenge.
 
 **The `Declares` column is the point of this table.** A client declares the
 obligation types it can actually discharge, and discharging `field_redact`
@@ -106,7 +122,7 @@ for several clients is "nothing".
 | `axonflow-n8n-node` | **1.2.0** | `n8n-node` | `[]` | returns the platform's response to the workflow, which decides; the node cannot promise a substitution on a workflow's behalf |
 | `axonflow-google-adk-plugin` | **1.2.0** | `adk-request`, `adk-response` | `[]` (request) and `field_redact@1` (response) | the response path is meant to substitute the platform's masked tool result; 1.2.0 does not (on `allowed: true` it returns before any substitution, and it reads `redacted_message` where `check-output` answers `redacted_data`), so until the fix that ships before v11.0.0 its response declaration over-claims. Requires `axonflow-sdk-python` >= 9.3.0 |
 | `axonflow-litellm` | **1.1.0** | `litellm-gateway` | `[]` | the wrapper gates a completion on the pre-check verdict and substitutes nothing; reaches the platform only through `axonflow-sdk-python` >= 9.3.0 |
-| `platform/gateway-adapters` | ships with the platform | `ext_authz`/`ext_proc` seams | `field_redact@1` (body-capable), `[]` (headers-only) | shipped in #3708, opt-in behind `AXONFLOW_PEP_AUDIENCE` |
+| `platform/gateway-adapters` | ships with the platform | `ext_authz`/`ext_proc` seams | `field_redact@1` (body-capable), `[]` (headers-only) | shipped in #3708 opt-in behind `AXONFLOW_PEP_AUDIENCE`; presented by default from v11.1.0, the audience defaulting to `AXONFLOW_GATEWAY_ID` |
 
 **Two clients present TWO declarations, and that is deliberate.** One process
 can be two enforcement points whose paths discharge different obligations, so

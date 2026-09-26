@@ -415,6 +415,18 @@ type MediaAnalysisResult struct {
 	// PIIFindings contains PII detected in extracted text.
 	PIIFindings []PIIFinding `json:"pii_findings,omitempty"`
 
+	// TextExtracted reports that text extraction RAN (an empty text included).
+	TextExtracted bool `json:"text_extracted,omitempty"`
+
+	// PIIScanned reports that the extracted text was scanned for PII (empty text
+	// from a successful extraction included). False means not scanned: PIIFindings
+	// being empty then says nothing about PII.
+	PIIScanned bool `json:"pii_scanned,omitempty"`
+
+	// FacesScanned reports that face detection RAN, so an empty Faces is a
+	// determined "no faces" rather than a detector that did not look.
+	FacesScanned bool `json:"faces_scanned,omitempty"`
+
 	// AnalysisTimeMs is how long the analysis took.
 	AnalysisTimeMs int64 `json:"analysis_time_ms"`
 
@@ -479,6 +491,16 @@ type ContentLabel struct {
 	Confidence float64 `json:"confidence"`
 }
 
+// The capability names AggregatedMediaResult.Scanned lists, one per family of
+// governance signals: a signal is stated only when its capability ran.
+const (
+	ScanPII           = "pii"            // has_pii, pii_types
+	ScanContentSafety = "content_safety" // nsfw_score, violence_score, content_safe
+	ScanFaces         = "faces"          // has_faces, face_count, has_biometric_data
+	ScanDocument      = "document"       // document_type, is_sensitive_document
+	ScanText          = "text"           // has_extracted_text, extracted_text_length
+)
+
 // PIIFinding represents a PII detection in extracted text.
 type PIIFinding struct {
 	Type       string  `json:"type"`
@@ -512,6 +534,12 @@ type AggregatedMediaResult struct {
 	HasPII              bool     `json:"has_pii"`
 	PIITypes            []string `json:"pii_types,omitempty"`
 	ExtractedText       string   `json:"extracted_text,omitempty"`
+
+	// Scanned names the capabilities that RAN on this item (sorted: ScanPII,
+	// ScanContentSafety, ScanFaces, ScanDocument, ScanText). A governance signal
+	// above is a finding only when its capability is listed; otherwise it is its
+	// zero value and says nothing (#4249 row 5705208432).
+	Scanned []string `json:"scanned,omitempty"`
 
 	// Cost estimation (aggregate at all tiers)
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
@@ -601,6 +629,9 @@ const (
 	WarnMediaOCRFailed          = "media_ocr_failed"
 	WarnMediaPartialResults     = "media_partial_results"
 	WarnMediaGetAnalyzersFailed = "media_get_analyzers_failed"
+	// WarnMediaPIIScanNotRun: an analyzer extracted text that no PII detector
+	// scanned, so has_pii reads unknown for the item (#4300).
+	WarnMediaPIIScanNotRun = "media_pii_scan_not_run"
 )
 
 // MediaWarning represents a structured warning from media analysis.

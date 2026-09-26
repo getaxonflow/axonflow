@@ -23,13 +23,16 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/activationinputs"
 )
 
 // ModuleConfig is accepted but ignored in community mode. The field set mirrors
 // the enterprise ModuleConfig exactly so run.go's single (untagged) construction
 // site compiles in both editions.
 type ModuleConfig struct {
-	DB *sql.DB
+	DB            *sql.DB
+	ActiveEffects activationinputs.EffectsFunc
 }
 
 // Module is the community stub for the US securities compliance module.

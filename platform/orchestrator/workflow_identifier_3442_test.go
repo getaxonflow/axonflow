@@ -324,13 +324,17 @@ func TestConvergedIDStillReconcilesStepApprovals(t *testing.T) {
 		t.Fatalf("CreateWorkflow: %v", err)
 	}
 
-	// The LIVE control-plane state: the step has been approved.
+	// The LIVE control-plane state: the step has been approved. It is held
+	// pending first, as a require_approval gate writes it: an approval moves
+	// only a pending row (#4249).
+	heldPending := workflow_control.ApprovalStatusPending
 	if err := wfRepo.AddStep(ctx, &workflow_control.WorkflowStep{
-		WorkflowID: wf.WorkflowID,
-		StepID:     stepID,
-		StepName:   "reconcile me",
-		StepType:   workflow_control.StepTypeToolCall,
-		Decision:   workflow_control.GateDecisionRequireApproval,
+		WorkflowID:     wf.WorkflowID,
+		StepID:         stepID,
+		StepName:       "reconcile me",
+		StepType:       workflow_control.StepTypeToolCall,
+		Decision:       workflow_control.GateDecisionRequireApproval,
+		ApprovalStatus: &heldPending,
 	}); err != nil {
 		t.Fatalf("AddStep: %v", err)
 	}

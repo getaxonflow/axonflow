@@ -27,13 +27,17 @@ const stageContextExtension = "axonflow-stage"
 // POST /api/v1/decide: allow/deny plus header mutation.
 //
 // ext_authz is a HEADERS-ONLY seam — it cannot rewrite bodies, so it can never
-// discharge a request-phase redact_pii obligation. It declares that up front
-// (#2958): every Decide call advertises the headers-only capability set, and a
-// >=9.11.0 PDP therefore does not emit an obligation this seam cannot fulfill.
-// What happens instead to content that WOULD have been redacted is a policy
-// question the PDP owns — it applies the org's obligation-fallback posture
-// (log: allow + audit the suppressed redaction; block: deny) — so this adapter
-// simply enforces the verdict it is handed.
+// discharge a request-phase redact_pii obligation. It declares that up front,
+// on both axes: every Decide call advertises #2958's headers-only seam
+// mechanics and presents an ADR-065 capability handshake with an EMPTY
+// capability set, so a >=9.11.0 PDP does not emit an obligation this seam
+// cannot fulfill. What happens instead to content that WOULD have been redacted
+// is a policy question the PDP owns. A v11 PDP, and a v10.4.0+ Enterprise one,
+// refuses the request unsupported_obligation (ADR-065 invariant 8), naming the
+// capability gap on an Enterprise build; any other >=9.11.0 PDP applies the
+// org's obligation-fallback posture (log: allow + audit the suppressed
+// redaction; block: deny). Either way this adapter simply enforces the verdict
+// it is handed.
 //
 // It used to answer that question locally, converting the PDP's `allow` into a
 // 403 whenever the verdict carried an obligation it could not fulfill. That was

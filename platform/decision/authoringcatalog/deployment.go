@@ -10,6 +10,7 @@ import (
 
 	"axonflow/platform/decision/authoring"
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
 	"axonflow/platform/decision/registry"
 )
@@ -53,10 +54,28 @@ import (
 // number somebody remembers to bump; it is a number the digest makes them bump.
 //
 // It starts at 1 and it is bumped by one per content change. It is never
-// reset, because a decision recorded under version 3 must never be
-// reproducible against a version-3 vocabulary that is not the one it was
+// reset, because a decision recorded under version N must never be
+// reproducible against a version-N vocabulary that is not the one it was
 // decided against.
-const DeploymentCatalogVersion int64 = 2
+//
+// ONE VERSION NAMES A FAMILY OF VOCABULARIES, NOT ONE. The realm set is derived
+// from what the deployment wired (a directory, the OIDC realm source), so
+// deployments of different shapes resolve different digests under the same
+// version; the weld pins one fixed shape, and a decision's snapshot carries the
+// digest-bearing registry beside the version. The version moves when the
+// derivation's content changes for that pinned shape, under EITHER plane
+// edition: the weld resolves the shape under a Community-category mode and an
+// Enterprise one, because an action states only the scopes whose plane the
+// edition registers.
+//
+// 6 (#4259): the Enterprise plane set gains cowork_ingest, which presents
+// llm.completion and tool.call; the Community vocabulary is unchanged.
+//
+// 7 (#4249 row 5706695827): the orchestrator's two request routes are their
+// own enforcement scope, orchestrator_request, so llm.completion and
+// agent.invoke each state one scope more - on EVERY edition and mode, unlike
+// 6, so both welded digests move.
+const DeploymentCatalogVersion int64 = 7
 
 // Stage action identifiers. THESE STRINGS ARE OWNED BY THE DECISION SURFACE:
 // platform/agent/authzen_adapter.go maps exactly these three names onto the
@@ -213,6 +232,10 @@ func resolveDeployment(dep Deployment) (*Snapshot, error) {
 	}
 	leaves := corpusPayloadLeaves(retained, corpus, orgTemplate)
 
+	planes, err := editionScopes(dep.Edition)
+	if err != nil {
+		return nil, err
+	}
 	for _, a := range deploymentActions() {
 		if err := c.RegisterTag(registry.TagRecord{
 			Tag:         stageTag(a.stage),
@@ -236,6 +259,8 @@ func resolveDeployment(dep Deployment) (*Snapshot, error) {
 			// enforcement point that cannot record a decision cannot enforce
 			// one of these.
 			RequiredCapabilities: []contract.Capability{{Type: contract.ObImmutableAudit, Version: 1}},
+			// The scopes a control selecting this action may bind on (#4371).
+			Planes: presentingIn(a.local, planes),
 		}); err != nil {
 			return nil, fmt.Errorf("deployment vocabulary: registering %s: %w", a.local, err)
 		}
@@ -246,6 +271,43 @@ func resolveDeployment(dep Deployment) (*Snapshot, error) {
 		return nil, fmt.Errorf("the deployment registry is not usable as an authoring catalog: %w", err)
 	}
 	return finish(SourceDeployment, false, c, cat, corpusDigest, DeploymentCatalogVersion, dep.Edition)
+}
+
+// editionScopes is the set of enforcing scopes whose plane this build edition
+// registers (registry/legacy_plane_peps.tsv). A scope the edition does not
+// register has no enforcement point in this build, so a document may not bind
+// a control to it.
+func editionScopes(edition registry.Edition) (map[string]bool, error) {
+	rows, err := registry.ParseLegacyPlanes(registry.LegacyPlaneFile)
+	if err != nil {
+		return nil, fmt.Errorf("deployment vocabulary: %w", err)
+	}
+	registered := map[string]bool{}
+	for _, r := range rows {
+		if r.Edition == edition {
+			registered[r.Plane] = true
+		}
+	}
+	out := map[string]bool{}
+	for _, name := range legacycompile.EnforcingScopes() {
+		plane, _, _ := strings.Cut(name, ":")
+		if registered[plane] {
+			out[name] = true
+		}
+	}
+	return out, nil
+}
+
+// presentingIn is legacycompile.ScopesPresenting(action), narrowed to scopes,
+// sorted.
+func presentingIn(action string, scopes map[string]bool) []string {
+	var out []string
+	for _, s := range legacycompile.ScopesPresenting(action) {
+		if scopes[s] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // corpusArguments derives the stage argument schema from the shipped corpus.

@@ -101,6 +101,8 @@ var Templates = []string{
 	"/api/v1/mcp/check-input",
 	"/api/v1/mcp/check-output",
 	"/api/v1/policy-overrides",
+	"/api/v1/policy-packs/summary",
+	"/api/v1/register",
 	"/api/v1/static-policies",
 	"/api/v1/static-policies/effective",
 	"/api/v1/static-policies/overrides",

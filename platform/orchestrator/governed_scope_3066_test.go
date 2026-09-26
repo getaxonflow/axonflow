@@ -428,7 +428,8 @@ func gs3066Workflow(extraUser map[string]any) map[string]any {
 func TestGoverned3066_ExecuteWorkflowBindsTenancyAndNeverPersistsAnUnstampedRow(t *testing.T) {
 	oldEngine, oldHITL := workflowEngine, hitlEnabled
 	t.Cleanup(func() { workflowEngine, hitlEnabled = oldEngine, oldHITL })
-	workflowEngine = NewWorkflowEngine()
+	// #4382: the engine decides every step, as the orchestrator wires it.
+	workflowEngine = newGovernedWorkflowEngine(&allowEveryStep{})
 	hitlEnabled = false
 
 	handler := gs3066ServedHandler(t, "/api/v1/workflows/execute", executeWorkflowHandler)

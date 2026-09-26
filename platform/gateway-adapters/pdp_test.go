@@ -411,22 +411,117 @@ func TestRenderSeamsCopiesRatherThanAliasingThePackageVars(t *testing.T) {
 	}
 }
 
-// TestRenderSeamsIsDarkWithoutAnAudience.
+// TestEverySeamPresentsAHandshakeByDefault.
 //
-// The opt-in property, asserted rather than assumed. It gates an ALLOW -> DENY
-// transition for the headers-only seam, so "no header is sent by default" is a
-// behaviour claim and not a configuration detail.
-func TestRenderSeamsIsDarkWithoutAnAudience(t *testing.T) {
-	headersOnly, bodyCapable, err := renderSeams("")
-	if err != nil {
-		t.Fatal(err)
+// The v11.1.0 contract that replaced the opt-in (#4249 row 5675016368): with no
+// AXONFLOW_PEP_AUDIENCE every seam still presents its capability handshake,
+// with the gateway ID as the audience. An adapter that presented nothing was
+// judged by a v11 platform as a caller able to discharge no redaction, so under
+// an organization's pii=redact the body-capable seams were refused a redaction
+// they can carry out.
+func TestEverySeamPresentsAHandshakeByDefault(t *testing.T) {
+	fieldRedact := []contract.Capability{{Type: contract.ObFieldRedact, Version: 1}}
+	wantDeclarations := func(t *testing.T, p *PDP, audience string) {
+		t.Helper()
+		for _, s := range []struct {
+			seam Seam
+			caps []contract.Capability
+		}{
+			{p.SeamHeadersOnly(), []contract.Capability{}},
+			{p.SeamBodyCapable(), fieldRedact},
+		} {
+			if s.seam.handshake == "" {
+				t.Fatalf("the %s seam presents no handshake", s.seam.Name)
+			}
+			h, refusal := contract.DecodePEPHandshake(s.seam.handshake)
+			if refusal != nil {
+				t.Fatalf("the %s seam's handshake does not decode: %v", s.seam.Name, refusal)
+			}
+			if h.Audience != audience || h.PEPID != s.seam.Name || len(h.Capabilities) != len(s.caps) {
+				t.Fatalf("the %s seam declares audience %q pep_id %q capabilities %v; want %q, %q, %v", s.seam.Name, h.Audience, h.PEPID, h.Capabilities, audience, s.seam.Name, s.caps)
+			}
+			for i := range s.caps {
+				if h.Capabilities[i] != s.caps[i] {
+					t.Fatalf("the %s seam declares %v; want %v", s.seam.Name, h.Capabilities, s.caps)
+				}
+			}
+		}
 	}
-	if headersOnly.handshake != "" || bodyCapable.handshake != "" {
-		t.Fatalf("an unconfigured audience rendered a handshake: %q / %q", headersOnly.handshake, bodyCapable.handshake)
+
+	for _, c := range []struct {
+		name, gatewayID, audience string
+		wantAudience, wantSource  string
+	}{
+		{"neither set: AXONFLOW_GATEWAY_ID's own default", "", "", defaultGatewayID, "AXONFLOW_GATEWAY_ID"},
+		{"a gateway ID and no audience: the gateway ID", "edge-gw-1", "", "edge-gw-1", "AXONFLOW_GATEWAY_ID"},
+		{"an explicit audience wins over the gateway ID", "edge-gw-1", "https://pdp.example/decisions", "https://pdp.example/decisions", "AXONFLOW_PEP_AUDIENCE"},
+	} {
+		t.Run("from the environment, "+c.name, func(t *testing.T) {
+			t.Setenv("AXONFLOW_ENDPOINT", "http://pdp:8080")
+			t.Setenv("AXONFLOW_GATEWAY_ID", c.gatewayID)
+			t.Setenv("AXONFLOW_PEP_AUDIENCE", c.audience)
+			cfg := ConfigFromEnv()
+			if audience, source := cfg.pepAudience(); audience != c.wantAudience || !strings.HasPrefix(source, c.wantSource) {
+				t.Fatalf("pepAudience() = %q from %q; want %q from %q", audience, source, c.wantAudience, c.wantSource)
+			}
+			p, err := NewPDP(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantDeclarations(t, p, c.wantAudience)
+		})
 	}
-	// The #2958 declarations are UNAFFECTED by the opt-in: they are a different
-	// axis and they ship on by default, as they did before #3704.
-	if len(headersOnly.Fulfillment) != 1 || headersOnly.Fulfillment[0] != pep.CapabilityRequestHeaderMutation {
-		t.Errorf("the seam-mechanics declaration changed with the handshake opt-in: %v", headersOnly.Fulfillment)
+
+	literal := func(gatewayID string) Config {
+		return Config{
+			AxonFlowEndpoint: "http://pdp:8080", GatewayID: gatewayID, FailMode: FailModeClosed,
+			RequestTimeout: time.Second, BreakerThreshold: 1, BreakerCooldown: time.Second,
+		}
 	}
+	t.Run("a Config literal with neither set: the default gateway ID, never an empty audience", func(t *testing.T) {
+		for _, c := range []struct {
+			audience, gatewayID, wantAudience, wantSource string
+		}{
+			{"", "", defaultGatewayID, "the default gateway ID"},
+			{"   ", "  ", defaultGatewayID, "the default gateway ID"},
+			{"", " edge-gw-1 ", "edge-gw-1", "AXONFLOW_GATEWAY_ID"},
+			{" https://pdp.example/decisions ", "edge-gw-1", "https://pdp.example/decisions", "AXONFLOW_PEP_AUDIENCE"},
+		} {
+			cfg := literal(c.gatewayID)
+			cfg.PEPAudience = c.audience
+			if audience, source := cfg.pepAudience(); audience != c.wantAudience || !strings.HasPrefix(source, c.wantSource) {
+				t.Fatalf("Config{PEPAudience: %q, GatewayID: %q}.pepAudience() = %q from %q; want %q from %q", c.audience, c.gatewayID, audience, source, c.wantAudience, c.wantSource)
+			}
+		}
+		p, err := NewPDP(literal(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantDeclarations(t, p, defaultGatewayID)
+	})
+	t.Run("a gateway ID the audience grammar refuses: the adapter refuses to start, naming where the audience came from", func(t *testing.T) {
+		_, err := NewPDP(literal("edge gateway"))
+		if err == nil || !strings.Contains(err.Error(), "AXONFLOW_GATEWAY_ID") {
+			t.Fatalf("NewPDP = %v; want a refusal naming AXONFLOW_GATEWAY_ID", err)
+		}
+	})
+	t.Run("renderSeams refuses an empty audience rather than rendering the seams dark", func(t *testing.T) {
+		for _, audience := range []string{"", "   "} {
+			if _, _, err := renderSeams(audience); err == nil {
+				t.Fatalf("renderSeams(%q) rendered seams; a seam that presents nothing is the Known Issue", audience)
+			}
+		}
+	})
+	t.Run("the #2958 seam mechanics ride beside the handshake, unchanged", func(t *testing.T) {
+		p, err := NewPDP(literal(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f := p.SeamHeadersOnly().Fulfillment; len(f) != 1 || f[0] != pep.CapabilityRequestHeaderMutation {
+			t.Errorf("the headers-only seam-mechanics declaration is %v", f)
+		}
+		if f := p.SeamBodyCapable().Fulfillment; len(f) != 1 || f[0] != pep.CapabilityRequestBodyRedaction {
+			t.Errorf("the body-capable seam-mechanics declaration is %v", f)
+		}
+	})
 }

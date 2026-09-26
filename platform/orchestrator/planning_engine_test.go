@@ -824,6 +824,9 @@ func TestPlanningEngineIsHealthy(t *testing.T) {
 
 // TestGeneratePlanWithMockLLM tests end-to-end plan generation with mock LLM
 func TestGeneratePlanWithMockLLM(t *testing.T) {
+	// An LLM call takes the organization's route rows; none apply here
+	// (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	// Create mock LLM router with fallback to heuristic analysis
 	// Since LLM will fail, the planning engine will use heuristics
 	router := NewMockLLMRouter()
@@ -1249,6 +1252,9 @@ func TestBuildSynthesisPromptWithDifferentInputs(t *testing.T) {
 
 // TestGenerateWorkflowDefinitionEdgeCases tests generateWorkflowDefinition with edge cases
 func TestGenerateWorkflowDefinitionEdgeCases(t *testing.T) {
+	// An LLM call takes the organization's route rows; none apply here
+	// (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	// Create a mock router for testing
 	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)

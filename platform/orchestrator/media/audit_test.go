@@ -396,3 +396,44 @@ func TestGetAuditRecord_Enterprise_SanitizesAnalyzerDetails(t *testing.T) {
 		t.Error("original result should not be modified by audit")
 	}
 }
+
+// TestTheAuditLineSaysUnknownForWhatNoAnalyzerMeasured: pii and safe print their
+// value only when the capability ran on the item, "unknown" otherwise, and
+// scanned lists what ran (#4249 row 5705208432).
+func TestTheAuditLineSaysUnknownForWhatNoAnalyzerMeasured(t *testing.T) {
+	cases := []struct {
+		name    string
+		result  *AggregatedMediaResult
+		want    []string
+		notWant []string
+	}{
+		{"nothing ran", &AggregatedMediaResult{ContentSafe: true},
+			[]string{"pii=unknown", "safe=unknown", "scanned=-"}, []string{"pii=false", "safe=true"}},
+		{"OCR scanned text, no PII", &AggregatedMediaResult{ContentSafe: true, Scanned: []string{ScanPII, ScanText}},
+			[]string{"pii=false", "safe=unknown", "scanned=pii,text"}, []string{"safe=true"}},
+		{"OCR found PII", &AggregatedMediaResult{HasPII: true, Scanned: []string{ScanPII, ScanText}},
+			[]string{"pii=true", "scanned=pii,text"}, nil},
+		{"text extracted, not scanned", &AggregatedMediaResult{ExtractedText: "SSN 123-45-6789", Scanned: []string{ScanText}},
+			[]string{"pii=unknown", "scanned=text"}, []string{"pii=false", "123-45-6789"}},
+		{"content safety measured", &AggregatedMediaResult{ContentSafe: false, Scanned: []string{ScanContentSafety}},
+			[]string{"safe=false", "pii=unknown"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			al := NewAuditLogger(WithAuditLoggerLogger(log.New(&buf, "", 0)))
+			al.LogMediaAnalysis("req-audit", c.result, &MediaContent{MIMEType: "image/png"})
+			out := buf.String()
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("audit line %q lacks %q", out, w)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(out, w) {
+					t.Errorf("audit line %q contains %q", out, w)
+				}
+			}
+		})
+	}
+}

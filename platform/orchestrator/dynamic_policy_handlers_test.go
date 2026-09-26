@@ -10,6 +10,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -508,15 +510,32 @@ func TestDynamicPolicyAPI_Import_InvalidCategory(t *testing.T) {
 	}
 }
 
+// TestDynamicPolicyAPI_Export pins that the legacy tenant-policy export
+// returns EVERY row the service exports for the organization, on both
+// spellings, and the same set as the policy-CRUD family's export (#4293).
+//
+// RESTATED, NOT DELETED. This cell fed a `pii` row commented "Should be
+// filtered out" and asserted one policy of two. That pinned the defect: the
+// export withheld every row whose category did not begin dynamic- or media-,
+// said nothing about it, and answered 200, while the list over the same table
+// returned those rows. PRD v11 §1.11 keeps the legacy read routes so an
+// organization can export its legacy rows after upgrading, and a file that
+// silently drops some of them breaks that.
+//
+// The empty category is the NULL row: the policy-CRUD writer INSERTs with no
+// category, and the repository reads it as an empty string (COALESCE).
 func TestDynamicPolicyAPI_Export(t *testing.T) {
+	rows := []PolicyResource{
+		{ID: uuid.New().String(), Name: "Dynamic Policy", Category: "dynamic-risk"},
+		{ID: uuid.New().String(), Name: "Media Policy", Category: "media-safety"},
+		{ID: uuid.New().String(), Name: "Static Policy", Category: "pii"},
+		{ID: uuid.New().String(), Name: "CRUD-written Policy", Category: ""},
+	}
 	mockService := &mockDynamicPolicyService{
 		exportFunc: func(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error) {
-			return &ExportPoliciesResponse{
-				Policies: []PolicyResource{
-					{ID: uuid.New().String(), Name: "Dynamic Policy", Category: "dynamic-risk"},
-					{ID: uuid.New().String(), Name: "Static Policy", Category: "pii"}, // Should be filtered out
-				},
-			}, nil
+			out := make([]PolicyResource, len(rows))
+			copy(out, rows)
+			return &ExportPoliciesResponse{Policies: out}, nil
 		},
 	}
 
@@ -524,26 +543,53 @@ func TestDynamicPolicyAPI_Export(t *testing.T) {
 	r := mux.NewRouter()
 	registerLegacyPolicyRoutes(r, handler, nil)
 
-	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/export", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
-	req.Header.Set("X-Org-ID", "org-123")
-	w := httptest.NewRecorder()
+	idsOf := func(t *testing.T, w *httptest.ResponseRecorder) []string {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp ExportPoliciesResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		ids := make([]string, 0, len(resp.Policies))
+		for _, p := range resp.Policies {
+			ids = append(ids, p.ID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	want := make([]string, 0, len(rows))
+	for _, p := range rows {
+		want = append(want, p.ID)
+	}
+	sort.Strings(want)
 
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", w.Code)
+	for _, path := range []string{"/api/v1/tenant-policies/export", "/api/v1/dynamic-policies/export"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("GET", path, nil)
+			req.Header.Set("X-Tenant-ID", "test-tenant")
+			req.Header.Set("X-Org-ID", "org-123")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if got := idsOf(t, w); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s exported %d of the organization's %d rows (NULL-category and pii rows included): got %v, want %v",
+					path, len(got), len(want), got, want)
+			}
+		})
 	}
 
-	var resp ExportPoliciesResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	// Should only have dynamic policies
-	if len(resp.Policies) != 1 {
-		t.Errorf("Expected 1 dynamic policy in export, got %d", len(resp.Policies))
-	}
+	// THE SAME SET AS THE POLICY-CRUD FAMILY'S EXPORT, over the same service.
+	t.Run("/api/v1/policies/export answers the same set", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/v1/policies/export", nil)
+		req.Header.Set("X-Tenant-ID", "test-tenant")
+		req.Header.Set("X-Org-ID", "org-123")
+		w := httptest.NewRecorder()
+		NewPolicyAPIHandler(mockService).handleExport(w, req)
+		if got := idsOf(t, w); !reflect.DeepEqual(got, want) {
+			t.Errorf("the CRUD export answered %v, the tenant-policy export %v", got, want)
+		}
+	})
 }
 
 func TestDynamicPolicyAPI_Effective(t *testing.T) {

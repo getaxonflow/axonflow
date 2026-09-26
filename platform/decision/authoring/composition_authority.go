@@ -135,8 +135,13 @@ type Composition struct {
 // by additions, declaring schemas beside the authored document's attributes.
 // authored is nil when the organization has no active document. omit is what
 // the plane being composed does not bind of the authored document (activation's
-// unboundTemplateControls); each id must name a policy the document carries, and
-// an omitted id stays taken, so no addition replaces it.
+// unboundTemplateControls and scopeUnboundControls); each id must name a policy
+// the document carries. An omitted id is FREE for one addition (#4371): the plane
+// then carries what it would carry had the document not carried that policy at
+// all - a pack's or the baseline's own control of that id - so leaving a control
+// out of a plane is exactly deleting it there, never more permissive. An id the
+// document carries and this plane keeps stays taken, and two additions never
+// share an id.
 func (c *CompositionAuthority) Compose(authored *AuthoredSource, omit []string, additions []pdp.Policy, schemas []pdp.AttributeSchema) (*Composition, error) {
 	if len(additions) == 0 && len(omit) == 0 {
 		return nil, fmt.Errorf("authoring: a composition with no additions and no omissions is the authored document itself, which activates as it was published")
@@ -172,11 +177,11 @@ func (c *CompositionAuthority) Compose(authored *AuthoredSource, omit []string, 
 			declared[a.Path] = a
 		}
 		for _, p := range authored.Document.Policies {
-			taken[p.ID] = true
 			if left[p.ID] {
 				delete(left, p.ID)
 				continue
 			}
+			taken[p.ID] = true
 			doc.Policies = append(doc.Policies, p)
 		}
 	}

@@ -900,16 +900,22 @@ func setupResumeTestWCPWithWorkflow(t *testing.T, planID, executionMode, workflo
 	wcpWorkflowName := "map-" + executionMode + "-" + planID
 	pending := workflow_control.ApprovalStatusPending
 	wcpWorkflow := &workflow_control.Workflow{
-		OrgID:            "org_1",
-		TenantID:         "tenant_1",
-		WorkflowID:       "wf-" + planID,
-		WorkflowName:     wcpWorkflowName,
-		Source:           workflow_control.WorkflowSource("map"),
-		Status:           workflow_control.WorkflowStatusInProgress,
-		CurrentStepIndex: 0,
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
+		WorkflowID:   "wf-" + planID,
+		WorkflowName: wcpWorkflowName,
+		Source:       workflow_control.WorkflowSource("map"),
+		Status:       workflow_control.WorkflowStatusInProgress,
+		// #4249: the index the real confirm gate writes. StepGate stamps a row
+		// one past the workflow's current index, so the confirm executor's
+		// step_0 row carries step_index 1 and raises current_step_index to 1.
+		// This fixture used to hand-build index 0, which is why no resume test
+		// saw the resume run step 1 on step 0's approval (row 5699398978).
+		CurrentStepIndex: 1,
 		Steps: []workflow_control.WorkflowStep{
 			{
 				StepID:         "step_0_step1",
+				StepIndex:      1,
 				WorkflowID:     "wf-" + planID,
 				StepName:       "step1",
 				StepType:       workflow_control.StepTypeLLMCall,
@@ -1360,10 +1366,11 @@ func TestResumePlanHandler_NoWorkflow(t *testing.T) {
 
 	// Create plan in executing state but no matching WCP workflow
 	plan := &planning.Plan{
-		OrgID:    "org_1",
-		TenantID: "tenant_1",
-		PlanID:   "plan_no_workflow",
-		Status:   planning.PlanStatusExecuting,
+		OrgID:         "org_1",
+		TenantID:      "tenant_1",
+		PlanID:        "plan_no_workflow",
+		ExecutionMode: "confirm",
+		Status:        planning.PlanStatusExecuting,
 	}
 	_ = planRepo.SavePlan(context.Background(), plan)
 	_ = planRepo.UpdatePlanStatus(context.Background(), "plan_no_workflow", planning.PlanStatusExecuting, nil, "")
@@ -1882,6 +1889,11 @@ func (r *recordingMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, 
 // StepMirrorExpiry reports no queue row, the state these tests stand for.
 func (r *recordingMirrorResolver) StepMirrorExpiry(context.Context, string, string, string, string) (time.Time, bool, bool, error) {
 	return time.Time{}, false, false, nil
+}
+
+// CurrentHoldID reports no queue row, the state these tests stand for.
+func (r *recordingMirrorResolver) CurrentHoldID(context.Context, string, string, string, string) (string, bool, error) {
+	return "", false, nil
 }
 
 func (r *recordingMirrorResolver) snapshot() []mirrorResolution {

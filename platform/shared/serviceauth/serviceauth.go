@@ -32,6 +32,16 @@ const (
 	// SecretEnvVar is the environment variable for the shared secret.
 	SecretEnvVar = "AXONFLOW_INTERNAL_SERVICE_SECRET"
 
+	// ServiceIDHeader is the request header that carries ClientID on an
+	// internal-service call. It and ServiceTokenHeader are one credential:
+	// either alone is not one. The agent reads both (internalServiceHints);
+	// the customer portal and the agent's own loopback send them.
+	ServiceIDHeader = "X-Internal-Service-ID"
+
+	// ServiceTokenHeader is the request header that carries the signed token
+	// (TokenPrefix, or TokenFallback without a secret) beside ServiceIDHeader.
+	ServiceTokenHeader = "X-Internal-Service-Token"
+
 	// SecretMinLength is the recommended minimum length for the shared secret.
 	SecretMinLength = 32
 

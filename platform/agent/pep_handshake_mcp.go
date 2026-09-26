@@ -146,3 +146,46 @@ func resolveMCPPEPHandshake(
 ) (context.Context, pepHandshakeResolution) {
 	return resolveAndRecordPEPHandshakeOnce(ctx, r, authenticatedClientID, PlaneMCP)
 }
+
+// mcpParameterRedactionObligation is the typed obligation the MCP plane's
+// hand-back of MASKED PARAMETERS corresponds to (#4264).
+//
+// check-input and check_policy mask each request parameter the redaction
+// matched and hand it back in redacted_parameters, as the text the request pass
+// scanned it as. Like the statement, the caller MUST forward the masked
+// parameter instead of the original, and a caller that does not read the member
+// runs the tool on the raw parameters while the audit row records them masked.
+// The Google ADK plugin as shipped is such a caller: it sends the tool's
+// arguments as parameters and reads neither member.
+//
+// So the hand-back is its own capability question, asked of a DECLARATION
+// rather than assumed: field_redact at schema version 2, the field_redact wire
+// that also carries redacted_parameters. Version 1 stays the statement-only
+// wire, so no existing declaration changes meaning, and capability matching is
+// exact (registry checkCapability), so a caller declaring only version 1 is not
+// taken to substitute parameters. An enforcement point that substitutes both
+// declares field_redact at versions 1 AND 2.
+//
+// Unlike the statement's obligation, an ABSENT handshake is not admitted to
+// it: a masked parameter is handed back only to an enforcement point that
+// declared it substitutes one (pepSubstitutesParameters), and every other
+// caller is refused unsupported_obligation, as it was before the hand-back
+// existed.
+func mcpParameterRedactionObligation() contract.Obligation {
+	return contract.Obligation{
+		Type:          contract.ObFieldRedact,
+		Target:        mcpParameterRedactionTarget,
+		Mandatory:     true,
+		SourcePolicy:  mcpRedactionSourcePolicy,
+		SchemaVersion: mcpParameterRedactionSchemaVersion,
+	}
+}
+
+const (
+	// mcpParameterRedactionTarget names what the parameter obligation applies
+	// to: the request's parameters.
+	mcpParameterRedactionTarget = "parameters"
+	// mcpParameterRedactionSchemaVersion is the field_redact schema version of
+	// the wire that carries redacted_parameters.
+	mcpParameterRedactionSchemaVersion = 2
+)

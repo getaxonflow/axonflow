@@ -202,8 +202,8 @@ func assertDeprecationSignal(t *testing.T, what string, h http.Header) {
 	if got, want := h.Get(policypath.HeaderLink), `</api/v1/typed-policies>; rel="successor-version"`; got != want {
 		t.Errorf("%s: Link = %q, want %q", what, got, want)
 	}
-	if got := h.Get(policypath.HeaderRemovedIn); got != "v11.1" {
-		t.Errorf("%s: %s = %q, want v11.1", what, policypath.HeaderRemovedIn, got)
+	if got := h.Get(policypath.HeaderRemovedIn); got != "v12.0" {
+		t.Errorf("%s: %s = %q, want v12.0", what, policypath.HeaderRemovedIn, got)
 	}
 	// Dated only once release prep sets DeprecatedSince; policypath's own
 	// tests pin the RFC 9745 format against a fixed date.
@@ -217,6 +217,6 @@ func assertDeprecationSignal(t *testing.T, what string, h http.Header) {
 		}
 	}
 	if got := h.Get("Sunset"); got != "" {
-		t.Errorf("%s: Sunset = %q - v11.1 has no agreed date", what, got)
+		t.Errorf("%s: Sunset = %q - v12.0.0 has no agreed date", what, got)
 	}
 }

@@ -62,11 +62,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -85,6 +87,7 @@ import (
 	"axonflow/platform/shared/authoringvocabulary"
 	"axonflow/platform/shared/detectionposture"
 	"axonflow/platform/shared/identity"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // TypedAuthoringRoutePrefix is the one prefix this handler owns.
@@ -225,6 +228,25 @@ type TypedAuthoringRouteHandler struct {
 
 	mu         sync.Mutex
 	workspaces map[string]*typedAuthoringWorkspace
+	// building is the one workspace build in flight per organization (#4283
+	// item 6). The durable open runs OUTSIDE mu, so a slow partial outage no
+	// longer holds every organization's typed-authoring request behind one
+	// database round trip, and a second request for the same organization
+	// waits for that build's result instead of opening again.
+	building map[string]*typedWorkspaceBuild
+	// degradedKeys holds the signing key of an organization's last build that
+	// was not installed (DEGRADED, or refused at the cap), so its retry reuses
+	// the key rather than minting one. Every
+	// attempt used to mint a key, and an open that failed after authorizing it
+	// left a typed_policy_signing_keys row per request (#4283 item 6).
+	degradedKeys map[string]ed25519.PrivateKey
+	// afterInstallLocked runs inside the locked install window, immediately
+	// after the guard entry is dropped. It is nil in production and exists for
+	// one cell: a panic raised INSIDE that window cannot be provoked from
+	// outside it, and that panic is what LOW-8 is about (master R3 round 2 on
+	// #4397). A hook that makes the interleaving is the only way to assert the
+	// lock is released while it unwinds.
+	afterInstallLocked func()
 }
 
 // typedAuthoringWorkspace is one organization's authoring plane.
@@ -262,8 +284,12 @@ type typedAuthoringWorkspace struct {
 	// workspace's signing key, and the trust it reads must be left as it was
 	// (#4047).
 	activationInputs func(context.Context) (activation.Inputs, error)
-	digests          map[string]struct{}
-	lastUsed         time.Time
+	// inputs builds this organization's activation inputs for any scope:
+	// activationInputs is its decide source, and ActiveEffects asks it for the
+	// scope a compliance report reads (#4249).
+	inputs   activationinputs.Builder
+	digests  map[string]struct{}
+	lastUsed time.Time
 }
 
 // NewTypedAuthoringRouteHandler builds the handler.
@@ -399,6 +425,7 @@ func (h *TypedAuthoringRouteHandler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/typed-policies/active", h.handleActive).Methods(http.MethodGet, http.MethodOptions)
 	r.HandleFunc("/api/v1/typed-policies/active/summary", h.handleActiveSummary).Methods(http.MethodGet, http.MethodOptions)
 	r.HandleFunc("/api/v1/typed-policies/system", h.handleSystem).Methods(http.MethodGet, http.MethodOptions)
+	r.HandleFunc("/api/v1/typed-policies/template", h.handleTemplate).Methods(http.MethodGet, http.MethodOptions)
 	r.PathPrefix("/api/v1/typed-policies").HandlerFunc(h.handleUnenumerated)
 	log.Printf("[TypedAuthoring] community typed-authoring routes registered under %s (%s=%q; the vocabulary resolves on first use)",
 		TypedAuthoringRoutePrefix, authoringcatalog.Env, h.catalogValue)
@@ -422,6 +449,12 @@ type typedAuthoringDocumentRequest struct {
 type typedAuthoringActivateRequest struct {
 	Digest string `json:"digest"`
 	Reason string `json:"reason,omitempty"`
+	// AcknowledgeTemplateOmissions names the organization-template policy ids
+	// the activated document omits or carries changed, which stop deciding as
+	// shipped when it is activated. It must equal the report's omitted and
+	// modified ids exactly (#4249 row 5672856881;
+	// activation.RequireTemplateOmissionAcknowledgement).
+	AcknowledgeTemplateOmissions []string `json:"acknowledge_template_omissions,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +848,12 @@ func (h *TypedAuthoringRouteHandler) handlePublish(w http.ResponseWriter, r *htt
 			typedAuthoringJSON(w, tierErr.HTTPStatus(), body)
 			return
 		}
+		// A STORE FAILURE IS NOT A PUBLICATION REFUSAL either (#4283): 503
+		// with the store's error in the log only, never 422 echoing it.
+		if errors.Is(err, authoring.ErrStoreUnavailable) {
+			writeTypedStoreRefusal(w, orgID, "publication", "", err)
+			return
+		}
 		typedAuthoringJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"success": false, "reason": "publication_refused",
 			"error": err.Error(), "findings": findings,
@@ -849,9 +888,14 @@ func (h *TypedAuthoringRouteHandler) handleActivate(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, typedAuthoringMaxRequestBytes)
 	var req typedAuthoringActivateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeTypedAuthoringRequest(w, r, &req); err != nil {
+		typedAuthoringJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false, "reason": "malformed_request", "error": err.Error(),
+		})
+		return
+	}
+	if err := activation.ValidateTemplateOmissionAcknowledgement(req.Reason, req.AcknowledgeTemplateOmissions); err != nil {
 		typedAuthoringJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false, "reason": "malformed_request", "error": err.Error(),
 		})
@@ -864,8 +908,19 @@ func (h *TypedAuthoringRouteHandler) handleActivate(w http.ResponseWriter, r *ht
 	if refuseIfStorageDegraded(w, ws) {
 		return
 	}
-	act, err := ws.api.Promote(r.Context(), typedAuthoringRoot, strings.TrimSpace(req.Digest), actor, time.Now(), req.Reason)
+	digest := strings.TrimSpace(req.Digest)
+	if refuseUnacknowledgedTemplateOmissions(r.Context(), w, ws.api.Store(), orgID, digest, req.AcknowledgeTemplateOmissions) {
+		return
+	}
+	reason := activation.RecordAcknowledgedTemplateOmissions(authoring.ActivationPromote, req.Reason, req.AcknowledgeTemplateOmissions)
+	act, err := ws.api.Promote(r.Context(), typedAuthoringRoot, digest, actor, time.Now(), reason)
 	if err != nil {
+		// A store failure is not a refusal of the promotion (#4283): the
+		// activation store-refusal mapping, never 409 echoing the database.
+		if errors.Is(err, authoring.ErrStoreUnavailable) {
+			writeTypedStoreRefusal(w, orgID, "activation", digest, err)
+			return
+		}
 		// 409, not 400. Every refusal Promote can produce is about the STATE of
 		// the root - the digest is not admitted, the version does not advance,
 		// the parent is not the active digest, the actor may not activate this
@@ -879,6 +934,60 @@ func (h *TypedAuthoringRouteHandler) handleActivate(w http.ResponseWriter, r *ht
 	body := map[string]any{"success": true, "activation": act}
 	addActivatedTemplateOmissions(r.Context(), ws.api.Store(), orgID, strings.TrimSpace(req.Digest), body)
 	typedAuthoringJSON(w, http.StatusOK, body)
+}
+
+// refuseUnacknowledgedTemplateOmissions runs the template-omission rule
+// (activation.RequireTemplateOmissionAcknowledgement) on the artifact an
+// activation names, BEFORE Promote, and writes the refusal when there is one.
+//
+// A digest the store does not hold passes through, so Promote answers it with
+// its own "not admitted" refusal exactly as before. A store that cannot be read
+// refuses as the active-document read does (writeTypedStoreRefusal: 503
+// key_not_loaded, 500 artifact_unverifiable, 503 storage_unavailable), so a
+// caller is told whether a retry can help. A report that cannot be computed
+// refuses with TEMPLATE_OMISSIONS_UNAVAILABLE and a fixed sentence. Either way
+// the error goes to the log only (#4271) and the activation never proceeds on
+// an omission report nobody could compute. The rule's own refusals are 409
+// activation_refused like Promote's, because they are about the state of what
+// is being activated.
+func refuseUnacknowledgedTemplateOmissions(ctx context.Context, w http.ResponseWriter, store *authoring.Store, orgID, digest string, acknowledged []string) bool {
+	art, found, err := store.Get(ctx, typedAuthoringRoot, digest)
+	if err != nil {
+		writeTypedStoreRefusal(w, orgID, "activation", digest, err)
+		return true
+	}
+	if !found {
+		return false
+	}
+	report, err := activation.RequireTemplateOmissionAcknowledgement(art, acknowledged)
+	if err == nil {
+		return false
+	}
+	writeTemplateOmissionRefusal(w, orgID, digest, report, err)
+	return true
+}
+
+// writeTemplateOmissionRefusal renders the rule's refusal: the rule's own
+// *TemplateOmissionAcknowledgementError as 409 with its code, error and report,
+// and any other error - a report that could not be computed - as 409
+// TEMPLATE_OMISSIONS_UNAVAILABLE with a fixed sentence and the error logged.
+func writeTemplateOmissionRefusal(w http.ResponseWriter, orgID, digest string, report *activation.TemplateOmissionReport, err error) {
+	var ackErr *activation.TemplateOmissionAcknowledgementError
+	if errors.As(err, &ackErr) {
+		body := map[string]any{
+			"success": false, "reason": "activation_refused", "code": ackErr.Code, "error": ackErr.Detail,
+		}
+		if report != nil {
+			body["template_omissions"] = report
+		}
+		typedAuthoringJSON(w, http.StatusConflict, body)
+		return
+	}
+	log.Printf("[TypedAuthoring] org %s: the template omissions of %s could not be computed before activation: %v", orgID, digest, err)
+	typedAuthoringJSON(w, http.StatusConflict, map[string]any{
+		"success": false, "reason": "activation_refused", "code": activation.CodeTemplateOmissionsUnavailable,
+		"error": "the template omissions of this digest could not be computed, so it was not activated; retry the activation",
+	})
 }
 
 // addActivatedTemplateOmissions adds the activated artifact's template
@@ -938,35 +1047,41 @@ func (h *TypedAuthoringRouteHandler) handleActive(w http.ResponseWriter, r *http
 		})
 		return
 	}
-	if errors.Is(err, authoringstore.ErrSigningKeyNotLoaded) {
-		// Signed by a key this replica has not loaded, and the reload that would
-		// load it was deferred (#4255). The key may be one another replica
-		// authorized moments ago, or one not authorized at all. A retry after the
-		// floor usually settles which, though under concurrent reads a retry can
-		// land inside another read's floor and answer 503 again.
-		log.Printf("[TypedAuthoring] org %s: the active document's signing key is not loaded on this replica: %v", orgID, err)
-		writeActiveKeyNotLoaded(w)
-		return
-	}
-	if errors.Is(err, authoringstore.ErrArtifactUnverifiable) {
-		// The store answered, and what it holds as active does not verify
-		// (#4255): a key de-authorized, or a signature, digest or module that no
-		// longer holds. That is an integrity fault, not a storage outage, so it
-		// is not storage_unavailable. (A key another replica authorized moments
-		// ago is ErrSigningKeyNotLoaded, answered above.) The verification error
-		// goes to the log only.
-		log.Printf("[TypedAuthoring] org %s: the active document did not verify on load: %v", orgID, err)
-		writeActiveUnverifiable(w)
-		return
-	}
 	if err != nil {
-		// A store that could not be read is NOT "nothing active" (#4255): every
-		// SDK maps that 404 to "no active document", so answering it here told an
-		// operator their organization had no policy in force during a database
-		// blip. The store's own error goes to the log only: it can name the
-		// database.
-		log.Printf("[TypedAuthoring] org %s: the active document could not be read: %v", orgID, err)
-		writeActiveStorageUnavailable(w)
+		// The kind of store failure is authoringstore's one classification,
+		// which the portal reads too (#4283). Its error goes to the log only:
+		// it can name the database.
+		switch authoringstore.ClassifyStoreFailure(err) {
+		case authoringstore.StoreKeyNotLoaded:
+			// Signed by a key this replica has not loaded, and the key reload
+			// the read waited for (#4272) did not complete within its bound: a
+			// reload in flight that took longer than the floor. A read whose
+			// reload was only deferred now waits and is answered definitively,
+			// so this is the timed-out case alone (#4255); a retry after a few
+			// seconds settles it.
+			log.Printf("[TypedAuthoring] org %s: the active document's signing key is not loaded on this replica: %v", orgID, err)
+			writeActiveKeyNotLoaded(w)
+		case authoringstore.StoreUnverifiable:
+			// The store answered, and what it holds as active does not verify
+			// (#4255): a key de-authorized, or a signature, digest or module
+			// that no longer holds. That is an integrity fault, not a storage
+			// outage, so it is not storage_unavailable.
+			log.Printf("[TypedAuthoring] org %s: the active document did not verify on load: %v", orgID, err)
+			writeActiveUnverifiable(w)
+		case authoringstore.StoreLedgerInconsistent:
+			// The ledger names an active digest the store does not hold (#4426,
+			// #4249 row 5797853828). Still the store's failure and still 503,
+			// but a retry will not heal it, and the reason says so.
+			log.Printf("[TypedAuthoring] org %s: the active document is not in the store its ledger names it in: %v", orgID, err)
+			writeActiveLedgerInconsistent(w)
+		default:
+			// A store that could not be read is NOT "nothing active" (#4255):
+			// every SDK maps that 404 to "no active document", so answering it
+			// here told an operator their organization had no policy in force
+			// during a database blip.
+			log.Printf("[TypedAuthoring] org %s: the active document could not be read: %v", orgID, err)
+			writeActiveStorageUnavailable(w)
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -984,6 +1099,18 @@ func writeActiveStorageUnavailable(w http.ResponseWriter) {
 		"error": "this deployment's typed-authoring store could not be read, so what is active on this " +
 			"organization is not known. The read is refused rather than answered as nothing active; retry " +
 			"once the database is reachable.",
+	})
+}
+
+// writeActiveLedgerInconsistent is a read of what is active refused because
+// the store's ledger names an active digest the store does not hold (#4249 row
+// 5797853828): 503, like every store failure, with a reason that tells an
+// operator a retry will not heal it.
+func writeActiveLedgerInconsistent(w http.ResponseWriter) {
+	typedAuthoringJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"success": false, "reason": "ledger_inconsistent",
+		"error": "the document this organization's activation ledger names active is not in its typed-authoring store, " +
+			"so what is active is not known. A retry will not change that: the store needs an operator's repair.",
 	})
 }
 
@@ -1006,6 +1133,59 @@ func writeActiveUnverifiable(w http.ResponseWriter) {
 			"may have been de-authorized, or its signature or content no longer holds. A document that verifies " +
 			"must be activated.",
 	})
+}
+
+// writeTypedStoreRefusal answers a typed-authoring write that the STORE
+// defeated, for both writes the orchestrator serves: a publication and an
+// activation (master R3 round 1 on #4396, LOW-6 - they were two writers with
+// one mapping, which is one copy too many for a rule that has to stay
+// identical).
+//
+// The mapping is the store's, not the caller's, and the kind comes from
+// authoringstore.ClassifyStoreFailure. Four arms: 503 key_not_loaded for a
+// signing key this replica does not hold; 500 artifact_unverifiable for an
+// artifact that does not verify on load (a retry cannot change it); 503
+// ledger_inconsistent when the ledger names an active document the store
+// does not hold (a retry cannot change that either); otherwise 503
+// storage_unavailable. The cause is logged; only the fixed sentence is
+// answered, so no database text reaches the client. `what` names the write in
+// the log line and in that sentence, and `subject` is the digest an activation
+// names (empty for a publication, which names none yet).
+func writeTypedStoreRefusal(w http.ResponseWriter, orgID, what, subject string, err error) {
+	logged := what
+	if subject != "" {
+		logged = what + " of " + subject
+	}
+	switch authoringstore.ClassifyStoreFailure(err) {
+	case authoringstore.StoreKeyNotLoaded:
+		log.Printf("[TypedAuthoring] org %s: the %s did not happen: a signing key is not loaded on this replica: %v", orgID, logged, err)
+		typedAuthoringJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "reason": "key_not_loaded",
+			"error": "a signing key the " + what + " needed is not loaded on this replica, so it did not happen; retry in a few seconds.",
+		})
+	case authoringstore.StoreUnverifiable:
+		log.Printf("[TypedAuthoring] org %s: the %s did not happen: a stored artifact did not verify on load: %v", orgID, logged, err)
+		typedAuthoringJSON(w, http.StatusInternalServerError, map[string]any{
+			"success": false, "reason": "artifact_unverifiable",
+			"error": "an artifact the " + what + " read does not verify on this orchestrator: its signing key may have been " +
+				"de-authorized, or its signature or content no longer holds. It did not happen, and a retry will not change that.",
+		})
+	case authoringstore.StoreLedgerInconsistent:
+		log.Printf("[TypedAuthoring] org %s: the %s did not happen: the active document is not in the store its ledger names it in: %v", orgID, logged, err)
+		typedAuthoringJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "reason": "ledger_inconsistent",
+			"error": "the document this organization's activation ledger names active is not in its typed-authoring store, so the " +
+				what + " did not happen and what it named was not refused. A retry will not change that: the store needs an " +
+				"operator's repair.",
+		})
+	default:
+		log.Printf("[TypedAuthoring] org %s: the %s did not happen: the store could not be read or written: %v", orgID, logged, err)
+		typedAuthoringJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "reason": "storage_unavailable",
+			"error": "this deployment's typed-authoring store could not be read or written, so the " + what + " did not happen " +
+				"and what it named was not refused; retry once the database is reachable.",
+		})
+	}
 }
 
 // typedAuthoringSummaryResponse is the summary route's 200.
@@ -1046,18 +1226,21 @@ func (h *TypedAuthoringRouteHandler) handleActiveSummary(w http.ResponseWriter, 
 		return
 	}
 	art, found, err := ws.api.Store().Active(r.Context(), typedAuthoringRoot)
-	switch {
-	case errors.Is(err, authoringstore.ErrSigningKeyNotLoaded):
-		log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document's signing key is not loaded on this replica: %v", orgID, err)
-		writeActiveKeyNotLoaded(w)
-		return
-	case errors.Is(err, authoringstore.ErrArtifactUnverifiable):
-		log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document did not verify on load: %v", orgID, err)
-		writeActiveUnverifiable(w)
-		return
-	case err != nil:
-		log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document could not be read: %v", orgID, err)
-		writeActiveStorageUnavailable(w)
+	if err != nil {
+		switch authoringstore.ClassifyStoreFailure(err) {
+		case authoringstore.StoreKeyNotLoaded:
+			log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document's signing key is not loaded on this replica: %v", orgID, err)
+			writeActiveKeyNotLoaded(w)
+		case authoringstore.StoreUnverifiable:
+			log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document did not verify on load: %v", orgID, err)
+			writeActiveUnverifiable(w)
+		case authoringstore.StoreLedgerInconsistent:
+			log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document is not in the store its ledger names it in: %v", orgID, err)
+			writeActiveLedgerInconsistent(w)
+		default:
+			log.Printf("[TypedAuthoring] org %s: the policies in force were not counted: the active document could not be read: %v", orgID, err)
+			writeActiveStorageUnavailable(w)
+		}
 		return
 	}
 	if !found {
@@ -1078,7 +1261,27 @@ func (h *TypedAuthoringRouteHandler) handleActiveSummary(w http.ResponseWriter, 
 		})
 		return
 	}
+	// THE INSTALLED PACKS ARE COUNTED BY THE AGENT, the only process that loads
+	// them: its summary is answered when it can be read, and otherwise this one,
+	// with packs_counted false and the reason named.
+	summary = activationinputs.WithAgentPacks(r.Context(), summary, typedAuthoringAgentSummary(), orgID)
 	typedAuthoringJSON(w, http.StatusOK, typedAuthoringSummaryResponse{Success: true, Summary: summary})
+}
+
+// typedAuthoringAgentSummary is the read of the agent's summary the route
+// counts the installed packs with: the agent this orchestrator was pointed at
+// (AGENT_MCP_ENDPOINT), signed with the internal-service credential.
+// Replaceable so a test can point it at a fake agent.
+var typedAuthoringAgentSummary = productionTypedAuthoringAgentSummary
+
+func productionTypedAuthoringAgentSummary() activationinputs.AgentSummaryReader {
+	return activationinputs.AgentSummaryReader{
+		AgentURL: agentMCPEndpoint,
+		Sign: func(req *http.Request) {
+			req.Header.Set(serviceauth.ServiceIDHeader, serviceauth.ClientID)
+			req.Header.Set(serviceauth.ServiceTokenHeader, serviceauth.GetInternalServiceToken(internalTokenGenerator))
+		},
+	}
 }
 
 // handleUnenumerated answers anything else under the prefix.
@@ -1239,10 +1442,21 @@ func typedAuthoringAuthor(realm identity.RealmID, t identity.SubjectType, subjec
 	return id, nil
 }
 
+// decodeTypedAuthoringRequest reads a bounded request body and decodes it with
+// authoring.DecodeStrict, the one parser this route and the customer portal
+// share (#4371): an unknown member, a second value and a null binds_on are
+// refused here as they are there.
+func decodeTypedAuthoringRequest(w http.ResponseWriter, r *http.Request, into any) error {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, typedAuthoringMaxRequestBytes))
+	if err != nil {
+		return err
+	}
+	return authoring.DecodeStrict(raw, into)
+}
+
 func (h *TypedAuthoringRouteHandler) decodeDocument(w http.ResponseWriter, r *http.Request) (typedAuthoringDocumentRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, typedAuthoringMaxRequestBytes)
 	var req typedAuthoringDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeTypedAuthoringRequest(w, r, &req); err != nil {
 		typedAuthoringJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false, "reason": "malformed_request", "error": err.Error(),
 		})
@@ -1283,12 +1497,47 @@ func refuseIfStorageDegraded(w http.ResponseWriter, ws *typedAuthoringWorkspace)
 	return true
 }
 
+// errTypedWorkspaceLimit marks workspaceFor's one quota refusal: the cap on
+// workspaces held in memory, reached with none evictable.
+var errTypedWorkspaceLimit = errors.New("typed-authoring workspace limit reached")
+
 func (h *TypedAuthoringRouteHandler) requireWorkspace(ctx context.Context, w http.ResponseWriter, orgID string) (*typedAuthoringWorkspace, bool) {
 	ws, err := h.workspaceFor(ctx, orgID)
 	if err != nil {
 		log.Printf("[TypedAuthoring] workspace refused for org %s: %v", orgID, err)
-		typedAuthoringJSON(w, http.StatusTooManyRequests, map[string]any{
-			"success": false, "reason": "workspace_limit", "error": err.Error(),
+		// ONLY THE CAP IS A QUOTA (#4283 item 4). A key that could not be
+		// generated or a plane that could not be built is this deployment
+		// failing, and 429 workspace_limit ("try later") read it as a quota;
+		// the portal's resolve already splits the two.
+		if errors.Is(err, errTypedWorkspaceLimit) {
+			typedAuthoringJSON(w, http.StatusTooManyRequests, map[string]any{
+				"success": false, "reason": "workspace_limit", "error": err.Error(),
+			})
+			return nil, false
+		}
+		// A REQUEST THAT STOPPED WAITING FOR A BUILD STILL RUNNING is 503: a
+		// retry is the remedy (#4283, master's ruling on (7)).
+		if errors.Is(err, errTypedWorkspaceBuilding) {
+			typedAuthoringJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"success": false, "reason": "workspace_building",
+				"error": "this organization's typed-authoring workspace is still being built on this orchestrator, and " +
+					"this request stopped waiting for it; retry in a few seconds.",
+			})
+			return nil, false
+		}
+		// EVERYTHING ELSE IS A BUILD THAT FAILED, AND A RETRY WILL NOT FIX IT:
+		// 500, as the portal's resolve answers it. It was 503 here, and the two
+		// surfaces gave one reason two statuses. A durable store that could
+		// not be opened never reaches this branch: that build returns a
+		// degraded workspace, whose writes and reads are refused 503
+		// storage_unavailable. What reaches it is a signing key that could not
+		// be generated, a plane or an activation authority that could not be
+		// built, a build that panicked (errTypedWorkspaceBuildDidNotComplete),
+		// and "declares no vocabulary", which requireAvailable makes
+		// unreachable and is kept as buildWorkspace's own guard.
+		typedAuthoringJSON(w, http.StatusInternalServerError, map[string]any{
+			"success": false, "reason": "workspace_unavailable",
+			"error": "this organization's typed-authoring workspace could not be built on this orchestrator; the cause is in its log.",
 		})
 		return nil, false
 	}
@@ -1307,28 +1556,226 @@ func (h *TypedAuthoringRouteHandler) requireWorkspace(ctx context.Context, w htt
 // here costs one map read per request and closes that window.
 func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID string) (*typedAuthoringWorkspace, error) {
 	profile := h.profileFor(ctx)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if ws, ok := h.workspaces[orgID]; ok {
-		if ws.profile == profile {
-			ws.lastUsed = time.Now()
-			return ws, nil
+	for {
+		h.mu.Lock()
+		if ws, ok := h.workspaces[orgID]; ok {
+			if ws.profile == profile {
+				ws.lastUsed = time.Now()
+				h.mu.Unlock()
+				return ws, nil
+			}
+			log.Printf("[TypedAuthoring] the deployment's edition changed from %s to %s; rebuilding the authoring plane for org %s. "+
+				"The WORKSPACE is rebuilt; the artifacts are NOT dropped - since #3975 they are in postgres and outlive "+
+				"it, so a policy admitted under a wider edition stays active under a narrower one (#3993, S10 #3895) - and a "+
+				"narrower edition must not inherit a store built under a wider one", ws.profile.Edition(), profile.Edition(), orgID)
+			delete(h.workspaces, orgID)
 		}
-		log.Printf("[TypedAuthoring] the deployment's edition changed from %s to %s; rebuilding the authoring plane for org %s. "+
-			"The WORKSPACE is rebuilt; the artifacts are NOT dropped - since #3975 they are in postgres and outlive "+
-			"it, so a policy admitted under a wider edition stays active under a narrower one (#3993, S10 #3895) - and a "+
-			"narrower edition must not inherit a store built under a wider one", ws.profile.Edition(), profile.Edition(), orgID)
-		delete(h.workspaces, orgID)
-	}
-	if len(h.workspaces) >= maxTypedAuthoringWorkspaces {
-		if evicted := h.evictAnEmptyWorkspaceLocked(); evicted == "" {
-			return nil, fmt.Errorf(
-				"this orchestrator holds typed-authoring workspaces for %d organizations, every one of them holding "+
-					"published artifacts, so none can be evicted. The artifacts themselves are durable since #3975; this "+
-					"cap is on WORKSPACES held in memory, and "+
-					"release; durable storage is tracked separately", maxTypedAuthoringWorkspaces)
+		// ONE BUILD IN FLIGHT PER ORGANIZATION (#4283 item 6): a request that
+		// finds one waits for its result rather than opening the store again.
+		if b, ok := h.building[orgID]; ok {
+			h.mu.Unlock()
+			select {
+			case <-b.done:
+			case <-ctx.Done():
+				// THIS REQUEST GAVE UP WAITING; THE BUILD IS STILL RUNNING
+				// (#4283, master's ruling on (7)). It is not a build that
+				// failed, so it is not 500 workspace_unavailable: it is 503
+				// workspace_building, and the log names the step the build was
+				// on, so an operator can still see when that step was the store.
+				return nil, b.abandoned(ctx.Err())
+			}
+			if b.err != nil {
+				return nil, b.err
+			}
+			if b.ws.profile == profile {
+				return b.ws, nil
+			}
+			continue
 		}
+		// THE CAP IS APPLIED ONLY TO A WORKSPACE THAT WILL BE CACHED (#4283
+		// item 5): below, when a healthy build is installed. A request during
+		// an outage builds a degraded workspace, which is never cached, so it
+		// evicts nothing and is answered as the outage it is (503), even when
+		// every cached workspace holds artifacts; before, it evicted an empty
+		// workspace for nothing, or was answered 429 "try later".
+		b := &typedWorkspaceBuild{done: make(chan struct{})}
+		if h.building == nil {
+			h.building = map[string]*typedWorkspaceBuild{}
+		}
+		h.building[orgID] = b
+		reuse := h.degradedKeys[orgID]
+		h.mu.Unlock()
+
+		// THE GUARD ENTRY IS RELEASED BY defer, NOT ON THE NORMAL RETURN
+		// (master R3 round 1 on #4397, MEDIUM-2). buildWorkspace can panic -
+		// net/http recovers the handler and the process lives on - and with
+		// the delete and the close on the normal path only, h.building[orgID]
+		// stayed set with `done` never closed: every later request for that
+		// organization waited at <-ctx.Done(), so one with no deadline waited
+		// forever and the organization was unreachable until a restart. Before
+		// this PR the `defer h.mu.Unlock()` released the lock on a panic, so a
+		// panicking build cost one request rather than the organization.
+		//
+		// The NORMAL path still publishes what it installed - after the
+		// degraded and cap decisions, which can replace the result - so a
+		// waiter never sees a workspace the builder did not install. The
+		// deferred publish below fires only when the normal one did not
+		// happen, which is the panic, and it hands waiters an error rather
+		// than a nil workspace with no error. The panic itself is not
+		// recovered: it keeps propagating, and net/http answers that one
+		// request 500 as it did before.
+		var ws *typedAuthoringWorkspace
+		var err error
+		published := false
+		func() {
+			defer func() {
+				if published {
+					return
+				}
+				h.mu.Lock()
+				delete(h.building, orgID)
+				b.ws, b.err = nil, errTypedWorkspaceBuildDidNotComplete
+				close(b.done)
+				h.mu.Unlock()
+			}()
+			// THE SHARED BUILD DOES NOT RUN ON ONE CALLER'S CONTEXT (master
+			// R3 round 1 on #4397, LOW-4). Every waiter takes this build's
+			// result, so a first caller who disconnects would degrade the
+			// round for all of them - and, with the store open cancelled
+			// halfway, hand them a degraded workspace that is cached for
+			// nobody. The build keeps the caller's VALUES (deadline and
+			// cancellation dropped, request-scoped values kept).
+			//
+			// SO NOTHING BOUNDS IT (master R3 round 1 on #4439). No timeout is
+			// set here or re-applied below: the build takes as long as its
+			// slowest step, in practice the durable open, and the request that
+			// started it waits that long with no answer. Only a WAITER can give
+			// up, when its own context ends, and it is answered 503
+			// workspace_building (errTypedWorkspaceBuilding). Bounding the
+			// build is a design decision (which bound, and whether a slow open
+			// then degrades), not taken here.
+			buildCtx := context.WithoutCancel(ctx)
+			ws, err = h.buildWorkspace(buildCtx, orgID, profile, reuse, b)
+
+			// THE INSTALL SECTION IS ITS OWN FUNC WITH `defer Unlock` (master
+			// R3 round 2 on #4397, LOW-8). The deferred publish below RE-TAKES
+			// h.mu, so a panic raised inside this locked window would run it
+			// while this goroutine still held the lock: a self-deadlock on a
+			// non-reentrant mutex, with the lock held for ever and EVERY
+			// organization's request blocked behind it - the request never
+			// even reaches net/http's recover. That is MEDIUM-2's class with a
+			// wider blast radius, introduced by MEDIUM-2's own fix. Unlocking
+			// while the panic unwinds means the deferred publish can take the
+			// lock and the panic goes on propagating.
+			//
+			// `published` is set BEFORE close(b.done) so the deferred publish
+			// can never close an already-closed channel.
+			func() {
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				delete(h.building, orgID)
+				if h.afterInstallLocked != nil {
+					h.afterInstallLocked()
+				}
+				if err == nil {
+					if ws.degraded {
+						h.keepKeyForRetryLocked(orgID, ws.priv)
+					} else {
+						delete(h.degradedKeys, orgID)
+						if len(h.workspaces) >= maxTypedAuthoringWorkspaces && h.evictAnEmptyWorkspaceLocked() == "" {
+							// Its key is kept for the retry, as a degraded build's is.
+							h.keepKeyForRetryLocked(orgID, ws.priv)
+							ws, err = nil, h.workspaceLimitError()
+						} else {
+							h.workspaces[orgID] = ws
+						}
+					}
+				}
+				b.ws, b.err = ws, err
+				published = true
+				close(b.done)
+			}()
+		}()
+		return ws, err
 	}
+}
+
+// errTypedWorkspaceBuildDidNotComplete is what a waiter is handed when the
+// build it waited for did not finish - today only a panic inside
+// buildWorkspace, which net/http recovers for the request that caused it
+// (master R3 round 1 on #4397, MEDIUM-2). A waiter must be told something: a
+// nil workspace with a nil error would be dereferenced by the caller.
+var errTypedWorkspaceBuildDidNotComplete = errors.New(
+	"this organization's typed-authoring workspace could not be built: the build did not complete")
+
+// workspaceLimitError is the cap's refusal: every workspace held is in use,
+// so none can be evicted.
+func (h *TypedAuthoringRouteHandler) workspaceLimitError() error {
+	return fmt.Errorf(
+		"%w: this orchestrator holds typed-authoring workspaces for %d organizations, every one of them holding "+
+			"published artifacts, so none can be evicted. The artifacts themselves are durable since #3975; this "+
+			"cap is on WORKSPACES held in memory, and "+
+			"release; durable storage is tracked separately", errTypedWorkspaceLimit, maxTypedAuthoringWorkspaces)
+}
+
+// keepKeyForRetryLocked keeps a build's signing key for the organization's next
+// attempt, when the build was not installed (degraded, or refused at the cap).
+func (h *TypedAuthoringRouteHandler) keepKeyForRetryLocked(orgID string, priv ed25519.PrivateKey) {
+	if h.degradedKeys == nil {
+		h.degradedKeys = map[string]ed25519.PrivateKey{}
+	}
+	h.degradedKeys[orgID] = priv
+}
+
+// typedWorkspaceBuild is one organization's workspace build in flight.
+type typedWorkspaceBuild struct {
+	done chan struct{}
+	ws   *typedAuthoringWorkspace
+	err  error
+	// step is the build step in flight, for the log line of a request that
+	// stops waiting for it (a string; empty before the first step).
+	step atomic.Value
+}
+
+// at records the build step now in flight. nil-safe.
+func (b *typedWorkspaceBuild) at(step string) {
+	if b != nil {
+		b.step.Store(step)
+	}
+}
+
+// abandoned is a waiter's error when its own context ends before the build it
+// waits for does: errTypedWorkspaceBuilding, naming the step in flight and
+// keeping the context's error.
+func (b *typedWorkspaceBuild) abandoned(ctxErr error) error {
+	step, _ := b.step.Load().(string)
+	if step == "" {
+		step = "starting"
+	}
+	return fmt.Errorf("%w (the build was %s): %w", errTypedWorkspaceBuilding, step, ctxErr)
+}
+
+// errTypedWorkspaceBuilding is a request that stopped waiting for its
+// organization's workspace build: 503 workspace_building. Retrying is the
+// remedy, and nothing about the build is known to be broken. IN PRACTICE the
+// durable open is the only build step that blocks this long, so the log line's
+// step usually reads "opening the durable store"; that is an observation about
+// today's build, which is why the reason does not claim the store.
+var errTypedWorkspaceBuilding = errors.New("this organization's typed-authoring workspace is still being built")
+
+// typedWorkspaceKey returns reuse's key pair when a degraded attempt left one,
+// and a fresh one otherwise.
+func typedWorkspaceKey(reuse ed25519.PrivateKey) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	if reuse != nil {
+		return reuse.Public().(ed25519.PublicKey), reuse, nil
+	}
+	return ed25519.GenerateKey(rand.Reader)
+}
+
+// buildWorkspace builds an organization's authoring plane. It runs OUTSIDE
+// h.mu (workspaceFor), and it caches nothing: workspaceFor installs the
+// result.
+func (h *TypedAuthoringRouteHandler) buildWorkspace(ctx context.Context, orgID string, profile authoring.Profile, reuse ed25519.PrivateKey, b *typedWorkspaceBuild) (*typedAuthoringWorkspace, error) {
 	snap, err := h.vocabulary()
 	if err != nil || snap == nil {
 		// Unreachable through the handlers, which all pass requireAvailable
@@ -1336,7 +1783,8 @@ func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID str
 		// vocabulary would validate every policy against an empty catalog.
 		return nil, fmt.Errorf("this deployment declares no typed-authoring vocabulary")
 	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	b.at("generating the signing key")
+	pub, priv, err := typedWorkspaceKey(reuse)
 	if err != nil {
 		return nil, fmt.Errorf("a signing key could not be generated: %w", err)
 	}
@@ -1391,6 +1839,7 @@ func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID str
 		if open == nil {
 			open = authoringstore.OpenForSigning
 		}
+		b.at("opening the durable store")
 		store, loaded, _, serr := open(
 			ctx, h.db, typedAuthoringRoot, orgID, "orchestrator", pub, "orchestrator")
 		if serr == nil {
@@ -1411,6 +1860,7 @@ func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID str
 		}
 	}
 
+	b.at("building the authoring plane")
 	api, err := authoring.NewAPIWithBackend(snap.Catalog, trust, profile, backend)
 	if err != nil {
 		return nil, fmt.Errorf("the authoring plane could not be built: %w", err)
@@ -1436,6 +1886,7 @@ func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID str
 	// one as the agent's enforcer does, and judges the document as it will be
 	// enforced. Both keys come from the one builder of an organization's
 	// activation inputs (platform/shared/activationinputs).
+	b.at("minting the activation authorities")
 	system, composition, err := activationinputs.NewAuthorities()
 	if err != nil {
 		return nil, err
@@ -1460,24 +1911,22 @@ func (h *TypedAuthoringRouteHandler) workspaceFor(ctx context.Context, orgID str
 	// THE ORGANIZATION'S RECORDED POSTURE (#4045) is read per dry run through
 	// recordedPosture: the dry run judges the document under the posture the
 	// enforcing seam folds, and fails closed as the seam does.
-	inputs := activationinputs.Builder{
+	builder := activationinputs.Builder{
 		Snapshot: snap, Trust: trust, System: system, Composition: composition,
 		Profile: profile, RefuseConstructsOutsideEdition: true,
 		OrganizationID: orgID, Posture: h.recordedPosture,
-	}.Source(legacycompile.PlaneDecide, "")
+	}
+	inputs := builder.Source(legacycompile.PlaneDecide, "")
 	api = api.WithActivator(activation.Activator(inputs))
 	ws := &typedAuthoringWorkspace{
 		api: api, keyID: keyID, priv: priv, profile: profile,
-		durable: durable, degraded: degraded, activationInputs: inputs,
+		durable: durable, degraded: degraded, activationInputs: inputs, inputs: builder,
 		digests: map[string]struct{}{}, lastUsed: time.Now(),
 	}
 	// NOT CACHED WHEN DEGRADED. Caching it is what made a transient failure
 	// permanent; leaving it uncached costs one rebuild per request while the
 	// database is unreachable, which is the correct price for not silently
 	// serving a store that loses writes.
-	if !degraded {
-		h.workspaces[orgID] = ws
-	}
 	return ws, nil
 }
 
@@ -1507,6 +1956,9 @@ func (h *TypedAuthoringRouteHandler) recordedPosture(ctx context.Context, orgID 
 // survive a restart, but that is a stated limit of this release rather than
 // something a cache is entitled to do on its own while the process is up.
 func (h *TypedAuthoringRouteHandler) evictAnEmptyWorkspaceLocked() string {
+	// The scan is inline (master R3 round 1 on #4397, LOW-5): it had one
+	// caller, and a helper whose whole body is this loop hid that the choice
+	// and the eviction are one decision under one lock.
 	victim := ""
 	var oldest time.Time
 	for org, ws := range h.workspaces {

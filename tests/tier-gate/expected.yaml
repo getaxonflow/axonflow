@@ -201,42 +201,42 @@ endpoints:
     port: 8081
     path: /api/v1/plans/test-plan/steps/test-step/approve
     expected:
-      community:  {status: 403, reason: "map_hitl_adapter.go:149 isCommunityMode + !IsHITLApprovalEnabled → 403"}
-      evaluation: {status: 503, reason: "isCommunityMode=false bypasses gate; WCP services not bootstrapped (no LLM keys in CI) → StatusServiceUnavailable"}
-      enterprise: {status: 503, reason: "same"}
+      community:  {status: 403, reason: "map_hitl_adapter.go:130 isCommunityMode + !hitlResolveAllowed → 403"}
+      evaluation: {status: 404, reason: "isCommunityMode=false bypasses gate; no workflow control plane workflow backs test-plan → 'No paused execution found for this plan'. It was 503 while the in-memory HITL engine was unwired; #4382 wired it on every deployment and #4249 row 5774060413 retired it"}
+      enterprise: {status: 404, reason: "same"}
 
   - id: orchestrator-plan-step-reject
     method: POST
     port: 8081
     path: /api/v1/plans/test-plan/steps/test-step/reject
     expected:
-      community:  {status: 403, reason: "map_hitl_adapter.go:334 same gate as approve"}
-      evaluation: {status: 503, reason: "gate bypassed; WCP service not bootstrapped"}
-      enterprise: {status: 503, reason: "same"}
+      community:  {status: 403, reason: "map_hitl_adapter.go:300 same gate as approve"}
+      evaluation: {status: 404, reason: "gate bypassed; no workflow backs the plan → 404, as approve (#4249 row 5774060413)"}
+      enterprise: {status: 404, reason: "same"}
 
   - id: orchestrator-plan-approvals-pending
     method: GET
     port: 8081
     path: /api/v1/plans/approvals/pending
     expected:
-      community:  {status: 403, reason: "map_hitl_adapter.go:461 same gate; #1680"}
+      community:  {status: 403, reason: "map_hitl_adapter.go:436 same gate; #1680"}
       evaluation: {status: 200, reason: "gate bypassed; empty list returned"}
       enterprise: {status: 200, reason: "same"}
 
   # ---------------------------------------------------------------------------
-  # WCP HITL execution status — handler-level gate present, but the WCP service
-  # itself isn't bootstrapped in CI (no LLM keys), so all three modes hit the
-  # service-unavailable path before / after the gate. The community vs eval gate
-  # difference still surfaces on the other plan/step routes.
+  # HITL execution status — no execution has an in-memory HITL status since the
+  # in-memory engine was retired (#4249 row 5774060413), so every id answers 404
+  # "Execution not found" in every mode, as it has since #4382 wired that engine
+  # on every deployment. The route's removal is a v12.0.0 row.
   # ---------------------------------------------------------------------------
   - id: orchestrator-workflow-hitl-status
     method: GET
     port: 8081
     path: /api/v1/workflows/executions/test-exec-id/hitl-status
     expected:
-      community:  {status: 503, reason: "WCP service not bootstrapped in CI; same response as eval/enterprise"}
-      evaluation: {status: 503, reason: "same"}
-      enterprise: {status: 503, reason: "same"}
+      community:  {status: 404, reason: "no execution has a hitl-status (#4249 row 5774060413); same response as eval/enterprise"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 404, reason: "same"}
 
   # ---------------------------------------------------------------------------
   # Policy simulation — handler checks tierChecker.IsPolicySimulationEnabled

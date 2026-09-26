@@ -272,6 +272,60 @@ func mutants() []mutant {
 			new: "\tif IsBlanketPermission(p) && p.ID == \"\" {",
 		},
 		{
+			code: CodeBindsOnEmpty, file: "authoring/validate.go",
+			why: "admits binds_on: [], which binds a control nowhere and round-trips through omitempty as absent, meaning everywhere",
+			old: "\tif len(*p.BindsOn) == 0 {",
+			new: "\tif len(*p.BindsOn) < 0 {",
+		},
+		{
+			code: CodePlaneNotDeclared, file: "authoring/validate.go",
+			why: "admits a scope this deployment does not enforce, so a mistyped plane scopes the control to nowhere",
+			old: "\t	if !declared[plane] {",
+			new: "\t	if false && !declared[plane] {",
+		},
+		{
+			code: CodeActionNotPresentedOnPlane, file: "authoring/validate.go",
+			why: "admits a scope that presents none of the selected actions, where the control can never be reached",
+			old: "\t	if len(presented) == 0 {",
+			new: "\t	if len(presented) < 0 {",
+		},
+		{
+			code: CodeBindsOnDuplicatePlane, file: "authoring/validate.go",
+			why: "admits a repeated scope, usually a second scope mistyped as the first",
+			old: "\t	if seen[plane] {",
+			new: "\t	if false && seen[plane] {",
+		},
+		{
+			code: CodeBindsOnMCPResponse, file: "authoring/validate.go",
+			why: "stops warning that an approval requirement binding on the MCP response pass is refused there rather than held",
+			old: "\t\tscope: legacycompile.MustScopeFor(legacycompile.PlaneMCP, legacycompile.PhaseResponse).String(),",
+			new: "\t\tscope: \"nowhere\",",
+		},
+		{
+			code: CodeBindsOnOrchestratorRequestNoHold, file: "authoring/validate.go",
+			why: "stops warning that an approval requirement binding on /api/v1/process or /api/v1/plan/execute is refused there rather than held",
+			old: "\t\tscope: legacycompile.MustScopeFor(legacycompile.PlaneOrchestratorRequest, \"\").String(),",
+			new: "\t\tscope: \"nowhere\",",
+		},
+		{
+			code: CodeBindsOnMapNoHold, file: "authoring/validate.go",
+			why: "stops warning that an approval requirement binding on the multi-agent plane is withheld there rather than held",
+			old: "\t\tscope: legacycompile.MustScopeFor(legacycompile.PlaneMAP, \"\").String(),",
+			new: "\t\tscope: \"nowhere\",",
+		},
+		{
+			code: CodeDetectorControlUnboundOnPlanes, file: "authoring/detector_scopes.go",
+			why: "stops warning that a control reading a registry detector does not bind on the planes that do not run it",
+			old: "\tif len(notRun) == 0 {",
+			new: "\tif len(notRun) >= 0 {",
+		},
+		{
+			code: CodeDetectorControlBindsNowhere, file: "authoring/detector_scopes.go",
+			why: "publishes, with a warning only, a control whose binds_on names no plane that runs its detector, so it binds nowhere",
+			old: "\t\tif p.BindsOn != nil {",
+			new: "\t\tif p.BindsOn == nil {",
+		},
+		{
 			code: CodeCatalogDisagreement, file: "authoring/validate.go",
 			why: "inverts the agreement test, so the carried registry copy becomes a second, editable source of truth",
 			old: "\t\tif gotVal != wantVal {",
@@ -399,6 +453,12 @@ func mutants() []mutant {
 			why: "lets a shipped dynamic control be given a replacement action, which v11 lets an organization disable only",
 			old: "case c.Action != \"\" && DynamicSystemControl(c.Control):",
 			new: "case false:",
+		},
+		{
+			code: CodeSystemControlForcedOnScope, file: "authoring/system_controls.go",
+			why: "stops warning that an entry disabling a PII control is not applied on the storage plane, which keeps masking PII",
+			old: "\t\tif len(scopes) == 0 {\n\t\t\tcontinue\n\t\t}",
+			new: "\t\tif len(scopes) >= 0 {\n\t\t\tcontinue\n\t\t}",
 		},
 	}
 }

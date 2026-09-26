@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"axonflow/platform/orchestrator/cloudstorage"
+	"axonflow/platform/shared/activationinputs"
 
 	"github.com/gorilla/mux"
 )
@@ -21,6 +22,9 @@ type OJKModule struct{}
 type OJKModuleConfig struct {
 	DB             *sql.DB
 	StorageBackend cloudstorage.StorageBackend
+	// ActiveEffects reads the policies in force on an organization
+	// (TypedAuthoringRouteHandler.ActiveEffects, #4249).
+	ActiveEffects activationinputs.EffectsFunc
 }
 
 // NewOJKModule returns an empty module in community mode.

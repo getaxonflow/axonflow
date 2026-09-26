@@ -90,6 +90,37 @@ func expectScope(mock sqlmock.Sqlmock, org string, withCapLock bool) {
 	}
 }
 
+// The chokepoint reads a step's holds BY ID (queue.HoldAtIDSQL, hold 1, 2, ...
+// until one is missing) and, before writing a new hold, looks for a row that
+// names the step outside its hold ids (queue.UnnamedStepRowSQL).
+const (
+	holdAtIDPattern   = `SELECT status, expires_at,\s+COALESCE\(request_context->>'workflow_id'`
+	unnamedRowPattern = `SELECT request_id\s+FROM hitl_approval_queue\s+WHERE status = 'pending'\s+AND request_type = \$1`
+)
+
+func holdRow(status string) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"status", "expires_at", "workflow_id", "step_id"}).
+		AddRow(status, time.Now().Add(time.Hour), "wf-123", "step-a")
+}
+
+func noRows(cols ...string) *sqlmock.Rows { return sqlmock.NewRows(cols) }
+
+// expectNoHold stubs a step with no hold: hold 1 is missing, and the step has
+// no unnamed row. The next hold is hold 1.
+func expectNoHold(mock sqlmock.Sqlmock) {
+	hold1 := uuid.MustParse(workflow_control.DeriveHITLApprovalIDForHold("wf-123", "step-a", 1))
+	mock.ExpectQuery(holdAtIDPattern).WithArgs(hold1).WillReturnRows(noRows("status", "expires_at", "workflow_id", "step_id"))
+	mock.ExpectQuery(unnamedRowPattern).WithArgs("wcp_step_gate", "wf-123", "step-a", sqlmock.AnyArg()).
+		WillReturnRows(noRows("request_id"))
+}
+
+// expectPendingHold stubs the walk finding the step's pending hold 1.
+func expectPendingHold(mock sqlmock.Sqlmock, id uuid.UUID) {
+	hold2 := uuid.MustParse(workflow_control.DeriveHITLApprovalIDForHold("wf-123", "step-a", 2))
+	mock.ExpectQuery(holdAtIDPattern).WithArgs(id).WillReturnRows(holdRow("pending"))
+	mock.ExpectQuery(holdAtIDPattern).WithArgs(hold2).WillReturnRows(noRows("status", "expires_at", "workflow_id", "step_id"))
+}
+
 func insertRows(id uuid.UUID, inserted bool) *sqlmock.Rows {
 	now := time.Now()
 	return sqlmock.NewRows([]string{"id", "request_id", "status", "created_at", "updated_at", "expires_at", "inserted"}).
@@ -114,6 +145,7 @@ func TestCreateApprovalDerivesTheIDTheAPIProjects(t *testing.T) {
 	want := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 
 	expectScope(mock, "test-org", true)
+	expectNoHold(mock)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WithArgs(
 			want,             // request_id - the DERIVED value, not any uuid
@@ -172,6 +204,7 @@ func TestCreateApprovalWritesTheArticle14HistoryRow(t *testing.T) {
 
 	id := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 	expectScope(mock, "test-org", true)
+	expectNoHold(mock)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").WillReturnRows(insertRows(id, true))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
@@ -187,6 +220,53 @@ func TestCreateApprovalWritesTheArticle14HistoryRow(t *testing.T) {
 
 	if _, err := newTestAdapter(t, db, 25).CreateApproval(context.Background(), stepGateRequest()); err != nil {
 		t.Fatalf("CreateApproval: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestCreateApprovalReHoldsADecidedStepUnderHold2 is #4249 row 5700138809 at
+// the adapter: a step whose hold 1 is decided is held again under hold 2's id
+// - DeriveHITLApprovalIDForHold, the id the approve/reject responses project
+// through CurrentHoldID - with a `created` outcome and a history row whose
+// previous_status is the decided one. The queue behaviour itself is proven on
+// real PostgreSQL (agent/hitl/queue/rehold_realpg_test.go); this pins the
+// adapter's wiring of the derivation into the chokepoint.
+func TestCreateApprovalReHoldsADecidedStepUnderHold2(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	hold1 := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
+	hold2 := uuid.MustParse(workflow_control.DeriveHITLApprovalIDForHold("wf-123", "step-a", 2))
+	expectScope(mock, "test-org", true)
+	mock.ExpectQuery(holdAtIDPattern).WithArgs(hold1).WillReturnRows(holdRow("approved"))
+	mock.ExpectQuery(holdAtIDPattern).WithArgs(hold2).WillReturnRows(noRows("status", "expires_at", "workflow_id", "step_id"))
+	mock.ExpectQuery(unnamedRowPattern).WithArgs("wcp_step_gate", "wf-123", "step-a", sqlmock.AnyArg()).
+		WillReturnRows(noRows("request_id"))
+	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
+		WithArgs(hold2, "test-org", "test-tenant", "test-client", "test-user", "high-risk-step", "wcp_step_gate",
+			sqlmock.AnyArg(), "policy-123", "test-policy", "High-risk op", "high",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "pending", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(insertRows(hold2, true))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("INSERT INTO hitl_approval_history").
+		WithArgs(hold2, "test-org", "test-tenant", "created",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"approved", "pending").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(2), time.Now()))
+	mock.ExpectCommit()
+
+	resp, err := newTestAdapter(t, db, 25).CreateApproval(context.Background(), stepGateRequest())
+	if err != nil {
+		t.Fatalf("CreateApproval: %v", err)
+	}
+	if resp.ApprovalID != hold2 || resp.Enqueue != string(queue.OutcomeCreated) {
+		t.Errorf("re-hold: approval id %s enqueue %q, want hold 2 %s created", resp.ApprovalID, resp.Enqueue, hold2)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
@@ -212,7 +292,11 @@ func TestReusedRowIsNotChargedAgainstTheCap(t *testing.T) {
 
 	id := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 	expectScope(mock, "test-org", true)
+	expectPendingHold(mock, id)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").WillReturnRows(insertRows(id, false))
+	// The conflict arm reads whose row it met (ErrHoldOwnership).
+	mock.ExpectQuery(`SELECT COALESCE\(request_context->>'workflow_id'`).WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"workflow_id", "step_id"}).AddRow("wf-123", "step-a"))
 	// No COUNT and no history INSERT: both are conditional on Inserted.
 	mock.ExpectCommit()
 
@@ -248,6 +332,7 @@ func TestCapRefusesAndRollsBack(t *testing.T) {
 
 	id := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 	expectScope(mock, "test-org", true)
+	expectNoHold(mock)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").WillReturnRows(insertRows(id, true))
 	// Six pending INCLUDING the speculative row, against a limit of five.
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(6))
@@ -284,6 +369,7 @@ func TestCapAdmitsExactlyAtTheLimit(t *testing.T) {
 
 	id := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 	expectScope(mock, "test-org", true)
+	expectNoHold(mock)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").WillReturnRows(insertRows(id, true))
 	// FIVE pending including the row just written, against a limit of five:
 	// this is the fifth approval and it is admitted.
@@ -314,6 +400,7 @@ func TestUnlimitedCapIssuesNoCount(t *testing.T) {
 	// serialise and nothing to measure. sqlmock's ordered expectations turn
 	// either one appearing into a failure.
 	expectScope(mock, "test-org", false)
+	expectNoHold(mock)
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").WillReturnRows(insertRows(id, true))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(1), time.Now()))

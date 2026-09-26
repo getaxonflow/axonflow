@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
@@ -41,8 +42,10 @@ import (
 
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/license/admission"
+	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/authoring"
 	"axonflow/platform/decision/pdp"
+	"axonflow/platform/policy/authoringstore"
 )
 
 const specRelPath = "../../docs/api/orchestrator-api.yaml"
@@ -412,6 +415,100 @@ func typedPolicyResponses() []typedPolicyResponse {
 			},
 		},
 		{
+			// #4249 row 5672856881: the refusal an activation of a document that
+			// omits template policies answers without the acknowledgement.
+			name: "POST /activate 409, TEMPLATE_OMISSIONS_UNACKNOWLEDGED with the report",
+			body: func(t *testing.T) map[string]any {
+				r := routerFor(newRouteHandler(t, authoring.EditionCommunity))
+				rr := call(t, r, http.MethodPost, prefix+"/publish", publishBody(communityDocument()), gatewayHeaders())
+				if rr.Code != http.StatusOK {
+					t.Fatalf("publish: status=%d body=%s", rr.Code, rr.Body.String())
+				}
+				digest, _ := decodeBody(t, rr)["digest"].(string)
+				rr = call(t, r, http.MethodPost, prefix+"/activate", typedAuthoringActivateRequest{Digest: digest, Reason: "unacknowledged"}, gatewayHeaders())
+				body := decodeBody(t, rr)
+				if rr.Code != http.StatusConflict || body["code"] != activation.CodeTemplateOmissionsUnacknowledged {
+					t.Fatalf("activate without the acknowledgement: status=%d body=%s", rr.Code, rr.Body.String())
+				}
+				if _, ok := body["template_omissions"]; !ok {
+					t.Fatalf("the refusal carries no template_omissions, so this case cannot see that member: %v", body)
+				}
+				return body
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/activate", "post", "409")
+			},
+		},
+		{
+			// Observed at the writer the handler calls, for the reason the
+			// read-back case above gives: no seam injects a failing report
+			// through the handler.
+			name: "POST /activate 409, TEMPLATE_OMISSIONS_UNAVAILABLE (observed at the writer)",
+			body: func(t *testing.T) map[string]any {
+				var logs bytes.Buffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
+				rr := httptest.NewRecorder()
+				writeTemplateOmissionRefusal(rr, testOrg, "sha256:planted-p10-unavailable", nil, errors.New(plantedStoreError))
+				body := decodeBody(t, rr)
+				if body["code"] != activation.CodeTemplateOmissionsUnavailable {
+					t.Fatalf("code = %v, want %s", body["code"], activation.CodeTemplateOmissionsUnavailable)
+				}
+				return body
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/activate", "post", "409")
+			},
+		},
+		{
+			name: "POST /activate 500, the named artifact does not verify (observed at the refusal)",
+			body: func(t *testing.T) map[string]any {
+				return activationStoreRefusalBody(t, fmt.Errorf("%w (%s)", authoringstore.ErrArtifactUnverifiable, plantedStoreError), http.StatusInternalServerError)
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/activate", "post", "500")
+			},
+		},
+		{
+			name: "POST /activate 503, the store could not be read (observed at the refusal)",
+			body: func(t *testing.T) map[string]any {
+				return activationStoreRefusalBody(t, errors.New(plantedStoreError), http.StatusServiceUnavailable)
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/activate", "post", "503")
+			},
+		},
+		{
+			name: "POST /activate 400, a malformed acknowledgement list",
+			body: func(t *testing.T) map[string]any {
+				r := routerFor(newRouteHandler(t, authoring.EditionCommunity))
+				rr := call(t, r, http.MethodPost, prefix+"/activate",
+					typedAuthoringActivateRequest{Digest: "sha256:any", AcknowledgeTemplateOmissions: []string{"a", "a"}}, gatewayHeaders())
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+				}
+				return decodeBody(t, rr)
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/activate", "post", "400")
+			},
+		},
+		{
+			name: "GET /template 200",
+			body: func(t *testing.T) map[string]any {
+				r := routerFor(newRouteHandler(t, authoring.EditionCommunity))
+				rr := call(t, r, http.MethodGet, prefix+"/template", nil, gatewayHeaders())
+				if rr.Code != http.StatusOK {
+					t.Fatalf("template: status=%d body=%s", rr.Code, rr.Body.String())
+				}
+				return decodeBody(t, rr)
+			},
+			schema: func(t *testing.T, d specDoc) map[string]any {
+				return d.jsonSchemaOf(t, prefix+"/template", "get", "200")
+			},
+		},
+		{
 			name: "GET /system 200",
 			body: func(t *testing.T) map[string]any {
 				r := routerFor(newRouteHandler(t, authoring.EditionCommunity))
@@ -580,6 +677,9 @@ func TestTheSpecMemberGuardReadsTheDocumentItNames(t *testing.T) {
 var openNodesTheGuardAllows = map[string]bool{
 	".system.document":         true,
 	".system.assurance_counts": true,
+	// The organization template's document, opaque for the reason the system
+	// corpus's is (#4249 row 5672856881).
+	".template.document": true,
 	// An obligation's params are contract.Obligation.Params, a
 	// map[string]string of the type's OWN parameters, so there are no member
 	// names to declare and nothing for the walk to compare. This entry was
@@ -666,9 +766,36 @@ func publishAndActivate(t *testing.T, r *mux.Router, doc *authoring.Document, re
 		t.Fatalf("publication returned no digest: %s", rr.Body.String())
 	}
 	rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-		typedAuthoringActivateRequest{Digest: digest, Reason: reason}, gatewayHeaders())
+		typedAuthoringActivateRequest{Digest: digest, Reason: reason, AcknowledgeTemplateOmissions: acknowledgedOmissions(t, doc)}, gatewayHeaders())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("activate: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	return digest, decodeBody(t, rr)
+}
+
+// activationStoreRefusalBody is the body refuseUnacknowledgedTemplateOmissions
+// writes when the store read before the rule fails with err, held to status.
+func activationStoreRefusalBody(t *testing.T, err error, status int) map[string]any {
+	t.Helper()
+	profile, perr := authoring.ProfileFor(authoring.EditionCommunity)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	store, serr := authoring.NewStoreWithBackend(authoring.StaticTrust(pdp.NewTrustStore()), profile,
+		readBackFailingBackend{Backend: authoring.NewMemoryBackend(), err: err})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	rr := httptest.NewRecorder()
+	if !refuseUnacknowledgedTemplateOmissions(context.Background(), rr, store, testOrg, "sha256:planted-p10-store-refusal", nil) {
+		t.Fatal("the failing store did not refuse")
+	}
+	if rr.Code != status {
+		t.Fatalf("status = %d, want %d: %s", rr.Code, status, rr.Body.String())
+	}
+	return decodeBody(t, rr)
 }

@@ -10,9 +10,12 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1854,8 +1857,724 @@ func TestClose(t *testing.T) {
 // Background Refresh Tests
 // =============================================================================
 
-// TestBackgroundRefresh tests the background refresh goroutine
+// TestBackgroundRefresh tests the background refresh goroutine: the ordinary
+// tick, and the policy cache catch-up that shortens it after a load that
+// cannot govern yet (#4249). Each subtest starts and stops its own loop.
 func TestBackgroundRefresh(t *testing.T) {
+	t.Run("refreshes on the ordinary tick", testBackgroundRefreshOrdinaryTick)
+
+	// THE R3 PLANT, KEPT: a row that never gets keyed. Without the cap the
+	// loop would take every expectation below at the catch-up interval.
+	t.Run("the catch-up is bounded on a row that stays unkeyed", func(t *testing.T) {
+		engine, mock := catchUpEngine(t)
+		engine.catchUpInterval = 5 * time.Millisecond
+		engine.catchUpMaxTicks = 3
+		settled := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+		// The boot load, the 3 refreshes the cap allows, and 5 more that a
+		// loop without the cap would take.
+		for i := 0; i < 1+3+5; i++ {
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, nil)
+		}
+		logs := captureLog(t)
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("boot load: %v", err)
+		}
+		startRefreshLoop(t, engine)
+
+		waitForLogCount(t, logs, "Loaded 1 policies from database", 4, 2*time.Second)
+		time.Sleep(100 * time.Millisecond) // twenty catch-up intervals
+		if n := strings.Count(logs.String(), "Loaded 1 policies from database"); n != 4 {
+			t.Fatalf("a row that stays unkeyed was loaded %d times; want 4 (the boot load and the 3 the cap allows), then the ordinary interval. Log:\n%s", n, logs.String())
+		}
+		if n := strings.Count(logs.String(), "policy cache catch-up: refreshing every"); n != 1 {
+			t.Errorf("entering the catch-up was logged %d times; want once. Log:\n%s", n, logs.String())
+		}
+		exhausted := logLinesContaining(logs, "policy cache catch-up EXHAUSTED")
+		if len(exhausted) != 1 {
+			t.Fatalf("EXHAUSTED was logged %d times; want once. Log:\n%s", len(exhausted), logs.String())
+		}
+		// EXHAUSTED means an unkeyed row outlasted the cap; the row count and
+		// the mark are on the line itself.
+		for _, want := range []string{"with an unkeyed row still loaded", "unkeyed rows=1", "schema_migrations 221 applied, latest at 2026-09-15T04:53:01Z"} {
+			if !strings.Contains(exhausted[0], want) {
+				t.Errorf("the EXHAUSTED line does not name %q: %s", want, exhausted[0])
+			}
+		}
+		requireRefreshMode(t, refreshModeExhausted)
+	})
+
+	t.Run("a closed handle during the catch-up stops the loop", func(t *testing.T) {
+		engine, mock := catchUpEngine(t)
+		engine.catchUpInterval = 5 * time.Millisecond
+		engine.catchUpMaxTicks = 1000
+		settled := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+		for i := 0; i < 50; i++ {
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, nil)
+		}
+		logs := captureLog(t)
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("boot load: %v", err)
+		}
+		done := startRefreshLoop(t, engine)
+
+		// The boot load and two catch-up refreshes: the burst is under way.
+		waitForLogCount(t, logs, "Loaded 1 policies from database", 3, 2*time.Second)
+		_ = engine.db.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("backgroundRefresh did not return within 2s of the database closing mid catch-up (#3798). Log:\n%s", logs.String())
+		}
+		if n := strings.Count(logs.String(), "sql: database is closed"); n != 1 {
+			t.Fatalf("the closed database was logged %d time(s); want exactly once. Log:\n%s", n, logs.String())
+		}
+		// The loop chose catch_up before it stopped; a stopped loop runs no
+		// catch-up, and reportMetricsTick must not keep saying it does.
+		requireRefreshMode(t, refreshModeSteady)
+		engine.reportMetricsTick()
+		requireRefreshMode(t, refreshModeSteady)
+	})
+
+	// THE COST OF ARMING ON THE FIRST READ, BOUNDED: a process whose boot load
+	// finds nothing moving spends the cap once, logged once each way, and then
+	// settles to the ordinary interval.
+	t.Run("a process's first load arms the catch-up once, for the cap", func(t *testing.T) {
+		engine, mock := catchUpEngine(t)
+		engine.catchUpInterval = 5 * time.Millisecond
+		engine.catchUpMaxTicks = 3
+		settled := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+		// The boot load, the 3 refreshes the cap allows, and 5 more that a
+		// catch-up that never ended would take.
+		for i := 0; i < 1+3+5; i++ {
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, "global")
+		}
+		logs := captureLog(t)
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("boot load: %v", err)
+		}
+		startRefreshLoop(t, engine)
+
+		waitForLogCount(t, logs, "Loaded 1 policies from database", 4, 2*time.Second)
+		time.Sleep(100 * time.Millisecond) // twenty catch-up intervals
+		if n := strings.Count(logs.String(), "Loaded 1 policies from database"); n != 4 {
+			t.Fatalf("a settled deployment's boot was followed by %d loads; want 4 (the boot load and the 3 the cap allows), then the ordinary interval. Log:\n%s", n, logs.String())
+		}
+		for _, line := range []string{"policy cache catch-up: refreshing every", "policy cache catch-up over: no unkeyed row, and schema_migrations has not advanced in 3 consecutive refreshes"} {
+			if n := strings.Count(logs.String(), line); n != 1 {
+				t.Errorf("%q was logged %d times; want once. Log:\n%s", line, n, logs.String())
+			}
+		}
+		requireRefreshMode(t, refreshModeSteady)
+	})
+
+	t.Run("the ordinary tick is unchanged when no trigger holds", func(t *testing.T) {
+		engine, mock := catchUpEngine(t)
+		engine.cacheTimeout = 40 * time.Millisecond
+		engine.catchUpInterval = time.Millisecond
+		settled := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+		for i := 0; i < 40; i++ {
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, "global")
+		}
+		logs := captureLog(t)
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("boot load: %v", err)
+		}
+		// The boot load is the process's first mark read, which arms the
+		// catch-up; leave it as a spent cap does, so no trigger holds.
+		settleMigrationTrigger(engine)
+		startRefreshLoop(t, engine)
+
+		time.Sleep(210 * time.Millisecond)
+		// About 5 at the 40ms ordinary interval; a catch-up at 1ms would be
+		// near 200. The bounds are loose for a loaded -race run.
+		if n := strings.Count(logs.String(), "Loaded 1 policies from database") - 1; n < 2 || n > 7 {
+			t.Fatalf("with no trigger holding, the loop refreshed %d times in 210ms; want about 5 at the 40ms ordinary interval. Log:\n%s", n, logs.String())
+		}
+		if strings.Contains(logs.String(), "policy cache catch-up") {
+			t.Fatalf("the catch-up was entered with no trigger holding. Log:\n%s", logs.String())
+		}
+		requireRefreshMode(t, refreshModeSteady)
+	})
+}
+
+// refreshPoliciesQueryPattern is the dynamic_policies SELECT refreshPolicies
+// issues (sharedpolicy.RefreshDynamicPolicies, the segment_id form), as a
+// sqlmock pattern.
+const refreshPoliciesQueryPattern = `SELECT id::text, name, COALESCE\(description, ''\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\(policy_type, 'content'\) as policy_type, COALESCE\(category, ''\) as category, COALESCE\(risk_level, 'medium'\) as risk_level, COALESCE\(allow_override, false\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC`
+
+// catchUpEngine is an engine over sqlmock with a one-hour cache interval, so
+// only the catch-up can make a refresh come sooner.
+func catchUpEngine(t *testing.T) (*DatabaseDynamicPolicyEngine, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return &DatabaseDynamicPolicyEngine{
+		db:           db,
+		policies:     make(map[string]interface{}),
+		cacheTimeout: time.Hour,
+		stopCh:       make(chan struct{}),
+	}, mock
+}
+
+// expectMigrationMark answers one schema_migrations mark read. A zero last is
+// a table with no successful row: MAX is NULL.
+func expectMigrationMark(mock sqlmock.Sqlmock, applied int64, last time.Time) {
+	rows := sqlmock.NewRows([]string{"count", "max"})
+	if last.IsZero() {
+		rows.AddRow(applied, nil)
+	} else {
+		rows.AddRow(applied, last)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(schemaMigrationMarkQuery)).WillReturnRows(rows)
+}
+
+// expectPolicyRows answers one policies SELECT with a row per org_id value;
+// nil is SQL NULL.
+func expectPolicyRows(mock sqlmock.Sqlmock, orgIDs ...interface{}) {
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"})
+	for i, org := range orgIDs {
+		id := fmt.Sprintf("catch_up_policy_%d", i)
+		rows.AddRow(fmt.Sprintf("00000000-0000-0000-0000-%012d", i+1), id, "", "[]", "[]", "global", org, 10, id, "content", "dynamic-security", "medium", false, nil, nil, nil)
+	}
+	mock.ExpectQuery(refreshPoliciesQueryPattern).WillReturnRows(rows)
+}
+
+// settleMigrationTrigger leaves the engine as a spent cap does: the migration
+// trigger the process's first mark read armed is cleared.
+func settleMigrationTrigger(engine *DatabaseDynamicPolicyEngine) {
+	engine.mu.Lock()
+	engine.catchUp.moving = false
+	engine.catchUp.advanced = false
+	engine.mu.Unlock()
+}
+
+// startRefreshLoop runs engine.backgroundRefresh and stops it at cleanup,
+// failing the test if it does not return. The returned channel closes when
+// the loop returns.
+func startRefreshLoop(t *testing.T, engine *DatabaseDynamicPolicyEngine) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		engine.backgroundRefresh()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-engine.stopCh:
+		default:
+			close(engine.stopCh)
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("backgroundRefresh did not return within 2s of its stop channel closing")
+		}
+	})
+	return done
+}
+
+func waitForLogCount(t *testing.T, logs *lockedBuffer, substr string, want int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for strings.Count(logs.String(), substr) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%q was logged %d time(s) within %v; want %d. Log:\n%s", substr, strings.Count(logs.String(), substr), within, want, logs.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func logLinesContaining(logs *lockedBuffer, substr string) []string {
+	var out []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, substr) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// requireRefreshMode asserts axonflow_policy_cache_refresh_mode has exactly
+// want at 1.
+func requireRefreshMode(t *testing.T, want string) {
+	t.Helper()
+	for _, mode := range []string{refreshModeSteady, refreshModeCatchUp, refreshModeExhausted} {
+		wantValue := 0.0
+		if mode == want {
+			wantValue = 1
+		}
+		if got := testutil.ToFloat64(policyCacheRefreshModeGauge.WithLabelValues(mode)); got != wantValue {
+			t.Errorf("axonflow_policy_cache_refresh_mode{mode=%q} = %v, want %v", mode, got, wantValue)
+		}
+	}
+}
+
+// The catch-up's FIRST trigger (#4249): a load that resolved a row to org_id
+// "". Every presence state of the column, one at a time, with the migration
+// trigger held off: a prior load read the same mark first, and its arm is
+// cleared as a spent cap clears it.
+func TestRefreshPolicies_CatchUpFirstTriggerIsAnUnkeyedRow(t *testing.T) {
+	settled := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		orgID   interface{}
+		unkeyed int
+	}{
+		{"org_id NULL", nil, 1},
+		{"org_id empty", "", 1},
+		{"org_id blank after trimming", "   ", 1},
+		{"org_id global", "global", 0},
+		{"org_id an organization", "org-a", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, mock := catchUpEngine(t)
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, "global")
+			if err := engine.refreshPolicies(); err != nil {
+				t.Fatalf("prior load: %v", err)
+			}
+			settleMigrationTrigger(engine)
+			// Expectations are ORDERED: the mark before the policies, which is
+			// what lets a migration racing the load re-arm rather than hide.
+			expectMigrationMark(mock, 221, settled)
+			expectPolicyRows(mock, tc.orgID)
+			if err := engine.refreshPolicies(); err != nil {
+				t.Fatalf("refreshPolicies: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("the mark and the policies were not read in that order: %v", err)
+			}
+			engine.mu.RLock()
+			c := engine.catchUp
+			engine.mu.RUnlock()
+			if c.unkeyedRows != tc.unkeyed || c.armed() != (tc.unkeyed > 0) {
+				t.Fatalf("unkeyedRows=%d armed=%t; want %d and %t", c.unkeyedRows, c.armed(), tc.unkeyed, tc.unkeyed > 0)
+			}
+			if c.moving {
+				t.Errorf("a settled schema_migrations mark read as moving")
+			}
+		})
+	}
+}
+
+// The catch-up's SECOND trigger (#4249): schema_migrations moved since the
+// previous successful load. It holds no unkeyed row, which is the 153->173
+// window a row-only trigger cannot see. The trigger is sticky: a load that
+// finds the mark unchanged leaves it armed, and only the cap clears it
+// (TestScheduleNextRefresh_TheCatchUpIsBoundedAtItsCap).
+func TestRefreshPolicies_CatchUpSecondTriggerIsSchemaMigrationsAdvancing(t *testing.T) {
+	engine, mock := catchUpEngine(t)
+	t1 := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+	t2 := t1.Add(5 * time.Second)
+	t3 := t2.Add(time.Minute)
+	for _, step := range []struct {
+		name         string
+		applied      int64
+		last         time.Time
+		wantMoving   bool
+		wantAdvanced bool
+		thenCapSpent bool
+	}{
+		{"the first read: a process has no previous mark to compare", 220, t1, true, true, true},
+		{"one more migration recorded", 221, t2, true, true, false},
+		{"the same mark again: still armed until the cap is spent", 221, t2, true, false, true},
+		{"an applied file re-run: applied_at moves and the count does not", 221, t3, true, true, true},
+		{"the same mark again once the cap has cleared it: nothing moves", 221, t3, false, false, false},
+	} {
+		expectMigrationMark(mock, step.applied, step.last)
+		expectPolicyRows(mock, "global")
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("%s: refreshPolicies: %v", step.name, err)
+		}
+		engine.mu.Lock()
+		c := engine.catchUp
+		engine.catchUp.advanced = false // what scheduleNextRefresh does between loads
+		engine.mu.Unlock()
+		if c.moving != step.wantMoving || c.advanced != step.wantAdvanced || c.armed() != step.wantMoving {
+			t.Errorf("%s: moving=%t advanced=%t armed=%t; want moving=%t advanced=%t armed=%t", step.name, c.moving, c.advanced, c.armed(), step.wantMoving, step.wantAdvanced, step.wantMoving)
+		}
+		if step.thenCapSpent {
+			settleMigrationTrigger(engine)
+		}
+	}
+}
+
+// A process's FIRST successful mark read arms the migration trigger (#4249): it
+// has no previous mark to compare, and on a co-booted stack the first load can
+// land inside the gap between two migrations of a burst, however long ago the
+// latest one was recorded. Each case is a fresh engine.
+func TestRefreshPolicies_TheFirstMarkReadArmsTheCatchUp(t *testing.T) {
+	longAgo := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		applied int64
+		last    time.Time
+	}{
+		{"a mark recorded years ago", 221, longAgo},
+		{"a mark recorded just now", 221, time.Now()},
+		{"no successful row at all", 0, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, mock := catchUpEngine(t)
+			expectMigrationMark(mock, tc.applied, tc.last)
+			expectPolicyRows(mock, "global")
+			if err := engine.refreshPolicies(); err != nil {
+				t.Fatalf("refreshPolicies: %v", err)
+			}
+			engine.mu.RLock()
+			c := engine.catchUp
+			engine.mu.RUnlock()
+			if !c.moving || !c.advanced || !c.armed() {
+				t.Fatalf("the first read: moving=%t advanced=%t armed=%t; want all true", c.moving, c.advanced, c.armed())
+			}
+		})
+	}
+
+	t.Run("the first SUCCESSFUL read arms, after the mark was unreadable at boot", func(t *testing.T) {
+		engine, mock := catchUpEngine(t)
+		_ = captureLog(t)
+		mock.ExpectQuery(regexp.QuoteMeta(schemaMigrationMarkQuery)).WillReturnError(errors.New("pq: permission denied for table schema_migrations"))
+		expectPolicyRows(mock, "global")
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("unreadable boot load: %v", err)
+		}
+		engine.mu.RLock()
+		armedAtBoot := engine.catchUp.armed()
+		engine.mu.RUnlock()
+		if armedAtBoot {
+			t.Fatal("an unreadable mark armed the catch-up")
+		}
+		expectMigrationMark(mock, 221, longAgo)
+		expectPolicyRows(mock, "global")
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("readable load: %v", err)
+		}
+		engine.mu.RLock()
+		c := engine.catchUp
+		engine.mu.RUnlock()
+		if !c.moving || !c.advanced {
+			t.Fatalf("the first successful read after an unreadable one: moving=%t advanced=%t; want both", c.moving, c.advanced)
+		}
+	})
+}
+
+// An unreadable mark never arms the migration trigger and leaves the refresh
+// unaffected, is logged once each way, and never reads as an advance; and a
+// load that fails records nothing, so the mark it read is not kept.
+func TestRefreshPolicies_AnUnreadableMigrationMarkNeverArmsTheCatchUp(t *testing.T) {
+	engine, mock := catchUpEngine(t)
+	logs := captureLog(t)
+	t1 := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+	t2 := t1.Add(time.Second)
+	denied := errors.New("pq: permission denied for table schema_migrations")
+	expectUnreadable := func() {
+		mock.ExpectQuery(regexp.QuoteMeta(schemaMigrationMarkQuery)).WillReturnError(denied)
+	}
+	state := func() policyCacheCatchUp {
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		c := engine.catchUp
+		engine.catchUp.advanced = false
+		return c
+	}
+
+	expectMigrationMark(mock, 221, t1)
+	expectPolicyRows(mock, "global")
+	if err := engine.refreshPolicies(); err != nil {
+		t.Fatalf("baseline load: %v", err)
+	}
+	if c := state(); !c.moving {
+		t.Fatalf("the baseline is the process's first mark read, which arms: moving=%t", c.moving)
+	}
+	// Leave it as a spent cap does, so the unreadable loads below start from a
+	// disarmed trigger (TestRefreshPolicies_AnUnreadableMarkDoesNotDisarmTheCatchUp
+	// covers an armed one).
+	settleMigrationTrigger(engine)
+
+	for i := 1; i <= 2; i++ {
+		expectUnreadable()
+		expectPolicyRows(mock, "global")
+		if err := engine.refreshPolicies(); err != nil {
+			t.Fatalf("unreadable load %d: the refresh failed because the mark could not be read: %v", i, err)
+		}
+		if c := state(); c.moving || c.advanced || c.armed() {
+			t.Fatalf("unreadable load %d: moving=%t advanced=%t armed=%t; an unreadable mark must never arm the catch-up", i, c.moving, c.advanced, c.armed())
+		}
+		if got := engine.PolicySetSource(); got != policySetSourceDatabase {
+			t.Fatalf("unreadable load %d: policy-set source %q; the policies still loaded", i, got)
+		}
+	}
+	if n := strings.Count(logs.String(), "schema_migrations could not be read"); n != 1 {
+		t.Fatalf("two unreadable loads logged %d time(s); want once. Log:\n%s", n, logs.String())
+	}
+
+	expectMigrationMark(mock, 221, t1)
+	expectPolicyRows(mock, "global")
+	if err := engine.refreshPolicies(); err != nil {
+		t.Fatalf("readable again: %v", err)
+	}
+	if c := state(); c.moving || c.advanced {
+		t.Fatalf("reading the SAME mark again after it was unreadable: moving=%t advanced=%t; want neither", c.moving, c.advanced)
+	}
+	if n := strings.Count(logs.String(), "schema_migrations reads again"); n != 1 {
+		t.Fatalf("reading again was logged %d time(s); want once. Log:\n%s", n, logs.String())
+	}
+
+	expectMigrationMark(mock, 222, t2)
+	mock.ExpectQuery(refreshPoliciesQueryPattern).WillReturnError(errors.New("connection reset by peer"))
+	if err := engine.refreshPolicies(); err == nil {
+		t.Fatal("a failed policies SELECT reported success")
+	}
+	if c := state(); c.mark.applied != 221 {
+		t.Fatalf("a failed load recorded the mark it read (applied=%d); want the last successful load's 221", c.mark.applied)
+	}
+
+	expectMigrationMark(mock, 222, t2)
+	expectPolicyRows(mock, "global")
+	if err := engine.refreshPolicies(); err != nil {
+		t.Fatalf("moved: %v", err)
+	}
+	if c := state(); !c.moving || !c.advanced {
+		t.Fatalf("the mark moved 221 -> 222: moving=%t advanced=%t; want both", c.moving, c.advanced)
+	}
+}
+
+// An unreadable mark inside a burst leaves an armed trigger armed (#4249). A
+// failed read says nothing about schema_migrations, and clearing the trigger on
+// it would leave the next migration of the burst to the 30 s refresh. The cap
+// still ends it.
+func TestRefreshPolicies_AnUnreadableMarkDoesNotDisarmTheCatchUp(t *testing.T) {
+	engine, mock := catchUpEngine(t)
+	_ = captureLog(t)
+	expectMigrationMark(mock, 221, time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC))
+	expectPolicyRows(mock, "global")
+	if err := engine.refreshPolicies(); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	engine.mu.Lock()
+	engine.catchUp.advanced = false // what scheduleNextRefresh does between loads
+	engine.mu.Unlock()
+	mock.ExpectQuery(regexp.QuoteMeta(schemaMigrationMarkQuery)).WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
+	expectPolicyRows(mock, "global")
+	if err := engine.refreshPolicies(); err != nil {
+		t.Fatalf("unreadable load: %v", err)
+	}
+	engine.mu.RLock()
+	c := engine.catchUp
+	engine.mu.RUnlock()
+	if !c.moving || c.advanced || !c.armed() {
+		t.Fatalf("after an unreadable read inside a burst: moving=%t advanced=%t armed=%t; want the trigger still armed and no advance", c.moving, c.advanced, c.armed())
+	}
+}
+
+// The cap, at N-1, N and N+1 consecutive short waits, and what resets it.
+func TestScheduleNextRefresh_TheCatchUpIsBoundedAtItsCap(t *testing.T) {
+	_ = captureLog(t)
+	const maxTicks = 3
+	stuck := policyCacheCatchUp{unkeyedRows: 1}
+	for _, tc := range []struct {
+		name       string
+		state      policyCacheCatchUp
+		ticks      int
+		wantDelay  time.Duration
+		wantTicks  int
+		wantMode   string
+		wantMoving bool
+	}{
+		{"N-1 short waits spent: one more", stuck, maxTicks - 1, 2 * time.Second, maxTicks, refreshModeCatchUp, false},
+		{"N spent: the ordinary interval", stuck, maxTicks, 30 * time.Second, maxTicks, refreshModeExhausted, false},
+		{"N+1 spent: still the ordinary interval", stuck, maxTicks + 1, 30 * time.Second, maxTicks + 1, refreshModeExhausted, false},
+		{"schema_migrations advanced after the cap was spent: re-armed", policyCacheCatchUp{unkeyedRows: 1, advanced: true}, maxTicks, 2 * time.Second, 1, refreshModeCatchUp, false},
+		{"migrations moving with no unkeyed row", policyCacheCatchUp{moving: true}, 0, 2 * time.Second, 1, refreshModeCatchUp, true},
+		{"migrations moving, N-1 spent: still armed", policyCacheCatchUp{moving: true}, maxTicks - 1, 2 * time.Second, maxTicks, refreshModeCatchUp, true},
+		{"migrations moving, N spent without an advance: the trigger clears to steady", policyCacheCatchUp{moving: true}, maxTicks, 30 * time.Second, 0, refreshModeSteady, false},
+		{"an unkeyed row and migrations moving, N spent: exhausted, and the migration trigger clears", policyCacheCatchUp{unkeyedRows: 1, moving: true}, maxTicks, 30 * time.Second, maxTicks, refreshModeExhausted, false},
+		{"migrations moving and an advance with N spent: the count restarts", policyCacheCatchUp{moving: true, advanced: true}, maxTicks, 2 * time.Second, 1, refreshModeCatchUp, true},
+		{"no trigger: the ordinary interval, and the count resets", policyCacheCatchUp{}, maxTicks, 30 * time.Second, 0, refreshModeSteady, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := &DatabaseDynamicPolicyEngine{cacheTimeout: 30 * time.Second, catchUpInterval: 2 * time.Second, catchUpMaxTicks: maxTicks, catchUp: tc.state}
+			ticks := tc.ticks
+			delay := engine.scheduleNextRefresh(&ticks)
+			if delay != tc.wantDelay || ticks != tc.wantTicks || engine.catchUp.mode != tc.wantMode || engine.catchUp.moving != tc.wantMoving {
+				t.Fatalf("delay=%v ticks=%d mode=%q moving=%t; want %v, %d, %q, %t", delay, ticks, engine.catchUp.mode, engine.catchUp.moving, tc.wantDelay, tc.wantTicks, tc.wantMode, tc.wantMoving)
+			}
+			if engine.catchUp.advanced {
+				t.Error("the advance was not consumed by the schedule")
+			}
+			requireRefreshMode(t, tc.wantMode)
+		})
+	}
+
+	t.Run("the short wait is never longer than cacheTimeout", func(t *testing.T) {
+		engine := &DatabaseDynamicPolicyEngine{cacheTimeout: 30 * time.Second, catchUpInterval: time.Minute, catchUp: stuck}
+		ticks := 0
+		if delay := engine.scheduleNextRefresh(&ticks); delay != 30*time.Second || engine.catchUp.mode != refreshModeCatchUp {
+			t.Fatalf("delay=%v mode=%q; want 30s in catch_up", delay, engine.catchUp.mode)
+		}
+	})
+
+	t.Run("zero settings are the named constants", func(t *testing.T) {
+		// The stated gap rests on this product: a migration recorded within
+		// 30 s of the previous advance is seen within 2 s.
+		if got := time.Duration(policyCacheCatchUpMaxTicks) * policyCacheCatchUpInterval; got != 30*time.Second || policyCacheCatchUpInterval != 2*time.Second {
+			t.Fatalf("the catch-up is %d x %v = %v; the stated gap needs 15 x 2s = 30s", policyCacheCatchUpMaxTicks, policyCacheCatchUpInterval, got)
+		}
+		engine := &DatabaseDynamicPolicyEngine{cacheTimeout: 30 * time.Second, catchUp: stuck}
+		ticks := policyCacheCatchUpMaxTicks - 1
+		if delay := engine.scheduleNextRefresh(&ticks); delay != policyCacheCatchUpInterval || ticks != policyCacheCatchUpMaxTicks {
+			t.Fatalf("delay=%v ticks=%d; want %v and %d", delay, ticks, policyCacheCatchUpInterval, policyCacheCatchUpMaxTicks)
+		}
+		if delay := engine.scheduleNextRefresh(&ticks); delay != 30*time.Second || engine.catchUp.mode != refreshModeExhausted {
+			t.Fatalf("delay=%v mode=%q after the cap; want 30s exhausted", delay, engine.catchUp.mode)
+		}
+	})
+}
+
+// simulateMigrationBurst runs observe and scheduleNextRefresh on a virtual
+// clock, with the production catch-up interval, cap and a 30s cache interval.
+// Migration 172 is recorded at t=0 and the process's first load reads the mark
+// at t=firstLoad; the next migration of the burst is recorded gap seconds after
+// 172, and when nextGap is positive a further migration, 174, is recorded nextGap
+// seconds after 172. Each load reads the mark as it stands at that load's virtual
+// time, except a load at unreadableAt (0 for none), which cannot read it.
+// capReRead installs the cap's own re-read of the mark (#4249 row 5683228870)
+// as the process has it, reading the mark at the cap's virtual time; without it
+// the engine has no reader, so that read fails and the cap clears the trigger.
+// It returns how long the last migration waited for a load that read its mark,
+// and the schedule the loop was on across its record.
+func simulateMigrationBurst(t *testing.T, firstLoad, gap, unreadableAt, nextGap float64, capReRead bool) (stale float64, modeAcrossRecord string) {
+	t.Helper()
+	engine := &DatabaseDynamicPolicyEngine{cacheTimeout: 30 * time.Second}
+	recorded172 := time.Date(2026, 9, 15, 4, 53, 0, 0, time.UTC)
+	at := func(s float64) time.Time { return recorded172.Add(time.Duration(s * float64(time.Second))) }
+	markAt := func(now float64) schemaMigrationMark {
+		switch {
+		case nextGap > 0 && now >= nextGap:
+			return schemaMigrationMark{applied: 174, lastApplied: at(nextGap)}
+		case now >= gap:
+			return schemaMigrationMark{applied: 173, lastApplied: at(gap)}
+		}
+		return schemaMigrationMark{applied: 172, lastApplied: recorded172}
+	}
+	target, record := int64(173), gap
+	if nextGap > 0 {
+		target, record = 174, nextGap
+	}
+	now, ticks := firstLoad, 0
+	if capReRead {
+		engine.capMarkReader = func(context.Context) (schemaMigrationMark, error) { return markAt(now), nil }
+	}
+	for i := 0; i < 200; i++ {
+		mark := markAt(now)
+		var markErr error
+		if d := now - unreadableAt; unreadableAt > 0 && d > -0.01 && d < 0.01 {
+			mark, markErr = schemaMigrationMark{}, errors.New("unreadable")
+		}
+		engine.mu.Lock()
+		engine.catchUp.observe(0, mark, markErr)
+		engine.mu.Unlock()
+		if markErr == nil && mark.applied == target {
+			return now - record, modeAcrossRecord
+		}
+		delay := engine.scheduleNextRefresh(&ticks).Seconds()
+		if now+delay >= record {
+			modeAcrossRecord = engine.catchUp.mode
+		}
+		now += delay
+	}
+	t.Fatalf("no load read migration %d within 200 refreshes (gap %vs, next gap %vs)", target, gap, nextGap)
+	return 0, ""
+}
+
+// THE MIGRATION TRIGGER HOLDS ACROSS A BURST (#4249). A migration recorded
+// within 30 s of the previous advance is seen within 2 s; longer gaps fall back
+// to the 30 s cadence. The process's first load counts as an advance, so a first
+// load that lands inside a gap arms it too. A trigger that disarmed with a 10s
+// window went steady at t=10.4 and first loaded a migration recorded 17s after
+// 172 at t=40.4, 23.4s stale; one that armed a first load only on a row younger
+// than 10s missed a first load 10.5s into a 20s gap and waited 20.5s. A mark read
+// that fails inside the burst neither arms nor disarms it: one that disarmed
+// left a migration recorded 3s after the arming load waiting 29s. A read that
+// fails on the last short refresh before the cap cannot credit an advance. The
+// cap then re-reads the mark once (#4249 row 5683228870), so the next migration
+// is still seen within the catch-up interval; where that re-read cannot read
+// either, the burst ends at the cap and the next migration waits for the 30 s
+// refresh. Both are subtests below, beside the same burst with every read
+// succeeding. A mark read that runs before the migration is recorded, with the
+// record landing after that read, gives the same schedule.
+func TestScheduleNextRefresh_AMigrationInsideTheBurstIsSeenWithinTheCatchUpInterval(t *testing.T) {
+	_ = captureLog(t)
+	for _, tc := range []struct {
+		name         string
+		firstLoad    float64
+		gap          float64
+		maxStale     float64
+		wantAcross   string
+		unreadableAt float64
+		nextGap      float64
+		minStale     float64
+		capReRead    bool
+	}{
+		{"recorded 17s after the previous migration", 0.4, 17, 2, refreshModeCatchUp, 0, 0, 0, false},
+		{"recorded 29s after it", 0.4, 29, 2, refreshModeCatchUp, 0, 0, 0, false},
+		{"recorded 29.9s after the arming load, the last instant inside the cap", 0.4, 30.3, 2, refreshModeCatchUp, 0, 0, 0, false},
+		{"recorded 30.1s after the arming load, just past the cap: the 30s cadence", 0.4, 30.5, 30, refreshModeSteady, 0, 0, 0, false},
+		{"recorded 45s after it, past the cap: the 30s cadence", 0.4, 45, 30, refreshModeSteady, 0, 0, 0, false},
+		{"the first load lands 10.5s into a 20s gap", 10.5, 20, 2, refreshModeCatchUp, 0, 0, 0, false},
+		{"the first load lands 12s into a 26s gap", 12, 26, 2, refreshModeCatchUp, 0, 0, 0, false},
+		{"a mark read fails 2s after the arming load, inside the burst", 0.4, 3.4, 2, refreshModeCatchUp, 2.4, 0, 0, false},
+		{"a second migration 2s after one recorded at 29s, every read succeeding", 0.4, 29, 2, refreshModeCatchUp, 0, 31, 0, false},
+		{"the read on the last short refresh before the cap fails AND the cap cannot re-read either: the next migration waits for the 30s refresh", 0.4, 29, 30, refreshModeSteady, 30.4, 31, 29, false},
+		{"the read on the last short refresh before the cap fails and the cap's re-read sees the migration: the next one is seen within the catch-up interval (#4249 row 5683228870, as filed)", 0.4, 29, 2, refreshModeCatchUp, 30.4, 31, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stale, across := simulateMigrationBurst(t, tc.firstLoad, tc.gap, tc.unreadableAt, tc.nextGap, tc.capReRead)
+			if stale > tc.maxStale || stale < tc.minStale || across != tc.wantAcross {
+				t.Fatalf("the last migration (173 at %vs, 174 at %vs when set), with the first load at %vs, waited %.1fs for a load, on the %q schedule; want %v to %vs, on %q", tc.gap, tc.nextGap, tc.firstLoad, stale, across, tc.minStale, tc.maxStale, tc.wantAcross)
+			}
+		})
+	}
+}
+
+func TestReadSchemaMigrationMark(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	last := time.Date(2026, 9, 15, 4, 53, 1, 0, time.UTC)
+
+	expectMigrationMark(mock, 221, last)
+	mark, err := readSchemaMigrationMark(ctx, db)
+	if err != nil || mark.applied != 221 || !mark.lastApplied.Equal(last) {
+		t.Fatalf("got mark=%+v err=%v; want 221 at %v", mark, err, last)
+	}
+
+	expectMigrationMark(mock, 0, time.Time{})
+	mark, err = readSchemaMigrationMark(ctx, db)
+	if err != nil || mark.applied != 0 || !mark.lastApplied.IsZero() {
+		t.Fatalf("no successful row: got mark=%+v err=%v; want a zero mark", mark, err)
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta(schemaMigrationMarkQuery)).WillReturnError(errors.New(`pq: relation "schema_migrations" does not exist`))
+	if _, err := readSchemaMigrationMark(ctx, db); err == nil {
+		t.Fatal("a failed read reported a mark")
+	}
+	if _, err := readSchemaMigrationMark(ctx, nil); err == nil {
+		t.Fatal("a nil handle reported a mark")
+	}
+}
+
+func testBackgroundRefreshOrdinaryTick(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create sqlmock: %v", err)
@@ -1932,6 +2651,119 @@ func requireNoRefreshLoop(t *testing.T, within time.Duration) {
 	}
 }
 
+// TestBackgroundRefresh_StopsWhenTheDatabaseIsClosed pins #3798: a refresh
+// loop whose database handle has been closed must stop, not retry the closed
+// handle at the cache interval forever. Before the fix this loop never
+// returned (bounded wait below fails) and every tick logged a failure; with
+// the fix it returns on the refresh that found the handle closed and logs that
+// failure once. A caller closing the handle without Close() is a
+// misuse, and this is what bounds the damage of that misuse.
+func TestBackgroundRefresh_StopsWhenTheDatabaseIsClosed(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	engine := &DatabaseDynamicPolicyEngine{
+		db:           db,
+		policies:     make(map[string]interface{}),
+		cacheTimeout: 20 * time.Millisecond,
+		lastRefresh:  time.Now(),
+		stopCh:       make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		select {
+		case <-engine.stopCh:
+		default:
+			close(engine.stopCh)
+		}
+	})
+
+	logs := &lockedBuffer{}
+	prev := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	done := make(chan struct{})
+	go func() {
+		engine.backgroundRefresh()
+		close(done)
+	}()
+
+	// A few refreshes against a live handle: sqlmock answers every unexpected
+	// query with an ordinary error, which is transient and must NOT stop the
+	// loop - only a closed handle is terminal.
+	time.Sleep(80 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatalf("backgroundRefresh returned on an ordinary refresh error; only a closed database is terminal")
+	default:
+	}
+
+	_ = db.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("backgroundRefresh did not return within 2s of the database closing: the loop is leaking and will retry the closed handle every %v for the rest of the process (#3798)", engine.cacheTimeout)
+	}
+
+	// The loop returns only after receiving that refresh's error, which its
+	// goroutine sends once refreshPolicies has returned, so every line the
+	// refresh logged is already written.
+
+	// Bounded logging: the closed handle is reported once, not once per tick.
+	time.Sleep(100 * time.Millisecond) // a few more intervals; nothing may fire
+	if n := strings.Count(logs.String(), "sql: database is closed"); n != 1 {
+		t.Fatalf("the closed database was logged %d time(s); want exactly once. Log:\n%s", n, logs.String())
+	}
+}
+
+// lockedBuffer is a log sink a test can read while other goroutines are still
+// writing to it: log.Logger serialises its own writes, but a test's read of a
+// plain bytes.Buffer races with them under -race.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestIsClosedDatabase pins the detection against the standard library: the
+// message is a literal in database/sql (errDBClosed) that no exported
+// sentinel names, so the engine recognises it by that literal, wrapped or
+// not. A Go release that changes the literal fails this test rather than the
+// race lane.
+func TestIsClosedDatabase(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	_ = db.Close()
+	_, qerr := db.QueryContext(context.Background(), "SELECT 1")
+	if qerr == nil {
+		t.Fatal("a closed *sql.DB answered a query")
+	}
+	if !isClosedDatabase(qerr) {
+		t.Fatalf("a closed *sql.DB's own error %q is not recognised", qerr)
+	}
+	if !isClosedDatabase(fmt.Errorf("failed to query policies: %w", qerr)) {
+		t.Fatalf("the engine's wrapping of %q is not recognised", qerr)
+	}
+	if isClosedDatabase(errors.New("connection refused")) || isClosedDatabase(nil) {
+		t.Fatal("an ordinary error or nil was taken for a closed database")
+	}
+}
+
 // =============================================================================
 // Report Metrics Tests
 // =============================================================================
@@ -1950,6 +2782,7 @@ func TestReportMetrics_PublishesPrometheusGauges(t *testing.T) {
 		policies:        map[string]interface{}{"test": map[string]interface{}{"name": "test"}},
 		lastRefresh:     time.Now().Add(-42 * time.Second),
 		policySetSource: policySetSourceDatabase,
+		catchUp:         policyCacheCatchUp{mode: refreshModeExhausted},
 	}
 
 	engine.reportMetricsTick()
@@ -1963,6 +2796,8 @@ func TestReportMetrics_PublishesPrometheusGauges(t *testing.T) {
 	if age := testutil.ToFloat64(policyCacheAgeSeconds); age < 42 {
 		t.Errorf("axonflow_policy_cache_age_seconds = %v, want >= 42", age)
 	}
+	// #4249: the refresh schedule is republished on the same tick.
+	requireRefreshMode(t, refreshModeExhausted)
 }
 
 // TestReportMetrics_ZeroLastRefreshReportsZeroAge covers the "never
@@ -1983,6 +2818,8 @@ func TestReportMetrics_ZeroLastRefreshReportsZeroAge(t *testing.T) {
 	if got := testutil.ToFloat64(policySetSourceGauge.WithLabelValues(policySourceLabelDefaults)); got != 1 {
 		t.Errorf("axonflow_policy_set_source{source=\"defaults\"} = %v, want 1", got)
 	}
+	// An engine whose loop has not chosen a schedule publishes steady.
+	requireRefreshMode(t, refreshModeSteady)
 }
 
 // TestBackgroundRefresh_StillRunsGoroutine keeps a smoke check that the

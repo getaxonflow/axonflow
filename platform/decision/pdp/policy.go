@@ -16,6 +16,7 @@ package pdp
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -336,6 +337,42 @@ type Policy struct {
 	Name string `json:"name,omitempty"`
 	// Description is operator-facing text carried into the trace.
 	Description string `json:"description,omitempty"`
+	// BindsOn names the enforcement scopes this control binds on (#4371), as
+	// legacycompile.EnforcementScope renders them (`wcp`, `mcp:request`).
+	// ABSENT MEANS EVERY SCOPE, which is what every document published before
+	// the field existed means; omitempty keeps such a document, its bundle and
+	// its digests byte-identical. The evaluator never reads it: activation
+	// leaves a control out of the organization root of every scope it does not
+	// name, so an engine only ever carries controls bound where it decides
+	// (activation.Activate). The publish validator refuses an empty list, an
+	// undeclared scope, a scope that presents none of the selected actions and
+	// a repeated scope.
+	//
+	// A POINTER, so the wire can say `[]`. With a plain slice under omitempty an
+	// empty list encodes as absent - every scope - so a client that computed an
+	// empty list from Go types would publish the control everywhere, silently.
+	// nil is absent and omitted; a non-nil empty list encodes as `[]`, which
+	// publication and activation refuse.
+	BindsOn *[]string `json:"binds_on,omitempty"`
+}
+
+// BindingScopes is scopes as Policy.BindsOn carries it: nil stays nil (absent,
+// every scope) and any other list - an empty one included - becomes a pointer
+// to a copy, so an empty list stays an empty list on the wire.
+func BindingScopes(scopes []string) *[]string {
+	if scopes == nil {
+		return nil
+	}
+	c := append([]string{}, scopes...)
+	return &c
+}
+
+// derefScopes is binds as a slice: nil for absent, the list otherwise.
+func derefScopes(binds *[]string) []string {
+	if binds == nil {
+		return nil
+	}
+	return *binds
 }
 
 // ReferencedPaths returns every attribute path this policy reads, including
@@ -651,6 +688,7 @@ func (d *Document) Validate() []ValidationError {
 		for _, c := range conds {
 			errs = append(errs, validateCondition(p.ID, p.Authority, c, schema)...)
 		}
+		errs = append(errs, checkCallerTypedLabels(p, schema)...)
 		for _, o := range p.Obligations {
 			if err := o.Validate(); err != nil {
 				errs = append(errs, ValidationError{RuleMalformedCondition, p.ID, err.Error()})
@@ -769,7 +807,10 @@ func validateCondition(policyID string, authority contract.Authority, c Conditio
 		}
 	}
 	errs = append(errs, checkAuthorityRule(policyID, authority, c)...)
-	if readsAttributeValue(c.Kind) && c.Path != "" {
+	// A caller-typed label's absence handling is checkCallerTypedLabels', which
+	// sees the condition's place in the policy; the ordinary rule below would
+	// refuse the no_match a label requires.
+	if readsAttributeValue(c.Kind) && c.Path != "" && !isCallerTypedLabel(c.Path) {
 		schemaEntry, declared := schema[c.Path]
 		switch {
 		case declared && schemaEntry.Optional && c.OnAbsent == AbsentUnspecified:
@@ -839,6 +880,136 @@ func validateCondition(policyID string, authority contract.Authority, c Conditio
 	}
 	for _, o := range c.Operands {
 		errs = append(errs, validateCondition(policyID, authority, o, schema)...)
+	}
+	return errs
+}
+
+// CallerTypedLabelPaths are caller-supplied attributes that NAME something the
+// caller chose rather than MEASURE the operation being decided (#4249 rows
+// 5670275054 and 5703546409).
+//
+// checkAuthorityRule lets untrusted input bound a grant against a literal,
+// which is right for an argument that is the operation's own parameter:
+// `args.amount_cents <= 500000` lets a caller ask for less, never for more.
+// A label is different. The workflow control plane and the multi-agent plane
+// forward a step's name and its tool from the request body, so a permission
+// written `args.context.step__name == "read_only_lookup"` is a permit the
+// caller selects by naming its step "read_only_lookup". Nothing about the
+// literal's type or the operator tells the two cases apart, which is why this
+// is a named list rather than a rule over shapes.
+//
+// THE LIST IS DELIBERATELY NARROW. Whether every caller-supplied string that is
+// compared by equality is a label (args.query, args.request_type) is an open
+// design question against ADR-065's "may be bounded, may not establish
+// authority" rule, recorded on row 5703546409 for the operator. A ruling can
+// extend this list or replace it with a rule over shapes without touching the
+// pinned equality-against-a-literal case in authoring_test.go. A constraint, a
+// requirement or an inspection may read these paths as a positive eq
+// (checkCallerTypedLabels): it applies only to requests that carry the label, and
+// a caller that omits or renames its step is not caught by it, which is what a
+// caller-typed label can and cannot do.
+var CallerTypedLabelPaths = []string{
+	"args.context.step__name",
+	"args.context.tool__name",
+}
+
+func isCallerTypedLabel(path string) bool {
+	return slices.Contains(CallerTypedLabelPaths, path)
+}
+
+// checkCallerTypedLabels is the one rule for reading a caller-typed label
+// (#4249 rows 5670275054 and 5703546409, master's rulings (B'), (A) and the R3
+// polarity ruling). A label may be read ONLY as a positive restricting read:
+//
+//   - in a constraint, a requirement or an inspection, never a permission: a
+//     permission keyed on a label is a permit the caller selects by naming its
+//     step;
+//   - reachable from where or resource_scope through and/or only: under an odd
+//     number of not, or inside unless, a label read becomes an EXEMPTION the
+//     caller selects ("unless the step is named trusted"), and because an absent
+//     label is a non-match, its negation matches every request that carries no
+//     label - every decide, MCP or /api/v1/process request on the actions the
+//     policy selects;
+//   - as a compare with op eq against a string literal: ne is an allow-list a
+//     caller defeats by renaming; an ordering over a label is selection; a set
+//     operator reads an array and answers unknown for every named step; an
+//     attr_compare answers unknown whenever either side is absent, which is
+//     every request that is not a step;
+//   - with on_absent no_match over a label the document declares optional: an
+//     omitted label is the same dodge as a renamed one, so unknown protects
+//     nothing and would withhold every request on every plane that carries no
+//     such label.
+//
+// "Any of these names" is an or of eq.
+func checkCallerTypedLabels(p Policy, schema map[string]AttributeSchema) []ValidationError {
+	var errs []ValidationError
+	var walk func(c Condition, negated, inUnless bool)
+	walk = func(c Condition, negated, inUnless bool) {
+		switch c.Kind {
+		case CondAnd, CondOr:
+			for _, o := range c.Operands {
+				walk(o, negated, inUnless)
+			}
+			return
+		case CondNot:
+			for _, o := range c.Operands {
+				walk(o, !negated, inUnless)
+			}
+			return
+		}
+		for _, path := range []string{c.Path, c.RightPath} {
+			if path == "" || !isCallerTypedLabel(path) {
+				continue
+			}
+			errs = append(errs, checkLabelRead(p, c, path, negated, inUnless, schema)...)
+		}
+	}
+	walk(p.Where, false, false)
+	if p.ResourceScope != nil {
+		walk(*p.ResourceScope, false, false)
+	}
+	if p.Unless != nil {
+		walk(*p.Unless, false, true)
+	}
+	return errs
+}
+
+// checkLabelRead is one label read, placed.
+func checkLabelRead(p Policy, c Condition, path string, negated, inUnless bool, schema map[string]AttributeSchema) []ValidationError {
+	refuse := func(why string) []ValidationError {
+		return []ValidationError{{RuleAuthorityFromUntrusted, p.ID, fmt.Sprintf("%q is a caller-typed label: %s", path, why)}}
+	}
+	switch {
+	case p.Authority == contract.AuthorityPermission:
+		return refuse("a step's name and its tool are caller-typed labels, and a permission keyed on them is a permit the caller selects; " +
+			"constrain or require on it with a positive eq (it may not appear in unless or under not), and select the step's type with the action selector")
+	case inUnless:
+		return refuse("it may not be read inside unless: an exception keyed on a label is an exemption the caller selects by naming its step, " +
+			"and an absent label negated matches every request that carries none")
+	case negated:
+		return refuse("it may not be read under not: a negated label read is an exemption the caller selects, " +
+			"and an absent label negated matches every request that carries none")
+	case c.Kind != CondCompare:
+		return refuse(fmt.Sprintf("it may be read only as compare op eq against a string literal, not as %s: "+
+			"a set operator reads an array and a pair comparison is unknown whenever either side is absent", c.Kind))
+	case c.Op != OpEq:
+		return refuse(fmt.Sprintf("it may be read only with op eq, not %s: ne is an allow-list a caller defeats by renaming, and an ordering over a label is selection", c.Op))
+	}
+	if literal, isString := c.Literal.(string); !isString {
+		return refuse("it may be compared only against a string literal")
+	} else if literal == "" {
+		return refuse(`it may not be compared with the empty string: an empty label is its absence, which is a non-match, so the condition could never hold`)
+	}
+	var errs []ValidationError
+	if entry, declared := schema[path]; declared && !entry.Optional {
+		errs = append(errs, ValidationError{RuleAbsenceNotHandled, p.ID, fmt.Sprintf(
+			"%q is a caller-typed label and must be declared optional: a request that is not a step carries no such label, "+
+				"and a required label would make every such request a data defect", path)})
+	}
+	if c.OnAbsent != AbsentIsNoMatch {
+		errs = append(errs, ValidationError{RuleAbsenceNotHandled, p.ID, fmt.Sprintf(
+			"the condition reads the caller-typed label %q with absence handling %q; it must be %q: an omitted label is the same dodge as a renamed one, "+
+				"so unknown protects nothing and would withhold every request on every plane that carries no such label", path, c.OnAbsent, AbsentIsNoMatch)})
 	}
 	return errs
 }

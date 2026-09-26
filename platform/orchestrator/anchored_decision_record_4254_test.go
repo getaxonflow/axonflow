@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
 	"axonflow/platform/shared/anchoredenforcer"
+	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 )
 
@@ -114,12 +116,11 @@ func anchoredRowWriters() []anchoredRowWriter {
 			l.LogWorkflowOperation(context.Background(), entry)
 		}},
 		{name: "the map step_gate row", plane: "map", write: func(l *AuditLogger, d *anchoredDecision) {
-			e := &HITLWorkflowEngine{}
-			e.SetAuditLogger(l)
-			e.auditStepGate(context.Background(), &HITLWorkflowExecution{WorkflowExecution: &WorkflowExecution{ID: "exec-stamp"}},
+			g := &mapStepGate{audit: l}
+			g.auditStepGate(context.Background(), &WorkflowExecution{ID: "exec-stamp"},
 				"stamp", WorkflowStep{Name: "s", Type: "llm-call"}, &PolicyCheckResult{Allowed: true, Action: "allow", decided: d}, UserContext{OrgID: "org-stamp"})
 		}},
-		{name: "a route's blocked row", plane: "wcp", write: func(l *AuditLogger, d *anchoredDecision) {
+		{name: "a route's blocked row", plane: "orchestrator_request", write: func(l *AuditLogger, d *anchoredDecision) {
 			l.LogBlockedRequest(context.Background(), OrchestratorRequest{RequestID: "req-stamp", RequestType: "llm", Client: ClientContext{OrgID: "org-stamp"}},
 				&PolicyEvaluationResult{Allowed: false}, d)
 		}},
@@ -237,11 +238,10 @@ func isMAPStepGateRow(e *AuditEntry) bool { return e.RequestType == "workflow_st
 func TestAnAllowedMAPStepIsRecordedOnceAndRuns(t *testing.T) {
 	withMAPEngine(t, anchoredStampVerdict(allowedStepVerdict(), "dec-map-allow"))
 	l := responsePlaneLogger()
-	hitl, processor := mapHITLEngine(&recordingApprovalService{})
-	hitl.SetAuditLogger(l)
+	engine, processor := mapGatedEngine(l)
 
-	if _, err := hitl.ExecuteWithHITL(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"}); err != nil {
-		t.Fatalf("ExecuteWithHITL: %v", err)
+	if _, err := engine.ExecuteWorkflow(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"}); err != nil {
+		t.Fatalf("ExecuteWorkflow: %v", err)
 	}
 	if processor.ran != 1 {
 		t.Errorf("the allowed step ran %d times, want once", processor.ran)
@@ -257,10 +257,9 @@ func TestAnAllowedMAPStepIsRecordedOnceAndRuns(t *testing.T) {
 func TestAWithheldMAPStepRowCarriesTheMapPlane(t *testing.T) {
 	withMAPEngine(t, anchoredenforcer.Verdict{Unavailable: anchoredenforcer.CauseActivation, SubjectType: "Client"})
 	l := responsePlaneLogger()
-	hitl, processor := mapHITLEngine(&recordingApprovalService{})
-	hitl.SetAuditLogger(l)
+	engine, processor := mapGatedEngine(l)
 
-	_, _ = hitl.ExecuteWithHITL(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
+	_, _ = engine.ExecuteWorkflow(mapSubjectContext(), oneStepWorkflow(), map[string]interface{}{}, UserContext{OrgID: "org-map"})
 	if processor.ran != 0 {
 		t.Errorf("the withheld step ran %d times, want never", processor.ran)
 	}
@@ -280,7 +279,7 @@ func TestARouteDecisionCarriesTheEnginesDecisionID(t *testing.T) {
 		t.Errorf("decision id = %q, want the engine's dec-route", decision.decisionID)
 	}
 	got := *decision.anchoredDecision()
-	want := anchoredDecision{Plane: "wcp", Engine: anchoredenforcer.EngineAnchored, SubjectType: "Client", PolicyBundle: "sha256:stamp-bundle", DecisionID: "dec-route"}
+	want := anchoredDecision{Plane: "orchestrator_request", Engine: anchoredenforcer.EngineAnchored, SubjectType: "Client", PolicyBundle: "sha256:stamp-bundle", DecisionID: "dec-route"}
 	if got != want {
 		t.Errorf("the route's record = %+v, want %+v", got, want)
 	}
@@ -294,9 +293,9 @@ func TestARouteDecisionCarriesTheEnginesDecisionID(t *testing.T) {
 func isBlockedRow(e *AuditEntry) bool { return e.PolicyDecision == "blocked" }
 
 // A refused plan's 403 carries the engine envelope /api/v1/process carries, and
-// both routes' blocked rows record the anchored decision under plane "wcp".
+// both routes' blocked rows record the anchored decision under plane "orchestrator_request".
 func TestARouteRefusalCarriesTheEngineEnvelopeOnTheAnswerAndTheRow(t *testing.T) {
-	want := anchoredDecision{Plane: "wcp", Engine: anchoredenforcer.EngineAnchored, SubjectType: "Client", PolicyBundle: "sha256:stamp-bundle"}
+	want := anchoredDecision{Plane: "orchestrator_request", Engine: anchoredenforcer.EngineAnchored, SubjectType: "Client", PolicyBundle: "sha256:stamp-bundle"}
 
 	t.Run("plan execute", func(t *testing.T) {
 		previousPlans, previousWorkflow, previousAudit := planService, workflowEngine, auditLogger
@@ -315,7 +314,7 @@ func TestARouteRefusalCarriesTheEngineEnvelopeOnTheAnswerAndTheRow(t *testing.T)
 		l := responsePlaneLogger()
 		auditLogger = l
 		withRouteRequestEngine(t, anchoredStampVerdict(heldStepVerdict(), "dec-plan"))
-		withRecordingHITL(t)
+		withHITLFlag(t, true)
 
 		body, _ := json.Marshal(PlanRequest{Query: "run it", User: UserContext{ID: 1, Email: "user@example.com"}, Context: map[string]interface{}{"plan_id": "plan_stamp_4254"}})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/plan/execute", bytes.NewReader(body))
@@ -348,7 +347,7 @@ func TestARouteRefusalCarriesTheEngineEnvelopeOnTheAnswerAndTheRow(t *testing.T)
 		l := responsePlaneLogger()
 		auditLogger = l
 		withRouteRequestEngine(t, anchoredStampVerdict(heldStepVerdict(), "dec-process"))
-		withRecordingHITL(t)
+		withHITLFlag(t, true)
 
 		handler := gs3066ServedHandler(t, "/api/v1/process", processRequestHandler)
 		rr := gs3066Post(t, handler, "/api/v1/process",
@@ -361,4 +360,42 @@ func TestARouteRefusalCarriesTheEngineEnvelopeOnTheAnswerAndTheRow(t *testing.T)
 		processWant.DecisionID = "dec-process"
 		assertAnchoredRow(t, "/api/v1/process's blocked row", oneAuditRowWhere(t, l, "/api/v1/process's blocked", isBlockedRow), processWant)
 	})
+}
+
+// A ROUTE-LAYER REFUSAL NEVER READS AS AN ENGINE DENY (#4249 row 5698088094).
+// The engine allowed, so its decision_id and engine stay on the row as
+// provenance, and the row states blocked_by=route_layer beside
+// policy_decision=blocked. The control is an engine refusal, which states no
+// blocked_by.
+func TestARouteLayerRefusalRowNamesTheLayerAndKeepsTheEnginesDecision(t *testing.T) {
+	allow := anchoredDecision{Plane: "orchestrator_request", Engine: anchoredenforcer.EngineAnchored, SubjectType: "Client", PolicyBundle: "sha256:stamp", DecisionID: "dec-allow"}
+	req := OrchestratorRequest{RequestID: "req-route-layer", RequestType: "llm", Client: ClientContext{OrgID: "org-stamp"}}
+
+	l := responsePlaneLogger()
+	d := allow
+	l.LogBlockedRequest(context.Background(), req, &PolicyEvaluationResult{
+		Allowed:         false,
+		AppliedPolicies: []string{reasonNoCompliantProvider},
+		RequiredActions: []string{"blocked: " + reasonNoCompliantProvider},
+		BlockedBy:       blockedByRouteLayer,
+	}, &d)
+	row := oneAuditRowWhere(t, l, "route-layer refusal", anyRow)
+	if row.PolicyDecision != sharedaudit.DecisionBlocked {
+		t.Errorf("policy_decision = %q, want %q", row.PolicyDecision, sharedaudit.DecisionBlocked)
+	}
+	if got := row.PolicyDetails["blocked_by"]; got != blockedByRouteLayer {
+		t.Errorf("policy_details.blocked_by = %v, want %q", got, blockedByRouteLayer)
+	}
+	if got, ok := row.PolicyDetails["applied_policies"].([]string); !ok || !reflect.DeepEqual(got, []string{reasonNoCompliantProvider}) {
+		t.Errorf("policy_details.applied_policies = %v, want [%s]", row.PolicyDetails["applied_policies"], reasonNoCompliantProvider)
+	}
+	assertAnchoredRow(t, "route-layer refusal", row, allow)
+
+	l = responsePlaneLogger()
+	d = allow
+	d.DecisionID = "dec-deny"
+	l.LogBlockedRequest(context.Background(), req, &PolicyEvaluationResult{Allowed: false, AppliedPolicies: []string{"pol-a"}}, &d)
+	if got, present := oneAuditRowWhere(t, l, "engine refusal", anyRow).PolicyDetails["blocked_by"]; present {
+		t.Errorf("CONTROL: an engine refusal's row states blocked_by=%v, want none", got)
+	}
 }

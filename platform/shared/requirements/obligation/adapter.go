@@ -333,13 +333,13 @@ func legacyInstructions(row LegacyPolicyRow, typ contract.ObligationType) ([]ins
 			return nil, fmt.Errorf("legacy adapter: policy %s maps to %s but names no approval clauses; the adapter will not default an eligible set",
 				policyLabel(row.PolicyID), typ)
 		}
+		// The expiry is carried only when the row states one (#4249 row
+		// 5774029945). This used to default to 24h, which was inert while the
+		// evaluator's 15-minute stamp won every minimum; now that a carried
+		// expiry sets the window in both directions, that default would have
+		// lengthened every adapted approval to a day that nobody authored. A
+		// row with no expiry takes the deployment's window.
 		expiry := row.ApprovalExpirySeconds
-		if expiry <= 0 {
-			// 24h, matching the HITL enqueue chokepoint's DefaultExpiry, so a
-			// row adapted here and a row enqueued through the legacy path do
-			// not time out at different moments for the same policy.
-			expiry = 24 * 60 * 60
-		}
 		out := make([]instruction, 0, len(row.ApprovalClauses))
 		for _, c := range row.ApprovalClauses {
 			if err := c.Validate(); err != nil {
@@ -350,9 +350,11 @@ func legacyInstructions(row LegacyPolicyRow, typ contract.ObligationType) ([]ins
 				eligible = append(eligible, e.String())
 			}
 			params := map[string]string{
-				"quorum":                    strconv.Itoa(c.Quorum),
-				"eligible":                  strings.Join(eligible, ","),
-				contract.ParamExpirySeconds: strconv.Itoa(expiry),
+				"quorum":   strconv.Itoa(c.Quorum),
+				"eligible": strings.Join(eligible, ","),
+			}
+			if expiry > 0 {
+				params[contract.ParamExpirySeconds] = strconv.Itoa(expiry)
 			}
 			if row.SeparationOfDuties {
 				params["separation_of_duties"] = "true"

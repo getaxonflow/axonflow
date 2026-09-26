@@ -4,6 +4,7 @@
 package activation
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -101,8 +102,15 @@ func TestASystemControlTheScopeDoesNotBindIsReportedAsBindingNowhere(t *testing.
 // PER-POLICY CONTROL IS NOT BEHIND PassesOrgOverrides (PRD v11 §1.5). On every
 // scope a disabled control leaves the restriction, and on a plane that passes no
 // recorded override it still displaces what it names there: Activate calls
-// this fold unconditionally, so the claim is decided here.
+// this fold unconditionally, so the claim is decided here. The one exception is
+// a policy whose category the scope FORCES (#4259), which stays, named as
+// Forced; TestThePublishWarningNamesExactlyTheScopesTheFoldKeeps and the cells
+// in system_controls_forced_test.go are that exception's.
 func TestASystemControlFoldsOnEveryScope(t *testing.T) {
+	census, err := detectorCensusBySignalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var control string
 	var quiet legacycompile.EnforcementScope
 	for _, s := range legacycompile.AllScopes() {
@@ -115,6 +123,10 @@ func TestASystemControlFoldsOnEveryScope(t *testing.T) {
 			t.Fatalf("restricting %s: %v", s, err)
 		}
 		for _, p := range restricted.Policies {
+			_, fact, censused := censusFactFor(p, census)
+			if _, forced := spec.Forces(fact.category); censused && forced {
+				continue
+			}
 			if c, _, ok := legacycompile.CorpusControlOf(p.ID); ok {
 				control, quiet = c, s
 				break
@@ -140,7 +152,7 @@ func TestASystemControlFoldsOnEveryScope(t *testing.T) {
 			t.Fatalf("%s: %v", s, err)
 		}
 		for _, p := range fold.system.Policies {
-			if c, _, ok := legacycompile.CorpusControlOf(p.ID); ok && c == control {
+			if c, _, ok := legacycompile.CorpusControlOf(p.ID); ok && c == control && !slices.Contains(fold.effects[0].Forced, p.ID) {
 				t.Fatalf("%s is disabled by the document and still in %s's restriction", p.ID, s)
 			}
 		}

@@ -20,11 +20,8 @@ import (
 // Reason* constant, proving axonflow_policy_condition_unevaluable_total
 // actually increments at the exact call site the reason is documented to
 // come from (condition_evaluator.go's "Unevaluable conditions" doc section,
-// and this package's condition_unevaluable_metrics.go). Follows the
-// testutil.ToFloat64-delta pattern already used by
-// TestCountActiveTenantPolicies_FailOpenWithErrorMetric
-// (platform/agent/mcp_v1_pro_tools_test.go) for
-// axonflow_active_policy_count_errors_total.
+// and this package's condition_unevaluable_metrics.go), by the
+// testutil.ToFloat64-delta pattern.
 
 func unevaluableCount(reason, plane string) float64 {
 	return testutil.ToFloat64(promPolicyConditionUnevaluableTotal.WithLabelValues(reason, plane))

@@ -38,7 +38,6 @@ node <path-to>/scenario-2-explain.mjs
 node <path-to>/scenario-3-override-lifecycle.mjs         # requires plugin v1.3.1+ (X-User-Email)
 node <path-to>/scenario-3-override-lifecycle-curl.mjs    # platform-side via curl (works on v1.3.0)
 node <path-to>/scenario-5-audit-filters.mjs
-node <path-to>/scenario-6-cache-invalidation.mjs
 ```
 
 Each script exits 0 on PASS, non-zero on FAIL. Output is human-readable,
@@ -53,7 +52,7 @@ suitable for pasting into the testing log.
 | 3 | Full override lifecycle (deny → create → apply → revoke → deny) | Plugin-facing (3a) or platform-side (3b) |
 | 4 | Critical-risk policy rejects override create with 403 | Orchestrator |
 | 5 | Audit search parity (`decision_id`, `policy_name`, `override_id` filters) | Orchestrator |
-| 6 | Cache invalidation on override create wipes stale `workflow_steps` rows; WCP re-eval applies override | WCP + Orchestrator |
+| 6 | Cache invalidation on override create wipes stale `workflow_steps` rows; WCP re-eval applies override | Deleted in v11.1.0: retired by #4252 (session overrides write nothing), nothing ran it, and git history keeps it |
 
 ## Why two scenario-3 variants
 

@@ -124,8 +124,9 @@ every declared type and level, and a mutant proves it can fire.
 
 ## The legacy plane fixture
 
-`legacy_plane_peps.tsv` is the registry view of the twelve legacy enforcement
-planes, per edition, with the file and symbol behind every capability claim.
+`legacy_plane_peps.tsv` is the registry view of the legacy enforcement planes
+(twelve with `orchestrator_request`, #4249 row 5706695827; count them with
+`cut -f1 legacy_plane_peps.tsv | tail -n +2 | sort -u | wc -l`), per edition, with the file and symbol behind every capability claim.
 Under-advertising is the safe direction and is what this table does: a capability
 is listed only where there is a named enforcement path behind it, and a plane is
 absent from an edition only when its source carries that build constraint.

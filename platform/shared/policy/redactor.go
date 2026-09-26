@@ -757,6 +757,14 @@ func (r *FieldRedactor) jsonSafeRemask(original, flatMasked string, patternMap m
 	if !json.Valid([]byte(original)) {
 		return flatMasked // non-JSON value: raw-string flat masking is authoritative
 	}
+	if isBareJSONNumber(original) {
+		// A run of digits is valid JSON, but it is text, not a serialized
+		// document: a card, phone, NIK or account number sent as a string, or
+		// a number's decimal text. The walk would mask the number into a JSON
+		// string LITERAL, quotes included, handing back `"41**11"` where the
+		// text was 4111...11 (#4264 round 1 M2). Flat masking is authoritative.
+		return flatMasked
+	}
 	// For VALID JSON always run the structure-aware walk, even when flat masking
 	// changed nothing: the flat pass scans the RAW serialized bytes, so PII hidden
 	// behind \uXXXX escapes in a string leaf ("123456" decodes to "123456")
@@ -780,6 +788,18 @@ func (r *FieldRedactor) jsonSafeRemask(original, flatMasked string, patternMap m
 		return safe
 	}
 	return flatMasked
+}
+
+// isBareJSONNumber reports whether s, as a JSON document, is one number.
+func isBareJSONNumber(s string) bool {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var root interface{}
+	if err := dec.Decode(&root); err != nil || dec.More() {
+		return false
+	}
+	_, isNumber := root.(json.Number)
+	return isNumber
 }
 
 // anyPatternMatches reports whether any compiled pattern still matches s — used to

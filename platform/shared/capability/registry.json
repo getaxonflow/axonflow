@@ -1,6 +1,6 @@
 {
   "schema": "1.0",
-  "platform_version": "11.0.0",
+  "platform_version": "11.1.0",
   "generated": "2026-09-03",
   "scan_roots": [
     "platform/agent",
@@ -835,14 +835,17 @@
       "implementation": [
         "platform/decision/authoring",
         "platform/decision/authoringcatalog",
-        "platform/orchestrator/typed_authoring_route.go"
+        "platform/orchestrator/typed_authoring_route.go",
+        "platform/agent/policy_pack_summary_handler.go"
       ],
       "owner": "platform/orchestrator/typed_authoring_route_test.go",
       "routes": [
-        "/api/v1/typed-policies"
+        "/api/v1/typed-policies",
+        "/api/v1/policy-packs/summary"
       ],
       "planes": [
-        "orchestrator"
+        "orchestrator",
+        "agent"
       ],
       "license_gate": [
         "OrgPolicies"
@@ -1239,7 +1242,6 @@
         "agent"
       ],
       "license_gate": [
-        "MaxActiveCustomPolicies",
         "MaxHITLApprovalsPerWeek"
       ],
       "health": {
@@ -1331,6 +1333,84 @@
       "notes": "ADR-066 decision 5 split with BOTH halves operational, which is why the classification is community_core and not enterprise_protocol: platform/agent/pep_handshake.go and the whole read/validate/bind/narrow/count path compile into a Community build unconditionally, and what sits behind the tag is the DECIDING half - THREE files, one per plane (pep_handshake_enforce_enterprise.go, pep_handshake_mcp_enforce_enterprise.go, pep_handshake_precheck_enforce_enterprise.go), each with a !enterprise twin that returns the verdict untouched. (The design document calls the wire contract enterprise_protocol; in THIS registry's vocabulary that classification means source kept OUT of a Community build, which is the opposite of what ships, and the validator refuses the pairing. Same shape as license.validation.) IMPLEMENTATION LISTS ALL NINE FILES UNDER platform/agent, not just the decide plane's three: the edition-fact derivation walks exactly the paths listed here, and the backstop that catches a trimmed list is scoped to route-REGISTERING files - which this capability deliberately has none of, so a short list would be checked by nothing. The cap on the two lower editions is the DENY, and only the deny: the three community twins return the verdict untouched, so those builds emit the mandatory obligation anyway - today's behaviour, where the enforcement point fails closed at its own seam rather than forwarding ungoverned content. The structural refusals (pep_handshake_malformed, pep_handshake_identity_unbindable, pep_handshake_edition_unresolvable) and the over-advertisement narrowing DO fire in every edition; community mode is in fact the one deployment class where the over-advertising rule can fire at all. OWNER names the decide plane's test because the field takes one path. It is one of ELEVEN: pep_handshake_test.go, pep_handshake_mcp_test.go and pep_handshake_precheck_test.go for the three planes' shared halves; each plane's enforcement half under its own _enforce_{community,enterprise}_test.go pair, six more; plus pep_handshake_authzen_test.go and pep_handshake_openapi_contract_test.go. Counted with `ls`, because an earlier revision of this sentence said seven and its own enumeration came to nine. No route of its own: the header is read on routes governance.decide, the MCP capabilities and the gateway pre-check already own, which is why this entry claims planes and not routes."
     },
     {
+      "id": "governance.approval_hold",
+      "title": "Pending approval and approval-carrying retry on the request planes",
+      "family": "governance",
+      "summary": "A challenge on decide and the MCP request plane is answered as a pending approval naming an approval id; the caller retries the same call naming that id in X-Axonflow-Approval-Id (or approval_id) and it passes once, after a person approves.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/approval_hold.go",
+        "platform/agent/approval_hold_community.go",
+        "platform/agent/approval_hold_enterprise.go",
+        "platform/shared/pep/pep.go"
+      ],
+      "owner": "platform/agent/approval_hold_contract_test.go",
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "health": {
+        "name": "approval_hold_retry",
+        "since": "11.1.0",
+        "description": "Retry a call that was held for a person's approval. On an Enterprise deployment with the approval queue wired, a challenge on POST /api/v1/decide and on the MCP request plane (POST /api/v1/mcp/check-input, POST /api/v1/mcp-server, /mcp/tools/execute and /mcp/resources/query) is answered as a PENDING approval, not a refusal: nothing runs, one approval is queued for exactly that call, and the answer carries pending_approval with its approval_id. Once a person other than the caller approves, retry the SAME call naming the id in the X-Axonflow-Approval-Id header (or the approval_id body field or tool argument, for a client that cannot set headers). The retry is decided exactly as the first call was and passes only if it is again a challenge and the approval is approved, live, unspent and bound to this call; the approval is then spent, once. An allow on the retry spends nothing, and no approval ever lifts a deny. EDITION SPLIT: a Community build answers the same challenge with the approval_required refusal it always has and never returns pending_approval, so a client must branch on the response, not on this name alone",
+        "planes": [
+          "agent"
+        ],
+        "order": 30
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "Added on the v11.1.0 train by Step 0b of RUNBOOK_RELEASE_PREP (lane T1): #4375 (#4370) shipped this header contract and response shape with no route of its own, the class TestEveryRegisteredRouteHasACapabilityEntry cannot see. Agent-only: the header is read in decision_handler.go, mcp_handler.go and mcp_server_handler.go and documented in agent-api.yaml only. Served on every build like the other enterprise-minimum /health names (AdvertisedButAbsentInCommunity), which is why the description states the Community answer."
+    },
+    {
+      "id": "governance.mcp_parameter_redaction_handback",
+      "title": "Masked request parameters handed back on the MCP request plane",
+      "family": "governance",
+      "summary": "Under a pii=redact posture, check-input and the check_policy tool hand the redaction's masked request parameters back in redacted_parameters, but only to an enforcement point whose X-Axonflow-PEP-Handshake declares field_redact at schema version 2; every other caller whose PII sits in the parameters keeps the refusal, as a 403 on check-input and as allowed false with a block_reason in the check_policy tool's result.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/pep_handshake_mcp.go",
+        "platform/agent/pep_handshake_mcp_enforce_community.go",
+        "platform/agent/pep_handshake_mcp_enforce_enterprise.go",
+        "platform/agent/mcp_request_enforcing_seam.go",
+        "platform/agent/mcp_handler.go",
+        "platform/agent/mcp_server_handler.go",
+        "platform/shared/policy/redactor.go",
+        "platform/shared/policy/engine.go"
+      ],
+      "owner": "platform/agent/mcp_request_enforcing_seam_test.go",
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "health": {
+        "name": "field_redact_parameters",
+        "since": "11.1.0",
+        "description": "Hand back the redaction's masked request parameters. Under an organization's pii=redact posture, a check-input (POST /api/v1/mcp/check-input) or check_policy tool call whose PII sits in the request parameters is answered with redacted_parameters: one entry per masked parameter, carrying the masked text the request pass scanned it as (a string or number as its text, a map or list as its JSON serialisation masked as one text), beside redacted_statement whenever the statement itself was masked. The caller MUST run the tool on the masked parameters instead of the originals; a caller that reads neither member runs the tool on raw PII while the audit row records a redaction. So the hand-back is asked of a DECLARATION: only an enforcement point that declared field_redact at schema version 2 in X-Axonflow-PEP-Handshake receives it. Version 1 stays the statement-only wire, matching is exact, an absent handshake is not admitted, and every other caller keeps the refusal - 403 unsupported_obligation on check-input, and on the check_policy tool the same refusal arrives in the JSON-RPC result as allowed false with a block_reason and no HTTP status, so a tool caller must branch on the result, not on a status - whose block_reason names the obligation, the policy that attached it, the masked parameter's KEY and the missing field_redact@2, never a value or its masked text. A client that substitutes both declares field_redact@1 and @2. The audit row names what was masked, statement and parameters.<key>. EDITION SPLIT: deciding on the declaration is Enterprise; a Community build never hands parameters back and answers the same 403 whatever is declared (ADR-066 decision 5), so a client must branch on the response, not on this name alone",
+        "planes": [
+          "agent"
+        ],
+        "order": 31
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "Added at v11.1.0 release execution by master, under Step 0b of RUNBOOK_RELEASE_PREP: #4427 (#4264) shipped this hand-back as a second schema version of the existing handshake vocabulary, with no route of its own, so the class TestEveryRegisteredRouteHasACapabilityEntry cannot see it, and the pep_capability_handshake entry (since 10.4.0) describes field_redact@1 only. Agent-only: the version is read in pep_handshake_mcp.go (mcpParameterRedactionObligation, schema version 2) and the edition split is pepSubstitutesParameters, whose Community twin is always false (row 5803523870 holds the operator's call on honouring a declaration there). The shipped Google ADK plugin presents no handshake and keeps the 403 (row 5803520785)."
+    },
+    {
       "id": "governance.proxy_request",
       "title": "Proxy-mode LLM calls",
       "family": "governance",
@@ -1345,7 +1425,8 @@
       "owner": "platform/agent/proxy_test.go",
       "routes": [
         "/api/request",
-        "/api/clients"
+        "/api/clients",
+        "/api/policies/test"
       ],
       "planes": [
         "agent"
@@ -2375,8 +2456,7 @@
       "routes": [
         "/api/v1/system-policies",
         "/api/v1/static-policies",
-        "/api/v1/policies/test",
-        "/api/policies/test"
+        "/api/v1/policies/test"
       ],
       "planes": [
         "agent",
@@ -2501,7 +2581,7 @@
       "id": "saas.graduated_freemium",
       "title": "Graduated freemium caps",
       "family": "saas",
-      "summary": "The Free tier gets a taste of Pro — two active tenant policies and one HITL approval per rolling seven days — with a structured 403 on cap hit.",
+      "summary": "The Free tier gets a taste of Pro — a HITL approval cap per rolling seven days — with a structured 403 on cap hit.",
       "minimum_edition": "community",
       "source_classification": "evaluation_preview",
       "build_tag": "none",
@@ -2511,13 +2591,12 @@
       ],
       "owner": "platform/agent/auth_daily_limit_community_test.go",
       "license_gate": [
-        "MaxActiveCustomPolicies",
         "MaxHITLApprovalsPerWeek"
       ],
       "health": {
         "name": "v1_pro_graduated_freemium",
         "since": "7.8.0",
-        "description": "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)",
+        "description": "Free tier exposes a taste of Pro capabilities — a HITL approval cap per rolling 7d — with structured 403 envelope on cap-hit; Pro tier raises the cap (Community SaaS only)",
         "planes": [
           "agent"
         ],
@@ -2751,13 +2830,12 @@
       "owner": "platform/agent/auth_daily_limit_community_test.go",
       "license_gate": [
         "DailyEventQuota",
-        "MaxActiveCustomPolicies",
         "MaxHITLApprovalsPerWeek"
       ],
       "health": {
         "name": "v1_pro_upgrade_envelope",
         "since": "7.8.0",
-        "description": "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 active_policies / hitl_approvals_window / feature_pro_only) with locked compare_url + buy_url + Retry-After header (Community SaaS only)",
+        "description": "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 hitl_approvals_window / feature_pro_only; the MCP server answers the same statuses with the envelope in the JSON-RPC result, and 429 per_minute) with locked compare_url + buy_url + Retry-After header where the limit resets (Community SaaS only)",
         "planes": [
           "agent"
         ],
@@ -2983,32 +3061,32 @@
       "reason": "Two unknowns in one call, and round 8 made the second one visible. The suffixes live in a struct slice, so the argument is a field read the scanner does not follow; and the receiver is the RANGE VARIABLE of `for _, sub := range []*mux.Router{legacy, successor}`, which is not a proven shape either, so the prefix is reported rather than guessed. Both subrouters it ranges over ARE priced where they are declared (/api/v1/system-policies and its /api/v1/static-policies legacy alias) and policy.system claims both, so the URL space is covered even though this one call site is not."
     },
     {
-      "pattern": "platform/agent/run.go:759 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
+      "pattern": "platform/agent/run.go:761 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /health, the readiness-aware handler registered before initialisation finishes so ECS health checks pass during boot, and platform.health claims exactly that route — the URL space is covered by that entry."
     },
     {
-      "pattern": "platform/agent/run.go:1548 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
+      "pattern": "platform/agent/run.go:1564 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /metrics, the JSON performance endpoint; platform.metrics claims it alongside /prometheus and /api/v1/metrics, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1551 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
+      "pattern": "platform/agent/run.go:1567 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /prometheus, the Prometheus exposition endpoint, which platform.metrics claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1554 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
+      "pattern": "platform/agent/run.go:1570 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/request, which every governed client call flows through; governance.proxy_request claims it, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1557 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1574 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on GET, the client listing, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1558 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1573 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on POST, client creation on the same path, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1561 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
-      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint, one of the four routes policy.system claims, so the URL space is covered."
+      "pattern": "platform/agent/run.go:1577 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint: it previews /api/request's verdict on the anchored engine (PRD v11 §1 item 10), so governance.proxy_request claims it beside /api/clients, and the URL space is covered."
     }
   ]
 }

@@ -388,6 +388,15 @@ func (s *PolicyService) testPolicyVerdictForStoredRow(policy *PolicyResource) *T
 	}
 }
 
+// evalTimeMs reports an evaluation's duration in milliseconds at full
+// resolution. The earlier Microseconds()/1000 truncated every evaluation
+// under one microsecond to 0, which a warm single-condition preview is
+// (#4249 rows 5781567856, 5766609846): eval_time_ms is a reported metric, so
+// a fast evaluation reads as fast, never as "took no time".
+func evalTimeMs(d time.Duration) float64 {
+	return float64(d.Nanoseconds()) / 1e6
+}
+
 func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
 	// Get the policy
 	policy, err := s.repo.GetByID(ctx, tenantID, orgID, policyID)
@@ -401,7 +410,7 @@ func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyI
 	start := time.Now()
 
 	if v := s.testPolicyVerdictForStoredRow(policy); v != nil {
-		v.EvalTimeMs = float64(time.Since(start).Microseconds()) / 1000
+		v.EvalTimeMs = evalTimeMs(time.Since(start))
 		return v, nil
 	}
 
@@ -411,7 +420,7 @@ func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyI
 
 	response := &TestPolicyResponse{
 		Matched:    matched,
-		EvalTimeMs: float64(time.Since(start).Microseconds()) / 1000,
+		EvalTimeMs: evalTimeMs(time.Since(start)),
 	}
 
 	if matched {

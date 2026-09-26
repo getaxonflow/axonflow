@@ -118,11 +118,13 @@ func corpusPolicySubstrate(id string) (legacycompile.Substrate, bool) {
 // that the restriction reads: the planes that LOAD its row, and the category
 // the row was seeded with, which is what a call site's filter admits or not -
 // and what an organization's recorded override is keyed by (#4045), with the
-// severity a replacement's obligations record.
+// severity a replacement's obligations record, and the tier the census
+// records for the control (system or tenant), which a report states.
 type censusFact struct {
 	planes   []string
 	category string
 	severity string
+	tier     string
 }
 
 // detectorCensusBySignalPath indexes the shipped detector census by the
@@ -139,7 +141,7 @@ func detectorCensusBySignalPath() (map[string]censusFact, error) {
 	}
 	out := make(map[string]censusFact, len(rows))
 	for _, r := range rows {
-		out[registry.DetectorID(r.PolicyID).SignalPath()] = censusFact{planes: r.Planes, category: r.Category, severity: r.Severity}
+		out[registry.DetectorID(r.PolicyID).SignalPath()] = censusFact{planes: r.Planes, category: r.Category, severity: r.Severity, tier: r.Tier}
 	}
 	return out, nil
 }
@@ -268,37 +270,163 @@ func unboundTemplateControls(scope legacycompile.EnforcementScope, doc *pdp.Docu
 // controls: a template redaction ships as two policies bound by discharge
 // (#4131), and a document carrying only one of them drops the control on the
 // other's scopes.
+//
+// A POLICY KEPT BY ID IS NOT A POLICY KEPT (#4249). The organization edits the
+// template's rows in place, so a document can carry a template policy's id with
+// a condition that never matches, and that control stops deciding exactly as an
+// omitted one does. Modified names every template policy the document carries
+// under its id but not as shipped. The two lists are disjoint, and an activation
+// acknowledges their union (Acknowledgement).
 type TemplateOmissionReport struct {
-	Omitted []string `json:"omitted"`
-	Of      int      `json:"of"`
-	Message string   `json:"message"`
+	Omitted  []string `json:"omitted"`
+	Modified []string `json:"modified"`
+	Of       int      `json:"of"`
+	Message  string   `json:"message"`
 }
 
-// ReportTemplateOmissions is doc's report, nil when doc carries every control of
-// the organization template.
+// Acknowledgement is the id list an activation of the reported document must
+// send: the omitted and the modified template policies, sorted.
+func (r *TemplateOmissionReport) Acknowledgement() []string {
+	if r == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(r.Omitted)+len(r.Modified))
+	ids = append(append(ids, r.Omitted...), r.Modified...)
+	sort.Strings(ids)
+	return ids
+}
+
+// ReportTemplateOmissions is doc's report, nil when doc carries every policy of
+// the organization template as shipped.
+//
+// "As shipped" is two checks, both the anchor's own for a system restriction
+// (pdp/system_corpus.go checkSystemRestriction):
+//
+//   - THE POLICY. A carried policy is compared by contract.ExactDigest over the
+//     parsed policy, the form the system anchor's subset check uses, so key
+//     order, number spelling and empty-versus-absent collections do not read as
+//     an edit and every other change does - a name or a description included.
+//     Whether an edit tightens or weakens the control is not decided here; any
+//     edit is reported, and the activation acknowledges it.
+//   - THE ATTRIBUTES IT READS. A document's attribute schemas replace the
+//     template's too, and `optional` decides whether an authoritative absence is
+//     a NON-MATCH or an UNKNOWN: flipping it turns a fail-closed control into one
+//     that silently stops applying while every policy stays byte-identical. The
+//     system anchor refuses exactly that (checkSystemRestriction's attribute
+//     pass, pdp/system_corpus.go:667-701). So a template attribute the document
+//     redeclares with another type, optionality or freshness bound, or does not
+//     declare at all, marks every carried template policy that reads its path as
+//     modified, and the message names the attribute and what differs. An
+//     attribute the template does not declare changes nothing here.
 func ReportTemplateOmissions(doc *pdp.Document) (*TemplateOmissionReport, error) {
 	template, err := pdp.SystemCorpusOrganizationTemplate()
 	if err != nil {
 		return nil, err
 	}
-	carried := make(map[string]bool, len(doc.Policies))
+	carried := make(map[string][]pdp.Policy, len(doc.Policies))
 	for _, p := range doc.Policies {
-		carried[p.ID] = true
+		carried[p.ID] = append(carried[p.ID], p)
 	}
-	var omitted []string
-	for _, p := range template.Policies {
-		if !carried[p.ID] {
-			omitted = append(omitted, p.ID)
+	changedAttributes := templateAttributeChanges(doc, template)
+	omitted, modified := []string{}, []string{}
+	notes := map[string]string{}
+	for _, shipped := range template.Policies {
+		copies, ok := carried[shipped.ID]
+		if !ok {
+			omitted = append(omitted, shipped.ID)
+			continue
+		}
+		asShipped, err := carriedAsShipped(shipped, copies)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range shipped.ReferencedPaths() {
+			if note, changed := changedAttributes[path]; changed {
+				notes[path] = note
+				asShipped = false
+			}
+		}
+		if !asShipped {
+			modified = append(modified, shipped.ID)
 		}
 	}
-	if len(omitted) == 0 {
+	if len(omitted) == 0 && len(modified) == 0 {
 		return nil, nil
 	}
 	sort.Strings(omitted)
-	return &TemplateOmissionReport{
-		Omitted: omitted, Of: len(template.Policies),
-		Message: fmt.Sprintf("this document omits %d of the %d template policies: %s", len(omitted), len(template.Policies), strings.Join(omitted, ", ")),
-	}, nil
+	sort.Strings(modified)
+	of := len(template.Policies)
+	var parts []string
+	if len(omitted) > 0 {
+		parts = append(parts, fmt.Sprintf("omits %d of the %d template policies: %s", len(omitted), of, strings.Join(omitted, ", ")))
+	}
+	if len(modified) > 0 {
+		parts = append(parts, fmt.Sprintf("carries %d of the %d template policies changed from the shipped template: %s", len(modified), of, strings.Join(modified, ", ")))
+	}
+	message := "this document " + strings.Join(parts, "; it ")
+	if len(notes) > 0 {
+		paths := make([]string, 0, len(notes))
+		for path := range notes {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		described := make([]string, 0, len(paths))
+		for _, path := range paths {
+			described = append(described, notes[path])
+		}
+		message += " (" + strings.Join(described, "; ") + ")"
+	}
+	return &TemplateOmissionReport{Omitted: omitted, Modified: modified, Of: of, Message: message}, nil
+}
+
+// carriedAsShipped reports whether every copy of a template policy a document
+// carries under its id is byte-identical to the shipped policy.
+func carriedAsShipped(shipped pdp.Policy, copies []pdp.Policy) (bool, error) {
+	want, err := contract.ExactDigest(shipped)
+	if err != nil {
+		return false, fmt.Errorf("activation: digesting the shipped template policy %q: %w", shipped.ID, err)
+	}
+	for _, p := range copies {
+		got, err := contract.ExactDigest(p)
+		if err != nil {
+			return false, fmt.Errorf("activation: digesting the document's template policy %q: %w", p.ID, err)
+		}
+		if got != want {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// templateAttributeChanges maps each template attribute path the document does
+// not declare as shipped to a sentence naming the attribute and what differs.
+func templateAttributeChanges(doc, template *pdp.Document) map[string]string {
+	declared := make(map[string]pdp.AttributeSchema, len(doc.Attributes))
+	for _, at := range doc.Attributes {
+		declared[at.Path] = at
+	}
+	changes := map[string]string{}
+	for _, want := range template.Attributes {
+		got, ok := declared[want.Path]
+		if !ok {
+			changes[want.Path] = fmt.Sprintf("attribute %s is not declared; the template declares it", want.Path)
+			continue
+		}
+		var diffs []string
+		if got.Type != want.Type {
+			diffs = append(diffs, fmt.Sprintf("type %s, shipped %s", got.Type, want.Type))
+		}
+		if got.Optional != want.Optional {
+			diffs = append(diffs, fmt.Sprintf("optional %t, shipped %t", got.Optional, want.Optional))
+		}
+		if got.MaxAgeSeconds != want.MaxAgeSeconds {
+			diffs = append(diffs, fmt.Sprintf("max_age_seconds %d, shipped %d", got.MaxAgeSeconds, want.MaxAgeSeconds))
+		}
+		if len(diffs) > 0 {
+			changes[want.Path] = fmt.Sprintf("attribute %s declares %s", want.Path, strings.Join(diffs, ", "))
+		}
+	}
+	return changes
 }
 
 // ReportArtifactTemplateOmissions is ReportTemplateOmissions over an artifact's
@@ -325,34 +453,21 @@ func restrictToScope(scope legacycompile.EnforcementScope, shipped *pdp.Document
 	for _, s := range spec.Substrates {
 		substrates[s] = true
 	}
-	// A static scope whose admission cannot be derived is REFUSED, not
-	// restricted to nothing. The zero value admits no category, so it would
-	// drop every judged control and read as a plane that evaluates nothing - a
-	// missing declaration dressed as a fact about the plane.
-	var admission legacycompile.CategoryAdmission
-	if substrates[legacycompile.SubstrateStatic] {
-		for _, ph := range scope.Phases() {
-			a, err := legacycompile.AdmissionFor(scope.Plane, ph)
-			if err != nil {
-				return nil, "", fmt.Errorf("activation: %s evaluates the static substrate and its category admission cannot be "+
-					"derived, so which of its loaded controls its call sites actually evaluate is unknown: %w", scope, err)
-			}
-			admission = admission.Union(a)
-		}
-	}
-	var witnesses []string
-	if scope.Phase != "" {
-		witnesses = phaseWitnesses(spec, scope.Phase)
-		if len(witnesses) == 0 {
-			return nil, "", fmt.Errorf("activation: no single-phase plane on the %s read path evaluates the %s phase, so which "+
-				"of %s's loaded controls load in that phase cannot be derived from the census", spec.StaticReadPath, scope.Phase, scope)
-		}
-	}
-	census, err := detectorCensusBySignalPath()
+	// THE THREE CENSUS ARMS - load, phase, category - are the judge's
+	// (legacycompile.ScopeDetectorJudge), the one statement of "does this scope
+	// run the detectors a policy reads", which an organization's document is
+	// restricted by too (#4249 row 5674230432). It is the one statement of the
+	// ARMS, not of every read of the census: censusFactFor below still answers
+	// "which censused detector does this policy read, and what is its category
+	// and severity" for the override fold, the system controls and the effects
+	// list, and it is first-match where the judge is ALL. It refuses a static scope whose
+	// admission cannot be derived and a phase with no witness, not restricts
+	// them to nothing.
+	judge, err := legacycompile.NewScopeDetectorJudge(scope)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("activation: %w", err)
 	}
-
+	admission := judge.Admission()
 	out := &pdp.Document{Root: shipped.Root, Version: shipped.Version, InteractiveRealms: shipped.InteractiveRealms}
 	var droppedSubstrate, droppedDetector, droppedPhase, droppedCategory, droppedBinding []string
 	// admitted are the controls every arm before the binding arm keeps.
@@ -377,27 +492,23 @@ func restrictToScope(scope legacycompile.EnforcementScope, shipped *pdp.Document
 			droppedSubstrate = append(droppedSubstrate, p.ID)
 			continue
 		}
-		path, fact, judged := censusFactFor(p, census)
-		if !judged {
+		j := judge.Judge(p)
+		switch j.Arm {
+		case legacycompile.DetectorArmUnjudged:
 			uncensused++
-			admitted = append(admitted, p)
+		case legacycompile.DetectorArmLoad:
+			droppedDetector = append(droppedDetector, fmt.Sprintf("%s (detector %s runs on %v)", p.ID, j.Path, j.Planes))
 			continue
-		}
-		if !listsPlane(fact.planes, plane) {
-			droppedDetector = append(droppedDetector, fmt.Sprintf("%s (detector %s runs on %v)", p.ID, path, fact.planes))
+		case legacycompile.DetectorArmPhase:
+			// THE PHASE ARM, on a scope that names one phase of a two-phase
+			// plane: the row loads on the plane, and must load in THIS phase.
+			droppedPhase = append(droppedPhase, fmt.Sprintf("%s (detector %s runs on %v, none of which evaluates only the %s phase)", p.ID, j.Path, j.Planes, scope.Phase))
 			continue
-		}
-		// THE PHASE ARM, on a scope that names one phase of a two-phase plane:
-		// the row loads on the plane, and must load in THIS phase.
-		if scope.Phase != "" && !listsAny(fact.planes, witnesses) {
-			droppedPhase = append(droppedPhase, fmt.Sprintf("%s (detector %s runs on %v, none of which evaluates only the %s phase)", p.ID, path, fact.planes, scope.Phase))
-			continue
-		}
-		// THE CATEGORY-ADMISSION ARM, after the load arms: a row the scope does
-		// not load is dropped for that reason, and only a loaded row is asked
-		// whether any call site in the scope evaluates its category.
-		if !admission.Admits(fact.category) {
-			droppedCategory = append(droppedCategory, fmt.Sprintf("%s (detector %s, category %q)", p.ID, path, fact.category))
+		case legacycompile.DetectorArmCategory:
+			// THE CATEGORY-ADMISSION ARM, after the load arms: a row the scope
+			// does not load is dropped for that reason, and only a loaded row is
+			// asked whether any call site in the scope evaluates its category.
+			droppedCategory = append(droppedCategory, fmt.Sprintf("%s (detector %s, category %q)", p.ID, j.Path, j.Category))
 			continue
 		}
 		admitted = append(admitted, p)
@@ -575,20 +686,10 @@ func listsAny(planes, candidates []string) bool {
 	return false
 }
 
-// phaseWitnesses are the planes whose listing of a row says it loads in one
-// phase: single-phase planes on the same static read path whose only phase is
-// that one. Derived from the plane model, so a plane added to it joins or
-// leaves the witness set without an edit here.
+// phaseWitnesses is legacycompile.PhaseWitnesses, the one derivation of the
+// witness planes, which the detector judge reads.
 func phaseWitnesses(spec legacycompile.PlaneSpec, ph legacycompile.Phase) []string {
-	var out []string
-	for _, p := range legacycompile.AllPlanes() {
-		w := legacycompile.MustSpecFor(p)
-		if p == spec.Plane || w.StaticReadPath != spec.StaticReadPath || len(w.Phases) != 1 || w.Phases[0] != ph {
-			continue
-		}
-		out = append(out, string(p))
-	}
-	return out
+	return legacycompile.PhaseWitnesses(spec, ph)
 }
 
 // censusFactFor returns the census record of the censused detector a policy

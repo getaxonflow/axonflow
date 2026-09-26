@@ -246,7 +246,7 @@ func TestTheEnforcerRebuildsAnOrganizationsEngineWhenItsRecordedOverridesChange(
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch)
+	e, err := newAnchoredEnforcer(docs, func() (*authoringcatalog.Snapshot, error) { return snap, nil }, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 	if err != nil {
 		t.Fatal(err)
 	}

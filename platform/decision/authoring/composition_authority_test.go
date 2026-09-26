@@ -195,9 +195,11 @@ func TestTheCompositionAuthorityRefusesByName(t *testing.T) {
 			_, err := comp.Compose(authoredSource(t, authoredDocument(pdp.RootOrganization)), nil, []pdp.Policy{notifyOn("authored.notify", composedProbe)}, schemas)
 			return err
 		}},
-		{"an addition that takes an omitted policy's id", authoring.CodeComposedPolicyIDTaken, func(t *testing.T) error {
+		{"two additions that take one omitted policy's id", authoring.CodeComposedPolicyIDTaken, func(t *testing.T) error {
+			// An omitted id is free for ONE addition (#4371); a second is two
+			// policies under one id.
 			_, err := comp.Compose(authoredSource(t, authoredDocument(pdp.RootOrganization)), []string{"authored.notify"},
-				[]pdp.Policy{notifyOn("authored.notify", composedProbe)}, schemas)
+				[]pdp.Policy{notifyOn("authored.notify", composedProbe), notifyOn("authored.notify", composedProbe)}, schemas)
 			return err
 		}},
 		{"an omission the authored document does not carry", authoring.CodeComposedOmissionNotCarried, func(t *testing.T) error {
@@ -237,4 +239,27 @@ func TestTheCompositionAuthorityRefusesByName(t *testing.T) {
 			t.Fatal("a 10-byte key became a composition authority")
 		}
 	})
+}
+
+// TestAnOmittedIDIsFreeForOneAddition (#4371): a policy the composed plane
+// leaves out of the authored document (a control its binds_on confines
+// elsewhere) frees its id, so a pack's or the baseline's own policy of that id
+// composes in its place - the plane carries exactly what it would carry had
+// the document not carried the policy. The addition, not the authored copy, is
+// what the composed document holds under the id.
+func TestAnOmittedIDIsFreeForOneAddition(t *testing.T) {
+	comp := newCompositionAuthority(t)
+	addition := notifyOn("authored.notify", composedSecond)
+	schemas := []pdp.AttributeSchema{boolSchema(composedSecond)}
+	c, err := comp.Compose(authoredSource(t, authoredDocument(pdp.RootOrganization)), []string{"authored.notify"}, []pdp.Policy{addition}, schemas)
+	if err != nil {
+		t.Fatalf("an addition taking an omitted id was refused: %v", err)
+	}
+	if len(c.Document.Policies) != 1 {
+		t.Fatalf("the composition carries %d policies; want the one addition", len(c.Document.Policies))
+	}
+	got := c.Document.Policies[0]
+	if got.ID != "authored.notify" || got.Where.Path != composedSecond {
+		t.Fatalf("the composition carries %+v under the omitted id; want the addition (reading %s), not the authored copy", got, composedSecond)
+	}
 }

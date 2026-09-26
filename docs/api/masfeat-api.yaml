@@ -82,7 +82,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.0.0
+  version: 11.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support

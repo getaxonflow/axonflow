@@ -282,6 +282,7 @@ func TestTheQueueRowExpiresWhenTheApprovalDoes(t *testing.T) {
 
 			id := uuid.MustParse(workflow_control.DeriveHITLApprovalID("wf-123", "step-a"))
 			expectScope(mock, "test-org", true)
+			expectNoHold(mock)
 			mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 				WithArgs(
 					id, "test-org", "test-tenant", "test-client", "test-user",

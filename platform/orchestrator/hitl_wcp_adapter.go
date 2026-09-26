@@ -38,7 +38,9 @@
 //     workflow_control.DeriveHITLApprovalID(workflow_id, step_id) as its
 //     approval_id - a deterministic UUID v5 that, on Evaluation, resolved to
 //     no row at all. Both editions now derive the same id, so the id a client
-//     is handed is the id of the row.
+//     is handed is the id of the row. (Since #4249 row 5700138809 a step can
+//     have several holds, each under its own derived id; the responses project
+//     the current hold's.)
 //
 //  4. NO hitl_approval_history ROW FROM EITHER. The EU AI Act Article 14
 //     trail recorded a `created` action for approvals made through the agent
@@ -77,15 +79,34 @@ func newWCPHITLAdapter(enq *queue.Enqueuer) *wcpHITLAdapter {
 	return &wcpHITLAdapter{enq: enq}
 }
 
+// wcpHoldID names hold n of a step through the workflow plane's one
+// derivation. uuid.Nil (which the chokepoint refuses) stands for a value that
+// does not parse, which DeriveHITLApprovalIDForHold's uuid.NewSHA1 cannot
+// produce; handled rather than panicked because a panic in a governance gate
+// takes the orchestrator down for every tenant.
+func wcpHoldID(workflowID, stepID string) func(n int) uuid.UUID {
+	return func(n int) uuid.UUID {
+		id, err := uuid.Parse(workflow_control.DeriveHITLApprovalIDForHold(workflowID, stepID, n))
+		if err != nil {
+			return uuid.Nil
+		}
+		return id
+	}
+}
+
 // CreateApproval implements HITLApprovalCreator for WCP require_approval
 // actions.
 //
-// Idempotency: request_id is derived from (workflow_id, step_id) with
-// workflow_control.DeriveHITLApprovalID - a fixed-namespace UUID v5, stable
-// across processes and restarts, and the SAME value the approve/reject
-// response projects. Combined with the unique index on request_id
-// (mig core/025:87) and the chokepoint's ON CONFLICT, concurrent first-time
-// calls and re-gates alike resolve to exactly one row.
+// Idempotency: request_id names the step's hold -
+// workflow_control.DeriveHITLApprovalIDForHold(workflow_id, step_id, n), a
+// fixed-namespace UUID v5 stable across processes and restarts - and the
+// chokepoint picks n inside its transaction: the step's pending hold if it has
+// one, else the next hold after a decided one. Combined with the unique index
+// on request_id (mig core/025:87) and the chokepoint's ON CONFLICT, concurrent
+// calls and retries of a live hold resolve to exactly one row, and a step held
+// again after a decision gets its own row (#4249 row 5700138809). The
+// approve/reject responses project the current hold's id
+// (HITLMirrorResolver.CurrentHoldID).
 //
 // The fallback to uuid.New() is reached only by a caller with no
 // (workflow_id, step_id) pair in its request context, which is not a WCP step
@@ -101,18 +122,17 @@ func (a *wcpHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRe
 	workflowID, _ := req.RequestContext["workflow_id"].(string)
 	stepID, _ := req.RequestContext["step_id"].(string)
 
-	var requestID uuid.UUID
-	if derived := workflow_control.DeriveHITLApprovalID(workflowID, stepID); derived != "" {
-		parsed, err := uuid.Parse(derived)
-		if err != nil {
-			// DeriveHITLApprovalID builds the value with uuid.NewSHA1, so
-			// this is unreachable short of that function changing shape.
-			// Handled rather than panicked (the pre-existing adapter used
-			// uuid.MustParse here) because a panic in a governance gate takes
-			// the orchestrator down for every tenant, not just this one.
-			return nil, fmt.Errorf("derive HITL approval id for %s/%s: %w", workflowID, stepID, err)
+	// A step gate names its hold by (workflow_id, step_id) and the hold's
+	// number; the chokepoint picks the number inside its transaction, so a step
+	// held again after its earlier hold was decided gets a NEW row
+	// (#4249 row 5700138809). Without the pair, uuid.Nil mints a fresh id.
+	var stepHold *queue.StepHold
+	if workflowID != "" && stepID != "" {
+		stepHold = &queue.StepHold{
+			WorkflowID: workflowID,
+			StepID:     stepID,
+			IDForHold:  wcpHoldID(workflowID, stepID),
 		}
-		requestID = parsed
 	}
 
 	expiresIn, err := approvalExpiresIn(req.ExpiresAt, time.Now())
@@ -121,11 +141,11 @@ func (a *wcpHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRe
 	}
 
 	row, outcome, err := a.enq.Enqueue(ctx, queue.Input{
-		RequestID: requestID,
-		OrgID:     req.OrgID,
-		TenantID:  req.TenantID,
-		ClientID:  req.ClientID,
-		UserID:    req.UserID,
+		StepHold: stepHold,
+		OrgID:    req.OrgID,
+		TenantID: req.TenantID,
+		ClientID: req.ClientID,
+		UserID:   req.UserID,
 		// original_query carries the STEP NAME, not step input. That is the
 		// pre-existing in-table convention for this request_type and it is
 		// deliberate: hitl_approval_queue.original_query is copied verbatim

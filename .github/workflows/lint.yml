@@ -318,6 +318,29 @@ jobs:
       - name: Lint - no pipe into an early-exiting reader under pipefail
         if: always()
         run: python3 scripts/lint-pipefail-early-exit-reader.py
+      # Row 5665386080 (#4249): the same lint over runtime-e2e/, where a pipe
+      # whose status the shell discards is admitted and counted, not flagged (the
+      # lint's header gives the rule). runtime-e2e/ does not sync, so on the
+      # community mirror, and on the sync pre-flight's replay of this job, the
+      # step names the skip; on this repository a missing directory is a red,
+      # never a skip. The repository is read from the runner's GITHUB_REPOSITORY,
+      # NOT from a `${{ }}` under `env:`: the pre-flight replayer
+      # (scripts/ci/run-community-job-in-mirror.sh) refuses any step env that is
+      # an expression and would fail the whole job before its first step. The
+      # replayer does not export GITHUB_REPOSITORY, so the replay takes the skip.
+      - name: Lint - no pipe into an early-exiting reader under pipefail (runtime-e2e)
+        if: always()
+        run: |
+          repo="${GITHUB_REPOSITORY:-}"
+          if [ ! -d runtime-e2e ]; then
+            if [ "$repo" = "getaxonflow/axonflow-enterprise" ]; then
+              echo "::error::runtime-e2e/ is missing on $repo, so this lint has nothing to scan; that is not a pass"
+              exit 1
+            fi
+            echo "SKIP: runtime-e2e/ is not synced to ${repo:-this checkout} (the community mirror), so there is nothing to lint"
+            exit 0
+          fi
+          python3 scripts/lint-pipefail-early-exit-reader.py runtime-e2e
       - name: Self-test the policy-table choke point, including #4072's large-scan case
         if: always()
         run: bash scripts/lint-policy-table-choke-point_test.sh

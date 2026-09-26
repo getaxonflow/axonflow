@@ -360,6 +360,60 @@ func (p pepHandshakeResolution) auditFields() (pepAuditFields, bool) {
 // presented reports whether the caller presented a handshake at all.
 func (p pepHandshakeResolution) presented() bool { return p.outcome != pepHandshakeAbsent }
 
+// unadmittedPEPProfileID names the empty profile requestProfile hands a pass
+// for a handshake that was presented and not admitted, so a refusal that ever
+// rendered it would say which case it was rather than quote an empty name.
+const unadmittedPEPProfileID = "unadmitted"
+
+// requestProfile is the enforcement profile a request pass is judged against,
+// and the ONE place the two readings of a nil profile meet.
+//
+// Contract: admitted -> the declared profile; absent OR never resolved -> nil,
+// the plane's registered profile; anything else -> an EMPTY profile, never nil.
+//
+// The decision core reads a nil profile as "this request presents no profile
+// of its own, so judge it against the plane's registered one"
+// (pdp.DecideOptions.PEP, and attachValidatorRedactions' act.PEP fallback),
+// which is the plane's row of legacy_plane_peps.tsv. The registry reads nil the
+// other way: ExternalPEP.Profile() is nil for an enforcement point that was
+// never ADMITTED, and there nil means "refuse". Passing the registry's value
+// straight through would make the two indistinguishable, which is the hazard
+// DecideOptions.PEP's own comment names. So this decides which one a
+// resolution is:
+//
+//   - An admitted handshake is judged against the profile it declared.
+//   - A caller that presented no header (outcome absent), and the zero value,
+//     whose outcome is "" and which a path that never reads a header carries -
+//     the MCP connector routes do (mcp_handler.go, "this route resolves no
+//     capability handshake") - are nil. Both are a caller declaring nothing,
+//     and the v11.0.0 contract for one is the plane's own profile: on decide
+//     and the gateway pre-check the plane discharges no field_redact, so a
+//     mandatory redaction is refused unsupported_obligation; on the MCP passes
+//     the plane discharges it, so the content is masked.
+//   - Everything else is an EMPTY profile, never nil, so it can never be
+//     granted the plane's. Today that is a refused handshake (malformed,
+//     unbindable, or an edition that cannot be established), which the handlers
+//     refuse before a pass is built. The nil cases are named and the default is
+//     the empty profile ON PURPOSE: an outcome added later that is presented but
+//     neither admitted nor marked refused gets the refusing answer, not the
+//     plane's. An empty profile still permits a request that carries no
+//     mandatory obligation, which is why the handlers' refusal, not this value,
+//     is the answer for a refused handshake.
+//
+// The absent test is the outcome, not presented(), because the zero value's
+// outcome is "" rather than absent and presented() reads it as a header that
+// arrived.
+func (p pepHandshakeResolution) requestProfile() *contract.PEPProfile {
+	switch {
+	case p.pep.Admitted():
+		return p.pep.Profile()
+	case p.outcome == pepHandshakeAbsent || p.outcome == "":
+		return nil
+	default:
+		return &contract.PEPProfile{ID: unadmittedPEPProfileID, Capabilities: []contract.Capability{}}
+	}
+}
+
 // resolvePEPHandshake reads, validates and binds one request's handshake.
 //
 // authenticatedClientID is the identity apiAuthMiddleware derived from the

@@ -4,6 +4,7 @@
 package workflow_control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"axonflow/platform/decision/contract"
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/tenantscope"
 )
@@ -169,6 +171,14 @@ type HITLMirrorResolver interface {
 	// error is a read that failed, and ApproveStep refuses on it rather than
 	// approving blind.
 	StepMirrorExpiry(ctx context.Context, orgID, tenantID, workflowID, stepID string) (expiresAt time.Time, expired bool, found bool, err error)
+
+	// CurrentHoldID reads the queue request id of the step's current hold: its
+	// pending row, else its newest (#4249 row 5700138809). A step held again
+	// after a decision has a row per hold, so the first hold's derived id is
+	// not the row ResolveStepMirror and StepMirrorExpiry act on; the
+	// approve/reject responses project this id as `approval_id`. found is false
+	// when the step has no row.
+	CurrentHoldID(ctx context.Context, orgID, tenantID, workflowID, stepID string) (approvalID string, found bool, err error)
 }
 
 // WorkflowExecutionTracker interface for unified execution tracking
@@ -397,9 +407,12 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		WorkflowName: workflow.WorkflowName,
 		Operation:    "created",
 		TenantID:     tenantID,
-		ClientID:     clientID,
-		UserID:       userID,
-		Metadata:     auditMeta,
+		// #4312: the org validated above and written to the workflow row;
+		// omitted here, every workflow_created row's org_id landed ''.
+		OrgID:    orgID,
+		ClientID: clientID,
+		UserID:   userID,
+		Metadata: auditMeta,
 	})
 
 	// Unified execution tracking — propagate concurrent limit errors
@@ -601,6 +614,46 @@ func (e *IdempotencyKeyMismatchError) Error() string {
 		e.WorkflowID, e.StepID, e.ExpectedKey, e.ReceivedKey)
 }
 
+// ApprovalHoldError refuses a re-evaluation of a step whose approval hold is
+// pending, rejected or expired (#4249, ADR-067 Decision 5). A re-evaluation (a
+// step gate that does not return the cached decision, a checkpoint resume) has
+// no approver, so it can never clear, overwrite or reset a hold, nor reopen
+// the workflow a rejection or an expiry aborted. The handlers map it to HTTP
+// 409 with APIError.Code == ErrorCodeApprovalHold.
+type ApprovalHoldError struct {
+	WorkflowID string
+	StepID     string
+	Status     ApprovalStatus
+}
+
+func (e *ApprovalHoldError) Error() string {
+	return fmt.Sprintf("step %s holds approval %s; a re-evaluation cannot clear it", e.StepID, e.Status)
+}
+
+// holdsApproval reports whether an approval status is a hold a re-evaluation
+// must not clear: pending (nobody has decided), rejected and expired (both
+// abort the workflow and are terminal not-approved). Approved is not a hold,
+// and a step with no approval status has none.
+func holdsApproval(status *ApprovalStatus) bool {
+	if status == nil {
+		return false
+	}
+	switch *status {
+	case ApprovalStatusPending, ApprovalStatusRejected, ApprovalStatusExpired:
+		return true
+	}
+	return false
+}
+
+// refuseHeldStep returns an *ApprovalHoldError when the step's existing row
+// holds an approval, nil otherwise (including when there is no row yet).
+func refuseHeldStep(existing *WorkflowStep, workflowID, stepID string) error {
+	if existing == nil || !holdsApproval(existing.ApprovalStatus) {
+		return nil
+	}
+	return &ApprovalHoldError{WorkflowID: workflowID, StepID: stepID, Status: *existing.ApprovalStatus}
+}
+
 // validateIdempotencyKeyMatch implements the strict rules in technical-docs/
 // WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §5. existing is the row loaded via
 // GetStepDecision (may be nil = no prior gate). suppliedKey is the key the
@@ -631,6 +684,115 @@ func validateIdempotencyKeyMatch(existing *WorkflowStep, suppliedKey, workflowID
 		ExpectedKey: storedKey,
 		ReceivedKey: suppliedKey,
 	}
+}
+
+// StepInputMismatchError is returned when an idempotent repeat /gate, or a
+// first /gate whose read-back found another call's decision, presents a
+// step_input or tool_context other than the one that decision was made over. The
+// handler maps it to HTTP 409 with APIError.Code == ErrorCodeStepInputMismatch.
+type StepInputMismatchError struct {
+	WorkflowID     string
+	StepID         string
+	IdempotencyKey string
+}
+
+func (e *StepInputMismatchError) Error() string {
+	return fmt.Sprintf("step content mismatch on %s/%s: the request presents step_input or tool_context other than the content the step's decision was made over", e.WorkflowID, e.StepID)
+}
+
+// validateStepInputMatch compares the stored step input with the one presented,
+// as values: both are encoded by contract.ExactJSON, an absent or null input
+// being {}. Input that cannot be compared is a mismatch.
+func validateStepInputMatch(existing *WorkflowStep, presented map[string]interface{}, workflowID, stepID string) error {
+	stored := map[string]interface{}{}
+	if raw := bytes.TrimSpace(existing.StepInput); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			stored = nil
+		}
+	}
+	if presented == nil {
+		presented = map[string]interface{}{}
+	}
+	a, errA := contract.ExactJSON(stored)
+	b, errB := contract.ExactJSON(presented)
+	if stored != nil && errA == nil && errB == nil && bytes.Equal(a, b) {
+		return nil
+	}
+	key := ""
+	if existing.IdempotencyKey != nil {
+		key = *existing.IdempotencyKey
+	}
+	return &StepInputMismatchError{WorkflowID: workflowID, StepID: stepID, IdempotencyKey: key}
+}
+
+// validateStepContentMatch compares everything a step presents as content with
+// what the stored decision was made over: the step input on the step row
+// (validateStepInputMatch) and the tool context on the step's gate checkpoint,
+// which every fresh gate upserts with the request's tool context. The tool
+// context is compared as values (contract.ExactJSON of its decoded form); an
+// absent tool context matches only an absent one, and a stored tool context
+// that cannot be decoded is a mismatch. A step whose gate checkpoint is missing
+// (its write is best-effort) matches only a request with no tool context, so a
+// tool step whose checkpoint was not written is refused rather than served:
+// fail-closed, and `retry_policy: reevaluate` decides it afresh (#4249 row
+// 5706152777).
+//
+// ON THE READ-BACK ARM (readBack) AN ABSENT STORED TOOL CONTEXT IS A MISMATCH
+// whatever the request presents. There the persisted decision is another
+// call's, and that call writes its checkpoint only after its own read-back, so
+// an absent checkpoint says nothing about the tool context the decision was made
+// over: a racer with no tool context must not read back a decision whose
+// checkpoint has not landed yet. The idempotent arm reads a step whose gate
+// finished, so there absent matches absent.
+func (s *Service) validateStepContentMatch(ctx context.Context, existing *WorkflowStep, req *StepGateRequest, workflowID, stepID string, readBack bool) error {
+	if err := validateStepInputMatch(existing, req.StepInput, workflowID, stepID); err != nil {
+		return err
+	}
+	checkpoints, err := s.repo.ListCheckpoints(ctx, workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to read the step's gate checkpoint to compare its tool context: %w", err)
+	}
+	var stored json.RawMessage
+	for i := range checkpoints {
+		if checkpoints[i].StepID == stepID {
+			stored = checkpoints[i].ToolContext
+			break
+		}
+	}
+	raw := bytes.TrimSpace(stored)
+	absentOnReadBack := readBack && (len(raw) == 0 || bytes.Equal(raw, []byte("null")))
+	if !absentOnReadBack && toolContextMatches(stored, req.ToolContext) {
+		return nil
+	}
+	key := ""
+	if existing.IdempotencyKey != nil {
+		key = *existing.IdempotencyKey
+	}
+	return &StepInputMismatchError{WorkflowID: workflowID, StepID: stepID, IdempotencyKey: key}
+}
+
+// toolContextMatches reports whether a stored tool context and a presented one
+// are the same value.
+func toolContextMatches(stored json.RawMessage, presented *ToolContext) bool {
+	raw := bytes.TrimSpace(stored)
+	storedAbsent := len(raw) == 0 || bytes.Equal(raw, []byte("null"))
+	if presented == nil || storedAbsent {
+		return presented == nil && storedAbsent
+	}
+	var storedValue, presentedValue any
+	if err := json.Unmarshal(raw, &storedValue); err != nil {
+		return false
+	}
+	encoded, err := json.Marshal(presented)
+	if err != nil {
+		return false
+	}
+	if err := json.Unmarshal(encoded, &presentedValue); err != nil {
+		return false
+	}
+	a, errA := contract.ExactJSON(storedValue)
+	b, errB := contract.ExactJSON(presentedValue)
+	return errA == nil && errB == nil && bytes.Equal(a, b)
 }
 
 // buildCachedResponse constructs a StepGateResponse from a previously persisted step decision.
@@ -757,6 +919,13 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	// instead of an error. GateOverride (MAP confirm/step modes) bypasses the cache
 	// because those modes have their own evaluator-level caching via sync.Map.
 	if retryPolicy == RetryPolicyIdempotent && req.GateOverride == nil && existing != nil {
+		// The cached decision was made over the step input it was gated with.
+		// A retry presenting other input is refused, never served that decision
+		// (#4249 row 5666236540), and neither is a retry with another tool
+		// context (row 5706152777).
+		if err := s.validateStepContentMatch(ctx, existing, req, workflowID, stepID, false); err != nil {
+			return nil, err
+		}
 		// Bump gate_count + snapshot last_decision before returning the cached
 		// response so retry_context reflects this call (Issue #1673 Phase 1).
 		bumped, bumpErr := s.repo.BumpGateCountCached(ctx, workflowID, stepID)
@@ -766,18 +935,33 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		return buildCachedResponse(bumped, workflowID, s.baseURL, req.IncludePriorOutput), nil
 	}
 
+	// Every call past this point evaluates afresh and upserts the step row,
+	// which would write a new decision and approval status over the hold
+	// (#4249). ADR-067 Decision 5: a re-evaluation has no approver, so it
+	// never clears a hold; it refuses, naming the hold. The refusal keys on the
+	// EXISTING row, not on the request, so a GateOverride (the MAP confirm and
+	// step holds are override-created) refuses exactly as reevaluate does.
+	// This is wider than the ADR's requirement-bearing holds: it covers every
+	// hold, typed requirement or policy or override.
+	if err := refuseHeldStep(existing, workflowID, stepID); err != nil {
+		return nil, err
+	}
+
 	// Check for pending approval on a DIFFERENT step.
-	// If the last step has a pending approval and the caller is requesting a
-	// gate for a new (different) step, block it — the workflow can't advance
-	// past a pending approval boundary. Same-step retries were already handled
-	// above via the cache lookup.
-	if len(workflow.Steps) > 0 {
-		lastStep := workflow.Steps[len(workflow.Steps)-1]
-		if lastStep.Decision == GateDecisionRequireApproval &&
-			lastStep.ApprovalStatus != nil &&
-			*lastStep.ApprovalStatus == ApprovalStatusPending &&
-			lastStep.StepID != stepID {
-			return nil, fmt.Errorf("workflow has pending approval for step %s", lastStep.StepID)
+	// If ANY step of the workflow holds a pending approval and the caller is
+	// requesting a gate for a different step, block it: the workflow can't
+	// advance past a pending approval boundary. Same-step retries were handled
+	// above via the cache lookup and the hold refusal.
+	//
+	// #4249: this read only the LAST row by step_index. A step's row keeps its
+	// index when it is re-gated, and an approved step can be held again by a
+	// re-evaluation (it is not a hold, so the refusal above lets it through), so
+	// an earlier step could be pending while a later row was last, and a gate
+	// for a new step then advanced past it.
+	for i := range workflow.Steps {
+		other := workflow.Steps[i]
+		if other.StepID != stepID && other.ApprovalStatus != nil && *other.ApprovalStatus == ApprovalStatusPending {
+			return nil, fmt.Errorf("workflow has pending approval for step %s", other.StepID)
 		}
 	}
 
@@ -882,6 +1066,16 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		return nil, fmt.Errorf("failed to read back step decision: %w", err)
 	}
 	if persisted != nil && persisted.Decision != evaluation.Decision {
+		// The persisted decision is another call's. Returning it is only sound
+		// when it was made over this call's content: a racing call with other
+		// input would otherwise be answered with a decision its own input never
+		// got (#4249 row 5666236540). The step row records the other content,
+		// so this call is refused rather than answered with its own evaluation.
+		if err := s.validateStepContentMatch(ctx, persisted, req, workflowID, stepID, true); err != nil {
+			s.logger.Printf("[WorkflowControl] Concurrent race with other step input: workflow=%s step=%s (refused)",
+				logutil.Sanitize(workflowID), logutil.Sanitize(stepID))
+			return nil, err
+		}
 		s.logger.Printf("[WorkflowControl] Concurrent race detected: workflow=%s step=%s evaluated=%s persisted=%s (returning persisted)",
 			logutil.Sanitize(workflowID), logutil.Sanitize(stepID),
 			logutil.Sanitize(string(evaluation.Decision)), logutil.Sanitize(string(persisted.Decision)))
@@ -1085,8 +1279,9 @@ func (s *Service) GetStep(ctx context.Context, workflowID, stepID, tenantID, org
 // step execution stores plan_id in workflow metadata so the plan-level HITL
 // endpoints (/api/v1/plans/{id}/steps/{step_id}/approve|reject) can find the
 // underlying WCP workflow and project rich responses (Issue #1677 Phase 1).
-// Returns ErrWorkflowNotFound when no WCP workflow matches — callers can then
-// fall back to the legacy in-memory MAP HITL flow.
+// Returns ErrWorkflowNotFound when no WCP workflow matches: no paused step
+// exists for the plan (the in-memory MAP HITL flow callers once fell back to is
+// retired, #4249 row 5774060413).
 func (s *Service) GetWorkflowByPlanID(ctx context.Context, planID, tenantID, orgID string) (*Workflow, error) {
 	workflow, err := s.repo.GetByPlanID(ctx, planID)
 	if err != nil {
@@ -1109,6 +1304,13 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID,
 	}
 	if !workflowBelongsTo(workflow, tenantID, orgID) {
 		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
+
+	// #4249: an approval never lands on a workflow that has ended. A rejection
+	// or an expiry aborts the workflow; approving a step of it afterwards would
+	// leave nothing rejected for a resume to see.
+	if workflow.IsTerminal() {
+		return fmt.Errorf("cannot approve a step of a workflow in terminal state: %s", workflow.Status)
 	}
 
 	step, err := s.repo.GetStep(ctx, workflowID, stepID)
@@ -1313,19 +1515,30 @@ func (s *Service) ResumeWorkflow(ctx context.Context, workflowID, tenantID, orgI
 		return fmt.Errorf("cannot resume workflow in terminal state: %s", workflow.Status)
 	}
 
-	// Check if there's a pending approval blocking the workflow
-	if len(workflow.Steps) > 0 {
-		lastStep := workflow.Steps[len(workflow.Steps)-1]
-		if lastStep.Decision == GateDecisionRequireApproval {
-			if lastStep.ApprovalStatus == nil || *lastStep.ApprovalStatus == ApprovalStatusPending {
-				return fmt.Errorf("workflow has pending approval for step %s", lastStep.StepID)
-			}
-			if *lastStep.ApprovalStatus == ApprovalStatusRejected {
-				return fmt.Errorf("workflow step %s was rejected", lastStep.StepID)
-			}
-			if *lastStep.ApprovalStatus == ApprovalStatusExpired {
-				return fmt.Errorf("workflow step %s expired (approval timed out)", lastStep.StepID)
-			}
+	// Check if there's a pending approval blocking the workflow.
+	//
+	// #4249: this read only the LAST row by step_index. A re-gated row keeps its
+	// index and an approved step can be held again, so ANY step's hold blocks a
+	// resume, as it blocks a gate for another step in StepGate.
+	for i := range workflow.Steps {
+		step := workflow.Steps[i]
+		if step.ApprovalStatus == nil {
+			continue
+		}
+		switch *step.ApprovalStatus {
+		case ApprovalStatusPending:
+			return fmt.Errorf("workflow has pending approval for step %s", step.StepID)
+		case ApprovalStatusRejected:
+			return fmt.Errorf("workflow step %s was rejected", step.StepID)
+		case ApprovalStatusExpired:
+			return fmt.Errorf("workflow step %s expired (approval timed out)", step.StepID)
+		}
+	}
+	// A require_approval row with no approval status is not written by any gate
+	// (it writes pending); it is refused as pending, as it was.
+	for i := range workflow.Steps {
+		if workflow.Steps[i].Decision == GateDecisionRequireApproval && workflow.Steps[i].ApprovalStatus == nil {
+			return fmt.Errorf("workflow has pending approval for step %s", workflow.Steps[i].StepID)
 		}
 	}
 
@@ -1362,6 +1575,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID, reason, tenantI
 		Operation:    "aborted",
 		Reason:       reason,
 		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID, // #4312
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
 	})
@@ -1418,6 +1632,7 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID, tenantID, or
 		WorkflowName: workflow.WorkflowName,
 		Operation:    "completed",
 		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID, // #4312
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
 		Metadata: map[string]interface{}{
@@ -1469,6 +1684,7 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID, reason, tenantID
 		Operation:    "failed",
 		Reason:       reason,
 		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID, // #4312
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
 	})
@@ -1637,6 +1853,7 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 		StepName:     stepName,
 		Operation:    "step_completed",
 		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID, // #4312
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
 		Metadata:     auditMeta,
@@ -1774,11 +1991,25 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 		return nil, fmt.Errorf("cannot resume workflow in %s state", workflow.Status)
 	}
 
-	// If workflow was aborted (e.g. after rejection), reset to in_progress for resume
+	// #4249 (ADR-067 Decision 5): a resume re-evaluates, so it never reopens a
+	// workflow a rejection or an expiry aborted, and never clears the hold on the
+	// step it resumes. Both refusals come BEFORE the status reset below: a
+	// refusal after it would leave an aborted workflow in_progress. The rejected
+	// or expired step is looked for on the WHOLE workflow, not only the
+	// checkpoint's step, because Enterprise resumes from any earlier checkpoint.
+	// A workflow aborted for any other reason (a failure) has no such step and
+	// resumes as before.
+	if err := refuseResumeOverHold(workflow, cp); err != nil {
+		return nil, err
+	}
+
+	// If workflow was aborted (e.g. after a failure), reset to in_progress for resume
+	reset := false
 	if workflow.Status == WorkflowStatusAborted {
 		if err := s.repo.UpdateStatus(ctx, workflow.WorkflowID, WorkflowStatusInProgress); err != nil {
 			return nil, fmt.Errorf("failed to reset workflow status: %w", err)
 		}
+		reset = true
 	}
 
 	// Reconstruct the full gate request from checkpoint context.
@@ -1816,6 +2047,15 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 		Email: email,
 	}, tenantID, cp.OrgID, resumeUserID, resumeClientID)
 	if err != nil {
+		// #4249: a resume that is refused leaves the workflow as it found it.
+		// A reset above is undone, so a refusal never leaves an aborted
+		// workflow in_progress.
+		if reset {
+			if restoreErr := s.repo.UpdateStatus(ctx, workflow.WorkflowID, WorkflowStatusAborted); restoreErr != nil {
+				s.logger.Printf("[WorkflowControl] Warning: resume of %s refused, and restoring its aborted status failed: %v",
+					logutil.Sanitize(workflow.WorkflowID), restoreErr)
+			}
+		}
 		return nil, fmt.Errorf("failed to re-evaluate step gate at checkpoint: %w", err)
 	}
 
@@ -1838,10 +2078,51 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 	}, nil
 }
 
+// refuseResumeOverHold returns an *ApprovalHoldError naming the first step of
+// the workflow whose approval was rejected or expired, else the checkpoint's
+// own step when it holds any approval, else nil. workflow.Steps is the row set
+// GetByID loaded.
+func refuseResumeOverHold(workflow *Workflow, cp *Checkpoint) error {
+	for i := range workflow.Steps {
+		status := workflow.Steps[i].ApprovalStatus
+		if status != nil && (*status == ApprovalStatusRejected || *status == ApprovalStatusExpired) {
+			return &ApprovalHoldError{WorkflowID: workflow.WorkflowID, StepID: workflow.Steps[i].StepID, Status: *status}
+		}
+	}
+	// An aborted workflow is reset before the re-evaluation, so ANY held step
+	// refuses here, not only the checkpoint's: the pending guard would refuse a
+	// resume from an earlier checkpoint only after the reset.
+	if workflow.Status == WorkflowStatusAborted {
+		for i := range workflow.Steps {
+			if holdsApproval(workflow.Steps[i].ApprovalStatus) {
+				return &ApprovalHoldError{WorkflowID: workflow.WorkflowID, StepID: workflow.Steps[i].StepID, Status: *workflow.Steps[i].ApprovalStatus}
+			}
+		}
+	}
+	for i := range workflow.Steps {
+		if workflow.Steps[i].StepID == cp.StepID {
+			return refuseHeldStep(&workflow.Steps[i], workflow.WorkflowID, cp.StepID)
+		}
+	}
+	return nil
+}
+
 // ErrApprovalExpired refuses an approval after its queue row's expiry. A
 // timed-out approval is a deny (ADR-065), and the queue row is the record of
 // when the approval times out (#4254).
 var ErrApprovalExpired = errors.New("approval_expired")
+
+// ErrApprovalHoldDecided is what a HITLMirrorResolver's StepMirrorExpiry wraps
+// when the step has queue holds but none is pending and the newest is decided
+// (#4249 row 5700138809). The step is held again on the workflow plane, but its
+// new hold was never queued - the gate's approval_enqueue reported why (a cap,
+// a database error, a refusal) - so there is no live hold an approval could
+// decide. The approval is refused as not pending (409 NOT_PENDING); it is never
+// judged by the decided hold's window. Until a hold is queued the step can only
+// be rejected: a re-evaluation of a pending step queues one only where the gate
+// admits it, and once #4349 refuses a pending step's re-evaluation nothing does
+// (recovery path: #4249 row 5704136803).
+var ErrApprovalHoldDecided = errors.New("the step's current approval hold was not queued (see the gate's approval_enqueue); its previous hold is already decided")
 
 // ErrApprovalStateUnreadable refuses an approval whose queue row's expiry could
 // not be read: approving without it could grant an approval that has already
@@ -1859,6 +2140,9 @@ func (s *Service) refuseLapsedApproval(ctx context.Context, workflow *Workflow, 
 		return nil
 	}
 	expiresAt, expired, found, err := s.hitlMirror.StepMirrorExpiry(ctx, workflow.OrgID, workflow.TenantID, workflow.WorkflowID, stepID)
+	if errors.Is(err, ErrApprovalHoldDecided) {
+		return fmt.Errorf("step is not pending approval on the approval queue: %w", err)
+	}
 	if err != nil {
 		s.logger.Printf("[WorkflowControl] Step approval refused: workflow=%s step=%s: the approval's expiry could not be read: %v",
 			logutil.Sanitize(workflow.WorkflowID), logutil.Sanitize(stepID), err)
@@ -1872,6 +2156,41 @@ func (s *Service) refuseLapsedApproval(ctx context.Context, workflow *Workflow, 
 			ErrApprovalExpired, stepID, expiresAt.UTC().Format(time.RFC3339))
 	}
 	return nil
+}
+
+// CurrentApprovalID is the `approval_id` an approve/reject response projects
+// for a step: the queue request id of the step's CURRENT hold (#4249 row
+// 5700138809). A step held again after a decision has a row per hold, so the
+// first hold's derived id would name a row the decision did not resolve.
+//
+// With no resolver, or no row for the step, it is the hold-1 id, which is what
+// every response projected before a step could be held twice. A lookup that
+// fails projects NO id rather than one that may name the wrong hold; the
+// decision itself has already landed and is not affected. The lookup is scoped
+// by the workflow row's organization and tenant.
+func (s *Service) CurrentApprovalID(ctx context.Context, workflowID, stepID, tenantID, orgID string) string {
+	if s.hitlMirror == nil {
+		return DeriveHITLApprovalID(workflowID, stepID)
+	}
+	// The queue's RLS scope comes from the workflow row, as the mirror's
+	// resolve does (resolveHITLMirror), never from the caller's headers: a
+	// header that authorizes after trimming would scope the lookup to no row.
+	workflow, err := s.repo.GetByID(ctx, workflowID)
+	if err != nil || !workflowBelongsTo(workflow, tenantID, orgID) {
+		s.logger.Printf("[WorkflowControl] approval id for workflow=%s step=%s not projected: the workflow could not be read for its scope",
+			logutil.Sanitize(workflowID), logutil.Sanitize(stepID))
+		return ""
+	}
+	id, found, err := s.hitlMirror.CurrentHoldID(ctx, workflow.OrgID, workflow.TenantID, workflowID, stepID)
+	if err != nil {
+		s.logger.Printf("[WorkflowControl] approval id for workflow=%s step=%s not projected: the current hold could not be read: %v",
+			logutil.Sanitize(workflowID), logutil.Sanitize(stepID), err)
+		return ""
+	}
+	if !found {
+		return DeriveHITLApprovalID(workflowID, stepID)
+	}
+	return id
 }
 
 // resolveHITLMirror is the single call site shape for the #3408 mirror

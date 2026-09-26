@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"axonflow/platform/decision/contract"
@@ -36,12 +35,16 @@ import (
 //   - the facts: the dynamic condition matcher's, through the fact producer -
 //     the environment, the risk floor, the caller-context arguments and each
 //     row's content verdict (PRD v11 §1.2 ruling R2);
-//   - NO CONTENT. This plane builds its policy request with no content field
-//     and never has, so it presents none and says so: EmptyContent tells the
-//     enforcer to state every registry detector known-false, and the producer's
-//     presentsNoContent does the same for the dynamic ones. Both are statements
-//     about the plane, not detectors run over an empty string. Presenting a
-//     step's input is the v11.1.0 follow-up (#4249).
+//   - THE STEP'S INPUT AS CONTENT (#4249 row 5666236540), whole: the step
+//     input, and with a tool context the tool's input after it, as the
+//     unescaped projection of their keys and values (step_content_projection.go)
+//     - the text a tool receives, never an encoding of it. It is the request's
+//     query, so the dynamic rows' content conditions and the risk floor read
+//     it. Only a step with no input at all presents EmptyContent, and then every
+//     detector's answer is determined. The request body is bounded and refused
+//     whole over the bound (workflow_control/request_body_cap.go), so no content
+//     reaches this seam cut. Content that cannot be presented is refused, never
+//     presented empty.
 //
 // TWO VOCABULARIES, DELIBERATELY NOT MERGED. The gate answers in
 // workflow_control's own terms - allow, block, require_approval - because its
@@ -105,28 +108,15 @@ func init() {
 // dynamic engine the process wired. Replaceable so a seam test can install its
 // own rows without a database.
 var (
-	wcpFactsOnce sync.Once
-	wcpFacts     *dynamicFactProducer
-	wcpFactsErr  error
+	// THE STEP GATE PRESENTS CONTENT (see the file comment): asStepPlane
+	// states the step's own context and sets no presentsNoContent, so every
+	// content row is evaluated over it.
+	newWCPFactProducer = func() (*dynamicFactProducer, error) { return wiredDynamicFactProducer(true) }
 
-	newWCPFactProducer = func() (*dynamicFactProducer, error) {
-		if dynamicPolicyEngine == nil {
-			return nil, errors.New("the dynamic policy engine is not wired, so this plane's facts cannot be produced")
-		}
-		p, err := newDynamicFactProducer(dynamicPolicyEngine.ListActivePoliciesForTenant)
-		if err != nil {
-			return nil, err
-		}
-		// THE STEP GATE PRESENTS NO CONTENT (see the file comment).
-		p.presentsNoContent = true
-		return p, nil
-	}
+	wcpFactSource = lazyFactSource[*dynamicFactProducer]{build: func() (*dynamicFactProducer, error) { return newWCPFactProducer() }}
 )
 
-func wcpFactProducer() (*dynamicFactProducer, error) {
-	wcpFactsOnce.Do(func() { wcpFacts, wcpFactsErr = newWCPFactProducer() })
-	return wcpFacts, wcpFactsErr
-}
+func wcpFactProducer() (*dynamicFactProducer, error) { return wcpFactSource.get() }
 
 // stepGateEvaluationFor decides one step on the anchored engine and answers in
 // the gate's own terms, with the PolicyEvaluationResult the enqueue path still
@@ -155,10 +145,17 @@ func stepGateDecide(ctx context.Context, step *workflow_control.StepGateContext,
 		// to decide the step for. Refused as the identity plane refuses an
 		// unverifiable subject, and never decided for anyone (R3 A-H1).
 		// Counted as the enforcer counts the same cause, "unavailable" (R3 B-L1).
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "unavailable", anchoredenforcer.CauseSubjectUnverifiable)
+		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, anchoredenforcer.CauseSubjectUnverifiable)
 		ids := []string{anchoredenforcer.CauseSubjectUnverifiable}
 		return stepGateBlocked(anchoredenforcer.CauseSubjectUnverifiable+": no credential subject was installed for this step", ids), blockedPolicyResult(ids), nil
 	}
+	query, err := stepGateContent(step)
+	if err != nil {
+		anchoredenforcer.FailClosed(wcpSeamScope, step.OrgID, anchoredenforcer.CauseRequest, err)
+		evaluation, result := stepGateUnavailable(anchoredenforcer.CauseRequest)
+		return evaluation, result, nil
+	}
+	req.Query = query
 	facts, err := stepGateFacts(ctx, req)
 	if err != nil {
 		anchoredenforcer.FailClosed(wcpSeamScope, step.OrgID, anchoredenforcer.CauseEvaluation, err)
@@ -172,32 +169,49 @@ func stepGateDecide(ctx context.Context, step *workflow_control.StepGateContext,
 	action, actionErr := actionForWCPStep(step.StepType)
 
 	v := enforcer.Evaluate(ctx, anchoredenforcer.Call{
-		Scope:     wcpSeamScope,
-		OrgID:     step.OrgID,
-		RequestID: req.RequestID,
-		Action:    action,
-		ActionErr: actionErr,
-		Subject:   subject,
-		// No content, stated as the plane's contract rather than computed.
-		Query:        "",
-		EmptyContent: true,
+		Scope:        wcpSeamScope,
+		OrgID:        step.OrgID,
+		RequestID:    req.RequestID,
+		Action:       action,
+		ActionErr:    actionErr,
+		Subject:      subject,
+		Query:        query,
+		EmptyContent: query == "",
 		Facts:        facts,
 	})
 
-	switch {
-	case v.Unavailable != "":
+	switch anchoredenforcer.Classify(v) {
+	case anchoredenforcer.ClassUnavailable:
 		// evaluate already logged the cause.
 		evaluation, result := stepGateUnavailable(v.Unavailable)
 		return evaluation, result, &v
-	case v.Refusal != nil:
+	case anchoredenforcer.ClassRefusal:
 		// The identity plane refused this step's subject. Named as every other
 		// plane names it: the admission's reason, then its detail.
 		reason := strings.ToLower(string(v.Refusal.Reason))
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", reason)
+		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		return stepGateBlocked(reason+": "+v.Refusal.Detail, []string{reason}), blockedPolicyResult([]string{reason}), &v
 	}
 	evaluation, result := stepGateFromDecision(v, dbRiskCalculator.CalculateRiskScore(req), time.Now())
 	return evaluation, result, &v
+}
+
+// stepGateContent is the content a step presents: the projection
+// (contentProjection) of its input, and with a tool context of the tool's input
+// after it. A step with no input presents "" - the one empty content. Content
+// that cannot be presented (a string that is not valid UTF-8, which only an
+// in-process caller can send: the HTTP decoder replaces such bytes) is
+// returned as an error, never presented empty.
+func stepGateContent(step *workflow_control.StepGateContext) (string, error) {
+	parts := []any{step.StepInput}
+	if step.ToolContext != nil {
+		parts = append(parts, step.ToolContext.ToolInput)
+	}
+	query, err := contentProjection(parts...)
+	if err != nil {
+		return "", fmt.Errorf("the step's input cannot be presented as content: %w", err)
+	}
+	return query, nil
 }
 
 // stepGateFacts produces the facts the dynamic rows governing this caller read.
@@ -221,16 +235,19 @@ func stepGateFacts(ctx context.Context, req OrchestratorRequest) (contract.Attri
 // approval carries no severity of its own, unlike the dynamic row's
 // require_approval config it replaces (#4254).
 func stepGateFromDecision(v anchoredenforcer.Verdict, riskScore float64, now time.Time) (*workflow_control.StepGateEvaluation, *PolicyEvaluationResult) {
+	// The decision half: the caller has answered a cause and a refusal, so only
+	// the decision is classed here.
 	dec := v.Decision
-	if dec == nil {
+	class := anchoredenforcer.ClassifyDecision(dec)
+	if class == anchoredenforcer.ClassNoDecision {
 		return stepGateUnavailable(anchoredenforcer.CauseEvaluation)
 	}
 	deciding := anchoredenforcer.DecidingPolicies(dec)
 	reason := string(dec.Reason)
 
-	switch dec.State {
-	case contract.StateAllow:
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "allow", reason)
+	switch class {
+	case anchoredenforcer.ClassAllow:
+		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictAllow, reason)
 		result := allowedPolicyResult(deciding)
 		result.RiskScore = riskScore
 		return &workflow_control.StepGateEvaluation{
@@ -241,7 +258,7 @@ func stepGateFromDecision(v anchoredenforcer.Verdict, riskScore float64, now tim
 			PoliciesMatched:   []workflow_control.PolicyMatch{},
 		}, result
 
-	case contract.StateChallenge:
+	case anchoredenforcer.ClassChallenge:
 		// A challenge carries its approval requirement. One that carries none is a
 		// decision the contract rejects, so it is withheld as an evaluation failure
 		// rather than held with no terms and the queue's default expiry (R3 B-L2).
@@ -256,10 +273,14 @@ func stepGateFromDecision(v anchoredenforcer.Verdict, riskScore float64, now tim
 		if dec.Approval != nil && !dec.Approval.ExpiresAt.IsZero() && !dec.Approval.ExpiresAt.After(now) {
 			return stepGateApprovalExpired(dec.DecisionID, dec.Approval.ExpiresAt)
 		}
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "needs_approval", reason)
+		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictNeedsApproval, reason)
 		blocking := anchoredenforcer.BlockingConstraint(dec.Determining, anchoredenforcer.UnknownConstraints(dec))
 		result := heldPolicyResult(deciding, blocking)
 		result.RiskScore = riskScore
+		// The severity the policy's author chose, when a mandatory approval
+		// states one; otherwise the queue derives it from the risk score
+		// (deriveSeverityFromResult, #4249 row 5667311128).
+		result.Severity = contract.ApprovalSeverity(dec.Obligations)
 		result.hold = &stepGateHold{decisionID: dec.DecisionID, approval: dec.Approval}
 		return &workflow_control.StepGateEvaluation{
 			Decision:          workflow_control.GateDecisionRequireApproval,
@@ -273,11 +294,11 @@ func stepGateFromDecision(v anchoredenforcer.Verdict, riskScore float64, now tim
 		// DENY and ERROR both withhold the step. An ERROR is a constraint the
 		// engine could not evaluate, which is not a permit: unknown input never
 		// becomes an admission (ADR-065 invariant 4).
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", reason)
+		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		unknown := anchoredenforcer.UnknownConstraints(dec)
 		detail := "Step blocked by policy"
 		if len(unknown) > 0 && v.Act != nil {
-			if reasons := anchoredenforcer.UnknownConstraintReasons(v.Act, unknown); len(reasons) > 0 {
+			if reasons := anchoredenforcer.UnknownConstraintReasons(v.Act, unknown, v.IdentityDetail); len(reasons) > 0 {
 				detail = strings.Join(reasons, "; ")
 			}
 		}
@@ -293,7 +314,7 @@ func stepGateFromDecision(v anchoredenforcer.Verdict, riskScore float64, now tim
 // stepGateUnavailable is the fail-closed answer: the step is withheld and the
 // cause is named, never admitted because the plane could not decide.
 func stepGateUnavailable(cause string) (*workflow_control.StepGateEvaluation, *PolicyEvaluationResult) {
-	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "unavailable", cause)
+	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, cause)
 	message := anchoredenforcer.CauseMessages[cause]
 	if message == "" {
 		message = cause
@@ -313,7 +334,7 @@ func stepGateUnavailable(cause string) (*workflow_control.StepGateEvaluation, *P
 // convention other routes share and that the audit row and the step-gate
 // runtime suite key off, so the move to the anchored engine does not rename it.
 func stepGateSegmentResolutionFailed() (*workflow_control.StepGateEvaluation, *PolicyEvaluationResult) {
-	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "unavailable", anchoredenforcer.CauseEvaluation)
+	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, anchoredenforcer.CauseEvaluation)
 	ids := []string{"segment_resolution_failed"}
 	result := blockedPolicyResult(ids)
 	result.EvaluationError = true
@@ -396,7 +417,7 @@ func heldPolicyResult(ids []string, blocking string) *PolicyEvaluationResult {
 // and its audit row say which approval lapsed and when.
 func stepGateApprovalExpired(decisionID string, expiresAt time.Time) (*workflow_control.StepGateEvaluation, *PolicyEvaluationResult) {
 	reason := string(contract.ReasonApprovalExpired)
-	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", reason)
+	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 	ids := []string{reason}
 	return stepGateBlocked(approvalExpiredReason(decisionID, expiresAt), ids), blockedPolicyResult(ids)
 }

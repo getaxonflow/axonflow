@@ -40,7 +40,7 @@ func TestTheRoutesDryRunLeavesItsTrustAloneAndSignsTheSystemRootWithItsOwnKey(t 
 		t.Fatalf("publication returned no digest: %s", rr.Body.String())
 	}
 	rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-		typedAuthoringActivateRequest{Digest: digest, Reason: "first activation"}, gatewayHeaders())
+		typedAuthoringActivateRequest{Digest: digest, Reason: "first activation", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, communityDocument())}, gatewayHeaders())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("activate: status=%d body=%s", rr.Code, rr.Body.String())
 	}

@@ -61,9 +61,8 @@ export USER_TOKEN=<jwt>
 # Tenant header (set to whatever tenant owns the workflows you're testing)
 export TENANT_ID=tenant-demo
 
-# The orchestrator must have HITL enabled:
-#   AXONFLOW_HITL_ENABLED=true
-# and the process should have access to a dynamic policy that matches the
+# AXONFLOW_HITL_ENABLED is not needed (ignored since v11.1.0, #4382).
+# The process should have access to a dynamic policy that matches the
 # demo step (e.g., a policy that fires require_approval on
 # step_input.amount_eur > 1000). A starter policy is documented below.
 ```
