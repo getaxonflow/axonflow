@@ -345,7 +345,7 @@ func enfInstallSeamWith(t *testing.T, docs activeDocumentSource, vocabulary func
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := newAnchoredEnforcer(docs, vocabulary, boot.Admitter, boot.Registry.Epoch)
+	e, err := newAnchoredEnforcer(docs, vocabulary, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 	if err != nil {
 		t.Fatal(err)
 	}

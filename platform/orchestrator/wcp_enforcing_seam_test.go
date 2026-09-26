@@ -70,13 +70,12 @@ func withStepGateFacts(t *testing.T, segmentsResolve bool, rows ...DynamicPolicy
 	t.Helper()
 	previous := newWCPFactProducer
 	newWCPFactProducer = func() (*dynamicFactProducer, error) {
-		p, err := newDynamicFactProducer(func(string, []string) []DynamicPolicy { return rows })
+		p, err := newDynamicFactProducer(fixedFactRows(rows))
 		if err != nil {
 			return nil, err
 		}
 		p.segments = func(context.Context, string, string) ([]string, bool) { return nil, segmentsResolve }
-		p.presentsNoContent = true
-		return p, nil
+		return asStepPlane(p), nil
 	}
 	resetWCPFacts()
 	t.Cleanup(func() {
@@ -86,8 +85,7 @@ func withStepGateFacts(t *testing.T, segmentsResolve bool, rows ...DynamicPolicy
 }
 
 func resetWCPFacts() {
-	wcpFactsOnce = sync.Once{}
-	wcpFacts, wcpFactsErr = nil, nil
+	wcpFactSource.reset()
 }
 
 // stepGateVerdict is the engine's decision in state. A challenge carries its
@@ -304,11 +302,11 @@ func TestASegmentResolutionOutageWithholdsTheStepNamingIt(t *testing.T) {
 	}
 }
 
-// The step gate's PRODUCTION fact producer presents no content, and it is not
-// built without a dynamic engine to read rows from. Every other seam test
-// overrides newWCPFactProducer, so this is the one test that holds the plane's
-// contract where a serving process takes it.
-func TestTheStepGatesProductionProducerPresentsNoContent(t *testing.T) {
+// The step gate's PRODUCTION fact producer presents content (#4249 row
+// 5666236540), and it is not built without a dynamic engine to read rows from.
+// Every other seam test overrides newWCPFactProducer, so this is the one test
+// that holds the plane's contract where a serving process takes it.
+func TestTheStepGatesProductionProducerPresentsContent(t *testing.T) {
 	previous := dynamicPolicyEngine
 	t.Cleanup(func() { dynamicPolicyEngine = previous })
 
@@ -322,7 +320,7 @@ func TestTheStepGatesProductionProducerPresentsNoContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the step gate's production fact producer: %v", err)
 	}
-	if !p.presentsNoContent {
-		t.Fatal("the step gate's production fact producer does not state that the plane presents no content")
+	if p.presentsNoContent {
+		t.Fatal("the step gate's production fact producer states that the plane presents no content; it presents the step's input")
 	}
 }

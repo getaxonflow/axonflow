@@ -24,6 +24,7 @@ package orchestrator
 //     segment_resolution_failed, the id every route answers that outage by.
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -46,17 +47,26 @@ func stepGateCtxFor(orgID, email string) *workflow_control.StepGateContext {
 }
 
 // segmentRowsProbe records the organization and segment set the dynamic rows
-// were selected with, which is what resolution feeds.
+// were selected with, which is what resolution feeds, and whether they were
+// selected for every segment (membership not established, ADR-067 step 1b).
 type segmentRowsProbe struct {
-	calls    int
-	orgID    string
-	segments []string
+	calls        int
+	orgID        string
+	segments     []string
+	everySegment bool
 }
 
-func (p *segmentRowsProbe) rows(orgID string, segmentIDs []string) []DynamicPolicy {
+func (p *segmentRowsProbe) ListActivePoliciesForTenant(orgID string, segmentIDs []string) []DynamicPolicy {
 	p.calls++
 	p.orgID = orgID
 	p.segments = append([]string(nil), segmentIDs...)
+	return nil
+}
+
+func (p *segmentRowsProbe) ListActivePoliciesForOrgInEverySegment(orgID string) []DynamicPolicy {
+	p.calls++
+	p.orgID = orgID
+	p.everySegment = true
 	return nil
 }
 
@@ -67,12 +77,11 @@ func withStepGateResolvingProducer(t *testing.T, probe *segmentRowsProbe) {
 	t.Helper()
 	previous := newWCPFactProducer
 	newWCPFactProducer = func() (*dynamicFactProducer, error) {
-		p, err := newDynamicFactProducer(probe.rows)
+		p, err := newDynamicFactProducer(probe)
 		if err != nil {
 			return nil, err
 		}
-		p.presentsNoContent = true
-		return p, nil
+		return asStepPlane(p), nil
 	}
 	resetWCPFacts()
 	t.Cleanup(func() {
@@ -105,14 +114,16 @@ func TestWCPPolicyAdapter_ConvertToOrchestratorRequest_ThreadsOrgAndEmail(t *tes
 }
 
 // The caller's organization and verified email reach segment resolution, and the
-// segment set it returns is the one the dynamic rows are selected with.
+// segment set it returns is the one the dynamic rows are selected with. "Verified"
+// is the agent's marker, carried on the context requireInternalProxyAuth stamps
+// (ADR-067 step 1b): an established caller selects by segment exactly as before.
 func TestTheStepGateSelectsDynamicRowsWithTheCallersResolvedSegments(t *testing.T) {
 	withStepGateEngine(t, allowedStepVerdict())
 	probe := &segmentRowsProbe{}
 	withStepGateResolvingProducer(t, probe)
 	withOrchestratorSegmentResolver(t, resolverReturning("seg-finance"))
 
-	NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", "alice@example.com"))
+	NewWCPPolicyAdapter().EvaluateStepGate(withIdentityEstablished(wcpSubjectContext(), true), stepGateCtxFor("org-shared", "alice@example.com"))
 
 	if probe.calls == 0 {
 		t.Fatal("PREMISE: the dynamic rows were never selected, so the segment set they were selected with proves nothing")
@@ -120,8 +131,42 @@ func TestTheStepGateSelectsDynamicRowsWithTheCallersResolvedSegments(t *testing.
 	if probe.orgID != "org-shared" {
 		t.Errorf("rows selected for organization %q; want org-shared", probe.orgID)
 	}
-	if !reflect.DeepEqual(probe.segments, []string{"seg-finance"}) {
-		t.Errorf("rows selected with segments %v; want [seg-finance], the set the resolver returned", probe.segments)
+	if !reflect.DeepEqual(probe.segments, []string{"seg-finance"}) || probe.everySegment {
+		t.Errorf("rows selected with segments %v (every segment: %v); want [seg-finance], the set the resolver returned", probe.segments, probe.everySegment)
+	}
+}
+
+// ADR-067 step 1b on the step gate: the same email WITHOUT the agent's
+// validated_token marker is not established, so the resolver is never asked
+// and the rows are selected for every segment. The engine's decision is
+// unchanged (the organization's dynamic rows author no verdict on v11).
+func TestAStepGateHeaderIdentitySelectsEverySegmentsRowsWithoutResolving(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  func() context.Context
+	}{
+		{"no marker on the context", wcpSubjectContext},
+		{"the marker read as not established", func() context.Context { return withIdentityEstablished(wcpSubjectContext(), false) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withStepGateEngine(t, allowedStepVerdict())
+			probe := &segmentRowsProbe{}
+			withStepGateResolvingProducer(t, probe)
+			fake := resolverReturning("seg-finance")
+			withOrchestratorSegmentResolver(t, fake)
+
+			ev := NewWCPPolicyAdapter().EvaluateStepGate(tc.ctx(), stepGateCtxFor("org-shared", "alice@example.com"))
+
+			if fake.callCount() != 0 {
+				t.Errorf("the resolver was called %d times for an email no validated token supplied", fake.callCount())
+			}
+			if probe.calls == 0 || !probe.everySegment || probe.orgID != "org-shared" {
+				t.Errorf("rows selected calls=%d every=%v org=%q; want the organization's rows in every segment", probe.calls, probe.everySegment, probe.orgID)
+			}
+			if ev.Decision != workflow_control.GateDecisionAllow {
+				t.Errorf("decision = %q (%s); want the engine's allow, unchanged", ev.Decision, ev.Reason)
+			}
+		})
 	}
 }
 
@@ -159,7 +204,7 @@ func TestWCPPolicyAdapter_EvaluateStepGate_ResolverError_FailsClosed(t *testing.
 	withStepGateResolvingProducer(t, &segmentRowsProbe{})
 	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("scim query failed")})
 
-	result := NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", "alice@example.com"))
+	result := NewWCPPolicyAdapter().EvaluateStepGate(withIdentityEstablished(wcpSubjectContext(), true), stepGateCtxFor("org-shared", "alice@example.com"))
 
 	if result.Decision != workflow_control.GateDecisionBlock {
 		t.Fatalf("a segment resolution error must DENY the step gate (fail-closed, ADR-060 §Fail-closed), got decision=%s", result.Decision)
@@ -171,4 +216,17 @@ func TestWCPPolicyAdapter_EvaluateStepGate_ResolverError_FailsClosed(t *testing.
 		t.Errorf("the enforcer was called %d times although which rows govern the caller is unknown", n)
 	}
 	_ = contract.StateAllow // the engine double's verdict is irrelevant here: it must not be consulted
+
+	// NOT ESTABLISHED: the email is never resolved, so an outage of the
+	// resolver cannot mask the not-established outcome as
+	// segment_resolution_failed; the step is decided over every segment's rows.
+	d = withStepGateEngine(t, allowedStepVerdict())
+	probe := &segmentRowsProbe{}
+	withStepGateResolvingProducer(t, probe)
+	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("scim query failed")})
+	result = NewWCPPolicyAdapter().EvaluateStepGate(wcpSubjectContext(), stepGateCtxFor("org-shared", "alice@example.com"))
+	if result.Decision != workflow_control.GateDecisionAllow || !probe.everySegment || d.callCount() != 1 {
+		t.Errorf("not established with a failing resolver: decision=%s every=%v engine calls=%d; want decided over every segment's rows",
+			result.Decision, probe.everySegment, d.callCount())
+	}
 }

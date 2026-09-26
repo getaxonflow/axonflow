@@ -411,17 +411,31 @@ func overlap(narrative, notes string) float64 {
 // in the same commit as the registry change, and say in the PR body which
 // direction moved and why.
 const (
+	// (STALE, kept for its citation: 86 was #3907's count, superseded twice -
+	// d24123be34 (#4139) 86 -> 85 and e3de250302 (#4243) 85 -> 84.)
 	// 86 since #3907: decision.typed_authoring, the ADR-065 authoring control
 	// plane and its two transports. UP by one, and the direction is the point -
 	// it is a capability that existed in the code and had no row, not a new
 	// feature. Neither the /health gap count nor the matrix-disagreement count
 	// moves with it.
-	pinnedCapabilities        = 84
+	//
+	// 85 since the v11.1.0 train's Step 0b: governance.approval_hold, the
+	// pending-approval header contract #4375 (#4370) shipped with no route of
+	// its own. UP by one on capabilities, on agent /health entries (31) and on
+	// edition-blind adverts (6): it is Enterprise-only and /health carries no
+	// build constraint, so its description states the Community answer.
+	//
+	// 86 at v11.1.0 release execution, the same Step 0b class:
+	// governance.mcp_parameter_redaction_handback, the field_redact@2
+	// hand-back #4427 (#4264) shipped as a schema version of the handshake
+	// vocabulary with no route of its own. UP by one on the same three counts
+	// (agent /health entries 32, edition-blind adverts 7) for the same reason.
+	pinnedCapabilities        = 86
 	pinnedFamilies            = 20
 	pinnedMatrixDisagreements = 16
 	pinnedHealthGaps          = 9
-	pinnedEditionBlindAdverts = 5
-	pinnedAgentHealthEntries  = 30
+	pinnedEditionBlindAdverts = 7
+	pinnedAgentHealthEntries  = 32
 	pinnedOrchHealthEntries   = 17
 	// Round 8 moved this from 1 to 8, in the direction that costs coverage
 	// rather than invents it. Inverting the receiver default means a package

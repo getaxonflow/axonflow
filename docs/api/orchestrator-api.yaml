@@ -51,7 +51,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.0.0
+  version: 11.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -408,7 +408,15 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '403':
-          description: Blocked by policy
+          description: |
+            Blocked by policy. When media was submitted the refusal carries
+            `media_analysis` (per item `has_pii`, `pii_types`, `scanned`,
+            never the extracted text), so a caller can tell a refusal on a
+            finding (for example `has_pii: true` beside `scanned` containing
+            `pii`) from one on a signal nothing measured (its capability
+            absent from `scanned`, `unknown_constraint` in
+            `policy_info.required_actions`). Before #4300 a refusal carried
+            no `media_analysis`.
           content:
             application/json:
               schema:
@@ -445,6 +453,21 @@ paths:
         2. **Planning**: Creates workflow with dependencies
         3. **Execution**: Runs tasks (parallel when possible)
         4. **Aggregation**: Synthesizes results into final response
+
+        ## Provider routing
+        The organization's route rows (`allowed_providers`,
+        `preferred_provider`) bind every LLM call a plan makes, as they bind
+        `/api/v1/process` (#4249): the two calls that generate the plan and
+        each `llm-call` step when it runs, decided over the prompt the call
+        sends. When several applying rows name a `preferred_provider`, the last
+        applying row in evaluation order (priority descending, then newest
+        first) wins it; `allowed_providers` intersect across every applying row.
+        Rows that permit no provider refuse the call before any provider
+        is called (`no_compliant_provider`, or `segment_not_established`), and a
+        route that cannot be established refuses it
+        (`segment_resolution_failed`, `decision_enforcement_unavailable`).
+        Plan generation answers such a refusal 403; a refused step fails with
+        the reason.
 
         ## Execution Modes
         - `auto`: Automatically determines parallel/sequential (recommended)
@@ -548,6 +571,20 @@ paths:
               example:
                 success: false
                 error: "Authentication required: requests must be routed through AxonFlow Agent"
+        '403':
+          description: |
+            The organization's route rows refuse the planner's LLM call, or the
+            route could not be established (#4249). No provider was called; the
+            `error` names the reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Planning refused: no_compliant_provider: the organization's route rows permit no provider for this call"
+        '413':
+          $ref: '#/components/responses/StepRequestTooLargeFlat'
         '503':
           description: Planning engine unavailable
           content:
@@ -566,6 +603,18 @@ paths:
         The execution mode is taken from the **stored plan** (not this request):
         `auto`, `parallel`, `sequential`, `balanced`, or the Enterprise-only
         HITL modes `confirm` / `step`.
+
+        Where a multi-agent step is decided - in `confirm` and `step` mode, and in
+        the other modes only when the orchestrator runs with
+        `AXONFLOW_HITL_ENABLED=true` outside Community (otherwise no step is
+        decided per step) - it is decided over its content as text: its
+        `prompt`, `statement` and `parameters` as written, then what its
+        processor sends (the rendered prompt of an `llm-call`; the statement and
+        built parameters of a `connector-call`) or, for any other step type, the
+        input it is passed. In `confirm` and `step` mode a step's hold asks no
+        policy; each step is decided when it runs (`POST
+        /api/v1/plan/{id}/resume`), for the credential that resumed the plan, in
+        the plan's organization, and anything but an allow fails the step.
 
         **Requires authentication**: requests must be routed through the AxonFlow
         Agent (`user.id` must be set). The `X-Tenant-ID` / `X-Org-ID` headers set
@@ -595,33 +644,16 @@ paths:
         '200':
           description: |
             Plan executed successfully. Body is a PlanResponse for normal
-            execution. HITL `confirm`/`step` dispatch returns an inline object
-            (`plan_id`, `workflow_id`, `status`, `current_step`, `total_steps`,
-            `step_name`, `approval_info`) instead.
+            execution, in which every step was decided by the organization's
+            policy before it ran, on every deployment (#4382; since v11.1.0
+            `AXONFLOW_HITL_ENABLED` is ignored). HITL `confirm`/`step`
+            dispatch returns an inline object (`plan_id`, `workflow_id`,
+            `status`, `current_step`, `total_steps`, `step_name`,
+            `approval_info`) instead.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PlanResponse'
-        '202':
-          description: Execution paused awaiting HITL approval
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  plan_id:
-                    type: string
-                  execution_id:
-                    type: string
-                  status:
-                    type: string
-                    example: "paused"
-                  paused_at_step:
-                    type: string
-                  paused_reason:
-                    type: string
-                  approval_id:
-                    type: string
         '400':
           description: Invalid request body or missing context.plan_id
           content:
@@ -635,11 +667,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Policy blocked execution, or HITL confirm/step mode requested in Community edition
+          description: |
+            Refused. Policy blocked the plan at its request-level decision, or
+            HITL confirm/step mode was requested in Community edition (a
+            `PlanResponse` or flat error body).
+
+            Or a step was refused before it ran (#4382), in `auto`,
+            `sequential`, `parallel` or `balanced` mode: the body is a
+            `MultiAgentStepRefusal` (`execution_blocked`;
+            `approval_requires_durable_record` for a step that requires an
+            approval, which only `confirm` and `step` mode can hold; or
+            `route_refused` for an `llm-call` step whose call the
+            organization's route rows refuse, naming the route's reason as
+            `policy`, #4249). The plan is marked failed. A refusal is not a
+            failure: `soft_failure_tolerance` does not absorb it. In
+            `parallel` and `balanced` mode a group of steps is decided whole
+            before any of them starts, so a step DECISION's refusal runs none
+            of the group. A `route_refused` is made at the step's LLM call,
+            not at the decision: a sibling in the same group whose call the
+            route rows permit may already have reached its provider, and the
+            steps after the group do not run.
+
+            Before v11.1.0 a step was decided only when
+            `AXONFLOW_HITL_ENABLED` was `true`, and a paused step answered
+            `202`; that response no longer exists.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PlanResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/PlanResponse'
+                  - $ref: '#/components/schemas/MultiAgentStepRefusal'
         '404':
           description: Plan not found
           content:
@@ -658,6 +715,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/StepRequestTooLargeFlat'
         '429':
           description: Concurrent plan-execution limit reached
           content:
@@ -674,7 +733,10 @@ paths:
                       message:
                         type: string
         '503':
-          description: Workflow engine or plan storage unavailable
+          description: >-
+            Workflow engine or plan storage unavailable, or (outside
+            confirm/step mode) the workflow engine decides no step because its
+            step gate is not wired; the plan is marked failed.
           content:
             application/json:
               schema:
@@ -869,6 +931,8 @@ paths:
               example:
                 success: false
                 error: "Version conflict: expected version 1, current version is 2"
+        '413':
+          $ref: '#/components/responses/StepRequestTooLargeFlat'
 
   /api/v1/plan/{id}/cancel:
     post:
@@ -981,6 +1045,65 @@ paths:
         Set `approved: true` to approve and execute the next step,
         or `approved: false` to reject and abort the plan.
 
+        The resume acts on the workflow bound to the plan when it entered
+        `confirm` or `step` mode (#4249), read under the caller's tenant (the
+        tenant that executed the plan). A plan that entered its mode before
+        that binding existed is resumed through the workflow named for its mode
+        under the plan's tenant, and refused when that selection is not the one
+        live workflow.
+
+        The plan's steps run in order (#4249). The step that runs is the
+        plan's NEXT step: the lowest-numbered step that has not run. The resume
+        approves (`approved: true`) or rejects (`approved: false`) that step's
+        pending gate and no other; a step already approved through the
+        plan-level approve route runs. A later step's gate, whoever wrote it,
+        is read only at that step's turn. In `step` mode the first resume runs
+        the ungated first step, and records it before it runs (a
+        `workflow_steps` row with decision `allow`, no approval status and the
+        reason `step_mode_first_step_ungated`), so a later gate cannot make the
+        resume skip it. A step-mode plan in flight at the upgrade to this
+        release has that record written for it (reason
+        `backfilled_at_upgrade`), at the orchestrator's start or at its next
+        resume; until the upgrade's migration 187 has run, such a plan's resume
+        answers 409.
+
+        A resume never runs a step past a gate that is not approved. It answers
+        403 when the caller is not of the plan's tenant and cannot see the
+        plan's workflow; 404 when the caller is of the plan's tenant and the
+        workflow is not visible to it (for example, another tenant of the
+        organization executed the plan, or the workflow was deleted); and 409,
+        running nothing, when:
+        - the plan is not in `confirm` or `step` mode;
+        - the plan's workflow is still being set up: it was marked executing
+          and its executor has not returned. An executor that fails fails the
+          plan; a plan left in this state (for example after a process stop)
+          is ended with `POST /api/v1/plan/{id}/cancel`;
+        - the plan's workflow has ended (a rejection or an expiry aborts it);
+          `approved: false` then fails the plan instead;
+        - the plan's next step's gate is pending (the error names the step to
+          approve), has no approval, or was rejected or expired, or its
+          approval is refused because it is no longer pending;
+        - a `confirm` workflow has no gate row, or no gate row names the plan's
+          next step;
+        - every step of the plan has already run;
+        - the plan's first step is already recorded by a concurrent resume;
+        - (a `step` plan in flight at the upgrade) whether its first step ran
+          cannot be decided yet, because migration 187 has not run;
+        - the pending step's approval has expired (`approval_expired`), as the
+          workflow step approve answers it;
+        - (a plan without a binding) a workflow named for the plan has ended,
+          or more than one is running.
+
+        It answers 503, approving and running nothing, when the approval's
+        state cannot be read (`approval_state_unreadable`), as the workflow
+        step approve answers it.
+
+        It answers 500 when a step ran but its completion could not be
+        recorded; the step's row still reads not completed, so the next resume
+        runs that step again (at-least-once). A step-mode first step whose
+        record was written but whose run never finished is run by the next
+        resume the same way.
+
         **Requires:** Enterprise license.
       operationId: resumePlan
       parameters:
@@ -1025,7 +1148,14 @@ paths:
                     result:
                       summary: "Trip booked successfully"
         '403':
-          description: Enterprise license required
+          description: |
+            Enterprise license required; or (#4249) the caller's tenant cannot
+            see the plan's workflow (`this plan belongs to another tenant`); or
+            the resumed step was withheld by policy (`error` begins "Step
+            withheld by policy"): the step is decided when it runs, and
+            anything but an allow fails it and the plan. A policy approval
+            requirement on the step is refused as `approval_required` rather
+            than held again (#4249).
           content:
             application/json:
               schema:
@@ -1035,6 +1165,30 @@ paths:
                 error: "Confirm/step execution modes require an Enterprise license"
         '404':
           description: Plan not found or not awaiting approval
+        '409':
+          description: |
+            The resume runs nothing (#4249). The `error` names why; the cases
+            are listed in the operation's description.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "step step_0_fetch holds approval none; the plan resume does not run a step past an unapproved gate"
+        '413':
+          $ref: '#/components/responses/StepRequestTooLargeFlat'
+        '503':
+          description: |
+            The approval's state could not be read, so nothing is approved and
+            nothing runs (`approval_state_unreadable`, #4249).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Failed to approve step: approval_state_unreadable: the approval's expiry could not be read, so the step is not approved (fail-closed)"
 
   /api/v1/plan/{id}/rollback/{version}:
     post:
@@ -2433,7 +2587,9 @@ paths:
                     items:
                       $ref: '#/components/schemas/AuthoringFinding'
         '400':
-          description: The request carries no document, or one that cannot be parsed
+          description: |
+            The request carries no document, or one that cannot be parsed. From
+            v11.1.0 the body is decoded strictly (#4371): a member the request or document does not declare, a second JSON value, or a `binds_on` that is `null` is refused here (`reason: malformed_request`) rather than ignored.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '503':
@@ -2500,7 +2656,9 @@ paths:
                       produced. The publication stands; this says why the omissions are not
                       reported.
         '400':
-          description: Malformed request, or a document carrying no document_id
+          description: |
+            Malformed request, or a document carrying no document_id. From
+            v11.1.0 the body is decoded strictly (#4371): a member the request or document does not declare, a second JSON value, or a `binds_on` that is `null` is refused here (`reason: malformed_request`) rather than ignored.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '402':
@@ -2530,6 +2688,25 @@ paths:
                       $ref: '#/components/schemas/AuthoringFinding'
         '429':
           description: This process holds its cap of admitted artifacts for this organization
+        '500':
+          description: |
+            `workspace_unavailable` (since v11.1.0, #4283; it was `503`): this
+            organization's typed-authoring workspace could not be built on this
+            process (a signing key, the authoring plane or an activation
+            authority could not be built, or the build did not complete), and a
+            retry will not change that. The cause is logged, never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [workspace_unavailable]
+                  error:
+                    type: string
         '503':
           $ref: '#/components/responses/TypedAuthoringUnavailable'
 
@@ -2543,6 +2720,19 @@ paths:
         names the caller; that is required on every edition, including those
         with no separation of duties, because an unattributed change of enforced
         policy is what the audit trail exists to prevent.
+
+        A published organization document REPLACES the shipped organization
+        template, so activating one that omits template policies, or carries one
+        under its id but changed (its body, or the schema of an attribute it
+        reads), stops those controls deciding as shipped for the organization.
+        Such an activation is refused (409, `code:
+        TEMPLATE_OMISSIONS_UNACKNOWLEDGED`) unless `acknowledge_template_omissions`
+        names exactly those template policy ids - the union of the publication's
+        `template_omissions.omitted` and `template_omissions.modified`. An edit is
+        not judged tighter or looser: a changed name or description is reported
+        and acknowledged like a changed condition. `GET
+        /api/v1/typed-policies/template` returns the template to seed a document
+        from.
       operationId: activateTypedPolicyDigest
       parameters:
         - $ref: '#/components/parameters/TypedAuthoringOrg'
@@ -2559,6 +2749,20 @@ paths:
                   type: string
                 reason:
                   type: string
+                acknowledge_template_omissions:
+                  type: array
+                  items:
+                    type: string
+                  description: |
+                    The organization-template policy ids this document omits or carries
+                    changed, which stop deciding as shipped for the organization when it is
+                    activated. Required, and it must EQUAL the union of the document's
+                    `template_omissions.omitted` and `template_omissions.modified` as a set,
+                    whenever that union is not empty; absent or empty when the document
+                    carries the template as shipped. Each id once, none empty, and a
+                    `reason` that does not itself contain `acknowledged template omissions:`
+                    (otherwise 400). The accepted list is recorded in the activation's
+                    `reason` as `[acknowledged template omissions: a, b]`.
       responses:
         '200':
           description: Activated
@@ -2581,14 +2785,87 @@ paths:
                       remains 200 and this says why the omissions are not reported. Where the
                       activated artifact could not be read back it is a fixed sentence, and the
                       store's own error is logged rather than returned.
+        '400':
+          description: |
+            Malformed request (`reason: malformed_request`): a body that does not
+            decode, an `acknowledge_template_omissions` list with an empty id or an
+            id named twice, or a `reason` that itself contains the note an
+            acknowledgement is recorded under (`acknowledged template omissions:`,
+            compared ignoring case and spacing). From v11.1.0 the body is decoded
+            strictly (#4371): a member the request does not declare, or a second
+            JSON value, is refused here rather than ignored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [malformed_request]
+                  error:
+                    type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
           description: |
-            Refused on the STATE of the root rather than on the shape of the
-            request: the digest is not admitted, the version does not advance,
-            the parent is not the active digest, or the actor may not activate
-            this version. Reload the active version and rebase.
+            Refused on the STATE of what is being activated rather than on the shape
+            of the request (`reason: activation_refused`): the digest is not admitted,
+            the version does not advance, the parent is not the active digest, or the
+            actor may not activate this version (reload the active version and
+            rebase; no `code`). Two refusals carry a `code`:
+
+            - `TEMPLATE_OMISSIONS_UNACKNOWLEDGED`: the document omits or changes
+              organization template policies and `acknowledge_template_omissions`
+              does not name exactly those ids (none, fewer, more, or any at all for a
+              document that carries the template as shipped). `template_omissions`
+              reports what the document omits and changes, and `error` says exactly
+              which list to send. Nothing was activated.
+            - `TEMPLATE_OMISSIONS_UNAVAILABLE`: the document's omissions could not be
+              computed, so it was not activated. Retry. `error` is a fixed sentence.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [activation_refused]
+                  code:
+                    type: string
+                    enum: [TEMPLATE_OMISSIONS_UNACKNOWLEDGED, TEMPLATE_OMISSIONS_UNAVAILABLE]
+                  error:
+                    type: string
+                  template_omissions:
+                    $ref: '#/components/schemas/TemplateOmissionReport'
+        '500':
+          description: |
+            The artifact this activation names does not verify on load (`reason:
+            artifact_unverifiable`): its signing key has been de-authorized, or its
+            signature, digest or compiled module no longer holds. Nothing was
+            activated, and a retry will not change that. The verification error is
+            logged, never returned.
+
+            Or `workspace_unavailable` (since v11.1.0, #4283; it was `503`): this
+            organization's typed-authoring workspace could not be built on this
+            process (a signing key, the authoring plane or an activation
+            authority could not be built, or the build did not complete), and a
+            retry will not change that. The cause is logged, never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [artifact_unverifiable, workspace_unavailable]
+                  error:
+                    type: string
         '503':
           $ref: '#/components/responses/TypedAuthoringUnavailable'
 
@@ -2628,6 +2905,12 @@ paths:
             holds. It is an integrity fault, not a storage outage, and a
             document that verifies must be activated. The verification
             error is logged, never returned.
+
+            Or `workspace_unavailable` (since v11.1.0, #4283; it was `503`): this
+            organization's typed-authoring workspace could not be built on this
+            process (a signing key, the authoring plane or an activation
+            authority could not be built, or the build did not complete), and a
+            retry will not change that. The cause is logged, never returned.
           content:
             application/json:
               schema:
@@ -2637,7 +2920,7 @@ paths:
                     type: boolean
                   reason:
                     type: string
-                    enum: [active_unverifiable]
+                    enum: [active_unverifiable, workspace_unavailable]
                   error:
                     type: string
         '503':
@@ -2660,12 +2943,23 @@ paths:
         - `disabled`: the policies of the shipped controls its document
           disabled; one control can bind several. These are not enforced and
           are not in `total`.
+        - `not_bound_here`: the ids of the document's controls whose
+          `binds_on` does not name this scope (#4371). They are neither
+          enforced nor counted here. Omitted when there are none.
 
-        `pack` is null and `packs_counted` is false. Only the agent loads a
-        deployment's installed policy packs, so this count leaves them out and
-        says so, rather than reporting zero. One scope is counted and named in
-        `scope`: a policy binds on every scope it applies to, so a sum across
-        scopes would count it once per scope.
+        The installed policy packs are counted by the agent, the only process
+        that loads them: this route reads the agent's summary of the activation
+        it enforces (`GET /api/v1/policy-packs/summary` on the agent, an
+        internal-service route) and answers it, with `pack` the packs' policies
+        on the scope, `packs_counted` true and `total` including `pack`. A
+        deployment that installs no pack, every Community one included, answers
+        `pack` 0 with `packs_counted` true: a counted zero, not an unknown. When
+        the agent's summary cannot be read, this route answers its own count,
+        in the same shape, with `pack` null, `packs_counted` false and
+        `packs_uncounted_reason` naming why; `packs_counted` false means only
+        that. One scope is counted and named in `scope`: a policy binds on every
+        scope it applies to, so a sum across scopes would count it once per
+        scope.
       operationId: getTypedPolicyActiveSummary
       parameters:
         - $ref: '#/components/parameters/TypedAuthoringOrg'
@@ -2693,10 +2987,41 @@ paths:
                     nullable: true
                   packs_counted:
                     type: boolean
+                  packs_uncounted_reason:
+                    type: string
+                    enum: [agent_unreachable, agent_refused, agent_answer_unreadable]
+                    description: |
+                      Why the installed packs were not counted, present only
+                      when `packs_counted` is false: the agent's summary could
+                      not be reached (`agent_unreachable`), the agent answered a
+                      non-2xx status (`agent_refused`), or it answered what is
+                      not a counted summary of this scope
+                      (`agent_answer_unreadable`).
                   disabled:
                     type: integer
                   total:
                     type: integer
+                  not_bound_here:
+                    type: array
+                    items:
+                      type: string
+                  detector_not_run_here:
+                    type: array
+                    description: |
+                      Per control, the registry detector this scope does not
+                      run and the planes that do. Every id here is also in
+                      `not_bound_here`. Omitted when there are none.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        detector:
+                          type: string
+                        runs_on:
+                          type: array
+                          items:
+                            type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -2705,6 +3030,12 @@ paths:
             (`reason: active_unverifiable`), as on `GET
             /api/v1/typed-policies/active`. The verification error is logged,
             never returned.
+
+            Or `workspace_unavailable` (since v11.1.0, #4283; it was `503`): this
+            organization's typed-authoring workspace could not be built on this
+            process (a signing key, the authoring plane or an activation
+            authority could not be built, or the build did not complete), and a
+            retry will not change that. The cause is logged, never returned.
           content:
             application/json:
               schema:
@@ -2714,14 +3045,15 @@ paths:
                     type: boolean
                   reason:
                     type: string
-                    enum: [active_unverifiable]
+                    enum: [active_unverifiable, workspace_unavailable]
                   error:
                     type: string
         '503':
           description: |
             The count cannot be given. `reason` says why:
 
-            - `catalog_not_configured`, `storage_unavailable` and
+            - `catalog_not_configured`, `storage_unavailable`,
+              `ledger_inconsistent`, `workspace_building` and
               `key_not_loaded`: as on `GET /api/v1/typed-policies/active`. A
               store that cannot be read is refused, never answered with a count
               of the implicit baseline.
@@ -2738,9 +3070,66 @@ paths:
                     type: boolean
                   reason:
                     type: string
-                    enum: [catalog_not_configured, storage_unavailable, key_not_loaded, summary_unavailable]
+                    enum: [catalog_not_configured, storage_unavailable, ledger_inconsistent, workspace_building, key_not_loaded, summary_unavailable]
                   error:
                     type: string
+
+  /api/v1/typed-policies/template:
+    get:
+      tags:
+        - Typed Policy Authoring
+      summary: The shipped organization template, read-only
+      description: |
+        Returns the organization template this binary shipped: the document a new
+        organization draft starts from. A published organization document REPLACES
+        the template, so an author seeds a document from it to keep the template's
+        controls deciding; activating a document that omits template policies
+        requires naming them (`acknowledge_template_omissions` on activate).
+
+        The same rendering and envelope the customer portal's
+        `GET /api/v1/typed-policies/template` returns. There is no write operation:
+        the template is a build constant. Like `system`, it does not require a
+        configured typed-authoring vocabulary.
+      operationId: getTypedPolicyOrganizationTemplate
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      responses:
+        '200':
+          description: The shipped organization template
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  template:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        description: |
+                          The template's document identifier, as an activation history records it once an organization withdraws its own.
+                      digest:
+                        type: string
+                        description: The template digest this binary shipped.
+                      document:
+                        type: object
+                        additionalProperties: true
+                        description: |
+                          The template itself, the organization-root policy document a draft copies,
+                          as the exact canonical bytes the digest is computed over.
+
+                          OPAQUE BY DESIGN, as the system corpus's `document` is: its interior is the
+                          typed document as shipped, and this response does not restate that shape.
+                          `additionalProperties: true` says so rather than leaving a reader to infer it
+                          from silence.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: |
+            The shipped template could not be rendered (`reason: organization_template_unavailable`).
 
   /api/v1/typed-policies/system:
     get:
@@ -5538,7 +5927,7 @@ paths:
                 framework: "OJK_BI_COMBINED"
                 compliance_score: 100
                 total_audit_records: 0
-                active_policies: 8
+                active_policies: 1
                 recent_violations: 0
                 retention_status: "compliant"
                 breach_notifications: 3
@@ -6497,17 +6886,20 @@ paths:
       responses:
         '200':
           description: |
-            Workflow execution result. With `AXONFLOW_HITL_ENABLED=true`, a
-            run paused by a `require_approval` policy verdict whose
-            approval request was created successfully ALSO answers `200`:
-            the body then carries `status: "paused"` with `approval_id`,
-            `approval_status`, `paused_at_step` (omitted at the first
-            step, index 0) and `paused_reason` promoted alongside the
-            fields below (the Go type embeds `WorkflowExecution`); only a pause whose approval-request
-            creation failed answers `202`. The returned `id` is where a
-            caller first observes the `wfe_` prefix introduced in #3442, so
-            an integration that matches run ids on `wf_` breaks here rather
-            than on a later GET.
+            Workflow execution result: every step ran, each decided by the
+            organization's policy before it ran (#4382). The returned `id` is
+            where a caller first observes the `wfe_` prefix introduced in
+            #3442, so an integration that matches run ids on `wf_` breaks
+            here rather than on a later GET.
+
+            Since v11.1.0 every step is decided on every deployment, and
+            `AXONFLOW_HITL_ENABLED` is ignored. Before it, steps were decided
+            only when that variable was `true`, and a run paused by an approval
+            answered `200` with `status: "paused"` (or `202` when the approval
+            could not be created). Neither pause exists any more: a step that
+            requires an approval is withheld (`403`,
+            `approval_requires_durable_record`). A plan run in `confirm` or
+            `step` mode holds its steps durably.
           content:
             application/json:
               schema:
@@ -6525,49 +6917,6 @@ paths:
                     process_time: "1.83s"
                 output:
                   summary: "Sales rose 12% over the window."
-        '202':
-          description: |
-            Degraded HITL pause (`AXONFLOW_HITL_ENABLED=true` only). A
-            `require_approval` policy verdict paused the run but the HITL
-            approval request could NOT be created. This is the only shape
-            the handler answers with `202`; an ordinary successful pause
-            returns `200` (above). The paused execution is stored for a
-            later resume before this response is written. The body is the
-            paused execution: every `WorkflowExecution` field promoted at
-            the top level, plus the HITL fields below.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                properties:
-                  status:
-                    type: string
-                    description: Always `paused` on this response.
-                  error:
-                    type: string
-                    description: >-
-                      Names the approval-creation failure
-                      (`Failed to create approval: ...`).
-                  approval_id:
-                    type: string
-                    description: >-
-                      The zero UUID on this arm - the approval request was
-                      never created. On a successful pause (a `200`) it is
-                      the real approval UUID.
-                  approval_status:
-                    type: string
-                    description: >-
-                      Absent on this arm; populated from the approval
-                      service on a successful pause.
-                  paused_at_step:
-                    type: integer
-                    description: >-
-                      Index of the step the run paused at. Omitted when
-                      the pause is at the first step: the field is
-                      omitempty and index 0 is the integer zero value.
-                  paused_reason:
-                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -6592,7 +6941,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The request body carries a cross-tenant claim: a
+            Refused, with one of two bodies.
+
+            A step was refused before it ran (#4382). Every step is decided
+            by the organization's policy before it runs, on every deployment.
+            The body is a `MultiAgentStepRefusal`: `code` is
+            `execution_blocked` when a policy blocks the step, or
+            `approval_requires_durable_record` when a policy requires an
+            approval (this route keeps no durable approval record, so it
+            withholds the step; run the plan in `confirm` or `step` mode,
+            whose holds are durable), or `route_refused` when the
+            organization's route rows refuse an `llm-call` step's call (#4249;
+            `policy` is the route's reason). No later step runs, and
+            `soft_failure_tolerance` does not absorb a refusal.
+
+            Or the request body carries a cross-tenant claim: a
             `user.tenant_id` naming a tenancy other than the
             authenticated one is refused with `Forbidden: user.tenant_id
             does not name the authenticated tenancy`. Omitting the body
@@ -6601,9 +6964,22 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/MultiAgentStepRefusal'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/StepRequestTooLargeFlat'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          description: |
+            The orchestrator's workflow engine decides no step (its step
+            gate is not wired), so nothing runs. A serving orchestrator
+            wires it at boot on every deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/workflows/executions/{id}:
     get:
@@ -6821,6 +7197,16 @@ paths:
 
         Call this BEFORE executing each step in your external orchestrator.
 
+        The step's input is the content the decision is made over, whole: every
+        key and every string value of `step_input`, and with a `tool_context` of
+        `tool_input` after it, as the text itself (unescaped, one per line, keys
+        in sorted order; numbers and booleans as their JSON value, so `1.50` is
+        presented as `1.5`). A content control
+        therefore sees a newline in a value as a newline, and a pattern may match
+        across a key and its value, which can only withhold. A step with no input
+        presents no content. A request body over 1 MiB is refused `413` before
+        it is read as a step.
+
         The response always includes a `retry_context` block (Issue #1673 Phase 1)
         carrying first-class retry state: gate count, prior completion status,
         first/last attempt timestamps, last decision, and the idempotency_key.
@@ -6970,6 +7356,36 @@ paths:
             earlier /gate call. `expected_idempotency_key` and
             `received_idempotency_key` are always present, empty string when
             one side is absent.
+
+            `STEP_INPUT_MISMATCH` (#4249), in the same shape - an idempotent
+            retry (the default `retry_policy`), or a first gate that raced
+            another for the same step, presents a `step_input` or a
+            `tool_context` other than the one the step's decision was made over,
+            compared as values (key order does not matter; an absent
+            `step_input` is `{}`; an absent `tool_context` matches only an
+            absent one). The decision is never served for other content; send
+            `retry_policy: reevaluate` or a new step id. On a step whose
+            approval hold is `pending`, `rejected` or `expired`, a
+            `reevaluate` is refused `APPROVAL_HOLD` (below), so a new step id
+            is the only way to gate other content. Both key fields carry
+            the recorded key. The tool context is read from the step's gate
+            checkpoint, which is written best-effort: a tool step whose
+            checkpoint was not written is refused rather than served. A first
+            gate that raced another is also refused when the other call's
+            checkpoint has not been written yet, whatever tool context it
+            presents: until then nothing records what that decision was made
+            over.
+
+            `APPROVAL_HOLD` (#4249) — the step's approval hold is `pending`,
+            `rejected` or `expired`, and this call would evaluate it afresh
+            (`retry_policy: reevaluate`).
+            A re-evaluation has no approver, so it never clears a hold: the
+            step row is left as it was. An idempotent retry (the default
+            `retry_policy`) with the same `step_input` and `tool_context` still
+            returns the cached decision. This refusal is
+            sent in the triplet envelope (`{error, code, message}`), as the
+            gate's other conflicts (`APPROVAL_PENDING`, `WORKFLOW_TERMINAL`)
+            are; the message names the step and its hold.
           content:
             application/json:
               schema:
@@ -6983,6 +7399,8 @@ paths:
                     step_id: "step-1"
                     expected_idempotency_key: "payment:wire:invoice-7721"
                     received_idempotency_key: "payment:wire:invoice-9999"
+        '413':
+          $ref: '#/components/responses/StepRequestTooLarge'
 
   /api/v1/workflows/{workflow_id}/steps/{step_id}/complete:
     post:
@@ -7199,6 +7617,15 @@ paths:
         Re-evaluates the step gate at the last resumable checkpoint with
         current policies. The step gate uses retry_policy=reevaluate internally.
 
+        Approval holds (#4249): a resume never clears a hold and never reopens a
+        workflow an approval rejection or expiry aborted. When any step of the
+        workflow holds `rejected` or `expired`, or the checkpoint's own step holds
+        `pending` (on an aborted workflow, any step holding `pending`), the
+        resume is refused with 409 `APPROVAL_HOLD` before anything is written,
+        and the message names the step and its hold
+        (`step <id> holds approval <status>; a re-evaluation cannot clear it`).
+        A workflow aborted for another reason resumes as before.
+
         Editions: served by Evaluation **and by Enterprise**. Until #3953 it was
         registered only on the Evaluation code path, so an Enterprise deployment
         answered the router's `text/plain` 404 here while this document
@@ -7271,6 +7698,11 @@ paths:
         Re-evaluates the step gate at a specific checkpoint with current policies.
         **Enterprise only** - it is the capability Enterprise has in addition to
         POST .../checkpoints/resume above, which both editions serve.
+
+        Approval holds (#4249): the same refusal as POST .../checkpoints/resume
+        above, 409 `APPROVAL_HOLD`. The rejected or expired step is looked for on
+        the whole workflow, so resuming an EARLIER checkpoint of a workflow a
+        later step's rejection aborted is refused too.
 
         Identity: same contract as POST .../checkpoints/resume above - the
         caller identity on THIS request drives segment resolution, the
@@ -7410,9 +7842,22 @@ paths:
             (`NOT_PENDING`, or `NO_APPROVAL_NEEDED` for a step that does not
             require approval), or its approval has timed out
             (`APPROVAL_EXPIRED`). A timed-out approval is a deny: an approval
-            after the `expires_at` of the step's approval queue row, or of a row
-            the queue has already expired, is refused and the step stays
-            pending. A step with no queue row declares no expiry.
+            after the `expires_at` of the step's pending approval queue hold,
+            or when the step's newest hold was already expired by the queue, is
+            refused and the step stays pending. A step with no queue row
+            declares no expiry.
+            `WORKFLOW_TERMINAL` (#4249): the workflow has ended (aborted,
+            completed or failed), and an approval never lands on it, even on a
+            step still pending.
+
+            A step held AGAIN whose new hold was never queued (the gate's
+            `approval_enqueue` was `cap_reached` or `error`) has no pending
+            hold, only its previous, decided one. Approving it answers
+            `NOT_PENDING` naming that; the approval is never judged by the
+            decided hold's window. Until a hold is queued the step can only
+            be rejected: a reject is not refused, and its `approval_id` is
+            the previous hold's. A re-evaluation of a pending step queues the
+            hold only where the step gate admits one.
           content:
             application/json:
               schema:
@@ -7432,7 +7877,13 @@ paths:
           description: |
             The expiry of the step's approval could not be read, so the step is
             not approved (fail-closed). The step stays pending, and the approval
-            can be retried.
+            can be retried. Also answered when the step's approval queue rows
+            cannot be told apart safely, and then a retry does not clear it: a
+            queue row under one of the step's hold ids that belongs to another
+            step (a step id ending in `#<n>` names the n-th hold of the step
+            without that suffix), or a pending step-gate row that names the
+            step outside its hold ids while the step has no hold, which clears
+            when that row expires or an operator removes it.
           content:
             application/json:
               schema:
@@ -7541,15 +7992,12 @@ paths:
         shape as the WCP endpoint (`/api/v1/workflows/{id}/steps/{step_id}/approve`)
         plus a `plan_id` field — see ADR-046 (HITL response parity).
 
-        Two underlying flows, identical response:
-        - MAP **confirm** / **step** modes — backed by a WCP workflow; the
-          handler delegates to the WCP service and projects the full
-          `retry_context`, approver metadata, and `policies_matched`.
-        - MAP **legacy** in-memory flow (policy-driven pause/resume, no WCP
-          workflow registered) — handler falls back to the in-memory
-          execution store and projects a minimal response with
-          `retry_context` zero-valued and `approval_id` from the execution
-          record.
+        A plan step is held only in MAP **confirm** / **step** mode, backed by
+        a WCP workflow: the handler delegates to the WCP service and projects
+        the full `retry_context`, approver metadata, and `policies_matched`. A
+        plan no workflow backs has no paused step, and answers 404. (The
+        in-memory pause the multi-agent routes used before v11.1.0 is retired,
+        #4249.)
       operationId: approveMAPPlanStep
       parameters:
         - name: planId
@@ -7617,7 +8065,10 @@ paths:
                   last_attempt_at: "2026-04-22T10:00:00Z"
                 message: "Step approved"
         '403':
-          description: MAP step approval requires Enterprise license (community mode)
+          description: |
+            MAP step approval requires Enterprise license (community mode), or
+            (#4249) the caller's tenant cannot see the plan's workflow (`this
+            plan belongs to another tenant`).
         '404':
           description: No paused execution / plan step found
         '409':
@@ -7625,11 +8076,15 @@ paths:
             The step cannot be approved, and the plan stays paused. On a plan
             backed by a workflow, the workflow step is not pending, its approval
             timed out (`approval_expired`), or its expiry could not be read
-            (`approval_state_unreadable`). On a plan paused in memory, its
-            approval timed out (`approval_expired`). A timed-out approval is a
-            deny.
-        '503':
-          description: HITL is not enabled in the orchestrator configuration
+            (`approval_state_unreadable`). A timed-out approval is a deny.
+
+            A confirm or step plan's workflow is the one bound to the plan when
+            it entered that mode (#4249). The approval is also refused (409)
+            when that workflow has ended, when the plan's workflow is still
+            being set up (a plan left in that state is ended with
+            `POST /api/v1/plan/{id}/cancel`), or, for a plan that began
+            executing before the binding existed, when a workflow named for the
+            plan has ended or more than one is running.
 
   /api/v1/plans/{planId}/steps/{stepId}/reject:
     post:
@@ -7641,9 +8096,9 @@ paths:
         (`/api/v1/workflows/{id}/steps/{step_id}/reject`) — same response
         shape (`ApprovalResponse`) plus `plan_id`. See ADR-046.
 
-        Rejection aborts the workflow / plan. On WCP-backed plans the WCP
-        service's `RejectStep` handles the abort; on the legacy in-memory
-        flow, the HITL workflow engine's `AbortExecution` handles it.
+        Rejection aborts the workflow / plan: the WCP service's `RejectStep`
+        handles the abort. A plan no workflow backs has no paused step, and
+        answers 404.
       operationId: rejectMAPPlanStep
       parameters:
         - name: planId
@@ -7679,11 +8134,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApprovalResponse'
         '403':
-          description: MAP step rejection requires Enterprise license
+          description: |
+            MAP step rejection requires Enterprise license, or (#4249) the
+            caller's tenant cannot see the plan's workflow.
         '404':
           description: No paused execution / plan step found
-        '503':
-          description: HITL is not enabled
+        '409':
+          description: |
+            (#4249) The rejection is refused, and nothing changes, when the
+            plan's bound workflow has ended, when the plan's workflow is still
+            being set up, or, for a plan that began executing before the binding
+            existed, when a workflow named for the plan has ended or more than
+            one is running. The same selection as the approve route.
 
   /api/v1/workflows/approvals/pending:
     get:
@@ -10430,9 +10892,12 @@ paths:
         - Workflows
       summary: Human-in-the-loop status for a workflow execution
       description: |
-        Report whether an execution is paused awaiting human approval, and which
-        approval it is waiting on. Available only on deployments with HITL
-        enabled; otherwise 503.
+        Reported whether an execution was paused, in memory, awaiting human
+        approval. The multi-agent execute routes pause nothing since v11.1.0
+        (#4382), and the in-memory engine this route read is retired (#4249), so
+        every id answers 404 `Execution not found`. A multi-agent step is held
+        only in confirm or step mode; read its approval state through the
+        workflow control plane. The route is removed in v12.0.0.
       operationId: getHITLExecutionStatus
       parameters:
         - name: id
@@ -10451,24 +10916,10 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: HITL status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HITLExecutionStatus'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          description: HITL is not enabled on this deployment
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/rbi/ai-systems/summary:
     get:
@@ -11177,11 +11628,12 @@ components:
     TemplateOmissionReport:
       type: object
       description: |
-        Which of the organization template's policies a document does not carry. The
-        document an organization activates REPLACES the implicit bundle's template,
-        so each policy it omits stops deciding for that organization; publish and
-        activation return this report so that dropping a template control is a
-        visible edit rather than a silent one.
+        Which of the organization template's policies a document does not carry, or
+        carries changed. The document an organization activates REPLACES the implicit
+        bundle's template, so each policy it omits or changes stops deciding as
+        shipped for that organization; publish and activation return this report so
+        that dropping or editing a template control is a visible edit rather than a
+        silent one.
 
         It counts POLICIES, not controls: a template redaction ships as two policies
         bound by discharge, and a document carrying only one of them drops the
@@ -11192,12 +11644,22 @@ components:
           items:
             type: string
           description: The template policy identifiers this document does not carry.
+        modified:
+          type: array
+          items:
+            type: string
+          description: |
+            The template policy identifiers this document carries under their id but
+            not as shipped: the policy differs (compared as canonical JSON), or an
+            attribute it reads is declared with another type, optionality or
+            freshness bound, or not declared. Disjoint from `omitted`; an activation
+            acknowledges both.
         of:
           type: integer
           description: How many policies the organization template ships.
         message:
           type: string
-          description: The same fact as a sentence, naming each omitted policy.
+          description: The same fact as a sentence, naming each omitted and each changed policy, and each changed attribute with what differs.
     TypedAuthoringActivation:
       type: object
       description: |
@@ -11261,6 +11723,11 @@ components:
             The reason the actor gave. A withdrawal and a rollback both require one:
             an unexplained return to the shipped set wants explaining as much as a
             rollback does.
+
+            Free text, read by audit. When the activation acknowledged organization
+            template omissions (`acknowledge_template_omissions`), the accepted ids
+            are recorded here, sorted, as `[acknowledged template omissions: a, b]`
+            after the actor's reason (or alone, for a promotion given no reason).
     AuthoringFinding:
       type: object
       description: One declared save-time or publication result.
@@ -11414,7 +11881,7 @@ components:
             codex: "1.9.0"
             claude-desktop: "0.4.0"
             n8n: "1.2.1"
-            google-adk: "1.3.0"
+            google-adk: "1.3.1"
 
     PlanStatusResponse:
       type: object
@@ -11739,7 +12206,7 @@ components:
         processing_time:
           type: string
         media_analysis:
-          description: Media governance analysis results (present when media was submitted)
+          description: Media governance analysis results (present when media was submitted and analysed, on an allowed response and on a policy refusal)
           allOf:
             - $ref: '#/components/schemas/MediaAnalysisResponse'
         engine:
@@ -11847,14 +12314,21 @@ components:
             $ref: '#/components/schemas/AppliedPolicyDetail'
         preferred_provider:
           type: string
-          description: LLM provider a matched routing policy prefers.
+          description: |
+            LLM provider a matched routing policy prefers. When more than one
+            applying route row names one, the LAST applying row in evaluation
+            order wins it and the routing reason: rows are walked by priority,
+            highest first, then newest first, so the winner is the
+            lowest-priority applying row (#4249).
         allowed_providers:
           type: array
           items:
             type: string
           description: |
             Strict provider allow-list for compliance routing. Failover stays
-            within this list.
+            within this list. It is the intersection of every applying route
+            row's list, whatever their order; an empty intersection refuses the
+            request (`no_compliant_provider`).
         routing_reason:
           type: string
           description: Why routing was changed.
@@ -12182,6 +12656,14 @@ components:
           description: |
             Total number of steps in the plan, so callers can render
             "Step N of M" without a separate plan-status lookup.
+        ignored_foreign_gate_rows:
+          type: integer
+          description: |
+            Gate rows on the plan's workflow whose step id is not one of
+            the plan's own step gates (written by another caller of the
+            workflow's gate route). The resume neither approves, rejects
+            nor waits on them. Present on an approving resume that read
+            the workflow's gate rows.
         workflow_id:
           type: string
           description: |
@@ -12694,7 +13176,15 @@ components:
             that mint decisions, omitted on legacy writers
         plane:
           type: string
-          description: Enforcement plane that wrote the row (e.g. mcp, llm); omitted on legacy writers
+          description: |
+            Enforcement plane that wrote the row (e.g. mcp, llm); omitted on
+            legacy writers. The orchestrator's four ENFORCEMENT planes are
+            `orchestrator_request` for /api/v1/process and
+            /api/v1/plan/execute, `wcp` for the workflow step gate, `map` for a
+            multi-agent step and `orchestrator_response` for the LLM response.
+            (`policy_simulation` and `policy_test` are the orchestrator's too,
+            but they are operator tools rather than enforcement points and
+            write no decision row.)
         correlation_id:
           type: string
           description: Decision-chain correlation key (#2611); omitted when not stitched
@@ -13250,10 +13740,15 @@ components:
           type: string
           format: uuid
           description: |
-            Deterministic HITL queue entry UUID (UUID v5 over
-            `(workflow_id, step_id)`), present on a `require_approval`
-            decision whose queue entry exists. Returned by this route since
-            #1082 but never specced; added with `approval_enqueue` below,
+            Deterministic HITL queue entry UUID of the step's current hold,
+            present on a `require_approval` decision whose queue entry
+            exists. A step can be held more than once: hold 1 is UUID v5 over
+            `workflow_id + ":" + step_id`, and hold n >= 2 (a step held again
+            after its earlier hold was decided) is UUID v5 over
+            `workflow_id + ":" + step_id + "#" + n`. The approve and reject
+            responses carry the step's current hold's id (see their
+            `approval_id`). Returned by this route since #1082 but never
+            specced; added with `approval_enqueue` below,
             which is only meaningful alongside it. Empty when no entry was
             created (see `approval_enqueue`) AND on a cached replay
             (`cached: true`, the default `retry_policy: "idempotent"` on a
@@ -13274,13 +13769,24 @@ components:
             to approve" (`cap_reached` / `tier_disabled` / `error`) - before
             #3408's sibling fix those were the same response.
 
-            - `created` - a new queue entry was written.
-            - `reused` - a re-gate of this step resolved to the entry an
-              earlier call created. The `approval_id` is the same. Reachable
-              only when the gate RE-EVALUATES (`retry_policy: "reevaluate"`,
-              or a gate override); the default `retry_policy: "idempotent"`
-              replays the stored decision and carries `cached: true` with
-              neither this field nor `approval_id`.
+            - `created` - a new queue entry was written. That includes a
+              step held AGAIN after its earlier hold was decided (approved,
+              rejected, expired or overridden): the re-hold is a new entry
+              under the next hold's `approval_id`, with its own expiry and
+              its own review, and the decided entry is kept unchanged as the
+              record of that decision.
+            - `reused` - the gate resolved to the step's still-PENDING entry
+              an earlier call created. The `approval_id` is the same. Reached
+              only by a gate that is evaluated again while that entry is
+              pending (`retry_policy: "reevaluate"`, a gate override, or
+              concurrent gates of the step, where the gate admits them); the
+              default `retry_policy: "idempotent"` replays the stored
+              decision and carries `cached: true` with neither this field
+              nor `approval_id`. A gate whose entry is already decided is
+              never `reused`: it writes a new entry (`created`), or reports
+              `error` when the queue refuses (for example, the hold id names
+              an entry that belongs to another step, or the step has a queue
+              entry outside its hold ids).
             - `cap_reached` - the tenant is at its licence tier's
               `MaxPendingApprovals`. No entry was created and none will be
               until a pending one is resolved. **Not reachable by any shipped
@@ -13522,7 +14028,10 @@ components:
         and by the MAP plan-scoped equivalents
         (`/api/v1/plans/{id}/steps/{step_id}/approve|reject`). Both planes
         project through the same helper — see ADR-046 (HITL response parity)
-        and ADR-045 (retry_context wire contract).
+        and ADR-045 (retry_context wire contract). A refused approval answers
+        the same status on both planes: 409 when the approval has expired
+        (`approval_expired`), 503 when its state cannot be read
+        (`approval_state_unreadable`).
 
         `decision` resolves to `allow` on a successful approval (the step can
         now proceed) or `block` on rejection (workflow aborted). `plan_id` is
@@ -13581,10 +14090,15 @@ components:
           type: string
           format: uuid
           description: |
-            Deterministic HITL queue entry UUID (UUID v5 over
-            `(workflow_id, step_id)`). Matches the queue row written by the
-            WCP HITL adapter. Empty on the legacy in-memory MAP flow when no
-            queue row exists.
+            HITL queue entry UUID of the hold this decision acted on: the
+            step's pending hold, else its newest (hold 1 is UUID v5 over
+            `workflow_id + ":" + step_id`; hold n >= 2, a step held again
+            after an earlier hold was decided, is UUID v5 over
+            `workflow_id + ":" + step_id + "#" + n`). Matches the queue row
+            written by the WCP HITL adapter. With no hold for the step (a
+            step-gate row outside its hold ids is not a hold) it is the hold-1
+            id; empty on the legacy in-memory MAP flow, and omitted when the
+            queue could not be read.
           example: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
         approved_by:
           type: string
@@ -14100,6 +14614,44 @@ components:
       required:
         - success
         - error
+    MultiAgentStepRefusal:
+      description: |
+        A multi-agent step refused before it ran (#4382), on
+        `POST /api/v1/workflows/execute` and `POST /api/v1/plan/execute`.
+        This is the flat `ErrorResponse` envelope with a machine-readable
+        `code` and the refusing policy added. It is a refinement of that
+        shape, not a fourth one, as `LLMProviderAPIError` refines the coded
+        shape.
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            error:
+              type: string
+              example: "execution blocked by policy: ceiling.no_tool_calls"
+            code:
+              type: string
+              enum: [execution_blocked, approval_requires_durable_record, route_refused]
+              description: >-
+                `execution_blocked`: a policy blocks the step.
+                `approval_requires_durable_record`: a policy requires an
+                approval, and this execution path keeps no durable approval
+                record, so the step is withheld; `confirm` and `step` mode hold
+                durably. `route_refused`: the organization's route rows refuse
+                an `llm-call` step's call before any provider is called, and
+                `policy` is the route's reason (`no_compliant_provider`,
+                `segment_not_established`, `segment_resolution_failed` or
+                `decision_enforcement_unavailable`).
+            policy:
+              type: string
+              description: The policy, or the cause, that refused the step.
+            reason:
+              type: string
+              description: Why the step was refused.
+          required:
+            - code
+            - policy
+            - reason
     TripletErrorResponse:
       type: object
       description: |
@@ -16626,18 +17178,41 @@ components:
           description: Whether the document is classified as sensitive
         has_pii:
           type: boolean
-          description: Whether PII was detected in image text (via OCR)
+          description: |
+            Whether the platform's PII detectors found PII in text extracted
+            from the image. A finding only when `scanned` contains `pii`;
+            without it the text was not scanned and `false` says nothing.
         pii_types:
           type: array
           items:
             type: string
-          description: Types of PII detected (e.g., credit_card, ssn, email)
+          description: |
+            The detectors that found PII, named by their policy id (e.g.
+            `sys_pii_ssn`, `sys_pii_email`). Meaningful only when `scanned`
+            contains `pii`.
         has_extracted_text:
           type: boolean
-          description: Whether text was extracted from the image via OCR
+          description: Whether text was extracted from the image via OCR (a finding only when `scanned` contains `text`)
         extracted_text_length:
           type: integer
-          description: Length of extracted text in characters (0 if none)
+          description: Length of extracted text in characters (0 if none; meaningful only when `scanned` contains `text`)
+        scanned:
+          type: array
+          items:
+            type: string
+            enum: [content_safety, document, faces, pii, text]
+          description: |
+            The analysis capabilities that RAN on this item, sorted. Each
+            signal above is a finding only when its capability is listed:
+            `content_safety` for `nsfw_score`, `violence_score` and
+            `content_safe`; `faces` for `has_faces`, `face_count` and
+            `has_biometric_data`; `document` for `document_type` and
+            `is_sensitive_document`; `pii` for `has_pii` and `pii_types`;
+            `text` for `has_extracted_text` and `extracted_text_length`. A
+            signal whose capability is not listed is reported at a default
+            that was not measured (`content_safe` as `true`, the others at
+            zero); the policy decision reads it as unknown. Empty when no analyzer produced a result for the item.
+          example: ["pii", "text"]
         estimated_cost_usd:
           type: number
           format: double
@@ -18358,6 +18933,11 @@ components:
           format: int64
         active_policies:
           type: integer
+          description: >-
+            Indonesia-PII policies (category pii-indonesia) in force on the
+            organization's proxy request plane, read from its activation: a
+            shipped control its policy document disabled is not counted.
+            -1 when the policies in force could not be read.
         recent_violations:
           type: integer
         retention_status:
@@ -18548,6 +19128,47 @@ components:
   # parity guards in platform/orchestrator compare this document against the
   # types the platform marshals.
   responses:
+    StepRequestTooLarge:
+      description: |
+        The request body is over 1 MiB (1,048,576 bytes). A route whose body
+        carries a step's content bounds it and refuses a larger body WHOLE,
+        before decoding it: the body is never cut to fit, so no step is gated,
+        planned or run. The bound is the orchestrator's and is the same on
+        every such route (#4249).
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, code, message, limit_bytes]
+            properties:
+              error:
+                type: string
+                enum: [request_too_large]
+              code:
+                type: string
+                enum: [REQUEST_TOO_LARGE]
+              message:
+                type: string
+              limit_bytes:
+                type: integer
+                enum: [1048576]
+          example:
+            error: request_too_large
+            code: REQUEST_TOO_LARGE
+            message: "request body exceeds 1048576 bytes; nothing was gated or run"
+            limit_bytes: 1048576
+    StepRequestTooLargeFlat:
+      description: |
+        The request body is over 1 MiB (1,048,576 bytes), refused whole before
+        it is decoded, in this route's `{success, error}` envelope: `error`
+        begins `request_too_large: `. Nothing is gated, planned or run (#4249).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "request_too_large: request body exceeds 1048576 bytes; nothing was gated or run"
     TypedAuthoringUnconfigured:
       description: |
         This deployment's typed-authoring vocabulary could not be resolved: an
@@ -18581,15 +19202,46 @@ components:
           it; a read of the active document is refused rather than answered
           `404 nothing_active` (#4255), which would say the organization has no
           active document. Retry once the database is reachable. The store's own
-          error is logged, never returned.
-        - `key_not_loaded` (`GET /api/v1/typed-policies/active` only, #4255):
-          the active document is signed by a key this replica has not loaded,
-          and the reload that would load it was deferred. The key may have
-          been authorized by another replica moments ago, or not be
-          authorized at all. A retry after a few seconds usually settles it,
-          though under concurrent reads a retry can land inside another
-          read's reload floor and answer `key_not_loaded` again. A `500
-          active_unverifiable` on retry means the document does not verify.
+          error is logged, never returned. A store that fails DURING a publish
+          or an activation, after the route was built, answers here too
+          (#4283), never `422 publication_refused` or `409 activation_refused`,
+          which are refusals of the document or the activation itself.
+        - `ledger_inconsistent` (since v11.1.0, #4249 row 5797853828): the
+          store does not hold the active document its own ledger names. It is
+          the store's failure, like `storage_unavailable`, but a retry will not
+          heal it: the database is reachable and disagrees with itself, and the
+          store needs an operator's repair. An activation reads that document to
+          replace it, so `POST /activate` answers this; so do the reads of the
+          active document (`GET /active`, `GET /active/summary`), never `404
+          nothing_active` or a count of the shipped set alone, which would report
+          the organization's own controls as absent. Until v11.1.0 this state
+          answered `storage_unavailable`.
+        - `workspace_building` (since v11.1.0, #4283): this request stopped
+          waiting for its organization's workspace build, which another request
+          started and which is still running. Retry in a few seconds. The step
+          the build was on is logged.
+        - `workspace_unavailable` is answered with **500**, not 503, since
+          v11.1.0 (#4283), as the customer portal answers it: this
+          organization's typed-authoring workspace could not be built on this
+          process (a signing key that could not be generated, an authoring plane
+          or an activation authority that could not be constructed, a build
+          that did not complete), and a retry will not change that. A durable
+          store that cannot be opened is never this: it is
+          `storage_unavailable`. The cause is logged, never returned. A
+          `429 workspace_limit` on the same routes is the one quota: the
+          process holds its cap of workspaces and none can be evicted.
+        - `key_not_loaded` (`GET /api/v1/typed-policies/active`, #4255, and
+          `POST /api/v1/typed-policies/activate`, where it is the artifact being
+          activated, #4249): the document is signed by a key this replica has not loaded,
+          and the reload that would load it did not complete in time. A read
+          whose key reload is deferred WAITS for it (at most a reload in flight
+          it joins, one reload floor of 2 seconds, plus one more floor for the
+          fresh reload it then runs or joins) and answers from the key set that
+          reload produced: `200`, `500 active_unverifiable` (on
+          activate, `500 artifact_unverifiable`) when the key is authorized
+          nowhere, or `503 storage_unavailable` when the re-read failed
+          (#4272). `key_not_loaded` is left for a reload in flight that took
+          longer than the floor; a retry after a few seconds settles it.
       content:
         application/json:
           schema:
@@ -18599,7 +19251,7 @@ components:
                 type: boolean
               reason:
                 type: string
-                enum: [catalog_not_configured, storage_unavailable, key_not_loaded]
+                enum: [catalog_not_configured, storage_unavailable, ledger_inconsistent, workspace_building, key_not_loaded]
               error:
                 type: string
     TypedAuthoringTierLimit:

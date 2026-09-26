@@ -66,7 +66,7 @@ func installDefaultTestEnforcer() error {
 	}
 	e, err := newAnchoredEnforcer(noDocumentsPublished{}, func() (*authoringcatalog.Snapshot, error) {
 		return authoringvocabulary.ResolveCatalogValue(authoringcatalog.SourceDeployment, authoringvocabulary.CatalogDeployment{})
-	}, boot.Admitter, boot.Registry.Epoch)
+	}, boot.Admitter, boot.Registry.Epoch, sharedidentity.NoGraphOnlyResolver{})
 	if err != nil {
 		return err
 	}

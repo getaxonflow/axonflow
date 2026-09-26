@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,35 @@ func workflowControlSchema() string {
 		CREATE INDEX IF NOT EXISTS idx_workflow_steps_idempotency_key
 			ON workflow_steps(idempotency_key)
 			WHERE idempotency_key IS NOT NULL;
+
+		-- migration 069: the gate's checkpoint, which the idempotent and
+		-- read-back arms read the recorded tool context from (#4249).
+		CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+			id BIGSERIAL PRIMARY KEY,
+			workflow_id VARCHAR(255) NOT NULL REFERENCES workflows(workflow_id) ON DELETE CASCADE,
+			step_id VARCHAR(255) NOT NULL,
+			step_index INTEGER NOT NULL,
+			step_type VARCHAR(100),
+			step_name VARCHAR(255),
+			checkpoint_type VARCHAR(50) NOT NULL DEFAULT 'step_gate',
+			gate_decision VARCHAR(50) NOT NULL,
+			gate_reason TEXT,
+			policies_evaluated JSONB DEFAULT '[]',
+			policies_matched JSONB DEFAULT '[]',
+			step_input JSONB,
+			tool_context JSONB,
+			model VARCHAR(100),
+			provider VARCHAR(100),
+			is_resumable BOOLEAN DEFAULT true,
+			resume_count INTEGER DEFAULT 0,
+			last_resumed_at TIMESTAMP WITH TIME ZONE,
+			org_id VARCHAR(255),
+			tenant_id VARCHAR(255),
+			user_id VARCHAR(255),
+			client_id VARCHAR(255),
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(workflow_id, step_id)
+		);
 	`
 }
 
@@ -1014,4 +1044,230 @@ func TestPostgresRepository_Integration_PlanApprovals(t *testing.T) {
 			t.Errorf("count after approve: want %d, got %d", before-1, after)
 		}
 	})
+}
+
+// #4249: the upsert alone never moves a hold. AddStep is driven directly, with
+// no Service.StepGate in front of it, so the SQL is the only thing that can keep
+// the hold: a row holding rejected or expired is never replaced, whatever the
+// write carries; a row holding pending is never replaced by a write with no
+// approval status; a kept hold keeps every field of the evaluation that made it
+// (step_type, reason, policies, decision, last_decision); a write landing a new
+// hold over an approved row clears the approver. An approval, a fresh hold and
+// a write over an approved step land as before. The approval write moves only
+// a pending row.
+func TestPostgresRepository_Integration_AddStepNeverMovesAHold(t *testing.T) {
+	db := getTestDB(t)
+	defer db.Close()
+	repo := NewPostgresRepository(db)
+	tenantID := fmt.Sprintf("test-tenant-hold-%d", time.Now().UnixNano())
+	defer cleanupTestWorkflows(t, db, tenantID)
+	ctx := context.Background()
+
+	pending, approved, rejected, expired := ApprovalStatusPending, ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusExpired
+	cases := []struct {
+		name         string
+		existing     *ApprovalStatus // written on the row: pending by AddStep, the rest by UpdateStepApproval out of pending
+		incoming     *ApprovalStatus
+		incomingDec  GateDecision
+		wantStatus   *ApprovalStatus
+		wantDecision GateDecision
+		wantType     StepType
+		wantReason   string
+		wantLast     GateDecision
+		wantApprover string
+	}{
+		{"nothing over pending", &pending, nil, GateDecisionAllow, &pending, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, ""},
+		{"nothing over rejected", &rejected, nil, GateDecisionAllow, &rejected, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, "reviewer@example.com"},
+		{"nothing over expired", &expired, nil, GateDecisionAllow, &expired, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, "reviewer@example.com"},
+		{"pending over rejected", &rejected, &pending, GateDecisionRequireApproval, &rejected, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, "reviewer@example.com"},
+		{"pending over expired", &expired, &pending, GateDecisionRequireApproval, &expired, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, "reviewer@example.com"},
+		{"approved over pending is kept (only a decision moves a hold)", &pending, &approved, GateDecisionAllow, &pending, GateDecisionRequireApproval, StepTypeToolCall, "first", GateDecisionRequireApproval, ""},
+		{"pending over nothing", nil, &pending, GateDecisionRequireApproval, &pending, GateDecisionRequireApproval, StepTypeLLMCall, "second", GateDecisionAllow, ""},
+		{"nothing over approved", &approved, nil, GateDecisionAllow, nil, GateDecisionAllow, StepTypeLLMCall, "second", GateDecisionRequireApproval, "reviewer@example.com"},
+		{"a new hold over approved clears the approver", &approved, &pending, GateDecisionRequireApproval, &pending, GateDecisionRequireApproval, StepTypeLLMCall, "second", GateDecisionRequireApproval, ""},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workflowID := fmt.Sprintf("wf_hold_%d_%d", time.Now().UnixNano(), i)
+			if err := repo.Create(ctx, &Workflow{WorkflowID: workflowID, WorkflowName: "hold", Source: WorkflowSourceExternal,
+				Status: WorkflowStatusInProgress, TenantID: tenantID, OrgID: "org-hold"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			firstStatus, firstDec := tc.existing, GateDecisionRequireApproval
+			if tc.existing == nil {
+				firstDec = GateDecisionAllow
+			} else if *tc.existing != ApprovalStatusPending {
+				firstStatus = &pending
+			}
+			first := &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeToolCall,
+				Decision: firstDec, DecisionReason: "first", ApprovalStatus: firstStatus,
+				PoliciesMatched: json.RawMessage(`[{"policy_id":"first"}]`)}
+			if err := repo.AddStep(ctx, first); err != nil {
+				t.Fatalf("first AddStep: %v", err)
+			}
+			if tc.existing != nil && *tc.existing != ApprovalStatusPending {
+				if err := repo.UpdateStepApproval(ctx, workflowID, "s1", *tc.existing, "reviewer@example.com", "seeded"); err != nil {
+					t.Fatalf("seed %s: %v", *tc.existing, err)
+				}
+			}
+			second := &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeLLMCall,
+				Decision: tc.incomingDec, DecisionReason: "second", ApprovalStatus: tc.incoming,
+				PoliciesMatched: json.RawMessage(`[{"policy_id":"second"}]`)}
+			if err := repo.AddStep(ctx, second); err != nil {
+				t.Fatalf("second AddStep: %v", err)
+			}
+
+			row, err := repo.GetStep(ctx, workflowID, "s1")
+			if err != nil {
+				t.Fatalf("GetStep: %v", err)
+			}
+			gotStatus, wantStatus := "<nil>", "<nil>"
+			if row.ApprovalStatus != nil {
+				gotStatus = string(*row.ApprovalStatus)
+			}
+			if tc.wantStatus != nil {
+				wantStatus = string(*tc.wantStatus)
+			}
+			if gotStatus != wantStatus {
+				t.Errorf("approval_status = %s, want %s", gotStatus, wantStatus)
+			}
+			if row.Decision != tc.wantDecision {
+				t.Errorf("decision = %s, want %s", row.Decision, tc.wantDecision)
+			}
+			if row.StepType != tc.wantType {
+				t.Errorf("step_type = %s, want %s", row.StepType, tc.wantType)
+			}
+			if row.DecisionReason != tc.wantReason {
+				t.Errorf("decision_reason = %q, want %q", row.DecisionReason, tc.wantReason)
+			}
+			if want := `"policy_id": "` + tc.wantReason + `"`; !strings.Contains(strings.ReplaceAll(string(row.PoliciesMatched), `":"`, `": "`), want) {
+				t.Errorf("policies_matched = %s, want the %s evaluation's", row.PoliciesMatched, tc.wantReason)
+			}
+			if row.LastDecision != tc.wantLast {
+				t.Errorf("last_decision = %s, want %s", row.LastDecision, tc.wantLast)
+			}
+			if row.ApprovedBy != tc.wantApprover {
+				t.Errorf("approved_by = %q, want %q", row.ApprovedBy, tc.wantApprover)
+			}
+			if row.GateCount != 2 {
+				t.Errorf("gate_count = %d, want 2 (the write still counts as a gate)", row.GateCount)
+			}
+		})
+	}
+
+	t.Run("a re-hold of a NULL-status row that still names an approver clears it", func(t *testing.T) {
+		workflowID := fmt.Sprintf("wf_hold_rehold_%d", time.Now().UnixNano())
+		if err := repo.Create(ctx, &Workflow{WorkflowID: workflowID, WorkflowName: "hold", Source: WorkflowSourceExternal,
+			Status: WorkflowStatusInProgress, TenantID: tenantID, OrgID: "org-hold"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := repo.AddStep(ctx, &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeToolCall,
+			Decision: GateDecisionRequireApproval, ApprovalStatus: &pending}); err != nil {
+			t.Fatalf("hold: %v", err)
+		}
+		if err := repo.UpdateStepApproval(ctx, workflowID, "s1", ApprovalStatusApproved, "reviewer@example.com", "ok"); err != nil {
+			t.Fatalf("approve: %v", err)
+		}
+		if err := repo.AddStep(ctx, &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeToolCall,
+			Decision: GateDecisionAllow}); err != nil {
+			t.Fatalf("allow: %v", err)
+		}
+		if row, _ := repo.GetStep(ctx, workflowID, "s1"); row == nil || row.ApprovalStatus != nil || row.ApprovedBy != "reviewer@example.com" {
+			t.Fatalf("PREMISE: after the allow the row = %+v, want no status with the old approver", row)
+		}
+		if err := repo.AddStep(ctx, &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeToolCall,
+			Decision: GateDecisionRequireApproval, ApprovalStatus: &pending}); err != nil {
+			t.Fatalf("re-hold: %v", err)
+		}
+		row, _ := repo.GetStep(ctx, workflowID, "s1")
+		if row == nil || row.ApprovalStatus == nil || *row.ApprovalStatus != ApprovalStatusPending || row.ApprovedBy != "" || row.ApprovedAt != nil {
+			t.Errorf("after the re-hold the row = %+v, want pending with no approver", row)
+		}
+	})
+
+	t.Run("an approval write moves only a pending row", func(t *testing.T) {
+		workflowID := fmt.Sprintf("wf_hold_race_%d", time.Now().UnixNano())
+		if err := repo.Create(ctx, &Workflow{WorkflowID: workflowID, WorkflowName: "hold", Source: WorkflowSourceExternal,
+			Status: WorkflowStatusInProgress, TenantID: tenantID, OrgID: "org-hold"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := repo.AddStep(ctx, &WorkflowStep{WorkflowID: workflowID, StepID: "s1", StepIndex: 1, StepType: StepTypeToolCall,
+			Decision: GateDecisionRequireApproval, ApprovalStatus: &pending}); err != nil {
+			t.Fatalf("AddStep: %v", err)
+		}
+		if err := repo.UpdateStepApproval(ctx, workflowID, "s1", ApprovalStatusRejected, "reviewer@example.com", "no"); err != nil {
+			t.Fatalf("reject: %v", err)
+		}
+		err := repo.UpdateStepApproval(ctx, workflowID, "s1", ApprovalStatusApproved, "approver@example.com", "late")
+		if err == nil || !strings.Contains(err.Error(), "step is not pending approval") {
+			t.Errorf("the racing approval write = %v, want refused as not pending", err)
+		}
+		if row, _ := repo.GetStep(ctx, workflowID, "s1"); row == nil || row.ApprovalStatus == nil || *row.ApprovalStatus != ApprovalStatusRejected || row.ApprovedBy != "reviewer@example.com" {
+			t.Errorf("row after the refused write = %+v, want rejected by reviewer@example.com", row)
+		}
+	})
+}
+
+// #4249: the mock and the Postgres repository list the same steps for a
+// workflow gated through the real path (Service.StepGate). The mock used to
+// return only steps a fixture embedded in the workflow struct, so a resume test
+// over a really gated workflow saw no steps; this parity test is what keeps
+// the next hand-built fixture honest.
+func TestPostgresRepository_Integration_ListStepsMatchTheMock(t *testing.T) {
+	db := getTestDB(t)
+	defer db.Close()
+	tenantID := fmt.Sprintf("test-tenant-listparity-%d", time.Now().UnixNano())
+	defer cleanupTestWorkflows(t, db, tenantID)
+	ctx := context.Background()
+	requireApproval, allow := GateDecisionRequireApproval, GateDecisionAllow
+
+	type listedStep struct {
+		StepID, Status string
+		StepIndex      int
+		Decision       GateDecision
+	}
+	listed := func(repo Repository, name string) []listedStep {
+		svc := NewService(repo, &fixedEvaluator{decision: GateDecisionAllow}, nil)
+		wf, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: name}, tenantID, "org-listparity", "user-1", "client-1")
+		if err != nil {
+			t.Fatalf("%s CreateWorkflow: %v", name, err)
+		}
+		for _, g := range []struct {
+			id       string
+			decision *GateDecision
+		}{{"step_0_fetch", &allow}, {"step_1_draft", &allow}, {"step_2_send", &requireApproval}} {
+			if _, err := svc.StepGate(ctx, wf.WorkflowID, g.id, &StepGateRequest{StepType: StepTypeToolCall, GateOverride: g.decision},
+				tenantID, "org-listparity", "user-1", "client-1"); err != nil {
+				t.Fatalf("%s gate %s: %v", name, g.id, err)
+			}
+		}
+		resp, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: tenantID, OrgID: "org-listparity", Limit: 50})
+		if err != nil {
+			t.Fatalf("%s ListWorkflows: %v", name, err)
+		}
+		var out []listedStep
+		for _, w := range resp.Workflows {
+			if w.WorkflowID != wf.WorkflowID {
+				continue
+			}
+			for _, s := range w.Steps {
+				status := "<nil>"
+				if s.ApprovalStatus != nil {
+					status = string(*s.ApprovalStatus)
+				}
+				out = append(out, listedStep{StepID: s.StepID, Status: status, StepIndex: s.StepIndex, Decision: s.Decision})
+			}
+		}
+		return out
+	}
+
+	fromPostgres := listed(NewPostgresRepository(db), "listparity-postgres")
+	fromMock := listed(NewMockRepository(), "listparity-mock")
+
+	if len(fromPostgres) != 3 {
+		t.Fatalf("Postgres listed %d steps (%+v), want the 3 gated", len(fromPostgres), fromPostgres)
+	}
+	if fmt.Sprint(fromMock) != fmt.Sprint(fromPostgres) {
+		t.Errorf("the mock lists %+v, Postgres lists %+v", fromMock, fromPostgres)
+	}
 }

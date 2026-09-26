@@ -202,8 +202,16 @@ func TestARacedActivationWritesNoAuditRow_RealPG(t *testing.T) {
 // TestAnActivationWhoseAuditKeyIsTakenIsRefused_RealPG is the other half of
 // recordAudit's rule: an ACTIVATION row is not idempotent. A row already
 // holding the key the next activation would take - left behind when the
-// activation history was lost and the audit table was not - describes a
-// different event, so the insert is refused and the activation with it.
+// activation history was lost and the audit table was not, or written by
+// another replica first - describes a different event, so the insert is
+// refused and the activation with it.
+//
+// IT IS A RACE, NOT AN OUTAGE (master R3 round 1 on #4396, LOW-4). The
+// unique violation used to leave here unmarked, so the store marking made it
+// ErrStoreUnavailable and the routes answered 503 "retry once the database is
+// reachable" - advice a retry cannot act on, about a database that was
+// reachable throughout. It is ErrActivationRaced now, which the routes answer
+// as the refusal it is.
 func TestAnActivationWhoseAuditKeyIsTakenIsRefused_RealPG(t *testing.T) {
 	h := setup(t)
 	ctx := context.Background()
@@ -220,8 +228,15 @@ func TestAnActivationWhoseAuditKeyIsTakenIsRefused_RealPG(t *testing.T) {
 		t.Fatal(err)
 	}
 	act := auditActivation(t, authoring.ActivationPromote, v1, time.Unix(1_700_000_200, 0).UTC(), "")
-	if err := s.AppendActivation(ctx, pdp.RootOrganization, act, ""); err == nil || !strings.Contains(err.Error(), "typed_policy_audit") {
-		t.Fatalf("an activation whose audit key was already taken returned %v, want the audit insert's refusal", err)
+	err := s.AppendActivation(ctx, pdp.RootOrganization, act, "")
+	if err == nil {
+		t.Fatal("an activation whose audit key was already taken was accepted")
+	}
+	if !errors.Is(err, authoring.ErrActivationRaced) {
+		t.Fatalf("it returned %v, want ErrActivationRaced: the key is taken by another event, which no retry changes", err)
+	}
+	if errors.Is(err, authoring.ErrStoreUnavailable) {
+		t.Fatalf("it is marked as the store failing (%v), so the caller is told to retry once the database is reachable", err)
 	}
 	if n := h.auditCount(t, "typed_policy_activations", orgA); n != 0 {
 		t.Fatalf("the refused activation left %d activation row(s); an activation must not outlive its audit row", n)

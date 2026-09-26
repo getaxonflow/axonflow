@@ -13,7 +13,7 @@
 # Prerequisites:
 #   - Orchestrator + agent running in enterprise mode (see
 #     `scripts/setup-e2e-testing.sh enterprise`)
-#   - HITL enabled (`AXONFLOW_HITL_ENABLED=true`)
+#   - (`AXONFLOW_HITL_ENABLED` is not needed: ignored since v11.1.0, #4382)
 #   - jq installed locally
 #
 # Exit codes:

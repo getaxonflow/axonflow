@@ -40,21 +40,30 @@ func auditCoverageAllowlist() map[string]string {
 		// shared engine's evaluation, whose detector facts the anchored engine
 		// decides from, and decides nothing itself. clientRequestHandler audits the
 		// anchored verdict; the policy-test preview is a dry run and records nothing.
-		"platform/agent/run.go::proxyDetectorPass": "by-design: detector pass only, no verdict; clientRequestHandler audits the anchored verdict and the policy-test preview records nothing (#4253).",
+		// The orchestrator request plane's two decision helpers (#4249 row
+		// 5779814437) return the decision up; processRequestHandler and
+		// executePlanHandler (orchestrator/run.go) record a refusal with
+		// LogBlockedRequest, and the gate checks them, because both helpers are
+		// policyDelegatingHelpers.
+		"platform/orchestrator/route_request_enforcing_seam.go::decideRouteRequestOnce": "by-design: returns the route decision; decideRouteRequest's callers record it (#4249 row 5779814437).",
+		"platform/orchestrator/route_request_enforcing_seam.go::decideRouteRequest":     "by-design: returns the route decision with its risk floor; processRequestHandler and executePlanHandler record a refusal with LogBlockedRequest, and the gate checks them (#4249 row 5779814437).",
+		"platform/agent/run.go::proxyDetectorPass":                                      "by-design: detector pass only, no verdict; clientRequestHandler audits the anchored verdict and the policy-test preview records nothing (#4253).",
 		// evaluateOutputPolicies returns an output outcome; callers run
 		// mcpOutputDecisionVerdict → writeMCPDecisionAudit / recordDecideDecision
 		// (mcp_handler.go ~1589, ~1956, ~2808). Closed by #2641.
 		"platform/agent/mcp_handler.go::evaluateOutputPolicies": "by-design: returns output outcome; caller handlers audit via mcpOutputDecisionVerdict→writeMCPDecisionAudit/recordDecideDecision (#2641).",
 
 		// ---- BY-DESIGN: Cowork / Claude Code OTEL ingest plane (caller audits) ----
-		// coworkRedactDefault is the redact-at-collector helper: it wraps the SAME
-		// engine response-plane redactor (evaluateOutputPolicies) and returns a
-		// coworkRedactResult (masked/withheld/allowed + verdict). It writes no row
-		// itself; its only caller, processCoworkRecord, records the canonical
-		// audit_logs row via writeCoworkAuditLog AND signs it via recordSignedDecision
-		// on every terminal verdict (allowed/redacted/blocked/error) — the same
-		// split as the MCP evaluateOutputPolicies helper above. (#2760 / WS-6.)
-		"platform/agent/cowork_otel_ingest.go::coworkRedactDefault": "by-design: redact-at-collector helper wrapping evaluateOutputPolicies; caller processCoworkRecord audits via writeCoworkAuditLog + recordSignedDecision on every verdict (#2760).",
+		// decideCoworkContent is the cowork_ingest seam (#4259): the shared
+		// engine's EvaluateResponse is its detector pass, the anchored engine
+		// decides, and it returns what to store (masked/withheld/allowed + verdict
+		// + the anchored posture). coworkRedactDefault is the redact-at-collector
+		// helper that delegates to it. Neither writes a row; their only caller,
+		// processCoworkRecord, records the canonical audit_logs row via
+		// writeCoworkAuditLog AND signs it via recordSignedDecision on every
+		// terminal verdict (allowed/redacted/blocked/error). (#2760 / WS-6.)
+		"platform/agent/cowork_ingest_enforcing_seam.go::decideCoworkContent": "by-design: the cowork_ingest seam, detector pass + anchored decision, no row of its own; caller processCoworkRecord audits via writeCoworkAuditLog + recordSignedDecision on every verdict (#2760, #4259).",
+		"platform/agent/cowork_otel_ingest.go::coworkRedactDefault":           "by-design: redact-at-collector helper delegating to decideCoworkContent; caller processCoworkRecord audits via writeCoworkAuditLog + recordSignedDecision on every verdict (#2760, #4259).",
 
 		// ---- BY-DESIGN: orchestrator response plane (handler audits) ----
 		// responseDetectorPass runs the response-phase evaluation for its detector
@@ -64,6 +73,16 @@ func auditCoverageAllowlist() map[string]string {
 		// is terminal inside either helper.
 		"platform/orchestrator/response_enforcing_seam.go::responseDetectorPass": "by-design: detector pass returning facts to decideResponse; llmProxyHandler audits the response verdict via LogBlockedResponse/LogSuccessfulRequest (#2626).",
 		"platform/orchestrator/response_enforcing_seam.go::decideResponse":       "by-design: returns the anchored response decision to ProcessResponse; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
+
+		// ---- BY-DESIGN: media signal producer (the process handler audits) ----
+		// NewEnginePIIDetector scans OCR-extracted text with the text PII
+		// detectors and returns findings, stated as signal.media.has_pii; the
+		// engine's own verdict is ignored and nothing is decided here. The
+		// decision is /api/v1/process's route seam over that signal, and
+		// processRequestHandler audits it via LogBlockedRequest /
+		// LogSuccessfulRequest. The same ruling exempts it from the legacy
+		// call-site census (shared/policy signalProducerCallSites).
+		"platform/orchestrator/media/pii_scan.go::NewEnginePIIDetector": "by-design: media signal producer, no verdict (engine verdict ignored); processRequestHandler audits the /api/v1/process decision via LogBlockedRequest/LogSuccessfulRequest (#4300, #4249 row 5665752190).",
 		// ProcessResponse is the public entrypoint that calls decideResponse (one
 		// hop); same response plane, same llmProxyHandler audit (#2626).
 		"platform/orchestrator/response_processor.go::ResponseProcessor.ProcessResponse": "by-design: response-plane entrypoint delegating to decideResponse; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
@@ -82,11 +101,12 @@ func auditCoverageAllowlist() map[string]string {
 
 		// ---- BY-DESIGN: MAP/HITL adapter (engine records the verdict) ----
 		// MAPHITLPolicyChecker.CheckPolicy is the adapter that evaluates the
-		// per-step policy and RETURNS its verdict up to HITLWorkflowEngine.
-		// ExecuteWithHITL, which records the block / require_approval gate decision
-		// via auditStepGate→LogWorkflowOperation (hitl_execution.go, #2693 merged).
-		// ExecuteWithHITL is therefore covered (the gate sees it via the writer-side
-		// one-hop) and is NOT allowlisted; the adapter delegates, so it is.
-		"platform/orchestrator/map_hitl_adapter.go::MAPHITLPolicyChecker.CheckPolicy": "by-design: adapter returns its per-step verdict to HITLWorkflowEngine.ExecuteWithHITL, which records it via auditStepGate→LogWorkflowOperation (#2693 merged).",
+		// per-step policy and RETURNS its verdict up to the multi-agent step gate
+		// (mapStepGate.decide, map_step_gate.go), which records the block /
+		// withheld gate decision via auditStepGate→LogWorkflowOperation (#2693).
+		// The gate is therefore covered (the writer-side one-hop) and is NOT
+		// allowlisted; the adapter delegates, so it is. (The in-memory
+		// HITLWorkflowEngine that also ran it is retired, #4249 row 5774060413.)
+		"platform/orchestrator/map_hitl_adapter.go::MAPHITLPolicyChecker.CheckPolicy": "by-design: adapter returns its per-step verdict to mapStepGate.decide, which records it via auditStepGate→LogWorkflowOperation (#2693).",
 	}
 }

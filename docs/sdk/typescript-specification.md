@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** 9.4.0 | **Platform Version:** 11.0.0
+**SDK Version:** 9.4.0 | **Platform Version:** 11.1.0
 
 **Status:** Production Ready
 

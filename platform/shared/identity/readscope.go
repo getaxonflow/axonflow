@@ -149,6 +149,11 @@ var NeverClientAssertableHeaders = []string{
 	HeaderReadScope,
 	HeaderAdminAuthority,
 	HeaderTenancyScope,
+	// Not an authority, but a WIDENING marker if forged: a client-sent
+	// "validated_token" would let a header identity select only the named
+	// email's segment route rows instead of every segment's (#4249 row
+	// 5697957634).
+	HeaderIdentitySource,
 }
 
 // AdminAuthorityFromHeader reports whether a HeaderAdminAuthority value asserts

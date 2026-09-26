@@ -86,9 +86,13 @@ set -euo pipefail
 #                                           shared status transition
 #                                           (UpdateStatusSQL). 2 statements.
 #   platform/agent/hitl/queue/transitions.go - the state transitions: Override,
-#                                           ExpireByIDs and ExpireDueReturning.
-#                                           3 statements (ConsumeGrant went
-#                                           with the grant path, #4254).
+#                                           ExpireByIDs, ExpireDueReturning and
+#                                           ConsumeBindingGrantSQL, the single-use
+#                                           spend of a call-binding approval
+#                                           (#4370). 4 statements (ConsumeGrant
+#                                           went with the grant path, #4254;
+#                                           #4370's consume is its successor,
+#                                           bound to the call, not a query hash).
 #
 #   Both files are IN THE SAME PACKAGE, which is the invariant; they are listed
 #   separately because a count keyed per FILE is what makes adding a statement
@@ -118,7 +122,7 @@ set -euo pipefail
 #
 ALLOW_LIST=$(cat <<'EOF'
 2 platform/agent/hitl/queue/writer.go
-3 platform/agent/hitl/queue/transitions.go
+4 platform/agent/hitl/queue/transitions.go
 1 migrations/core/025_hitl_oversight_queue.sql
 1 scripts/e2e/fixtures/readiness-gate-shape/decoy/05-curl-fail-flag.sh
 EOF
@@ -487,7 +491,8 @@ self_test() {
 const upd = \`UPDATE hitl_approval_queue SET status = \$1 WHERE request_id = \$2\`"
     mk "$1/platform/agent/hitl/queue/transitions.go" "const a = \`UPDATE hitl_approval_queue SET status = 'overridden'\`
 const b = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE id = ANY(\$1)\`
-const c = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE request_id IN (SELECT request_id FROM hitl_approval_queue)\`"
+const c = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE request_id IN (SELECT request_id FROM hitl_approval_queue)\`
+const d = \`UPDATE hitl_approval_queue SET consumed_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM hitl_approval_queue FOR UPDATE SKIP LOCKED)\`"
     mk "$1/migrations/core/025_hitl_oversight_queue.sql" "WITH expired AS (
         UPDATE hitl_approval_queue SET status = 'expired' RETURNING request_id
     ) SELECT 1;"
@@ -932,7 +937,7 @@ z := 3 // delete from decisions, hitl_history, hitl_approval_queue in that order
   #     change is about.
   real_scan=$(scan "$REPO_ROOT")
   if grep -qx '2 platform/agent/hitl/queue/writer.go' <<<"$real_scan" &&
-     grep -qx '3 platform/agent/hitl/queue/transitions.go' <<<"$real_scan"; then
+     grep -qx '4 platform/agent/hitl/queue/transitions.go' <<<"$real_scan"; then
     echo "  ok   the real scan actually FINDS both chokepoint files (INSERT and the transitions)"
   else
     echo "  FAIL the real scan found no choke point - it is passing vacuously"

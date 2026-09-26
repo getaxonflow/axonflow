@@ -381,12 +381,24 @@ func goldenCases(t *testing.T) []goldenCase {
 			},
 		},
 		{
-			name: "the evaluator's own stamp takes part in the same minimum",
+			// #4249 row 5774029945: this case pinned the evaluator's stamp inside
+			// the minimum, so a carried 600s under a 100s stamp expired at 100s
+			// and any authored value above the deployment window did nothing. A
+			// carried value now sets the window in both directions.
+			name: "a carried expiry LONGER than the evaluator's stamp sets the window",
 			in: ComposeInput{Obligations: []Obligation{
 				gob(ObApprovalChallenge, "", true, "p1", map[string]string{"quorum": "1", "eligible": "Group::r:a", ParamExpirySeconds: "600"}),
 			}, PEP: pep, ApprovalExpiry: goldenNow.Add(100 * time.Second), Now: goldenNow},
 			composed: []string{"approval_challenge - mandatory p1 eligible=Group::r:a;expiry_seconds=600;quorum=1"},
-			approval: &goldenApproval{clauses: []string{"1|Group::r:a"}, expiresAt: goldenNow.Add(100 * time.Second)},
+			approval: &goldenApproval{clauses: []string{"1|Group::r:a"}, expiresAt: goldenNow.Add(600 * time.Second)},
+		},
+		{
+			name: "a carried expiry SHORTER than the evaluator's stamp sets the window",
+			in: ComposeInput{Obligations: []Obligation{
+				gob(ObApprovalChallenge, "", true, "p1", map[string]string{"quorum": "1", "eligible": "Group::r:a", ParamExpirySeconds: "60"}),
+			}, PEP: pep, ApprovalExpiry: goldenNow.Add(time.Hour), Now: goldenNow},
+			composed: []string{"approval_challenge - mandatory p1 eligible=Group::r:a;expiry_seconds=60;quorum=1"},
+			approval: &goldenApproval{clauses: []string{"1|Group::r:a"}, expiresAt: goldenNow.Add(60 * time.Second)},
 		},
 		{
 			// R3 ROUND 2, PINNED. An advisory-only approval must produce NO

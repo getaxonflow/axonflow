@@ -143,6 +143,9 @@ type mcpPassSeam struct {
 	identities      []PolicyIdentity
 	documentVersion int
 	actionName      string
+	// riskScore is what the REQUEST pass stated for the Engine B risk score and
+	// why (#3330); nil on the response pass, and where no control read it.
+	riskScore *riskScoreRecord
 }
 
 type mcpResponseSeamKey struct{}
@@ -178,6 +181,7 @@ func (s *mcpPassSeam) recordRequestPass(enforced requestPassEnforcement, reason 
 	s.ran, s.engine, s.bundle, s.reason, s.subjectType = true, enforced.engine, enforced.policyBundle, reason, enforced.subjectType
 	s.packs = append([]string(nil), enforced.policyPacks...)
 	s.identities, s.documentVersion, s.actionName = enforced.policyIdentities, enforced.documentVersion, enforced.actionName
+	s.riskScore = enforced.riskScore.auditDetail()
 }
 
 // noteIdentity keeps what the anchored decision named, for the audit row.
@@ -312,6 +316,7 @@ func postureSeam(ctx context.Context) *mcpPassSeam {
 // (postureSeam). It is a no-op for a row written before a pass ran or outside
 // one, and an entry the writer set wins.
 func mergeEnforcementPosture(ctx context.Context, details map[string]interface{}) map[string]interface{} {
+	mergeRiskScore(ctx, details)
 	s := postureSeam(ctx)
 	if s == nil || details == nil {
 		return details
@@ -345,6 +350,24 @@ func mergeEnforcementPosture(ctx context.Context, details map[string]interface{}
 	}
 	stampAnchoredIdentity(details, s.identities, s.documentVersion, s.actionName)
 	return details
+}
+
+// mergeRiskScore writes what the MCP REQUEST pass stated for the Engine B risk
+// score onto an audit row (#3330), whichever pass the row's posture describes:
+// a connector route's rows after the response pass still belong to a request
+// that was, or was not, scored, and a reviewer answers "was this transaction
+// scored, and if not why" from the row. An entry the writer set wins.
+func mergeRiskScore(ctx context.Context, details map[string]interface{}) {
+	s := mcpRequestSeamFrom(ctx)
+	if s == nil || details == nil {
+		return
+	}
+	s.mu.Lock()
+	record := s.riskScore
+	s.mu.Unlock()
+	if _, set := details[riskScoreAuditKey]; record != nil && !set {
+		details[riskScoreAuditKey] = record
+	}
 }
 
 // sessionSubject is the credential an MCP server session presents: the
@@ -391,7 +414,7 @@ func enforceMCPResponse(ctx context.Context, orgID string, out *OutputPolicyOutc
 			PoliciesEvaluated: evaluated, Observation: observation,
 		}
 		seam.record(decisionEngineAnchored, "", "", "")
-		recordAnchoredEnforcement(mcpResponseSeamScope, decisionEngineAnchored, "unavailable", cause)
+		recordAnchoredEnforcement(mcpResponseSeamScope, decisionEngineAnchored, anchoredenforcer.VerdictUnavailable, cause)
 	}
 
 	e := anchoredEnforcerInstance.Load()
@@ -412,7 +435,7 @@ func enforceMCPResponse(ctx context.Context, orgID string, out *OutputPolicyOutc
 	v := e.evaluate(ctx, anchoredCall{
 		scope: mcpResponseSeamScope, orgID: orgID, requestID: seam.requestID,
 		action: authoringcatalog.ActionToolCall, subject: seam.subject, query: string(query),
-		observation: observation, emptyContent: len(content) == 0, pep: seam.handshake.pep.Profile(),
+		observation: observation, emptyContent: len(content) == 0, pep: seam.handshake.requestProfile(),
 	})
 	switch {
 	case v.unavailable != "":
@@ -461,7 +484,13 @@ func anchoredResponse(ctx context.Context, v anchoredVerdict, handshake pepHands
 				blockingName = p.Name
 			}
 		}
-		text := strings.Join(append([]string{reason}, unknownConstraintReasons(v.act, unknown)...), "; ")
+		parts := append([]string{reason}, unknownConstraintReasons(v.act, unknown, v.identityDetail)...)
+		// A refusal before any policy ran names what could not be admitted
+		// (#4249).
+		if detail := admissionDetail(dec); detail != "" {
+			parts = append(parts, detail)
+		}
+		text := strings.Join(parts, "; ")
 		if dec.State == contract.StateChallenge {
 			reason = string(contract.ReasonApprovalRequired)
 			text = approvalRequiredReason(mcpResponseSeamScope)
@@ -535,6 +564,12 @@ func sendMCPResponseRefusal(ctx context.Context, w http.ResponseWriter, message 
 // type and policy bundle the pass recorded, when one ran, and any checksum
 // validator that acted ahead of it. seam is nil for a refusal no pass authored.
 func sendMCPPassRefusal(w http.ResponseWriter, seam *mcpPassSeam, status int, message string) {
+	sendMCPPassRefusalWith(w, seam, status, message, nil)
+}
+
+// sendMCPPassRefusalWith is sendMCPPassRefusal naming the pending approval a
+// held call's retry spends (#4370); nil writes no pending_approval.
+func sendMCPPassRefusalWith(w http.ResponseWriter, seam *mcpPassSeam, status int, message string, pending *pendingApproval) {
 	engine, subjectType, policyBundle := seam.wireFields()
 	policyPacks := seam.packsRecorded()
 	legacyValidators := seam.legacyValidatorsActed()
@@ -547,7 +582,8 @@ func sendMCPPassRefusal(w http.ResponseWriter, seam *mcpPassSeam, status int, me
 		PolicyBundle     string                  `json:"policy_bundle,omitempty"`
 		PolicyPacks      []string                `json:"policy_packs,omitempty"`
 		LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
-	}{ClientResponse{Success: false, Error: message, Blocked: status == http.StatusForbidden}, engine, subjectType, policyBundle, policyPacks, legacyValidators}); err != nil {
+		PendingApproval  *pendingApproval        `json:"pending_approval,omitempty"`
+	}{ClientResponse{Success: false, Error: message, Blocked: status == http.StatusForbidden}, engine, subjectType, policyBundle, policyPacks, legacyValidators, pending}); err != nil {
 		log.Printf("Error encoding error response: %v", err)
 	}
 }

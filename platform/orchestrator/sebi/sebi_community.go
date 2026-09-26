@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/orchestrator/cloudstorage"
+	"axonflow/platform/shared/activationinputs"
 )
 
 // SEBIModule contains all SEBI compliance services and handlers.
@@ -30,6 +31,10 @@ type SEBIModuleConfig struct {
 
 	// Cloud storage backend for audit exports (unused in Community)
 	StorageBackend cloudstorage.StorageBackend
+
+	// ActiveEffects reads the policies in force on an organization (unused in
+	// Community).
+	ActiveEffects activationinputs.EffectsFunc
 }
 
 // NewSEBIModule creates a new SEBI compliance module.

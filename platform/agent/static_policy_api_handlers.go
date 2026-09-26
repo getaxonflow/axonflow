@@ -580,7 +580,7 @@ type TestPatternAPIRequest struct {
 // (sharedpolicy.EffectivePattern, #4131) is not applied here, and for those
 // categories this tool can report no match where the engine matches. Test with
 // a leading (?i) to see what the engine sees. The route is deprecated for
-// removal in v11.1, so the request shape is left as it is.
+// removal in v12.0.0, so the request shape is left as it is.
 // Request body: {"pattern": "...", "inputs": ["input1", "input2"]}
 // or: {"pattern": "...", "input": "single input"} for backward compatibility
 func (h *StaticPolicyAPIHandler) HandleTestPattern(w http.ResponseWriter, r *http.Request) {

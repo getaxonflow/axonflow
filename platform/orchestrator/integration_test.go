@@ -16,6 +16,9 @@ import (
 
 // TestPlanningEngineWorkflowIntegration tests planning engine generating executable workflows
 func TestPlanningEngineWorkflowIntegration(t *testing.T) {
+	// Plan generation and every llm-call step take the organization's route
+	// rows; none apply here (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 
@@ -62,6 +65,9 @@ func TestPlanningEngineWorkflowIntegration(t *testing.T) {
 
 // TestEndToEndPlanningToExecution tests planning → workflow execution flow
 func TestEndToEndPlanningToExecution(t *testing.T) {
+	// Plan generation and every llm-call step take the organization's route
+	// rows; none apply here (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	router := NewMockLLMRouter()
 
 	planningEngine := NewPlanningEngine(router)
@@ -303,6 +309,9 @@ func TestConcurrentWorkflowExecution(t *testing.T) {
 
 // TestPlanningWithSynthesisSteps tests that planning engine creates synthesis steps
 func TestPlanningWithSynthesisSteps(t *testing.T) {
+	// Plan generation and every llm-call step take the organization's route
+	// rows; none apply here (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 
@@ -341,6 +350,9 @@ func TestPlanningWithSynthesisSteps(t *testing.T) {
 
 // TestLLMRouterFailover tests LLM provider failover mechanism
 func TestLLMRouterFailover(t *testing.T) {
+	// An LLM call takes the organization's route rows; none apply here
+	// (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	// Create a mock router that simulates unhealthy state with route error
 	router := NewMockLLMRouter()
 	router.Healthy = false
@@ -384,6 +396,9 @@ func TestWorkflowEngineHealthCheck(t *testing.T) {
 
 // TestMultiDomainPlanning tests planning across multiple domains
 func TestMultiDomainPlanning(t *testing.T) {
+	// An LLM call takes the organization's route rows; none apply here
+	// (#4249 rows 5701303521, 5774077156).
+	withLLMCallRouteSource(t, &recordingRouteFacts{}, nil)
 	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 

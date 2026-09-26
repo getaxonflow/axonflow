@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -87,13 +88,7 @@ func (m *MockRepository) GetByID(ctx context.Context, workflowID string) (*Workf
 
 	// Deep copy to avoid race conditions
 	copy := *workflow
-	copy.Steps = make([]WorkflowStep, 0)
-
-	if steps, ok := m.steps[workflowID]; ok {
-		for _, step := range steps {
-			copy.Steps = append(copy.Steps, *step)
-		}
-	}
+	copy.Steps = m.sortedStepsLocked(workflowID)
 
 	return &copy, nil
 }
@@ -127,12 +122,7 @@ func (m *MockRepository) GetByPlanID(ctx context.Context, planID string) (*Workf
 	}
 
 	copy := *match
-	copy.Steps = make([]WorkflowStep, 0)
-	if steps, ok := m.steps[match.WorkflowID]; ok {
-		for _, step := range steps {
-			copy.Steps = append(copy.Steps, *step)
-		}
-	}
+	copy.Steps = m.sortedStepsLocked(match.WorkflowID)
 	return &copy, nil
 }
 
@@ -252,11 +242,30 @@ func (m *MockRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([
 		if opts.TraceID != "" && w.TraceID != opts.TraceID {
 			continue
 		}
+		if opts.WorkflowName != "" && w.WorkflowName != opts.WorkflowName {
+			continue
+		}
 
-		result = append(result, *w)
+		// The rows AddStep wrote, ordered by step_index as the Postgres List
+		// loads them (GetStepsForWorkflow). The mock used to return the
+		// struct's own Steps, which only a hand-built fixture fills, so a
+		// workflow gated through the real path listed with no steps (#4249).
+		copied := *w
+		copied.Steps = m.sortedStepsLocked(w.WorkflowID)
+		result = append(result, copied)
 	}
 
 	total := len(result)
+
+	// Ordered as the Postgres List orders them (created_at DESC), so paging
+	// with Offset visits every row once; map iteration order is random per
+	// call (#4249). The workflow id breaks a tie.
+	sort.SliceStable(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].WorkflowID > result[j].WorkflowID
+	})
 
 	// Apply pagination
 	limit := opts.Limit
@@ -274,6 +283,35 @@ func (m *MockRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([
 	}
 
 	return result[offset:end], total, nil
+}
+
+// InsertStepRunRecord mirrors the Postgres insert: a new row, or nothing when
+// the step already has one.
+func (m *MockRepository) InsertStepRunRecord(ctx context.Context, step *WorkflowStep) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workflow, ok := m.workflows[step.WorkflowID]
+	if !ok {
+		return false, fmt.Errorf("workflow not found: %s", step.WorkflowID)
+	}
+	if m.steps[step.WorkflowID] == nil {
+		m.steps[step.WorkflowID] = make(map[string]*WorkflowStep)
+	}
+	if m.steps[step.WorkflowID][step.StepID] != nil {
+		return false, nil
+	}
+	now := time.Now()
+	step.GateCheckedAt = now
+	step.ID = len(m.steps[step.WorkflowID]) + 1
+	step.GateCount = 1
+	step.LastDecision = step.Decision
+	first := now
+	step.FirstAttemptAt = &first
+	m.steps[step.WorkflowID][step.StepID] = step
+	if step.StepIndex > workflow.CurrentStepIndex {
+		workflow.CurrentStepIndex = step.StepIndex
+	}
+	return true, nil
 }
 
 // AddStep records a new step gate decision. Issue #1673: also maintains
@@ -315,9 +353,39 @@ func (m *MockRepository) AddStep(ctx context.Context, step *WorkflowStep) error 
 	} else {
 		// Re-gate UPSERT: preserve immutable fields, bump counter, snapshot OLD decision
 		step.ID = existing.ID
+		// The Postgres upsert never updates step_index on conflict.
+		step.StepIndex = existing.StepIndex
 		step.GateCount = existing.GateCount + 1
 		step.CompletionCount = existing.CompletionCount
 		step.LastDecision = existing.Decision // OLD decision becomes last_decision
+		// #4249: mirrors the Postgres upsert's upsertKeepsHold and
+		// upsertLandsNewHold. A row holding rejected or expired, or pending
+		// against a write that is not itself a pending hold, keeps its hold and every
+		// field of the evaluation that made it; a write landing a new pending
+		// hold clears the previous decision's approver.
+		incomingPending := step.ApprovalStatus != nil && *step.ApprovalStatus == ApprovalStatusPending
+		keepsHold := existing.ApprovalStatus != nil &&
+			(*existing.ApprovalStatus == ApprovalStatusRejected || *existing.ApprovalStatus == ApprovalStatusExpired ||
+				(*existing.ApprovalStatus == ApprovalStatusPending && !incomingPending))
+		if keepsHold {
+			held := *existing.ApprovalStatus
+			step.ApprovalStatus = &held
+			step.StepName = existing.StepName
+			step.StepType = existing.StepType
+			step.StepInput = existing.StepInput
+			step.Model = existing.Model
+			step.Provider = existing.Provider
+			step.Decision = existing.Decision
+			step.DecisionReason = existing.DecisionReason
+			step.PoliciesEvaluated = existing.PoliciesEvaluated
+			step.PoliciesMatched = existing.PoliciesMatched
+			step.LastDecision = existing.LastDecision
+		}
+		if !keepsHold && incomingPending {
+			step.ApprovedBy, step.ApprovedAt, step.ApprovalComment = "", nil, ""
+		} else {
+			step.ApprovedBy, step.ApprovedAt, step.ApprovalComment = existing.ApprovedBy, existing.ApprovedAt, existing.ApprovalComment
+		}
 		step.FirstAttemptAt = existing.FirstAttemptAt
 		// idempotency_key is immutable once set: keep existing, else take new
 		if existing.IdempotencyKey != nil {
@@ -400,6 +468,10 @@ func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, ste
 
 	if steps, ok := m.steps[workflowID]; ok {
 		if step, ok := steps[stepID]; ok {
+			// #4249: mirrors the Postgres statement's AND approval_status = 'pending'.
+			if step.ApprovalStatus == nil || *step.ApprovalStatus != ApprovalStatusPending {
+				return fmt.Errorf("step is not pending approval: %s/%s", workflowID, stepID)
+			}
 			step.ApprovalStatus = &status
 			step.ApprovedBy = approvedBy
 			step.ApprovalComment = comment
@@ -637,6 +709,12 @@ func (m *MockRepository) CreateCheckpoint(ctx context.Context, cp *Checkpoint) e
 		existing.PoliciesEvaluated = cp.PoliciesEvaluated
 		existing.PoliciesMatched = cp.PoliciesMatched
 		existing.StepInput = cp.StepInput
+		// The Postgres upsert refreshes these too (checkpoint.go CreateCheckpoint).
+		existing.StepType = cp.StepType
+		existing.StepName = cp.StepName
+		existing.ToolContext = cp.ToolContext
+		existing.Model = cp.Model
+		existing.Provider = cp.Provider
 		existing.IsResumable = cp.IsResumable
 		cp.ID = existing.ID
 		cp.CreatedAt = existing.CreatedAt
@@ -734,5 +812,38 @@ func (m *MockRepository) IncrementResumeCount(ctx context.Context, id int64) err
 		}
 	}
 
+	return nil
+}
+
+// sortedStepsLocked returns copies of the workflow's stored step rows ordered by
+// step_index, then by insertion id, as GetStepsForWorkflow orders them. The
+// caller holds m.mu.
+func (m *MockRepository) sortedStepsLocked(workflowID string) []WorkflowStep {
+	steps := make([]WorkflowStep, 0, len(m.steps[workflowID]))
+	for _, step := range m.steps[workflowID] {
+		steps = append(steps, *step)
+	}
+	sort.SliceStable(steps, func(i, j int) bool {
+		if steps[i].StepIndex != steps[j].StepIndex {
+			return steps[i].StepIndex < steps[j].StepIndex
+		}
+		return steps[i].ID < steps[j].ID
+	})
+	return steps
+}
+
+// SetStepApprovalForTest overwrites a stored step's approval status and
+// decision with no rule applied, standing in for a direct SQL write to
+// workflow_steps (a test clearing a hold by a path the service does not see,
+// #4249). It is not part of Repository.
+func (m *MockRepository) SetStepApprovalForTest(workflowID, stepID string, status *ApprovalStatus, decision GateDecision) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	step, ok := m.steps[workflowID][stepID]
+	if !ok {
+		return fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+	step.ApprovalStatus = status
+	step.Decision = decision
 	return nil
 }

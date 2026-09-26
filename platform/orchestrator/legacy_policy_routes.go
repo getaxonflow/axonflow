@@ -21,7 +21,7 @@ import (
 //
 // Reads keep working, so an organization can see and export its legacy rows
 // after upgrading and the SDKs that still call these routes keep working until
-// v11.1; writes answer 409 through platform/shared/legacyfreeze.
+// v12.0.0; writes answer 409 through platform/shared/legacyfreeze.
 //
 // ONE REGISTRAR, BECAUSE THE STAMP IS A PROPERTY OF WHERE A ROUTE IS
 // REGISTERED. These routes were registered from four places in Run, and seven

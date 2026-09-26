@@ -47,6 +47,14 @@ import (
 // Part 2 is the half that would be missing from a naive test, and it is the
 // half that catches the dangerous shape: a plane that is MORE permissive than
 // its capabilities justify.
+//
+// PART 3 IS NOT HERE, because it is not a property of one compiled document:
+// a control's author-declared binds_on scope (#4371) leaves it out of the
+// document the engine on every other scope activates. Its statement - off-scope
+// is deletion, on-scope is the unscoped document - is executable where
+// activation builds those documents: platform/decision/activation's
+// TestGate15OffScopeIsDeletion. This package cannot import activation, which
+// imports it through authoringcatalog.
 
 // planePEPs returns one PEP profile per implemented plane, for one edition,
 // from the registry's checked-in table.

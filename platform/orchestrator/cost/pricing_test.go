@@ -462,3 +462,58 @@ func TestCalculateCost_ModelFallbackToLowercase(t *testing.T) {
 		t.Error("expected non-zero cost for uppercase model")
 	}
 }
+
+// A PRICE THIS DEPLOYMENT DOES NOT HAVE IS NOT A PRICE OF ZERO (#4249 row
+// 5664825929). CalculateCost answers 0 both for a step that costs nothing and
+// for a provider or model nothing prices, and the policy fact producer must
+// tell those apart: it states signal.cost_estimate only where there is a price,
+// because 0 reads as "cheap" to a control with a threshold.
+func TestEstimateCostPricedSaysWhetherTheDeploymentPricesTheStep(t *testing.T) {
+	pricing := NewPricingConfig()
+
+	cost, priced := pricing.EstimateCostPriced("openai", "gpt-4o", 1000, 1000)
+	if !priced {
+		t.Fatal("PREMISE: the default pricing does not price openai/gpt-4o, so this test measures nothing")
+	}
+	if cost <= 0 {
+		t.Errorf("a priced step costs %v; want a positive estimate", cost)
+	}
+	if got := pricing.CalculateCost("openai", "gpt-4o", 1000, 1000); got != cost {
+		t.Errorf("CalculateCost = %v and EstimateCostPriced = %v; one lookup answers both", got, cost)
+	}
+
+	// A MODEL THE PROVIDER DOES NOT LIST IS STILL PRICED where the provider
+	// carries a wildcard, which the shipped table does for every provider: that
+	// fallback is the deployment pricing the step, and it is reported as such.
+	if cost, priced := pricing.EstimateCostPriced("openai", "no-such-model", 1000, 1000); !priced || cost <= 0 {
+		t.Errorf("openai/no-such-model priced=%v cost=%v; the provider's wildcard prices it", priced, cost)
+	}
+
+	// A provider with neither the model nor a wildcard prices nothing.
+	bare := &PricingConfig{Providers: map[string]map[string]ModelPricing{
+		"barevendor": {"one-model": {InputPer1K: 0.01, OutputPer1K: 0.02}},
+	}}
+	if cost, priced := bare.EstimateCostPriced("barevendor", "another-model", 1000, 1000); priced || cost != 0 {
+		t.Errorf("a provider with no wildcard reports priced=%v cost=%v for an unlisted model", priced, cost)
+	}
+
+	for _, tc := range []struct {
+		pricing  *PricingConfig
+		provider string
+		model    string
+	}{
+		{pricing, "no-such-provider", "gpt-4o"},
+		{bare, "no-such-provider", "one-model"},
+	} {
+		cost, priced := tc.pricing.EstimateCostPriced(tc.provider, tc.model, 1000, 1000)
+		if priced {
+			t.Errorf("%s/%s is reported as priced at %v", tc.provider, tc.model, cost)
+		}
+		if cost != 0 {
+			t.Errorf("%s/%s answers %v; an unpriced step costs 0 and is reported unpriced", tc.provider, tc.model, cost)
+		}
+		if got := tc.pricing.CalculateCost(tc.provider, tc.model, 1000, 1000); got != 0 {
+			t.Errorf("CalculateCost(%s/%s) = %v; it answered 0 before this change and must still", tc.provider, tc.model, got)
+		}
+	}
+}

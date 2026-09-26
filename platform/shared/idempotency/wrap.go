@@ -131,8 +131,18 @@ func (rr *responseRecorder) Write(p []byte) (int, error) {
 // Per #2420: deterministic deny responses (400/403/404/409/429) ARE cached
 // because they're the legitimate idempotent answer for the same input — a
 // retry with a corrected body changes the input and should use a new key.
+//
+// A handler can refuse caching an answer by setting `Cache-Control: no-store`
+// on it (#4370). The cache key is the Idempotency-Key, not the request body, so
+// an answer that belongs to ONE request - an approval spent for exactly one
+// call, a pending approval that a person may approve a minute later - must not
+// be replayed for another request under the same key, or for this one after
+// its state moved.
 func (rr *responseRecorder) shouldCache() bool {
 	if rr.writeBodyErr != nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(rr.ResponseWriter.Header().Get("Cache-Control")), "no-store") {
 		return false
 	}
 	return rr.status >= 200 && rr.status < 500

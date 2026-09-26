@@ -201,10 +201,12 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 // carries TenantID, OrgID, AND Email - step.Email is the trust-gated
 // X-User-Email the WCP handler read off the HTTP request (see
 // StepGateRequest.Email's doc), threaded through StepGateContext.Email. A
-// step-gate's EvaluateDynamicPolicies call therefore resolves the caller's
-// governance-segment set the SAME way /api/v1/process and MAP do
-// (resolveUserSegments, segment_policy_gate.go), and a segment-scoped
-// dynamic policy is enforced identically on a WCP workflow step-gate. This
+// step-gate's dynamic facts therefore select the caller's rows the SAME way
+// /api/v1/process and MAP do: for an ESTABLISHED caller (the agent's
+// X-Axonflow-Identity-Source stamp, requireInternalProxyAuth) by the segments
+// resolveUserSegments resolves; for a caller whose email no validated token
+// supplied, every segment's rows, the email never resolved (ADR-067 Decision 4
+// step 1b, dynamicFactProducer.Produce). This
 // holds on EVERY route that reaches Service.StepGate: the gate handler and
 // both checkpoint-resume routes read the same trust-gated header (#3281), and
 // the two GateOverride callers (MAP confirm/step, run.go's plan resume) never

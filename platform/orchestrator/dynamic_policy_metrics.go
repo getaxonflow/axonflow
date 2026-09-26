@@ -80,6 +80,27 @@ var (
 			Help: "Count of dynamic policy loads that succeeded but returned zero rows, distinguishing a genuinely empty policy set from a failed load. A nonzero rate on a deployment known to have policies configured may indicate an RLS-blind read (#3039 class).",
 		},
 	)
+
+	// policyCacheRefreshModeGauge backs axonflow_policy_cache_refresh_mode -
+	// which schedule the background refresh is on (#4249): "steady" (every
+	// cache interval), "catch_up" (the short interval, after a load that held
+	// an unkeyed row or saw schema_migrations move, until the cap is spent
+	// without the mark advancing, or while no load has succeeded on an engine
+	// with a database configured) or "exhausted" (the cap is spent and the
+	// last load still held an unkeyed row, or no load has succeeded on an
+	// engine with a database configured). Each change sets the new mode's
+	// label to 1 and the other two to 0, under the engine's lock, the same
+	// closed-enum shape as axonflow_policy_set_source; `{mode="exhausted"} ==
+	// 1` for longer than a boot is the operator's signal, and the log line
+	// that entered it names the unkeyed row count and the migration mark, or
+	// that no policy load has succeeded.
+	policyCacheRefreshModeGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "axonflow_policy_cache_refresh_mode",
+			Help: "Which schedule the dynamic policy cache refresh is on: steady (every cache interval), catch_up (a short interval after a load that held an unkeyed row or saw schema_migrations move, or while no load has succeeded on an engine with a database configured, until the cap of short waits is spent without it advancing) or exhausted (the cap is spent and the last load still held an unkeyed row, or no load has succeeded on an engine with a database configured). A refresh loop stopped on a closed database handle reports steady. Each change sets that mode to 1 and the other two to 0. #4249.",
+		},
+		[]string{"mode"},
+	)
 )
 
 // reason* values for policyRefreshFailuresTotal's "reason" label — a closed
@@ -118,6 +139,25 @@ func init() {
 	prometheus.MustRegister(policyCacheAgeSeconds)
 	prometheus.MustRegister(policyRefreshFailuresTotal)
 	prometheus.MustRegister(policyZeroRowLoadsTotal)
+	prometheus.MustRegister(policyCacheRefreshModeGauge)
+}
+
+// setPolicyCacheRefreshModeMetric publishes mode as the current value of
+// axonflow_policy_cache_refresh_mode, driving every other label value to 0 in
+// the same call. Anything but refreshModeCatchUp or refreshModeExhausted
+// (db_dynamic_policies.go) publishes as steady: the zero mode is the schedule
+// an engine is on before its loop has chosen one.
+func setPolicyCacheRefreshModeMetric(mode string) {
+	if mode != refreshModeCatchUp && mode != refreshModeExhausted {
+		mode = refreshModeSteady
+	}
+	for _, m := range []string{refreshModeSteady, refreshModeCatchUp, refreshModeExhausted} {
+		v := 0.0
+		if m == mode {
+			v = 1
+		}
+		policyCacheRefreshModeGauge.WithLabelValues(m).Set(v)
+	}
 }
 
 // setPolicySetSourceMetric publishes source as the current value of

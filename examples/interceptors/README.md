@@ -87,7 +87,7 @@ response = governed_client.chat.completions.create(
 
 ```go
 import (
-    axonflow "github.com/getaxonflow/axonflow-sdk-go"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
     "github.com/getaxonflow/axonflow-sdk-go/interceptors"
 )
 

@@ -8,22 +8,27 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
 )
 
-// THE TWO WORKFLOW CONTROL REQUEST ROUTES DECIDE ON THE ANCHORED ENGINE (#4254).
+// THE ORCHESTRATOR REQUEST ROUTES DECIDE ON THE ANCHORED ENGINE (#4254),
+// UNDER A PLANE OF THEIR OWN (#4249 row 5706695827).
 //
-// /api/v1/process and /api/v1/plan/execute are call sites of the workflow
-// control plane (legacy_call_sites.tsv), so they decide under the workflow step
-// gate's scope. Unlike the step gate they PRESENT CONTENT - the request's query,
-// or the stored plan's - so their facts come from a producer that runs every
-// dynamic row's content detector over it, never from the step gate's no-content
-// producer.
+// /api/v1/process and /api/v1/plan/execute are the orchestrator request plane's
+// call sites (legacy_call_sites.tsv), and decide under its scope,
+// orchestratorRequestSeamScope. Until row 5706695827 they decided under the
+// workflow step gate's scope (wcp), so a control bound to or dropped from wcp
+// moved on both; now an author names the routes or the step gate alone. They
+// PRESENT CONTENT - the request's query, or the stored plan's - so their facts
+// come from a producer that runs every dynamic row's content detector over it.
+// The registry's static detectors do not run here (plane.go,
+// PlaneOrchestratorRequest): an organization control that reads one is left
+// off this plane at activation rather than decided as unknown.
 //
 // NEITHER ROUTE CAN HOLD. A request answered in one round trip has no pending
 // state to return to, so a challenge withholds it with the contract's own reason,
@@ -40,6 +45,14 @@ const (
 	processRouteAction     = authoringcatalog.ActionLLMCompletion
 	planExecuteRouteAction = authoringcatalog.ActionAgentInvoke
 )
+
+// orchestratorRequestSeamScope is the enforcement scope the two routes decide
+// under: the orchestrator request plane, which evaluates the request alone.
+var orchestratorRequestSeamScope = legacycompile.MustScopeFor(legacycompile.PlaneOrchestratorRequest, "")
+
+func init() {
+	orchestratorEnforcingScopes = append(orchestratorEnforcingScopes, orchestratorRequestSeamScope)
+}
 
 // The engine and verdict a withheld route request's envelope names, in the
 // vocabulary the response plane's envelope already uses.
@@ -59,27 +72,26 @@ type routeFactSource interface {
 // The fact source the two routes decide from, built once per process from the
 // dynamic engine the process wired. Replaceable so a test can install its own.
 var (
-	routeRequestFactsOnce sync.Once
-	routeRequestFacts     routeFactSource
-	routeRequestFactsErr  error
+	newRouteRequestFactProducer = productionRouteRequestFactProducer
 
-	newRouteRequestFactProducer = func() (routeFactSource, error) {
-		if dynamicPolicyEngine == nil {
-			return nil, errors.New("the dynamic policy engine is not wired, so this plane's facts cannot be produced")
-		}
-		// THESE ROUTES PRESENT CONTENT: no presentsNoContent here.
-		p, err := newDynamicFactProducer(dynamicPolicyEngine.ListActivePoliciesForTenant)
-		if err != nil {
-			return nil, err
-		}
-		return p, nil
-	}
+	routeRequestFactSource = lazyFactSource[routeFactSource]{build: func() (routeFactSource, error) { return newRouteRequestFactProducer() }}
 )
 
-func routeRequestFactProducer() (routeFactSource, error) {
-	routeRequestFactsOnce.Do(func() { routeRequestFacts, routeRequestFactsErr = newRouteRequestFactProducer() })
-	return routeRequestFacts, routeRequestFactsErr
+// productionRouteRequestFactProducer builds the process's route fact source
+// from the dynamic engine it wired. The package's tests default
+// newRouteRequestFactProducer to a source with no rows (TestMain), so a test
+// that reaches an LLM call reads "no route rows" whether or not it declared
+// one; a test of this factory calls it by name.
+func productionRouteRequestFactProducer() (routeFactSource, error) {
+	// THESE ROUTES PRESENT CONTENT: no presentsNoContent here.
+	p, err := wiredDynamicFactProducer(false)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
+
+func routeRequestFactProducer() (routeFactSource, error) { return routeRequestFactSource.get() }
 
 // routeRequestDecision is one route request's answer.
 type routeRequestDecision struct {
@@ -94,7 +106,7 @@ type routeRequestDecision struct {
 	decisionID string
 }
 
-// decideRouteRequest decides req on the workflow control plane as action, for
+// decideRouteRequest decides req on the orchestrator request plane as action, for
 // the client credential the agent authenticated (h).
 //
 // It FAILS CLOSED: a route that cannot reach a verdict withholds the request and
@@ -122,10 +134,10 @@ func decideRouteRequestOnce(ctx context.Context, h http.Header, req Orchestrator
 		facts, routes, err = producer.Produce(ctx, req)
 	}
 	if err != nil {
-		anchoredenforcer.FailClosed(wcpSeamScope, orgID, anchoredenforcer.CauseEvaluation, err)
+		anchoredenforcer.FailClosed(orchestratorRequestSeamScope, orgID, anchoredenforcer.CauseEvaluation, err)
 		if errors.Is(err, errDynamicFactsUnavailable) {
 			// The id every route answers a segment-resolution outage by.
-			anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "unavailable", anchoredenforcer.CauseEvaluation)
+			anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, anchoredenforcer.CauseEvaluation)
 			d := routeRequestWithheld([]string{"segment_resolution_failed"}, "segment_resolution_failed")
 			d.result.EvaluationError = true
 			return d
@@ -134,7 +146,7 @@ func decideRouteRequestOnce(ctx context.Context, h http.Header, req Orchestrator
 	}
 
 	v := enforcer.Evaluate(ctx, anchoredenforcer.Call{
-		Scope:     wcpSeamScope,
+		Scope:     orchestratorRequestSeamScope,
 		OrgID:     orgID,
 		RequestID: req.RequestID,
 		Action:    action,
@@ -155,14 +167,15 @@ func decideRouteRequestOnce(ctx context.Context, h http.Header, req Orchestrator
 
 // routeRequestFromVerdict answers the engine's verdict in the routes' terms.
 func routeRequestFromVerdict(v anchoredenforcer.Verdict, routes routeEffects) routeRequestDecision {
-	switch {
-	case v.Unavailable != "":
+	class := anchoredenforcer.Classify(v)
+	switch class {
+	case anchoredenforcer.ClassUnavailable:
 		return routeRequestUnavailable(v.Unavailable)
-	case v.Refusal != nil:
+	case anchoredenforcer.ClassRefusal:
 		reason := strings.ToLower(string(v.Refusal.Reason))
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", reason)
+		anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		return routeRequestWithheld([]string{reason}, reason)
-	case v.Decision == nil:
+	case anchoredenforcer.ClassNoDecision:
 		return routeRequestUnavailable(anchoredenforcer.CauseEvaluation)
 	}
 	dec := v.Decision
@@ -174,9 +187,27 @@ func routeRequestFromVerdict(v anchoredenforcer.Verdict, routes routeEffects) ro
 	}
 	named = dedupeStepGateIDs(named)
 
-	switch dec.State {
-	case contract.StateAllow:
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "allow", string(dec.Reason))
+	switch class {
+	case anchoredenforcer.ClassAllow:
+		// AN ALLOW WHOSE ROUTE RESTRICTIONS PERMIT NO PROVIDER IS REFUSED HERE,
+		// before any LLM call: every reader downstream takes an empty allow-list
+		// for "unrestricted" (routeEffects.NothingPermitted, #4249 row 5698088094).
+		// The refusal is named segment_not_established only when the segment
+		// rows applied to a not-established caller took the last provider away,
+		// which a validated user token could change; otherwise it is
+		// no_compliant_provider (routeEffects.SegmentNotEstablished, ADR-067
+		// step 1b, row 5697957634).
+		if routes.NothingPermitted() {
+			reason := reasonNoCompliantProvider
+			if routes.SegmentNotEstablished {
+				reason = reasonSegmentNotEstablished
+			}
+			anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
+			d := routeRequestWithheld([]string{reason}, reason)
+			d.result.BlockedBy = blockedByRouteLayer
+			return d
+		}
+		anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictAllow, string(dec.Reason))
 		return routeRequestDecision{result: &PolicyEvaluationResult{
 			Allowed:           true,
 			AppliedPolicies:   deciding,
@@ -186,7 +217,7 @@ func routeRequestFromVerdict(v anchoredenforcer.Verdict, routes routeEffects) ro
 			RoutingReason:     routes.RoutingReason,
 		}}
 
-	case contract.StateChallenge:
+	case anchoredenforcer.ClassChallenge:
 		// A challenge carries its approval requirement. One that carries none is a
 		// decision the contract rejects, so it is withheld as an evaluation failure
 		// rather than held with no terms and the queue's default expiry (R3 B-L2).
@@ -196,21 +227,21 @@ func routeRequestFromVerdict(v anchoredenforcer.Verdict, routes routeEffects) ro
 		// NEITHER ROUTE CAN HOLD (see the file comment): the challenge withholds
 		// the request by the contract's reason, and nothing is queued.
 		reason := string(contract.ReasonApprovalRequired)
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", reason)
+		anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, reason)
 		if len(named) == 0 {
 			named = []string{reason}
 		}
 		// The one sentence every plane with no hold answers a challenge with: the
 		// reason code first, then the plane (PRD v11 §1 item 13).
-		return routeRequestWithheld(named, anchoredenforcer.ApprovalRequiredReason(wcpSeamScope))
+		return routeRequestWithheld(named, anchoredenforcer.ApprovalRequiredReason(orchestratorRequestSeamScope))
 
 	default:
 		// DENY and ERROR both withhold the request: unknown input is never an
 		// admission (ADR-065 invariant 4).
-		anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "deny", string(dec.Reason))
+		anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictDeny, string(dec.Reason))
 		reasons := []string{string(dec.Reason)}
 		if len(unknown) > 0 && v.Act != nil {
-			reasons = append(reasons, anchoredenforcer.UnknownConstraintReasons(v.Act, unknown)...)
+			reasons = append(reasons, anchoredenforcer.UnknownConstraintReasons(v.Act, unknown, v.IdentityDetail)...)
 		}
 		return routeRequestWithheld(named, reasons...)
 	}
@@ -218,7 +249,7 @@ func routeRequestFromVerdict(v anchoredenforcer.Verdict, routes routeEffects) ro
 
 // routeRequestUnavailable is the fail-closed answer, naming the cause.
 func routeRequestUnavailable(cause string) routeRequestDecision {
-	anchoredenforcer.RecordEnforcement(wcpSeamScope, anchoredenforcer.EngineAnchored, "unavailable", cause)
+	anchoredenforcer.RecordEnforcement(orchestratorRequestSeamScope, anchoredenforcer.EngineAnchored, anchoredenforcer.VerdictUnavailable, cause)
 	d := routeRequestWithheld([]string{"decision_enforcement_unavailable"}, cause)
 	d.result.EvaluationError = true
 	return d

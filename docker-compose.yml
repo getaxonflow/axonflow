@@ -99,7 +99,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.0.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.1.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -312,6 +312,14 @@ services:
       # override after this process has served that org can pin it low and
       # wait it out instead of restarting the process.
       AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS: ${AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS:-}
+      # The deployment's LLM pricing table, as JSON, merged over the shipped
+      # defaults (cost.LoadPricingFromEnv). It prices a multi-agent step for
+      # signal.cost_estimate (#4249 row 5664825929), so a deployment whose
+      # providers the shipped table does not price states no estimate rather
+      # than a zero. CARRIED EXPLICITLY, because an env file passed with
+      # --env-file only INTERPOLATES: a variable no service maps reaches no
+      # container.
+      AXONFLOW_PRICING_CONFIG: ${AXONFLOW_PRICING_CONFIG:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
       # The ADR-065 typed policy vocabulary, for the COMMUNITY write route
       # #3943 added to this binary. It reached the customer-portal service in
@@ -325,7 +333,7 @@ services:
       # runs) and `conformance` (the ADR-065 fixture world, publishable against
       # and NEVER activatable).
       AXONFLOW_TYPED_AUTHORING_CATALOG: ${AXONFLOW_TYPED_AUTHORING_CATALOG:-deployment}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.0.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.1.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -335,9 +343,9 @@ services:
       CI: ${CI:-}
       GITHUB_ACTIONS: ${GITHUB_ACTIONS:-}
 
-      # HITL mode (Evaluation+) — set to "true" to enable the HITL workflow
-      # engine backing WCP /steps/{step_id}/approve|reject, MAP plan-scoped
-      # equivalents, and the /hitl/queue Enterprise surface.
+      # Ignored since v11.1.0 (#4382): every multi-agent step is decided on
+      # every deployment, and the HITL routes answer without it. Kept one
+      # release so a compose file that sets it still starts; it will be removed.
       AXONFLOW_HITL_ENABLED: ${AXONFLOW_HITL_ENABLED:-false}
 
       # Media governance (v4.5.0+) - set to "true" to enable in Community mode

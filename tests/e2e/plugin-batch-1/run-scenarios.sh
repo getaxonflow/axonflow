@@ -122,7 +122,7 @@ scenario_context_enriched_on_block() {
 # and found override_revoked. From v11.0.0 the override create and revoke
 # write nothing and answer 409 LEGACY_POLICY_WRITE_FROZEN on every stack, so
 # the scenario could only fail. It is retired rather than inverted, as
-# scenario-3 and scenario-6 in openclaw-install/ were: the freeze itself is
+# scenario-3 in openclaw-install/ was (scenario-6 was deleted in v11.1.0): the freeze itself is
 # proven by the platform's own runtime suites, not by this manual harness.
 
 # -----------------------------------------------------------------------------

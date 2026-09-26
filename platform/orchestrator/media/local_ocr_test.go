@@ -4,6 +4,7 @@
 package media
 
 import (
+	"context"
 	"testing"
 )
 
@@ -25,8 +26,8 @@ func TestNewLocalOCRAnalyzer_Defaults(t *testing.T) {
 }
 
 func TestNewLocalOCRAnalyzer_CustomValues(t *testing.T) {
-	detector := func(text string) []PIIFinding {
-		return nil
+	detector := func(ctx context.Context, text string) ([]PIIFinding, error) {
+		return nil, nil
 	}
 	a := NewLocalOCRAnalyzer("my-ocr", "/usr/local/bin/tesseract", "deu", detector)
 
@@ -68,8 +69,8 @@ func TestLocalOCRAnalyzer_Capabilities_WithoutPIIDetector(t *testing.T) {
 }
 
 func TestLocalOCRAnalyzer_Capabilities_WithPIIDetector(t *testing.T) {
-	detector := func(text string) []PIIFinding {
-		return nil
+	detector := func(ctx context.Context, text string) ([]PIIFinding, error) {
+		return nil, nil
 	}
 	a := NewLocalOCRAnalyzer("test", "", "", detector)
 	caps := a.Capabilities()

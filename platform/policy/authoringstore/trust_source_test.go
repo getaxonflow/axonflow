@@ -133,7 +133,7 @@ func TestLoadVerifiedRetriesOnlyForAKeyItHasNotHeardOf(t *testing.T) {
 		stub := &stubTrust{current: pdp.NewTrustStore(), afterReload: authorized, changed: true}
 		s := &Store{trust: stub}
 
-		got, err := s.loadVerified(context.Background(), stored)
+		got, err := s.loadVerified(context.Background(), stored, time.Now())
 		if err != nil {
 			t.Fatalf("the artifact did not load after a reload that authorizes its key: %v", err)
 		}
@@ -159,7 +159,7 @@ func TestLoadVerifiedRetriesOnlyForAKeyItHasNotHeardOf(t *testing.T) {
 		stub := &stubTrust{current: wrong, afterReload: authorized, changed: true}
 		s := &Store{trust: stub}
 
-		if _, err := s.loadVerified(context.Background(), stored); err == nil {
+		if _, err := s.loadVerified(context.Background(), stored, time.Now()); err == nil {
 			t.Fatal("an artifact whose signature does not verify was accepted")
 		} else if errors.Is(err, authoring.ErrKeyNotAuthorized) {
 			t.Fatalf("a signature mismatch was reported as an unauthorized key: %v", err)
@@ -173,7 +173,7 @@ func TestLoadVerifiedRetriesOnlyForAKeyItHasNotHeardOf(t *testing.T) {
 		stub := &stubTrust{current: pdp.NewTrustStore(), err: errors.New("dial tcp: connection refused")}
 		s := &Store{trust: stub}
 
-		_, err := s.loadVerified(context.Background(), stored)
+		_, err := s.loadVerified(context.Background(), stored, time.Now())
 		if err == nil {
 			t.Fatal("the artifact loaded although its key is unknown and the reload failed")
 		}
@@ -197,7 +197,7 @@ func TestLoadVerifiedRetriesOnlyForAKeyItHasNotHeardOf(t *testing.T) {
 		stub := &stubTrust{current: pdp.NewTrustStore(), changed: false}
 		s := &Store{trust: stub}
 
-		_, err := s.loadVerified(context.Background(), stored)
+		_, err := s.loadVerified(context.Background(), stored, time.Now())
 		if !errors.Is(err, authoring.ErrKeyNotAuthorized) {
 			t.Fatalf("want the original refusal, got: %v", err)
 		}
@@ -213,7 +213,7 @@ func TestLoadVerifiedRetriesOnlyForAKeyItHasNotHeardOf(t *testing.T) {
 		stub := &stubTrust{current: authorized}
 		s := &Store{trust: stub}
 
-		if _, err := s.loadVerified(context.Background(), stored); err != nil {
+		if _, err := s.loadVerified(context.Background(), stored, time.Now()); err != nil {
 			t.Fatalf("an artifact whose key is already authorized did not load: %v", err)
 		}
 		if stub.calls != 0 {
@@ -258,7 +258,7 @@ func TestAFailedReloadKeepsTheTrustInForce(t *testing.T) {
 		}
 		// And it still does its job, which is the consequence a reader cares
 		// about rather than the field's identity.
-		if _, lerr := (&Store{trust: r}).loadVerified(context.Background(), stored); lerr != nil {
+		if _, lerr := (&Store{trust: r}).loadVerified(context.Background(), stored, time.Now()); lerr != nil {
 			t.Fatalf("an artifact that verified before the failed reload no longer verifies: %v", lerr)
 		}
 	}
@@ -376,7 +376,7 @@ func TestAPanickingLoaderDoesNotWedgeTheInFlightGuard(t *testing.T) {
 	if !changed || rerr != nil {
 		t.Fatalf("after a panicking reload a healthy one did not run: changed=%t err=%v (loader calls=%d)", changed, rerr, calls)
 	}
-	if _, lerr := (&Store{trust: r}).loadVerified(context.Background(), stored); lerr != nil {
+	if _, lerr := (&Store{trust: r}).loadVerified(context.Background(), stored, time.Now()); lerr != nil {
 		t.Fatalf("the recovered source cannot verify a key the reload admitted: %v", lerr)
 	}
 }

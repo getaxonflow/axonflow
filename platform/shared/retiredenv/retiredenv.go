@@ -75,14 +75,25 @@ var MCPDynamicPolicies = []string{
 	"MCP_DYNAMIC_POLICIES_GRACEFUL",
 }
 
-// FinCrimeScorer is the FinCrime Engine B scorer's configuration, retired with
-// the legacy FinCrime engine that called it (PRD v11 §1.2, §5.1): the anchored
-// engine decides the FinCrime pack's controls on every plane they bind on, and
-// nothing asks the scorer for a risk score. The v10 enterprise compose file set
-// the timeout to a non-empty default, so an upgrade that keeps it is refused.
+// FinCrimeScorer is the FinCrime Engine B scorer's v10 configuration, retired
+// with the legacy FinCrime engine that called it (PRD v11 §1.2, §5.1). Under
+// v10 the scorer's own threshold decided a request; since v11.1.0 its score is
+// a FACT the FinCrime pack's control reads against the pack's threshold
+// (#3330), configured under FinCrimeRiskFactReplacements. The v10 names stay
+// refused rather than re-read with the new meaning, so a v10 environment -
+// whose compose file set the timeout to a non-empty default - never boots into
+// a posture its own configuration misdescribes.
 var FinCrimeScorer = []string{
 	"AXONFLOW_FINCRIME_SCORER_URL",
 	"AXONFLOW_FINCRIME_SCORER_TIMEOUT_MS",
+}
+
+// FinCrimeRiskFactReplacements are the names that configure the Engine B
+// risk-score fact since v11.1.0 (#3330), in FinCrimeScorer's order. They are
+// NOT retired; the refusal of a v10 name names its replacement.
+var FinCrimeRiskFactReplacements = []string{
+	"AXONFLOW_FINCRIME_RISK_FACT_URL",
+	"AXONFLOW_FINCRIME_RISK_FACT_TIMEOUT_MS",
 }
 
 // IdentityCompat is the identity-compat mode and its comparison's
@@ -132,10 +143,11 @@ var families = []struct {
 	}},
 	{FinCrimeScorer, func(set string, count int) string {
 		return fmt.Sprintf(
-			"%s: v11 retired the FinCrime Engine B scorer with the legacy FinCrime engine that called it - the anchored engine decides "+
-				"the FinCrime pack's controls, and no plane asks the scorer for a risk score (%s §1.2, §5.1). Remove %s from this process's environment; "+
+			"%s: v11 retired the FinCrime Engine B scorer's v10 configuration with the legacy FinCrime engine that called it - under v10 the "+
+				"scorer's own threshold decided; since v11.1.0 its score is a fact the FinCrime pack's control reads against the pack's threshold "+
+				"(%s §1.2, §5.1). Remove %s from this process's environment and configure %s instead; "+
 				"it is refused rather than ignored because a deployment that sets it believes it does something",
-			set, PRD, pluralIt(count))
+			set, PRD, pluralIt(count), strings.Join(FinCrimeRiskFactReplacements, " and "))
 	}},
 	{IdentityCompat, func(set string, count int) string {
 		return fmt.Sprintf(

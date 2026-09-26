@@ -134,7 +134,6 @@
 /api/v1/portal	DELETE,GET,OPTIONS,POST,PUT	registry,source
 /api/v1/recover	POST	registry,source
 /api/v1/recover/verify	GET,POST	source
-/api/v1/register	POST	registry,source
 /api/v1/tenant/{}/delete-confirm	-	source
 /api/v1/tenant/{}/delete-request	-	source
 /api/v1/typed-policies/artifacts	GET	source

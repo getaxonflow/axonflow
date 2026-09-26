@@ -42,7 +42,11 @@ package agent
 //
 // # A CHALLENGE
 //
-// This plane holds nothing for approval, so the engine's challenge answers a
+// On an Enterprise deployment the challenge is HELD (#4370,
+// enforceMCPRequestHolding): one pending approval is queued, the caller is
+// refused approval_pending with the pending_approval naming it, and a retry
+// naming an approved one spends it once. The community build, and a challenge
+// the hold cannot queue (a quorum above one, no admitted requester), answer a
 // deny with reason approval_required naming the plane (PRD v11 §1.13,
 // mapAnchoredDecision).
 //
@@ -66,6 +70,7 @@ import (
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
+	"axonflow/platform/shared/anchoredenforcer"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -100,18 +105,39 @@ func mcpRequestSeamFrom(ctx context.Context) *mcpPassSeam {
 // point writes after it. The final verdict is counted by the entry point, once
 // its wire has projected the decision (recordAnchoredEnforcement).
 func enforceMCPRequest(ctx context.Context, in requestPassInput, handshake pepHandshakeResolution) requestPassEnforcement {
+	enforced, _ := enforceMCPRequestHolding(ctx, in, handshake, nil)
+	return enforced
+}
+
+// enforceMCPRequestHolding is enforceMCPRequest for an entry point that holds
+// a challenge as a pending approval (#4370): the hold is applied to the pass's
+// verdict BEFORE the seam records it, so the body and every audit row the
+// entry point writes carry the held outcome, not the challenge it replaced.
+// A nil hold is enforceMCPRequest exactly.
+func enforceMCPRequestHolding(ctx context.Context, in requestPassInput, handshake pepHandshakeResolution, hold *approvalHoldCall) (requestPassEnforcement, approvalHoldResult) {
 	in.stage = DecisionStageTool
-	in.pep = handshake.pep.Profile()
+	in.pep = handshake.requestProfile()
 	enforced := enforceRequestPass(ctx, mcpRequestSeamScope, in)
 	// An invariant-8 refusal names the admitted enforcement point's capability
 	// gap and counts it (applyAnchoredCapabilityRefusal).
 	enforced.reasons = applyAnchoredCapabilityRefusal(PlaneMCP, handshake, enforced.undischarged, enforced.reasons)
+	held := approvalHoldResult{enforced: enforced}
+	if hold != nil {
+		call := *hold
+		if call.decisionID == "" {
+			// The pass's decision id is the plane's, the one the caller's
+			// answer and the audit row name.
+			call.decisionID = in.decisionID
+		}
+		held = applyApprovalHold(ctx, enforced, call)
+		enforced = held.enforced
+	}
 	if enforced.unavailable != "" {
 		mcpRequestSeamFrom(ctx).record(enforced.engine, "", "", "")
-		return enforced
+		return enforced, held
 	}
 	mcpRequestSeamFrom(ctx).recordRequestPass(enforced, enforced.reasonCode)
-	return enforced
+	return enforced, held
 }
 
 // dischargesAsRequestContent reports whether a field_redact target names the
@@ -154,117 +180,118 @@ var errNoRedactionEngine = errors.New("the decision requires a redaction of the 
 // apply it (errNoRedactionEngine), rows it could not load, a requirement or
 // detector the engine no longer holds, a redactor that returned no text - and
 // the caller fails it closed as an outage.
-func maskMCPStatement(ctx context.Context, enforced requestPassEnforcement, statement string, opts sharedpolicy.EvalOptions, observation *sharedpolicy.Observation) (masked string, redacted bool, refusal string, err error) {
+func maskMCPStatement(ctx context.Context, enforced requestPassEnforcement, statement string, opts sharedpolicy.EvalOptions, observation *sharedpolicy.Observation) (masked string, maskedParams map[string]string, redacted bool, refusal string, err error) {
 	if enforced.decision == nil || enforced.act == nil || enforced.verdict != VerdictAllow {
-		return statement, false, "", nil
+		return statement, nil, false, "", nil
 	}
 	ids, unsupported, err := contentRedactionPolicies(enforced.decision, enforced.act.Policy, observation, mcpRequestPassName, dischargesAsRequestContent)
 	if err != nil || unsupported != "" {
-		return statement, false, unsupported, err
+		return statement, nil, false, unsupported, err
 	}
 	if len(ids) == 0 {
-		return statement, false, "", nil
+		return statement, nil, false, "", nil
 	}
 	engine := sharedpolicy.GetGlobalEngine()
 	if engine == nil {
-		return statement, false, "", errNoRedactionEngine
+		return statement, nil, false, "", errNoRedactionEngine
 	}
-	redact := func(row map[string]interface{}) (map[string]interface{}, bool, error) {
-		result, err := engine.RedactDecided(ctx, []map[string]interface{}{row}, sharedpolicy.PhaseRequest, opts, ids)
-		if err != nil {
-			return nil, false, err
-		}
-		rows, _ := result.Content.([]map[string]interface{})
-		if len(rows) != 1 {
-			return nil, false, errors.New("the redactor returned no row")
-		}
-		return rows[0], result.Redacted, nil
+	// ONE LOAD FOR THE WHOLE DISCHARGE (#4264). The statement and each
+	// parameter's scan text are masked by one batch, under one policy load, so
+	// no two of them can see a different policy set.
+	keys, texts := scannedParameters(opts.Parameters)
+	contents := make([]interface{}, 0, 1+len(texts))
+	contents = append(contents, []map[string]interface{}{{"statement": statement}})
+	for _, text := range texts {
+		contents = append(contents, text)
 	}
-	maskedRow, didMask, err := redact(map[string]interface{}{"statement": statement})
+	results, err := engine.RedactDecidedBatch(ctx, contents, sharedpolicy.PhaseRequest, opts, ids)
 	if err != nil {
-		return statement, false, "", err
+		return statement, nil, false, "", err
 	}
-	out, ok := maskedRow["statement"].(string)
+	if len(results) != len(contents) {
+		return statement, nil, false, "", errors.New("the redactor returned a different number of results than it was given")
+	}
+	rows, _ := results[0].Content.([]map[string]interface{})
+	if len(rows) != 1 {
+		return statement, nil, false, "", errors.New("the redactor returned no row")
+	}
+	out, ok := rows[0]["statement"].(string)
 	if !ok {
-		return statement, false, "", errors.New("the redactor returned no statement")
+		return statement, nil, false, "", errors.New("the redactor returned no statement")
 	}
-	redactText := func(text string) (string, bool, error) {
-		result, err := engine.RedactDecided(ctx, text, sharedpolicy.PhaseRequest, opts, ids)
-		if err != nil {
-			return "", false, err
-		}
-		out, ok := result.Content.(string)
-		if !ok {
-			return "", false, errors.New("the redactor returned no text")
-		}
-		return out, result.Redacted, nil
+	didMask := results[0].Redacted || out != statement
+	params, err := parametersTheRedactionMasks(keys, texts, results[1:])
+	if err != nil {
+		return statement, nil, false, "", err
 	}
-	params, paramsErr := parametersTheRedactionMasks(opts.Parameters, redactText)
-	refusal, err = redactionOutcome(enforced.decision, didMask, params, paramsErr)
-	if refusal != "" || err != nil {
-		return statement, false, refusal, err
+	if refusal := redactionOutcome(enforced.decision, didMask, params); refusal != "" {
+		return statement, nil, false, refusal, nil
 	}
-	return out, true, "", nil
+	return out, params, true, "", nil
 }
 
 // redactionOutcome decides what a permit's redaction of the request means for
-// this wire, from what the redactor did to the statement and what it would do
-// to the parameters. It is a pure function so the ORDER can be tested.
+// this wire, from what it masked in the statement and in the parameters. It is
+// a pure function so the rule can be tested.
 //
-// THE ORDER IS THE POINT (#4264, R3 round 3). A statement the redaction masked
-// nothing in is a refusal that is already CERTAIN: this wire hands back only
-// the statement, so there is nothing to hand over whatever the parameters hold.
-// The parameter probe must therefore never turn that refusal into an outage.
-// It can fail on its own - RedactDecided loads the policies per call, so a row
-// removed between the statement's redaction and the probe's errors - and
-// returning that error first would answer 503, the class a client that fails
-// open on a 5xx runs the tool on, which is the defect this change removes. The
-// probe's error is reported only where it decides something: after a statement
-// the redactor DID mask, where the answer would otherwise be a permit.
-func redactionOutcome(dec *contract.Decision, didMask bool, params []string, paramsErr error) (string, error) {
-	if !didMask {
-		why := "it masks nothing in the statement, the only content this wire hands back"
-		if paramsErr == nil && len(params) > 0 {
-			why += fmt.Sprintf("; it masks the request's parameters (%s), which this wire cannot hand back masked", strings.Join(params, ", "))
-		}
-		return undischargeableRedaction(dec, why), nil
+// ONE ARM (#4264). This wire hands back the masked statement
+// (redacted_statement) AND each masked parameter as the text the request pass
+// scanned it as (redacted_parameters), so a redaction that masks the statement,
+// the parameters or both is DISCHARGED here. It is refused
+// (unsupported_obligation) only when it masked nothing at all: then nothing this
+// wire returns carries what the decision required masked. The parameter masking
+// is part of the discharge, in the same batch as the statement's, so its failure
+// is an outage (the caller's error path), never a refusal: there is no longer a
+// certain refusal that a later probe could turn into a 503.
+func redactionOutcome(dec *contract.Decision, didMask bool, params map[string]string) string {
+	if didMask || len(params) > 0 {
+		return ""
 	}
-	if paramsErr != nil {
-		return "", paramsErr
-	}
-	if len(params) > 0 {
-		return undischargeableRedaction(dec, fmt.Sprintf("it also masks the request's parameters (%s), which this wire cannot hand back masked", strings.Join(params, ", "))), nil
-	}
-	return "", nil
+	return undischargeableRedaction(dec, "it masks nothing in the statement or in any parameter, the content this wire hands back")
 }
 
-// parametersTheRedactionMasks names the request parameters a permit's
-// redaction would mask. Each parameter is redacted ON ITS OWN, as the text the
-// request pass scanned it as (sharedpolicy.ParameterScanText, the one
-// definition the scan uses), by the same policies as the statement: the scan
-// evaluates each parameter's text alone, so a pattern anchored to the start or
-// end of that text matches here as it matched there. A parameter the scan
-// skips is skipped here, and nothing else is.
-func parametersTheRedactionMasks(parameters map[string]interface{}, redactText func(string) (string, bool, error)) ([]string, error) {
-	keys := make([]string, 0, len(parameters))
+// scannedParameters returns, in key order, the parameters the request pass
+// scanned and the text it scanned each as (sharedpolicy.ParameterScanText, the
+// one definition the scan uses: the string itself, or a map or list parameter's
+// JSON serialisation). A parameter the scan skips is skipped here, and nothing
+// else is; a parameter the caller did not send is never claimed.
+func scannedParameters(parameters map[string]interface{}) (keys, texts []string) {
+	all := make([]string, 0, len(parameters))
 	for key := range parameters {
-		keys = append(keys, key)
+		all = append(all, key)
 	}
-	sort.Strings(keys)
-	var masked []string
-	for _, key := range keys {
+	sort.Strings(all)
+	for _, key := range all {
 		text, scanned := sharedpolicy.ParameterScanText(parameters[key])
 		if !scanned {
 			continue
 		}
-		out, didMask, err := redactText(text)
-		if err != nil {
-			return nil, err
+		keys = append(keys, key)
+		texts = append(texts, text)
+	}
+	return keys, texts
+}
+
+// parametersTheRedactionMasks returns, per parameter the redaction masked, its
+// masked scan text: masked as ONE text, exactly as it was scanned, so a span
+// across a map or list parameter's serialisation is masked as it was matched.
+// The caller decodes it where it decodes the parameter.
+func parametersTheRedactionMasks(keys, texts []string, results []*sharedpolicy.ResponseResult) (map[string]string, error) {
+	if len(results) != len(keys) {
+		return nil, fmt.Errorf("the redactor returned %d parameter results for %d parameters", len(results), len(keys))
+	}
+	var masked map[string]string
+	for i, key := range keys {
+		out, ok := results[i].Content.(string)
+		if !ok {
+			return nil, errors.New("the redactor returned no text for parameter " + key)
 		}
-		// Anything but the text handed back unchanged counts as masked: the
-		// direction that refuses.
-		if didMask || out != text {
-			masked = append(masked, key)
+		// Anything but the text handed back unchanged counts as masked.
+		if results[i].Redacted || out != texts[i] {
+			if masked == nil {
+				masked = map[string]string{}
+			}
+			masked[key] = out
 		}
 	}
 	return masked, nil
@@ -286,6 +313,22 @@ func undischargeableRedaction(dec *contract.Decision, why string) string {
 	// contentRedactionPolicies applies the same filter.
 	subject := strings.Join(slices.Compact(named), "; ")
 	return fmt.Sprintf("%s: %s cannot be discharged on %s: %s", contract.ReasonUnsupportedObligation, subject, mcpRequestPassName, why)
+}
+
+// undischargeableParameterRedaction is the refusal of a redaction that masks a
+// parameter for an enforcement point that has not declared it substitutes masked
+// parameters: the obligations, the parameters masked and the capability that
+// was not declared.
+func undischargeableParameterRedaction(dec *contract.Decision, maskedParams map[string]string) string {
+	keys := make([]string, 0, len(maskedParams))
+	for k := range maskedParams {
+		keys = append(keys, "parameters."+k)
+	}
+	sort.Strings(keys)
+	o := mcpParameterRedactionObligation()
+	return undischargeableRedaction(dec, fmt.Sprintf(
+		"it masks %s, and this enforcement point has not declared that it substitutes masked parameters (%s@%d in its PEP handshake)",
+		strings.Join(keys, ", "), o.Type, o.SchemaVersion))
 }
 
 // anchoredPolicyMatches names the controls that determined an anchored verdict,
@@ -338,12 +381,12 @@ func maskIndonesiaBeforeTheRequestPass(ctx context.Context, orgID, tenantID, dec
 // route's satellite entry and its canonical audit row (emit) and is encoded
 // with the pass's engine, subject type and policy bundle. A request the engine
 // could not decide is 503 and decides nothing (PRD v11 §1.7).
-func refuseMCPConnectorRequest(ctx context.Context, w http.ResponseWriter, enforced requestPassEnforcement,
+func refuseMCPConnectorRequest(ctx context.Context, w http.ResponseWriter, enforced requestPassEnforcement, pending *pendingApproval,
 	auditEntry *MCPQueryAuditEntry, startTime time.Time,
 	emit func(verdict string, policyIDs, reasons, redactedFields []string, policyNames map[string]string)) bool {
 	seam := mcpRequestSeamFrom(ctx)
 	if enforced.unavailable != "" {
-		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, enforced.unavailable)
 		emit(mcpVerdictError, []string{"decision_enforcement_unavailable"}, []string{enforced.unavailable}, nil, nil)
 		sendMCPPassRefusal(w, seam, http.StatusServiceUnavailable, enforceCauseMessages[enforced.unavailable])
 		return true
@@ -362,7 +405,9 @@ func refuseMCPConnectorRequest(ctx context.Context, w http.ResponseWriter, enfor
 	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 	logMCPQueryAudit(*auditEntry)
 	emit(mcpVerdictBlocked, result.TriggeredPolicies, []string{result.Reason}, nil, policyIdentityNames(enforced.policyIdentities))
-	sendMCPPassRefusal(w, seam, http.StatusForbidden, "Request blocked: "+result.Reason)
+	// A call held for a person's approval (#4370) is refused the same way,
+	// and the envelope names the pending approval the retry spends.
+	sendMCPPassRefusalWith(w, seam, http.StatusForbidden, "Request blocked: "+result.Reason, pending)
 	return true
 }
 
@@ -393,7 +438,33 @@ type mcpStatementVerdict struct {
 	blockReason string
 	// statement is what the caller forwards: masked when redacted.
 	statement string
-	redacted  bool
+	// redacted is true when the redaction masked the statement or any
+	// parameter; statementRedacted only when it masked the statement.
+	redacted          bool
+	statementRedacted bool
+	// redactedParameters are the masked scan texts of the parameters the
+	// redaction masked, keyed by parameter (#4264).
+	redactedParameters map[string]string
+}
+
+// redactedFields names what the redaction masked, as the audit row records it:
+// "statement" when the statement was masked, then "parameters.<key>" for each
+// masked parameter in key order (#4264: a parameters-only redaction is recorded
+// as what it masked, never as the statement).
+func (v mcpStatementVerdict) redactedFields() []string {
+	var out []string
+	if v.statementRedacted {
+		out = append(out, "statement")
+	}
+	keys := make([]string, 0, len(v.redactedParameters))
+	for k := range v.redactedParameters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, "parameters."+k)
+	}
+	return out
 }
 
 // projectMCPStatement projects the request pass onto check-input and
@@ -429,7 +500,7 @@ func projectMCPStatement(ctx context.Context, orgID string, enforced requestPass
 				contract.ReasonUnsupportedObligation, legacyValidatorIndonesia, reason))
 		}
 	}
-	masked, _, refusal, err := maskMCPStatement(ctx, enforced, evaluated, opts, observation)
+	masked, maskedParams, _, refusal, err := maskMCPStatement(ctx, enforced, evaluated, opts, observation)
 	switch {
 	case err != nil:
 		// A redaction the pass could not attempt is an outage, never the
@@ -445,5 +516,14 @@ func projectMCPStatement(ctx context.Context, orgID string, enforced requestPass
 	case refusal != "":
 		return refuse(refusal)
 	}
-	return mcpStatementVerdict{allowed: true, reasonCode: enforced.reasonCode, statement: masked, redacted: masked != original}
+	// A masked parameter is handed back only to an enforcement point that
+	// declared it substitutes one (#4264, mcpParameterRedactionObligation):
+	// every other caller would run its tool on the raw parameters while the
+	// audit row records them masked, so it is refused, the statement's
+	// redaction included.
+	if len(maskedParams) > 0 && !pepSubstitutesParameters(handshake) {
+		return refuse(undischargeableParameterRedaction(enforced.decision, maskedParams))
+	}
+	return mcpStatementVerdict{allowed: true, reasonCode: enforced.reasonCode, statement: masked,
+		redacted: masked != original || len(maskedParams) > 0, statementRedacted: masked != original, redactedParameters: maskedParams}
 }

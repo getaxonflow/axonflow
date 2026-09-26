@@ -23,7 +23,7 @@
 # Prerequisites:
 #   - Orchestrator + agent running at Evaluation or Enterprise tier
 #     (./scripts/setup-e2e-testing.sh evaluation | enterprise)
-#   - HITL enabled (`AXONFLOW_HITL_ENABLED=true`)
+#   - (`AXONFLOW_HITL_ENABLED` is not needed: ignored since v11.1.0, #4382)
 #   - A dynamic policy loaded that matches the demo step (see README).
 #   - jq installed locally
 #

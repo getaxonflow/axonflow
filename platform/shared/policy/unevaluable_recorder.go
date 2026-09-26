@@ -49,6 +49,10 @@ const (
 	// ReasonNonStringPattern: a regex condition's Value was not a Go string,
 	// so no compile was even attempted.
 	ReasonNonStringPattern = "non_string_pattern"
+	// ReasonInvalidPattern: a regex condition's Value was a string that does
+	// not compile, so whether the field matches is not known (#4249 row
+	// 5674229132). Before, it was an unrecorded non-match.
+	ReasonInvalidPattern = "invalid_pattern"
 	// ReasonConditionsUnmarshalFailed: a stored policy's conditions JSON
 	// failed to unmarshal. Recorded by the orchestrator at the point it
 	// discards that error (cachedPolicyToDynamicPolicy in

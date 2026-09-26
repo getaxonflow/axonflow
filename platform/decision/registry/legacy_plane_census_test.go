@@ -31,6 +31,7 @@ var reviewedPlanes = []string{
 	"map",
 	"mcp",
 	"openai_compatible",
+	"orchestrator_request",
 	"orchestrator_response",
 	"policy_simulation",
 	"policy_test",

@@ -104,6 +104,11 @@ type rateLimitEnvelope struct {
 	Window    string       `json:"window,omitempty"`
 	ResetsAt  *time.Time   `json:"resets_at,omitempty"`
 	Upgrade   upgradeBlock `json:"upgrade"`
+	// Code is the refusal's machine-readable code where it has one: a tier
+	// admission refusal's ERR_TIER_LIMIT_<DIMENSION> on the MCP server
+	// (writeMCPAdmissionRefused). Omitted on every V1 Plugin Pro limit, whose
+	// envelope is unchanged.
+	Code string `json:"code,omitempty"`
 }
 
 // upgradeBlock carries the upgrade-prompt content. Same shape across every
@@ -318,7 +323,7 @@ func writeRateLimitErrorJSONRPC(w http.ResponseWriter, reqID interface{}, tenant
 			BuyURL:     v1ProUpgradeBuyURL,
 		},
 	}
-	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, retryAfterSeconds(resetsAt))
+	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, http.StatusTooManyRequests, retryAfterSeconds(resetsAt))
 }
 
 // writeMinuteRateLimitErrorJSONRPC emits the per-minute envelope (#4261)
@@ -346,7 +351,7 @@ func writeMinuteRateLimitErrorJSONRPC(w http.ResponseWriter, reqID interface{}, 
 			BuyURL:     v1ProUpgradeBuyURL,
 		},
 	}
-	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, retrySecs)
+	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, http.StatusTooManyRequests, retrySecs)
 }
 
 // renderPerMinuteWording names Pro's higher limit only to a Free caller;
@@ -358,12 +363,17 @@ func renderPerMinuteWording(tier string, limit int) string {
 	return fmt.Sprintf(wordingPerMinute, limit)
 }
 
-// writeEnvelopeJSONRPC answers HTTP 429 with the envelope inside a JSON-RPC
-// result: `result.content[0].text`, isError true. The installed plugin hooks
-// read an envelope only from a 429 or a 403 and look for it at the body root
-// or in `result.content[0].text`; before #4261 this answer was a 200, so every
-// hook passed it by as an ordinary result and allowed the call silently.
-func writeEnvelopeJSONRPC(w http.ResponseWriter, reqID interface{}, tenantID string, envelope rateLimitEnvelope, retrySecs int) {
+// writeEnvelopeJSONRPC answers status with the envelope inside a JSON-RPC
+// result: `result.content[0].text`, isError true. The rate limits answer 429
+// and the tier gates 403 (#4274), the statuses the REST paths answer. The
+// installed plugin hooks read an envelope only from a 429 or a 403 and look
+// for it at the body root or in `result.content[0].text`; before #4261 the
+// rate limits, and before #4274 the tier gates, answered a 200 here.
+//
+// Retry-After is set only when retrySecs is positive: a limit with a reset
+// time has one, an object-count limit or a feature gate does not, as on the
+// REST twin writeFreeLimitError.
+func writeEnvelopeJSONRPC(w http.ResponseWriter, reqID interface{}, tenantID string, envelope rateLimitEnvelope, status, retrySecs int) {
 	envelopeJSON, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		log.Printf("[V1 Pro envelope JSON-RPC] tenant=%s marshal failed: %v", tenantID, err)
@@ -373,8 +383,10 @@ func writeEnvelopeJSONRPC(w http.ResponseWriter, reqID interface{}, tenantID str
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Axonflow-Tier-Limit", envelope.LimitType)
 	w.Header().Set("X-Axonflow-Upgrade-URL", v1ProUpgradeCompareURL)
-	w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySecs))
-	w.WriteHeader(http.StatusTooManyRequests)
+	if retrySecs > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySecs))
+	}
+	w.WriteHeader(status)
 
 	resp := map[string]interface{}{
 		"jsonrpc": "2.0",

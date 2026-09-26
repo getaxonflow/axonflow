@@ -6,19 +6,21 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	sharedaudit "axonflow/platform/shared/audit"
 )
 
-// #2693 — legacy in-memory HITL gate-decision audit. The HITLWorkflowEngine
-// (AXONFLOW_HITL_ENABLED, default-OFF) ENFORCES block / require_approval policy
-// verdicts — failing the workflow on block, pausing on require_approval — but
-// previously left no audit row, asymmetric with the WCP path. These tests prove
-// each gated verdict now emits a canonical step_gate audit_logs entry via the
-// established LogWorkflowOperation writer (no new writer/table), mapped onto the
-// canonical policy_decision vocabulary. Red-on-revert: drop the auditStepGate
-// call from a switch arm and the entry count assertion fails.
+// #2693 / #2698 — the multi-agent step gate's audit. The gate (mapStepGate,
+// wired onto the declarative WorkflowEngine on every route since #4382; the
+// in-memory HITL engine that also ran it is retired, #4249 row 5774060413)
+// ENFORCES block and withholds require_approval, and each gated verdict emits a
+// canonical step_gate audit_logs entry via the established LogWorkflowOperation
+// writer, mapped onto the canonical policy_decision vocabulary. A checker ERROR
+// proceeds (the #2698 design decision) and is recorded as an `error` row.
+// Red-on-revert: drop the auditStepGate call from a switch arm and the entry
+// count assertion fails.
 
 // recordingHITLAudit captures the WorkflowAuditEntry the engine emits, so the
 // step_gate decision can be asserted deterministically with no async worker or
@@ -51,7 +53,17 @@ func gateTestUser() UserContext {
 	return UserContext{TenantID: "tenant-1", OrgID: "org-1", Email: "user@org-1.example", Role: "analyst"}
 }
 
-func TestHITLWorkflowEngine_Block_WritesStepGateAudit(t *testing.T) {
+// gatedTestEngine is the declarative engine deciding every step through
+// checker, its rows written to audit (nil writes none), with an llm-call step
+// that completes.
+func gatedTestEngine(checker HITLPolicyChecker, audit hitlAuditLogger) *WorkflowEngine {
+	engine := newGateTestEngine()
+	engine.stepProcessors["llm-call"] = &gateNoopProcessor{}
+	engine.SetStepGate(checker, audit)
+	return engine
+}
+
+func TestTheStepGate_Block_WritesStepGateAudit(t *testing.T) {
 	checker := NewMockPolicyChecker()
 	checker.SetResult("step1", &PolicyCheckResult{
 		Allowed:    false,
@@ -61,23 +73,23 @@ func TestHITLWorkflowEngine_Block_WritesStepGateAudit(t *testing.T) {
 		Reason:     "SQL injection detected",
 		Severity:   "critical",
 	})
-	hitlEngine := NewHITLWorkflowEngine(newGateTestEngine(), checker, nil)
 	rec := &recordingHITLAudit{}
-	hitlEngine.SetAuditLogger(rec)
 
-	_, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+	_, err := gatedTestEngine(checker, rec).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
 	if err == nil {
-		t.Fatal("expected a block error from ExecuteWithHITL")
+		t.Fatal("expected a block error from ExecuteWorkflow")
 	}
 
 	if len(rec.entries) != 1 {
 		t.Fatalf("block must emit exactly one step_gate audit entry, got %d", len(rec.entries))
 	}
-	e := rec.entries[0]
-	assertGateEntry(t, e, "block", sharedaudit.DecisionBlocked)
+	assertGateEntry(t, rec.entries[0], "block", sharedaudit.DecisionBlocked)
 }
 
-func TestHITLWorkflowEngine_RequireApproval_WritesStepGateAudit(t *testing.T) {
+// A require_approval verdict is withheld (#4382): the step never runs, and its
+// one step_gate row records the withholding as blocked, never needs_approval,
+// which would count a hold that does not exist.
+func TestTheStepGate_RequireApproval_IsWithheldAndWritesABlockedStepGateAudit(t *testing.T) {
 	checker := NewMockPolicyChecker()
 	checker.SetResult("step1", &PolicyCheckResult{
 		Allowed:    false,
@@ -87,36 +99,26 @@ func TestHITLWorkflowEngine_RequireApproval_WritesStepGateAudit(t *testing.T) {
 		Reason:     "Query requires human oversight",
 		Severity:   "high",
 	})
-	hitlEngine := NewHITLWorkflowEngine(newGateTestEngine(), checker, NewMockApprovalService())
 	rec := &recordingHITLAudit{}
-	hitlEngine.SetAuditLogger(rec)
 
-	exec, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if exec.Status != StatusPaused {
-		t.Fatalf("status = %q, want paused", exec.Status)
+	exec, err := gatedTestEngine(checker, rec).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+	if err == nil || exec.Status != "failed" || !strings.Contains(err.Error(), mapApprovalRequiresDurableRecord) {
+		t.Fatalf("execution = (%v, %v), want failed naming %s", exec.Status, err, mapApprovalRequiresDurableRecord)
 	}
 
 	if len(rec.entries) != 1 {
 		t.Fatalf("require_approval must emit exactly one step_gate audit entry, got %d", len(rec.entries))
 	}
-	assertGateEntry(t, rec.entries[0], "require_approval", sharedaudit.DecisionNeedsApproval)
+	assertGateEntry(t, rec.entries[0], "block", sharedaudit.DecisionBlocked)
 }
 
-// TestHITLWorkflowEngine_Allowed_NoStepGateAudit: an allowed workflow gates
-// nothing, so no step_gate row is written (audit is reserved for the
-// block/require_approval terminal verdicts).
-func TestHITLWorkflowEngine_Allowed_NoStepGateAudit(t *testing.T) {
-	checker := NewMockPolicyChecker() // default → Allowed:true
-	engine := newGateTestEngine()
-	engine.stepProcessors["llm-call"] = &gateNoopProcessor{}
-	hitlEngine := NewHITLWorkflowEngine(engine, checker, nil)
+// A verdict that names no action gates nothing, so no step_gate row is written.
+// (An "allow" writes one, PRD v11 §5.7; the plane's checker always names one.)
+func TestTheStepGate_NoAction_NoStepGateAudit(t *testing.T) {
+	checker := NewMockPolicyChecker() // default → Allowed:true, no action
 	rec := &recordingHITLAudit{}
-	hitlEngine.SetAuditLogger(rec)
 
-	exec, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+	exec, err := gatedTestEngine(checker, rec).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,41 +126,50 @@ func TestHITLWorkflowEngine_Allowed_NoStepGateAudit(t *testing.T) {
 		t.Fatalf("status = %q, want completed", exec.Status)
 	}
 	if len(rec.entries) != 0 {
-		t.Fatalf("allowed workflow must emit no step_gate audit, got %d", len(rec.entries))
+		t.Fatalf("a verdict with no action must emit no step_gate audit, got %d", len(rec.entries))
 	}
 }
 
-// TestHITLWorkflowEngine_Block_NoAuditLogger_NoPanic: with no audit logger wired
-// (the default state), a block path must still enforce without panicking.
-func TestHITLWorkflowEngine_Block_NoAuditLogger_NoPanic(t *testing.T) {
+// With no audit logger wired, a block still enforces without panicking.
+func TestTheStepGate_Block_NoAuditLogger_NoPanic(t *testing.T) {
 	checker := NewMockPolicyChecker()
 	checker.SetResult("step1", &PolicyCheckResult{Allowed: false, Action: "block", PolicyName: "p"})
-	hitlEngine := NewHITLWorkflowEngine(newGateTestEngine(), checker, nil)
-	// SetAuditLogger intentionally NOT called.
 
-	if _, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser()); err == nil {
+	if _, err := gatedTestEngine(checker, nil).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser()); err == nil {
 		t.Fatal("expected a block error")
 	}
 }
 
-// TestHITLWorkflowEngine_PolicyError_WritesErrorStepGateAudit (#2698): when the
-// policy checker returns an ERROR, the engine fails OPEN (proceeds for
-// availability) — but the errored governance verdict must no longer be lost. It
-// now emits a canonical `error` step_gate audit row, while the workflow still
-// runs to completion (fail-open behavior unchanged). Red-on-revert: drop the
-// auditStepGateError call and the entry-count assertion fails.
-func TestHITLWorkflowEngine_PolicyError_WritesErrorStepGateAudit(t *testing.T) {
+// A warn or log verdict runs the step and writes no step_gate row. The plane's
+// checker answers neither; the arms serve other checkers.
+func TestTheStepGate_WarnAndLog_RunTheStepWithNoStepGateAudit(t *testing.T) {
+	for _, action := range []string{"warn", "log"} {
+		checker := NewMockPolicyChecker()
+		checker.SetResult("step1", &PolicyCheckResult{Allowed: true, Action: action, PolicyName: "p"})
+		rec := &recordingHITLAudit{}
+
+		exec, err := gatedTestEngine(checker, rec).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+		if err != nil || exec.Status != "completed" {
+			t.Errorf("%s: execution = (%v, %v), want completed", action, exec.Status, err)
+		}
+		if len(rec.entries) != 0 {
+			t.Errorf("%s: %d step_gate rows, want none", action, len(rec.entries))
+		}
+	}
+}
+
+// (#2698) When the checker returns an ERROR the step proceeds (fail-open, for
+// availability; the plane's own checker never returns one), and the errored
+// verdict is recorded as a canonical `error` step_gate row. Red-on-revert: drop
+// the auditStepGateError call and the entry-count assertion fails.
+func TestTheStepGate_PolicyError_WritesErrorStepGateAudit(t *testing.T) {
 	checker := NewMockPolicyChecker()
 	checker.SetError(errors.New("policy engine unreachable"))
-	engine := newGateTestEngine()
-	engine.stepProcessors["llm-call"] = &gateNoopProcessor{}
-	hitlEngine := NewHITLWorkflowEngine(engine, checker, nil)
 	rec := &recordingHITLAudit{}
-	hitlEngine.SetAuditLogger(rec)
 
-	exec, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+	exec, err := gatedTestEngine(checker, rec).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
 	if err != nil {
-		t.Fatalf("fail-open: expected no error from ExecuteWithHITL, got %v", err)
+		t.Fatalf("fail-open: expected no error from ExecuteWorkflow, got %v", err)
 	}
 	if exec.Status != "completed" {
 		t.Fatalf("fail-open must proceed to completion, status = %q", exec.Status)
@@ -185,18 +196,13 @@ func TestHITLWorkflowEngine_PolicyError_WritesErrorStepGateAudit(t *testing.T) {
 	}
 }
 
-// TestHITLWorkflowEngine_PolicyError_NoAuditLogger_NoPanic (#2698): with no audit
-// logger wired (the default state), the fail-open error path must still proceed
+// (#2698) With no audit logger wired, the fail-open error path still proceeds
 // without panicking.
-func TestHITLWorkflowEngine_PolicyError_NoAuditLogger_NoPanic(t *testing.T) {
+func TestTheStepGate_PolicyError_NoAuditLogger_NoPanic(t *testing.T) {
 	checker := NewMockPolicyChecker()
 	checker.SetError(errors.New("policy engine unreachable"))
-	engine := newGateTestEngine()
-	engine.stepProcessors["llm-call"] = &gateNoopProcessor{}
-	hitlEngine := NewHITLWorkflowEngine(engine, checker, nil)
-	// SetAuditLogger intentionally NOT called.
 
-	exec, err := hitlEngine.ExecuteWithHITL(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
+	exec, err := gatedTestEngine(checker, nil).ExecuteWorkflow(context.Background(), gateTestWorkflow(), map[string]interface{}{}, gateTestUser())
 	if err != nil {
 		t.Fatalf("fail-open with no logger: expected no error, got %v", err)
 	}

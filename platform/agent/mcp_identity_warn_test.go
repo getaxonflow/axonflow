@@ -93,6 +93,7 @@ func TestWarnIfTokenWithoutValidator_Quiet(t *testing.T) {
 // constructors return ErrEnterpriseOnly, so nothing registers — a harmless
 // no-op, exactly as a community deployment behaves.
 func TestEnsureFleetValidatorsRegistered_Idempotent(t *testing.T) {
+	restoreIdentityWiring(t)
 	sharedidentity.ResetRegistryForTest()
 	t.Cleanup(sharedidentity.ResetRegistryForTest)
 	ensureFleetValidatorsRegistered()

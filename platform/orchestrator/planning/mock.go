@@ -117,6 +117,53 @@ func (m *MockRepository) UpdatePlanStatusAtomic(ctx context.Context, planID stri
 	return nil
 }
 
+// MarkExecutingWithPendingBinding mirrors the Postgres statement (#4249).
+func (m *MockRepository) MarkExecutingWithPendingBinding(ctx context.Context, planID string) error {
+	if m.err != nil {
+		return m.err
+	}
+	if planID == "" {
+		return ErrInvalidPlanID
+	}
+	plan, ok := m.plans[planID]
+	if !ok || plan.Status != PlanStatusPending {
+		return ErrPlanAlreadyRun
+	}
+	result, err := executionBinding("")
+	if err != nil {
+		return err
+	}
+	plan.Status = PlanStatusExecuting
+	if plan.ExecutionMode == "confirm" || plan.ExecutionMode == "step" {
+		plan.ExecutionResult = result
+	}
+	return nil
+}
+
+// BindExecutionWorkflow mirrors the Postgres statement: an executing plan whose
+// binding is still empty, once (#4249).
+func (m *MockRepository) BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error {
+	if m.err != nil {
+		return m.err
+	}
+	if planID == "" || workflowID == "" {
+		return ErrInvalidPlanID
+	}
+	plan, ok := m.plans[planID]
+	if !ok {
+		return ErrPlanWorkflowBindRefused
+	}
+	if id, marked := plan.ExecutionBinding(); !marked || id != "" {
+		return ErrPlanWorkflowBindRefused
+	}
+	result, err := executionBinding(workflowID)
+	if err != nil {
+		return err
+	}
+	plan.ExecutionResult = result
+	return nil
+}
+
 // CleanupExpiredPlans removes expired plans from mock storage
 func (m *MockRepository) CleanupExpiredPlans(ctx context.Context) (int, error) {
 	if m.err != nil {

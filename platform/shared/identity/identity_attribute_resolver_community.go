@@ -44,6 +44,7 @@ type ResolvedIdentity struct {
 type IdentityAttributeResolver interface {
 	RoleResolver
 	Resolve(ctx context.Context, orgID, email string) (ResolvedIdentity, error)
+	ResolveSegments(ctx context.Context, orgID, email string) ([]Segment, error)
 }
 
 // NewIdentityAttributeResolver is Enterprise-only in community builds — SCIM,

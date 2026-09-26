@@ -14,8 +14,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
-
 	"axonflow/platform/agent/hitl/queue"
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
@@ -29,11 +27,12 @@ type wcpHITLMirrorResolver struct {
 // ResolveStepMirror flips the `wcp_step_gate` row for (workflowID, stepID) to
 // a terminal status and writes its hitl_approval_history entry.
 //
-// The row is addressed by workflow_control.DeriveHITLApprovalID - the same
-// fixed-namespace UUID v5 the adapter wrote it under and the same value the
-// approve/reject HTTP response projects as `approval_id`. There is no lookup
-// and no scan: the identifier is a pure function of the pair, so this cannot
-// resolve the wrong row and cannot miss a row whose id drifted.
+// The row is the step's CURRENT hold (queue.CurrentHoldID): its pending row,
+// else its newest. A step can be held more than once - each hold is its own
+// row, named workflow_control.DeriveHITLApprovalIDForHold(workflow, step, n)
+// (#4249 row 5700138809) - so the first hold's id is not a pure function of
+// the pair any more, and resolving it would leave a re-hold pending while its
+// step is decided. The approve/reject response projects the same lookup.
 //
 // WHY NOT REUSE hitl.Repository.UpdateStatus, WHICH DOES THE SAME UPDATE.
 // Two reasons, both structural rather than stylistic:
@@ -56,14 +55,7 @@ func (r *wcpHITLMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, te
 	if r == nil || r.db == nil {
 		return
 	}
-	derived := workflow_control.DeriveHITLApprovalID(workflowID, stepID)
-	if derived == "" {
-		return
-	}
-	requestID, err := uuid.Parse(derived)
-	if err != nil {
-		log.Printf("[WCP-HITL] mirror resolve: cannot parse derived approval id for %s/%s: %v",
-			logutil.Sanitize(workflowID), logutil.Sanitize(stepID), err)
+	if workflowID == "" || stepID == "" {
 		return
 	}
 	if orgID == "" {
@@ -107,6 +99,21 @@ func (r *wcpHITLMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, te
 		reviewerID = "system"
 	}
 
+	requestID, found, err := queue.CurrentHoldID(ctx, r.db, orgID, wcpStepHold(workflowID, stepID))
+	if err != nil {
+		log.Printf("[WCP-HITL] mirror resolve FAILED for %s/%s: the current hold could not be read: %v",
+			logutil.Sanitize(workflowID), logutil.Sanitize(stepID), err)
+		queue.RecordMirrorResolve("error")
+		return
+	}
+	if !found {
+		// No row: no adapter was wired when the gate fired, or the enqueue
+		// was refused. Counted as not_pending, as the resolve of a missing row
+		// always was.
+		queue.RecordMirrorResolve("not_pending")
+		return
+	}
+
 	err = queue.ResolveMirror(ctx, r.db, queue.StatusParams{
 		OrgID:     orgID,
 		RequestID: requestID,
@@ -142,9 +149,11 @@ func (r *wcpHITLMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, te
 	}
 }
 
-// StepMirrorExpiry reads the expiry of the `wcp_step_gate` row for (workflowID,
-// stepID), addressed by the same derived id ResolveStepMirror resolves (#4254).
-// expired reports that the queue has already expired the row.
+// StepMirrorExpiry reads the expiry of the step's CURRENT hold - the row
+// ResolveStepMirror resolves (#4254, #4249 row 5700138809) - so a step held
+// again is judged by its own window, not by its first hold's. The lookup and
+// the read share one transaction. expired reports that the queue has already
+// expired the row.
 //
 // A workflow with no org_id reports no row rather than an error: the queue's
 // writer refuses an empty org (RLS on hitl_approval_queue), so no row can exist
@@ -153,9 +162,28 @@ func (r *wcpHITLMirrorResolver) StepMirrorExpiry(ctx context.Context, orgID, ten
 	if r == nil || r.db == nil || orgID == "" {
 		return time.Time{}, false, false, nil
 	}
-	requestID, err := uuid.Parse(workflow_control.DeriveHITLApprovalID(workflowID, stepID))
-	if err != nil {
-		return time.Time{}, false, false, fmt.Errorf("derive the approval id for %s/%s: %w", workflowID, stepID, err)
+	expiresAt, expired, found, err := queue.CurrentHoldExpiry(ctx, r.db, orgID, wcpStepHold(workflowID, stepID))
+	if errors.Is(err, queue.ErrHoldNotPending) {
+		return time.Time{}, false, true, fmt.Errorf("%w: %v", workflow_control.ErrApprovalHoldDecided, err)
 	}
-	return queue.ApprovalExpiry(ctx, r.db, orgID, requestID)
+	return expiresAt, expired, found, err
+}
+
+// wcpStepHold names a WCP step's holds for the queue's by-id reads.
+func wcpStepHold(workflowID, stepID string) queue.StepHold {
+	return queue.StepHold{WorkflowID: workflowID, StepID: stepID, IDForHold: wcpHoldID(workflowID, stepID)}
+}
+
+// CurrentHoldID reads the request id of the step's current hold, the value the
+// approve/reject responses project as `approval_id`. found is false when the
+// step has no row.
+func (r *wcpHITLMirrorResolver) CurrentHoldID(ctx context.Context, orgID, tenantID, workflowID, stepID string) (string, bool, error) {
+	if r == nil || r.db == nil || orgID == "" {
+		return "", false, nil
+	}
+	id, found, err := queue.CurrentHoldID(ctx, r.db, orgID, wcpStepHold(workflowID, stepID))
+	if err != nil || !found {
+		return "", false, err
+	}
+	return id.String(), true, nil
 }

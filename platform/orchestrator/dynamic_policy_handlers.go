@@ -622,24 +622,22 @@ func (h *DynamicPolicyAPIHandler) handleExport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Export only dynamic policies - the service will need to filter
-	// For now, we'll get all and filter client-side (or update service to accept category filter)
+	// THE EXPORT IS EVERY ROW THE LIST RETURNS, NOT THE ROWS WHOSE CATEGORY
+	// BEGINS dynamic- OR media- (#4293). This filtered on
+	// isValidDynamicPolicyCategory, withheld every other row, said nothing
+	// about what it withheld, and answered 200. The rows it dropped are
+	// ordinary: the policy-CRUD writer INSERTs with no category, so they land
+	// NULL (migrations/core/030 makes the column nullable), and an unfiltered
+	// list over the same table returns them. PRD v11 §1.11 keeps these read
+	// routes so an organization can see AND export its legacy rows after
+	// upgrading. A file that looks complete and is not breaks that promise.
+	// This now answers the same set as the list and as the CRUD family's
+	// /api/v1/policies/export, which reads the same ExportPolicies.
 	response, err := h.service.ExportPolicies(r.Context(), tenantID, h.getOrgID(r))
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] ExportPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to export dynamic policies")
 		return
-	}
-
-	// Filter to only include dynamic/media policies in the export
-	if response != nil {
-		filtered := make([]PolicyResource, 0)
-		for _, p := range response.Policies {
-			if isValidDynamicPolicyCategory(p.Category) {
-				filtered = append(filtered, p)
-			}
-		}
-		response.Policies = filtered
 	}
 
 	h.writeJSON(w, http.StatusOK, response)

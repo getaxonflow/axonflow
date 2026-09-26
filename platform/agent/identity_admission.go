@@ -84,7 +84,11 @@ func noteIdentityWiring(revocations sharedidentity.RevocationChecker, configs sh
 		identityDeployment.HasRevocation = true
 	}
 	if configs != nil {
+		// configs is passed only when sharedidentity.OIDCRealmSourceWiring
+		// reported the source wired, which is the one predicate HasOIDC
+		// declares (#4249).
 		identityOIDCConfigs = configs
+		identityDeployment.HasOIDC = true
 	}
 	if directoryWired {
 		identityDeployment.HasDirectory = true
@@ -122,8 +126,15 @@ func identityExtraRealmSources(reg *sharedidentity.RealmRegistry) ([]sharedident
 		// A real construction failure. It is returned, not logged and
 		// swallowed: a deployment that HAS an OIDC configuration and could not
 		// build a realm source for it would otherwise silently report every
-		// IdP token as UNKNOWN_REALM, which reads exactly like EX-47 and is
-		// not.
+		// IdP token as UNKNOWN_REALM at the identity gate, which reads exactly
+		// like EX-47 and is not.
+		//
+		// That is the FIRST of two unknown-realm gates. The second is the
+		// anchored engine's (pdp.Registry.Admit), which refuses an actor whose
+		// realm is not in the deployment vocabulary even when this source
+		// registered it; HasOIDC, set in noteIdentityWiring, is what declares
+		// `oidc` there (#4249). Before it, a successful registration still
+		// ended in unknown_realm on the MCP-server session.
 		return nil, err
 	}
 }

@@ -323,6 +323,15 @@ type fakeSegmentResolver struct {
 	err      error
 }
 
+// ResolveSegments completes the resolver interface; it counts nothing, so the
+// Resolve call count stays the observability resolve's own.
+func (f *fakeSegmentResolver) ResolveSegments(_ context.Context, _, _ string) ([]sharedidentity.Segment, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resolved.Segments, nil
+}
+
 func (f *fakeSegmentResolver) Resolve(_ context.Context, _, _ string) (sharedidentity.ResolvedIdentity, error) {
 	f.mu.Lock()
 	f.calls++

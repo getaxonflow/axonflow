@@ -40,16 +40,19 @@ const (
 
 // Common errors
 var (
-	ErrPlanNotFound    = errors.New("plan not found")
-	ErrPlanExpired     = errors.New("plan has expired")
-	ErrPlanAlreadyRun  = errors.New("plan has already been executed")
-	ErrPlanCancelled   = errors.New("plan has been cancelled")
-	ErrInvalidPlanID   = errors.New("invalid plan ID")
-	ErrInvalidWorkflow = errors.New("invalid workflow definition")
-	ErrVersionConflict = errors.New("version conflict: plan was modified by another request")
-	ErrVersionNotFound = errors.New("version not found")
-	ErrMaxPlans        = errors.New("maximum number of stored plans reached")
-	ErrMaxVersions     = errors.New("maximum number of versions per plan reached")
+	ErrPlanNotFound   = errors.New("plan not found")
+	ErrPlanExpired    = errors.New("plan has expired")
+	ErrPlanAlreadyRun = errors.New("plan has already been executed")
+	ErrPlanCancelled  = errors.New("plan has been cancelled")
+	// ErrPlanWorkflowBindRefused: a plan's executor workflow is bound only
+	// while the plan is executing, and only once (#4249).
+	ErrPlanWorkflowBindRefused = errors.New("the plan's workflow can be bound only once, while the plan is executing")
+	ErrInvalidPlanID           = errors.New("invalid plan ID")
+	ErrInvalidWorkflow         = errors.New("invalid workflow definition")
+	ErrVersionConflict         = errors.New("version conflict: plan was modified by another request")
+	ErrVersionNotFound         = errors.New("version not found")
+	ErrMaxPlans                = errors.New("maximum number of stored plans reached")
+	ErrMaxVersions             = errors.New("maximum number of versions per plan reached")
 )
 
 // Plan represents a stored multi-agent plan
@@ -186,4 +189,43 @@ type RollbackPlanRequest struct {
 // CancelPlanRequest contains the data needed to cancel a plan
 type CancelPlanRequest struct {
 	Reason string `json:"reason,omitempty"`
+}
+
+// planExecutionBinding is the execution_result an executing confirm/step plan
+// carries: the workflow-control workflow its executor created (#4249). It is
+// written EMPTY in the same statement that marks the plan executing, and filled
+// once when the executor returns; a completed or failed plan's
+// execution_result is its result instead. Any future writer of
+// execution_result on an executing plan silently unbinds it: the plan then
+// reads as unbound and falls back to selection by name.
+type planExecutionBinding struct {
+	WCPWorkflowID *string `json:"wcp_workflow_id"`
+}
+
+func executionBinding(workflowID string) (json.RawMessage, error) {
+	return json.Marshal(planExecutionBinding{WCPWorkflowID: &workflowID})
+}
+
+// ExecutionBinding reports the workflow-control workflow bound to this plan
+// (#4249). marked is true when the plan carries a binding at all: a confirm or
+// step plan marked executing on this release. id is "" while the executor has
+// not yet returned. A plan that is not executing, or that began executing
+// before the binding existed, is ("", false); callers select its workflow by
+// name, refusing what that selection cannot establish.
+func (p *Plan) ExecutionBinding() (id string, marked bool) {
+	if p == nil || p.Status != PlanStatusExecuting || len(p.ExecutionResult) == 0 {
+		return "", false
+	}
+	var b planExecutionBinding
+	if err := json.Unmarshal(p.ExecutionResult, &b); err != nil || b.WCPWorkflowID == nil {
+		return "", false
+	}
+	return *b.WCPWorkflowID, true
+}
+
+// BoundWorkflowID is ExecutionBinding's id: "" when there is no binding or it
+// is still empty.
+func (p *Plan) BoundWorkflowID() string {
+	id, _ := p.ExecutionBinding()
+	return id
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/authoring"
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/decision/contract"
@@ -250,7 +251,7 @@ func TestASoleAdministratorAuthorsAPolicyEndToEndThroughTheRoute(t *testing.T) {
 			assertOmitsTheWholeTemplate(t, "publish", body)
 
 			rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-				typedAuthoringActivateRequest{Digest: digest, Reason: "first activation"}, gatewayHeaders())
+				typedAuthoringActivateRequest{Digest: digest, Reason: "first activation", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, communityDocument())}, gatewayHeaders())
 			if rr.Code != http.StatusOK {
 				t.Fatalf("activate: status=%d body=%s", rr.Code, rr.Body.String())
 			}
@@ -291,6 +292,23 @@ func TestASoleAdministratorAuthorsAPolicyEndToEndThroughTheRoute(t *testing.T) {
 			}
 		})
 	}
+}
+
+// acknowledgedOmissions is the acknowledge_template_omissions list a client
+// sends to activate doc: the organization-template policy ids doc omits or
+// changes, nil when it carries the template as shipped (#4249 row 5672856881).
+// It is computed from the document as the server computes it, never typed out,
+// so the tests follow the template.
+func acknowledgedOmissions(t *testing.T, doc *authoring.Document) []string {
+	t.Helper()
+	report, err := activation.ReportTemplateOmissions(&doc.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report == nil {
+		return nil
+	}
+	return report.Acknowledgement()
 }
 
 // assertOmitsTheWholeTemplate holds a response's template omission report for a
@@ -555,7 +573,7 @@ func TestAStockDeploymentAuthorsWithTheVariableUnset(t *testing.T) {
 				t.Fatalf("publication returned no digest: %s", rr.Body.String())
 			}
 			rr = call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-				typedAuthoringActivateRequest{Digest: digest, Reason: "a stock deployment"}, gatewayHeaders())
+				typedAuthoringActivateRequest{Digest: digest, Reason: "a stock deployment", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, communityDocument())}, gatewayHeaders())
 			if rr.Code != http.StatusOK {
 				t.Fatalf("activate with the variable %s: status=%d body=%s", tc.name, rr.Code, rr.Body.String())
 			}
@@ -681,8 +699,8 @@ func TestTheRegisteredPathsAllCarryThePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ANTI-VACUITY: a walk that visited nothing would pass every assertion above.
-	if seen != 8 {
-		t.Fatalf("the walk visited %d routes; RegisterRoutes registers 8 (seven endpoints and the prefix guard), "+
+	if seen != 9 {
+		t.Fatalf("the walk visited %d routes; RegisterRoutes registers 9 (eight endpoints and the prefix guard), "+
 			"so this test is either blind or the surface changed without it", seen)
 	}
 }
@@ -723,7 +741,7 @@ func TestTheAuthorFallsBackToTheAuthenticatedClientWhenNoUserIsStamped(t *testin
 			t.Fatalf("no digest to activate: %s", rr2.Body.String())
 		}
 		if rr3 := call(t, r, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-			typedAuthoringActivateRequest{Digest: digest, Reason: "fallback author"}, headers); rr3.Code != http.StatusOK {
+			typedAuthoringActivateRequest{Digest: digest, Reason: "fallback author", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, communityDocument())}, headers); rr3.Code != http.StatusOK {
 			t.Fatalf("the client-identity author could not activate its own version: status=%d body=%s", rr3.Code, rr3.Body.String())
 		}
 		rr = call(t, r, http.MethodGet, TypedAuthoringRoutePrefix+"/active", nil, headers)
@@ -760,7 +778,7 @@ func TestTheAuthorFallsBackToTheAuthenticatedClientWhenNoUserIsStamped(t *testin
 	}
 	digest, _ := decodeBody(t, rr)["digest"].(string)
 	if rr := call(t, r2, http.MethodPost, TypedAuthoringRoutePrefix+"/activate",
-		typedAuthoringActivateRequest{Digest: digest, Reason: "user wins"}, both); rr.Code != http.StatusOK {
+		typedAuthoringActivateRequest{Digest: digest, Reason: "user wins", AcknowledgeTemplateOmissions: acknowledgedOmissions(t, communityDocument())}, both); rr.Code != http.StatusOK {
 		t.Fatalf("activate with both headers: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	rr = call(t, r2, http.MethodGet, TypedAuthoringRoutePrefix+"/active", nil, both)

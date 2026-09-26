@@ -6,8 +6,10 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +73,10 @@ type WorkflowEngine struct {
 	storage        WorkflowStorage
 	replayRecorder ReplayRecorder    // Execution replay recorder (#763)
 	pricingConfig  PlanCostEstimator // Cost calculation for step snapshots
+	// stepGate decides every step before it runs (map_step_gate.go, #4382).
+	// The orchestrator wires it at boot on every posture; an engine without one
+	// decides nothing, and the execute handlers refuse to run on it.
+	stepGate *mapStepGate
 }
 
 // Workflow represents a workflow definition
@@ -192,9 +198,8 @@ const EngineExecutionIDPrefix = "wfe_"
 // control-plane minter (workflow_control.NewWorkflowID, 122 bits), whose ids
 // are a database-wide PRIMARY KEY over a table nothing prunes.
 //
-// One helper for three call sites (ExecuteWorkflow,
-// executeWorkflowWithStepGroups, HITLWorkflowEngine.createExecution) so they
-// cannot drift - the way the two control-plane copies did.
+// One helper for its two call sites (ExecuteWorkflow,
+// executeWorkflowWithStepGroups) so they cannot drift - the way the two control-plane copies did.
 func newEngineExecutionID() string {
 	return fmt.Sprintf("%s%d_%s", EngineExecutionIDPrefix, time.Now().Unix(), generateRandomString(8))
 }
@@ -202,6 +207,23 @@ func newEngineExecutionID() string {
 // StepProcessor interface for different step types
 type StepProcessor interface {
 	ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error)
+}
+
+// stepContentRenderer is a step processor that says what content a step will
+// send, by the same function its ExecuteStep sends it with: the parts it sends,
+// each presented as content (mapStepContent).
+type stepContentRenderer interface {
+	RenderStepContent(step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) []any
+}
+
+// sortedInputKeys returns m's keys in order.
+func sortedInputKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // WorkflowStorage interface for persisting workflow state
@@ -259,13 +281,13 @@ func NewLLMCallProcessor(router LLMRouterInterface) *LLMCallProcessor {
 func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
 	log.Printf("[LLM] Executing step '%s' for workflow %s", step.Name, execution.ID)
 
-	// Replace template variables in prompt
-	prompt := p.replaceTemplateVars(step.Prompt, input, execution)
+	// The query this step sends is llmCallQuery's, the same function the
+	// multi-agent plane decides the step's rendered content by.
+	prompt := p.llmCallQuery(step, input, execution)
 	log.Printf("[LLM] Step '%s': Prompt length = %d chars", step.Name, len(prompt))
 
-	// For synthesis steps, automatically inject previous step outputs
 	if p.isSynthesisStep(step.Name) {
-		log.Printf("[LLM] Step '%s' is a synthesis step - injecting previous outputs", step.Name)
+		log.Printf("[LLM] Step '%s' is a synthesis step - previous outputs were injected", step.Name)
 
 		// Log what task outputs are being synthesized
 		log.Printf("[Synthesis Debug] Task outputs being synthesized:")
@@ -282,13 +304,6 @@ func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, i
 			}
 		}
 
-		previousOutputs := p.buildPreviousOutputsContext(execution)
-		if previousOutputs != "" {
-			log.Printf("[LLM] Step '%s': Injected %d chars of previous outputs", step.Name, len(previousOutputs))
-			prompt = prompt + "\n\n" + previousOutputs
-		} else {
-			log.Printf("[LLM] Step '%s': WARNING - No previous outputs to inject!", step.Name)
-		}
 	}
 
 	// Create orchestrator request for LLM
@@ -308,6 +323,22 @@ func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, i
 
 	log.Printf("[LLM] Step '%s': Routing to provider=%s, model=%s, max_tokens=%d",
 		step.Name, step.Provider, step.Model, step.MaxTokens)
+
+	// The organization's route rows bind this call as they bind
+	// /api/v1/process, and rows that permit nothing refuse it before any
+	// provider is called (#4249 row 5701303521, llm_call_route_effects.go).
+	if err := applyLLMCallRoutes(ctx, req, &req); err != nil {
+		log.Printf("[LLM] Step '%s': refused by the organization's route rows - %v", step.Name, err)
+		// A policy refusal, never a failed step: typed as the plane's step
+		// refusal, so an execution's soft_failure_tolerance does not absorb it
+		// and the execute routes answer it 403 (sendStepRefusal). It carries the
+		// route refusal, which errors.As still finds.
+		var refusal *llmCallRouteRefusal
+		if stderrors.As(err, &refusal) {
+			return nil, &mapStepRefusal{code: mapStepRouteRefused, policy: refusal.Reason, reason: refusal.Error(), cause: refusal}
+		}
+		return nil, err
+	}
 
 	// Route to LLM
 	response, providerInfo, err := p.llmRouter.RouteRequest(ctx, req)
@@ -369,21 +400,45 @@ func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, i
 	return output, nil
 }
 
+// llmCallQuery is the query an llm-call step sends: its prompt with the template
+// variables replaced, and for a synthesis step the previous steps' outputs
+// appended. It is pure, so the multi-agent plane renders the step with it
+// before the step runs and decides exactly what the step will send (#4249 row
+// 5666236540); ExecuteStep sends what it returns.
+func (p *LLMCallProcessor) llmCallQuery(step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) string {
+	prompt := p.replaceTemplateVars(step.Prompt, input, execution)
+	if p.isSynthesisStep(step.Name) {
+		if previousOutputs := p.buildPreviousOutputsContext(execution); previousOutputs != "" {
+			prompt = prompt + "\n\n" + previousOutputs
+		}
+	}
+	return prompt
+}
+
+// RenderStepContent is the content an llm-call step sends: its query.
+func (p *LLMCallProcessor) RenderStepContent(step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) []any {
+	return []any{p.llmCallQuery(step, input, execution)}
+}
+
 func (p *LLMCallProcessor) replaceTemplateVars(template string, stepInput map[string]interface{}, execution *WorkflowExecution) string {
 	result := template
 
-	// Replace {{input.key}} variables
-	for key, value := range stepInput {
+	// Replace {{input.key}} variables, in key order: a value that itself holds
+	// a placeholder is expanded the same way every time, so the content the
+	// plane decides is the content the step sends.
+	for _, key := range sortedInputKeys(stepInput) {
+		value := stepInput[key]
 		placeholder := fmt.Sprintf("{{input.%s}}", key)
 		if str, ok := value.(string); ok {
 			result = strings.ReplaceAll(result, placeholder, str)
 		}
 	}
 
-	// Replace {{steps.stepname.output.key}} variables
+	// Replace {{steps.stepname.output.key}} variables, in key order too.
 	for _, stepExec := range execution.Steps {
 		if stepExec.Status == "completed" {
-			for key, value := range stepExec.Output {
+			for _, key := range sortedInputKeys(stepExec.Output) {
+				value := stepExec.Output[key]
 				placeholder := fmt.Sprintf("{{steps.%s.output.%s}}", stepExec.Name, key)
 				if str, ok := value.(string); ok {
 					result = strings.ReplaceAll(result, placeholder, str)
@@ -428,7 +483,8 @@ func (p *LLMCallProcessor) buildPreviousOutputsContext(execution *WorkflowExecut
 			} else {
 				// Fallback: show raw output
 				if len(stepExec.Output) > 0 {
-					for key, value := range stepExec.Output {
+					for _, key := range sortedInputKeys(stepExec.Output) {
+						value := stepExec.Output[key]
 						// Skip internal fields
 						if key == "provider" || key == "model" || key == "tokens_used" || key == "response_time" || key == "duration" || key == "cached" || key == "connector" {
 							continue
@@ -467,6 +523,22 @@ func NewConditionalProcessor(engine *WorkflowEngine) *ConditionalProcessor {
 }
 
 func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
+	// #4249 row 5665091860: branch steps run only when each is presented to the
+	// engine first, through the gate the presenting path carries on ctx
+	// (map_conditional_gate.go). With no gate, a conditional carrying branch
+	// steps is refused with the v11.0.0 message and nothing runs; with a gate
+	// but no position, it is refused rather than recording unpathed decisions.
+	gate := conditionalGateFrom(ctx)
+	path := conditionalPathFrom(ctx)
+	if branchSteps := len(step.IfTrue) + len(step.IfFalse); branchSteps > 0 {
+		if gate == nil {
+			return nil, p.unpresentedBranchesError(step, path, branchSteps)
+		}
+		if path == "" {
+			return nil, errConditionalPathMissing
+		}
+	}
+
 	// Evaluate condition
 	conditionResult := p.evaluateCondition(step.Condition, execution)
 
@@ -491,7 +563,26 @@ func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowSte
 	branchOutputs := make([]map[string]interface{}, 0, len(stepsToExecute))
 	currentInput := input
 
-	for _, branchStep := range stepsToExecute {
+	branchName, _ := output["branch_taken"].(string)
+	for branchIndex, branchStep := range stepsToExecute {
+		// #4249: a conditional carrying no branch steps invokes nothing and is
+		// not presented, as at top level.
+		if mapStepNotPresented(branchStep) {
+			continue
+		}
+		branchPath := fmt.Sprintf("%s.%s.%d", path, branchName, branchIndex)
+		branchCtx := ctx
+		if branchStep.Type == mapStepTypeConditional {
+			// A conditional carrying branch steps is not itself presented (no
+			// action names a conditional): its own branch steps are, one level
+			// down, through this processor with the extended position.
+			branchCtx = withConditionalPath(ctx, branchPath)
+		} else if gate != nil {
+			if err := gateBranchStep(ctx, gate, branchStep, currentInput, execution, branchPath); err != nil {
+				return nil, err
+			}
+		}
+
 		// Get processor for the step type
 		processor, exists := p.engine.stepProcessors[branchStep.Type]
 		if !exists {
@@ -509,14 +600,14 @@ func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowSte
 		stepIdx := len(execution.Steps) - 1
 
 		// Execute the branch step
-		stepOutput, err := processor.ExecuteStep(ctx, branchStep, currentInput, execution)
+		stepOutput, err := processor.ExecuteStep(branchCtx, branchStep, currentInput, execution)
 		now := time.Now()
 
 		if err != nil {
 			execution.Steps[stepIdx].Status = "failed"
 			execution.Steps[stepIdx].Error = err.Error()
 			execution.Steps[stepIdx].EndTime = &now
-			return nil, fmt.Errorf("branch step %s failed: %v", branchStep.Name, err)
+			return nil, fmt.Errorf("branch step %s failed: %w", branchStep.Name, err)
 		}
 
 		// Update step execution record
@@ -545,6 +636,39 @@ func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowSte
 	output["steps_executed"] = len(branchOutputs)
 
 	return output, nil
+}
+
+// runnableStepCount is how many steps a run of steps can execute, for sizing its
+// timeout: a conditional carrying branch steps counts as the larger of its two
+// branches, recursively (only one branch runs), and every other step, a
+// branchless conditional included, counts as one. It reads no receiver state,
+// so it is called on a nil *ConditionalProcessor; it lives here because only
+// the conditional processor and the admission refusal read branch fields.
+func (*ConditionalProcessor) runnableStepCount(steps []WorkflowStep) int {
+	count := 0
+	for _, step := range steps {
+		if step.Type != mapStepTypeConditional || len(step.IfTrue)+len(step.IfFalse) == 0 {
+			count++
+			continue
+		}
+		ifTrue := (*ConditionalProcessor)(nil).runnableStepCount(step.IfTrue)
+		ifFalse := (*ConditionalProcessor)(nil).runnableStepCount(step.IfFalse)
+		count += max(ifTrue, ifFalse)
+	}
+	return count
+}
+
+// unpresentedBranchesError is the v11.0.0 refusal of a conditional carrying
+// branch steps where nothing presents them, naming the conditional's position
+// when the context carries one (refuseUnpresentableSteps names an index in the
+// list it was given, which here would always be 0).
+func (p *ConditionalProcessor) unpresentedBranchesError(step WorkflowStep, path string, branchSteps int) error {
+	position := "at an unrecorded position"
+	if path != "" {
+		position = "at " + path
+	}
+	return fmt.Errorf("conditional step %q (%s) carries %d branch steps, and a branch step is not presented to the policy engine; refusing the whole workflow rather than executing them undecided",
+		step.Name, position, branchSteps)
 }
 
 func (p *ConditionalProcessor) evaluateCondition(condition string, execution *WorkflowExecution) bool {
@@ -660,6 +784,55 @@ func (e *WorkflowEngine) InitializeWithDependencies(router LLMRouterInterface, a
 	e.stepProcessors["connector-call"] = mcpProcessor
 }
 
+// SetStepGate wires the per-step decision every execution of this engine runs
+// (#4382): checker decides each step before it runs, and audit records the
+// decision. A nil audit logger records nothing.
+func (e *WorkflowEngine) SetStepGate(checker HITLPolicyChecker, audit hitlAuditLogger) {
+	e.stepGate = &mapStepGate{checker: checker, audit: audit}
+}
+
+// PresentsSteps reports whether this engine decides every step before it runs.
+func (e *WorkflowEngine) PresentsSteps() bool {
+	return e != nil && e.stepGate.presentsSteps()
+}
+
+// governStep decides step before it runs (#4382). It returns the refusal when
+// the step must not run, and nil when it may. The declarative engine cannot
+// pause, so every challenge is withheld.
+func (e *WorkflowEngine) governStep(ctx context.Context, execution *WorkflowExecution, workflowName string, step WorkflowStep, input map[string]interface{}) error {
+	if !e.stepGate.presentsSteps() {
+		return nil
+	}
+	return e.stepGate.decide(ctx, execution, workflowName, step, stepContentFor(e, step, input), execution.UserContext)
+}
+
+// governedContext is ctx carrying the gate this execution's conditional branch
+// steps are decided through (#4249 row 5665091860), when the engine decides
+// steps.
+func (e *WorkflowEngine) governedContext(ctx context.Context, execution *WorkflowExecution, workflowName string) context.Context {
+	if !e.stepGate.presentsSteps() {
+		return ctx
+	}
+	return withConditionalGate(ctx, e.stepGate.conditionalGate(e, execution, workflowName, execution.UserContext))
+}
+
+// failRefused ends an execution whose step the gate refused before it ran: the
+// execution fails with the refusal's detail, in storage and in replay.
+func (e *WorkflowEngine) failRefused(ctx context.Context, execution *WorkflowExecution, refusal error) {
+	execution.Status = "failed"
+	if r, ok := refusal.(*mapStepRefusal); ok {
+		execution.Error = r.detail()
+	} else {
+		execution.Error = refusal.Error()
+	}
+	_ = e.storage.UpdateExecution(execution)
+	if e.replayRecorder != nil {
+		if replayErr := e.replayRecorder.FailExecution(ctx, execution.ID, execution.Error); replayErr != nil {
+			log.Printf("[Replay] ERROR: Failed to mark execution as failed: %v", replayErr)
+		}
+	}
+}
+
 // SetReplayRecorder sets the execution replay recorder for snapshot capture
 func (e *WorkflowEngine) SetReplayRecorder(recorder ReplayRecorder) {
 	e.replayRecorder = recorder
@@ -703,8 +876,23 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		}
 	}
 
+	// #4382: every step is decided before it runs, a conditional's branch steps
+	// through the gate this context carries.
+	ctx = e.governedContext(ctx, execution, workflow.Metadata.Name)
+
 	// Execute steps sequentially (basic implementation)
 	for stepIndex, step := range workflow.Spec.Steps {
+		if refusal := e.governStep(ctx, execution, workflow.Metadata.Name, step, input); refusal != nil {
+			e.failRefused(ctx, execution, refusal)
+			return execution, refusal
+		}
+		stepCtx := ctx
+		if step.Type == mapStepTypeConditional {
+			// The conditional's position, read only for its branch decisions'
+			// audit rows.
+			stepCtx = withConditionalPath(ctx, strconv.Itoa(stepIndex))
+		}
+
 		stepExecution := StepExecution{
 			Name:      step.Name,
 			Status:    "running",
@@ -713,6 +901,10 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		}
 
 		execution.Steps = append(execution.Steps, stepExecution)
+		// The step's own record: a conditional appends its branch steps' records
+		// after it while it runs, so the last record is not this step's
+		// (#4249 row 5774060413; the retired HITL engine kept this since #4353).
+		recordIdx := len(execution.Steps) - 1
 
 		// Get step processor
 		processor, exists := e.stepProcessors[step.Type]
@@ -737,7 +929,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		}
 
 		// Execute step
-		stepOutput, err := processor.ExecuteStep(ctx, step, input, execution)
+		stepOutput, err := processor.ExecuteStep(stepCtx, step, input, execution)
 		now := time.Now()
 		stepExecution.EndTime = &now
 		stepExecution.ProcessTime = now.Sub(stepExecution.StartTime).String()
@@ -750,7 +942,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			execution.Error = fmt.Sprintf("Step %s failed: %v", step.Name, err)
 
 			// Update execution state
-			execution.Steps[len(execution.Steps)-1] = stepExecution
+			execution.Steps[recordIdx] = stepExecution
 			_ = e.storage.UpdateExecution(execution)
 
 			// Record failed step snapshot (#763)
@@ -769,7 +961,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		stepExecution.Output = stepOutput
 
 		// Update execution state
-		execution.Steps[len(execution.Steps)-1] = stepExecution
+		execution.Steps[recordIdx] = stepExecution
 
 		// Record completed step snapshot (#763)
 		e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "completed", stepExecution.StartTime, &now, &durationMs, stepOutput, "", input)
@@ -1062,14 +1254,27 @@ func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, work
 	// Track global step index across groups for replay snapshots (#835)
 	globalStepIndex := 0
 
+	// #4382: every step is decided before it runs, a conditional's branch steps
+	// through the gate this context carries.
+	ctx = e.governedContext(ctx, execution, workflow.Metadata.Name)
+
 	// Execute step groups
 	for groupIdx, group := range stepGroups {
 		log.Printf("[Workflow] Executing step group %d/%d with %d steps (parallel=%v)",
 			groupIdx+1, len(stepGroups), len(group.Steps), group.IsParallel)
 
 		if group.IsParallel && len(group.Steps) > 1 {
+			// #4382: the whole group is decided before any of its steps launches,
+			// and a refusal of any one runs none of them.
+			for _, step := range group.Steps {
+				if refusal := e.governStep(ctx, execution, workflow.Metadata.Name, step, input); refusal != nil {
+					log.Printf("[Workflow] Step group %d refused before it ran: %v", groupIdx+1, refusal)
+					e.failRefused(ctx, execution, refusal)
+					return execution, refusal
+				}
+			}
 			// Execute steps in parallel with configurable failure tolerance (Issue #1082)
-			groupResults, err := e.executeStepsParallel(ctx, group.Steps, input, execution, workflow.Spec.SoftFailureTolerance)
+			groupResults, err := e.executeStepsParallel(ctx, group, input, execution, workflow.Spec.SoftFailureTolerance)
 			if err != nil {
 				log.Printf("[Workflow] Step group %d FAILED: %v", groupIdx+1, err)
 				execution.Status = "failed"
@@ -1135,8 +1340,19 @@ func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, work
 		} else {
 			// Execute steps sequentially
 			log.Printf("[Workflow] Executing %d steps sequentially in group %d", len(group.Steps), groupIdx+1)
-			for _, step := range group.Steps {
-				stepResult, err := e.executeSingleStep(ctx, step, input, execution)
+			for j, step := range group.Steps {
+				if refusal := e.governStep(ctx, execution, workflow.Metadata.Name, step, input); refusal != nil {
+					log.Printf("[Workflow] Sequential step '%s' refused before it ran in group %d: %v", step.Name, groupIdx+1, refusal)
+					e.failRefused(ctx, execution, refusal)
+					return execution, refusal
+				}
+				stepCtx := ctx
+				if step.Type == mapStepTypeConditional {
+					// The conditional's position in the workflow, read only for its
+					// branch decisions' audit rows.
+					stepCtx = withConditionalPath(ctx, strconv.Itoa(group.position(j, globalStepIndex)))
+				}
+				stepResult, err := e.executeSingleStep(stepCtx, step, input, execution)
 
 				// Record step snapshot for replay (#835)
 				stepStatus := "completed"
@@ -1213,13 +1429,35 @@ func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, work
 type StepGroup struct {
 	IsParallel bool
 	Steps      []WorkflowStep
+	// Positions is each step's index in the workflow's steps, in Steps' order;
+	// balanced grouping reorders steps. Empty when the group was built without
+	// them.
+	Positions []int
+}
+
+// position is the workflow index of the group's j-th step, or fallback when
+// the group carries no positions.
+func (g StepGroup) position(j, fallback int) int {
+	if j < len(g.Positions) {
+		return g.Positions[j]
+	}
+	return fallback
+}
+
+// indexRange is [from, to).
+func indexRange(from, to int) []int {
+	out := make([]int, 0, to-from)
+	for i := from; i < to; i++ {
+		out = append(out, i)
+	}
+	return out
 }
 
 // Group steps for execution (parallel vs sequential)
 func (e *WorkflowEngine) groupStepsForExecution(steps []WorkflowStep, enableParallel bool) []StepGroup {
 	if !enableParallel || len(steps) <= 1 {
 		// All steps sequential
-		return []StepGroup{{IsParallel: false, Steps: steps}}
+		return []StepGroup{{IsParallel: false, Steps: steps, Positions: indexRange(0, len(steps))}}
 	}
 
 	// Simple heuristic: Last step is usually synthesis (sequential)
@@ -1232,18 +1470,21 @@ func (e *WorkflowEngine) groupStepsForExecution(steps []WorkflowStep, enablePara
 		groups = append(groups, StepGroup{
 			IsParallel: true,
 			Steps:      parallelSteps,
+			Positions:  indexRange(0, len(steps)-1),
 		})
 
 		// Last step sequential (synthesis)
 		groups = append(groups, StepGroup{
 			IsParallel: false,
 			Steps:      []WorkflowStep{steps[len(steps)-1]},
+			Positions:  []int{len(steps) - 1},
 		})
 	} else {
 		// Single step
 		groups = append(groups, StepGroup{
 			IsParallel: false,
 			Steps:      steps,
+			Positions:  indexRange(0, len(steps)),
 		})
 	}
 
@@ -1268,13 +1509,15 @@ func (e *WorkflowEngine) ExecuteWorkflowBalanced(ctx context.Context, workflow W
 // llm-call steps run sequentially, synthesis step always last.
 func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 	if len(steps) <= 1 {
-		return []StepGroup{{IsParallel: false, Steps: steps}}
+		return []StepGroup{{IsParallel: false, Steps: steps, Positions: indexRange(0, len(steps))}}
 	}
 
 	var groups []StepGroup
 	var connectorSteps []WorkflowStep
 	var llmSteps []WorkflowStep
 	var synthesisStep *WorkflowStep
+	var connectorPositions, llmPositions []int
+	synthesisPosition := 0
 
 	// Classify steps
 	for i := range steps {
@@ -1287,13 +1530,16 @@ func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 			strings.Contains(nameLower, "final") ||
 			strings.Contains(nameLower, "summary") {
 			synthesisStep = &step
+			synthesisPosition = i
 			continue
 		}
 
 		if step.Type == "connector-call" {
 			connectorSteps = append(connectorSteps, step)
+			connectorPositions = append(connectorPositions, i)
 		} else {
 			llmSteps = append(llmSteps, step)
+			llmPositions = append(llmPositions, i)
 		}
 	}
 
@@ -1302,6 +1548,7 @@ func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 		groups = append(groups, StepGroup{
 			IsParallel: len(connectorSteps) > 1,
 			Steps:      connectorSteps,
+			Positions:  connectorPositions,
 		})
 	}
 
@@ -1310,6 +1557,7 @@ func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 		groups = append(groups, StepGroup{
 			IsParallel: false,
 			Steps:      llmSteps,
+			Positions:  llmPositions,
 		})
 	}
 
@@ -1318,6 +1566,7 @@ func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 		groups = append(groups, StepGroup{
 			IsParallel: false,
 			Steps:      []WorkflowStep{*synthesisStep},
+			Positions:  []int{synthesisPosition},
 		})
 	}
 
@@ -1331,7 +1580,11 @@ func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
 //   - "count:N" - At most N failures allowed
 //   - "percentage:N" - At least N% of steps must succeed
 //   - "required:step1,step2" - These specific steps must succeed, others can fail
-func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []WorkflowStep, input map[string]interface{}, execution *WorkflowExecution, softFailureTolerance string) ([]StepExecution, error) {
+//
+// The group carries its steps' workflow positions, so a conditional among them
+// has its branch decisions recorded at its position (#4382).
+func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, group StepGroup, input map[string]interface{}, execution *WorkflowExecution, softFailureTolerance string) ([]StepExecution, error) {
+	steps := group.Steps
 	numSteps := len(steps)
 	results := make([]StepExecution, numSteps)
 	errors := make([]error, numSteps)
@@ -1352,7 +1605,13 @@ func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []Workf
 
 			log.Printf("[Parallel] Starting step %d/%d: %s", idx+1, numSteps, s.Name)
 
-			stepResult, err := e.executeSingleStep(ctx, s, inputSnapshot, execution)
+			stepCtx := ctx
+			if s.Type == mapStepTypeConditional {
+				// The conditional's position in the workflow, read only for its
+				// branch decisions' audit rows.
+				stepCtx = withConditionalPath(ctx, strconv.Itoa(group.position(idx, idx)))
+			}
+			stepResult, err := e.executeSingleStep(stepCtx, s, inputSnapshot, execution)
 			results[idx] = stepResult
 			errors[idx] = err
 
@@ -1366,6 +1625,16 @@ func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []Workf
 
 	// Wait for all goroutines to complete
 	wg.Wait()
+
+	// #4382: a step the plane refused (a conditional's branch step, decided
+	// inside its processor) is a governance decision, not a failure a
+	// soft_failure_tolerance can absorb: the group fails with the refusal.
+	for _, err := range errors {
+		var refusal *mapStepRefusal
+		if stderrors.As(err, &refusal) {
+			return results, refusal
+		}
+	}
 
 	// Collect failed and succeeded steps
 	failedSteps := []string{}

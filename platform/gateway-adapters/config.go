@@ -62,8 +62,11 @@ const (
 	defaultListenAddr     = ":9090"
 	defaultRequestTimeout = 10 * time.Second
 	defaultMaxBodyBytes   = 8 << 20 // 8 MB
-	defaultBreakerTrips   = 5
-	defaultBreakerCool    = 30 * time.Second
+	// defaultGatewayID is AXONFLOW_GATEWAY_ID's default, and so the audience
+	// every seam's capability handshake presents when neither is set.
+	defaultGatewayID    = "agentgateway"
+	defaultBreakerTrips = 5
+	defaultBreakerCool  = 30 * time.Second
 )
 
 // Config configures the adapter server. All adapters share one PDP client,
@@ -109,8 +112,9 @@ type Config struct {
 	// the circuit posture; a hung engine can never wedge a callout past it).
 	RequestTimeout time.Duration
 
-	// PEPAudience opts this process into the ADR-065 capability handshake
-	// (#3704) and names the audience it expects decision proofs to be bound to.
+	// PEPAudience names the audience this process expects decision proofs to be
+	// bound to, which every seam presents in its ADR-065 capability handshake
+	// (#3704). It does NOT decide whether a handshake is presented: one always is.
 	//
 	// SET AS `AXONFLOW_PEP_AUDIENCE`. Both names are load bearing in different
 	// places - the environment variable is what an operator sets, this field is
@@ -118,45 +122,44 @@ type Config struct {
 	// the other, or a brief names one spelling and the operator searches for
 	// the other.
 	//
-	// EMPTY IS THE DEFAULT AND MEANS NO HANDSHAKE, and the transition it gates
-	// is ALLOW -> DENY rather than the block-to-block one an earlier version of
-	// this comment claimed.
+	// EMPTY MEANS THE GATEWAY ID (GatewayID, `AXONFLOW_GATEWAY_ID`, default
+	// "agentgateway"), resolved by pepAudience. The audience is recorded on the
+	// decision's audit row and authorises nothing today, and the gateway ID is
+	// already the deployment-scoped name this adapter stamps on every decide, so
+	// it is the one value an operator has already chosen for this process. Set
+	// PEPAudience explicitly when decision proofs bind to a different audience.
 	//
-	// TODAY, with no handshake: the headers-only seam declares
-	// request_header_mutation on #2958's axis, the PDP SUPPRESSES the
-	// request-body redaction it cannot discharge, and the organization's
-	// obligation-fallback posture decides. That posture's documented default is
-	// `log`, so the request is ALLOWED, minus the obligation, with the
-	// suppression on the audit row. ObligationBackstop does not fire - it
-	// cannot, because the obligation was already withheld, which is exactly why
-	// it is documented as never-firing.
+	// WHY THE HANDSHAKE IS NOT OPT-IN ANY MORE (v11.1.0). Until then an empty
+	// value sent no header, and on a v11 platform that is a caller declaring
+	// nothing: the anchored engine judges it against the decide plane's own
+	// registered profile, which discharges no field_redact, so under an
+	// organization's pii=redact every PII-bearing request through EVERY seam was
+	// refused unsupported_obligation, including the two that can redact (the
+	// v11.0.0 Known Issue). Presenting the handshake is what lets the seams that
+	// discharge field_redact say so.
 	//
-	// WITH THIS SET, AGAINST AN ENTERPRISE DEPLOYMENT: the seam's honest
-	// ADR-065 declaration is an EMPTY capability set, so the platform answers
-	// CapabilityDeclaredNone and DENIES before the seam gate runs. A deployment
-	// that acquired the header without asking would therefore start refusing
-	// every PII-matching request through the ext_authz seam and ext_proc's
-	// bodyless leg.
+	// WHAT EACH SEAM GETS UNDER pii=redact. The body-capable seams (ExtMcp, and
+	// ext_proc's request-body path) declare field_redact@1 and are allowed with
+	// the redaction, which they carry out through the engine. The headers-only
+	// seams (ext_authz, and ext_proc's bodyless request path) declare the honest
+	// empty set and are REFUSED unsupported_obligation, naming the capability gap
+	// on an Enterprise build: a seam that cannot rewrite a body cannot discharge a
+	// mandatory redaction, and allowing the request without it is the outcome
+	// ADR-065 invariant 8 removes. The organization's obligation-fallback posture
+	// (#2958) no longer changes that answer, because the capability refusal runs
+	// before the seam gate.
 	//
-	// AGAINST A COMMUNITY DEPLOYMENT, NOTHING CHANGES AT ALL. The capability
-	// deny is physically absent from a community build, so the declaration is
-	// read, bound and counted and then acted on by nothing. An operator on a
-	// community deployment who reads only the paragraph above would expect
-	// every PII-matching request to start being refused, and would get no
-	// change.
-	//
-	// That may well be the posture an operator wants - it is the ADR-065
-	// invariant-8 answer, reached before the content is held rather than after -
-	// but it is a change in what callers see, so it is opt-in and stated here
-	// rather than discovered in production. An organization whose
-	// obligation-fallback posture is already `block` sees no change.
+	// AGAINST A PLATFORM OLDER THAN v10.4.0 the header is ignored and nothing
+	// changes. AGAINST A v10.4.0-v10.x ENTERPRISE PLATFORM the headers-only
+	// seams' requests that #2958's `log` posture used to allow minus the
+	// redaction are refused instead, which is the v11 answer arriving early; the
+	// body-capable seams are unaffected.
 	//
 	// THE VALUE MUST BE 1-128 bytes matching `^[A-Za-z0-9][A-Za-z0-9._:/-]*$` -
-	// a URI, a URN or a bare name all fit. A value outside it makes NewPDP
-	// return an error, so the adapter refuses to start rather than silently
-	// sending nothing: a half-configured enforcement point that looks
-	// configured is worse than one that will not boot. The error names the
-	// audience, not the handshake.
+	// a URI, a URN or a bare name all fit, and so must a gateway ID it defaults
+	// to. A value outside it makes NewPDP return an error naming the setting it
+	// came from, so the adapter refuses to start rather than presenting a
+	// declaration the platform would refuse on every request.
 	//
 	// There is no PEP NAME setting: the two seams name themselves, because
 	// their identity is a property of the call path rather than of the
@@ -211,6 +214,27 @@ func (c *Config) responseGovernanceOff() bool {
 	return c.ExtProcResponseGovernance == ExtProcResponseGovernanceOff
 }
 
+// pepAudience resolves the audience every seam's capability handshake presents,
+// and names the setting it came from for NewPDP's refusal.
+//
+// PEPAudience wins; an empty one is the gateway ID; an empty gateway ID - which
+// only a Config literal can produce, since ConfigFromEnv defaults it - is the
+// same default ConfigFromEnv applies. A value that is only whitespace counts as
+// unset, as ConfigFromEnv reads the environment, and a value is returned
+// trimmed. Never empty, so no seam goes back to
+// presenting nothing, which a v11 platform judges as a caller that can
+// discharge no redaction (see PEPAudience).
+func (c *Config) pepAudience() (audience, source string) {
+	switch {
+	case strings.TrimSpace(c.PEPAudience) != "":
+		return strings.TrimSpace(c.PEPAudience), "AXONFLOW_PEP_AUDIENCE"
+	case strings.TrimSpace(c.GatewayID) != "":
+		return strings.TrimSpace(c.GatewayID), "AXONFLOW_GATEWAY_ID, because AXONFLOW_PEP_AUDIENCE is unset"
+	default:
+		return defaultGatewayID, "the default gateway ID, because AXONFLOW_PEP_AUDIENCE and AXONFLOW_GATEWAY_ID are unset"
+	}
+}
+
 // ConfigFromEnv builds a Config from AXONFLOW_* environment variables
 // (the same convention as the reference Decision Mode adapters).
 func ConfigFromEnv() Config {
@@ -220,7 +244,7 @@ func ConfigFromEnv() Config {
 		OrgID:                os.Getenv("AXONFLOW_ORG_ID"),
 		LicenseKey:           os.Getenv("AXONFLOW_LICENSE_KEY"),
 		TenantID:             os.Getenv("AXONFLOW_TENANT_ID"),
-		GatewayID:            envOr("AXONFLOW_GATEWAY_ID", "agentgateway"),
+		GatewayID:            envOr("AXONFLOW_GATEWAY_ID", defaultGatewayID),
 		ConnectorTag:         envOr("AXONFLOW_CONNECTOR_TAG", "agentgateway"),
 		PEPAudience:          envOr("AXONFLOW_PEP_AUDIENCE", ""),
 		DefaultStage:         envOr("AXONFLOW_DEFAULT_STAGE", "llm"),

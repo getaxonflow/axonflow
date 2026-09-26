@@ -45,6 +45,12 @@ import (
 //   - and the phase's category admission (legacycompile.AdmissionFor) admits
 //     the detector's category, as it does for a corpus control.
 //
+// A pack's score control (policypack.ScoreThreshold, #3330) reads an external
+// scorer's signal rather than a detector, and is judged the same way by the
+// category it declares: it binds where the pack's detectors of that category
+// are loaded, which is where the request carries the pack's documented objects
+// for the scorer to read (packControlCategory).
+//
 // Nothing here is a list of planes: a call site whose category filter changes
 // moves the set, which TestAPackBindsWhereItsDetectorsRun pins.
 
@@ -70,10 +76,15 @@ func (p InstalledPack) Ref() string { return p.Pack.Source.ID + "@" + p.Digest }
 
 // InstallPacks instantiates each pack for the deployment whose vocabulary snap
 // is. The approver pool names the pack's group in every realm a person can
-// answer in (authoring.RealmEntry.Interactive). A group graph is NOT required:
-// the scopes a pack binds on today hold no approval (PRD v11 §1.13 - a
-// challenge there is refused as approval_required), so the pool is named and
-// never resolved.
+// answer in (authoring.RealmEntry.Interactive). A group graph is NOT required
+// on this release: the pool is named and never resolved, because no release
+// predicate reads a pool yet (#4249 row 5670730156; the enforcement is #4374,
+// v12.0.0). Since #4375 the mcp:request and decide planes HOLD a challenge as
+// a pending approval, so a pack step-up bound there (the rbi and sebi packs'
+// oversight rows) is held and released by any person the queue admits, not
+// by the pool; TestEveryShippedPackStepUpBindsOnAPlaneThatHoldsNoApproval
+// pins exactly which pack step-ups sit on a holding plane, so the eligibility
+// enforcement sees them when it lands.
 //
 // It refuses two packs with one id and two packs that ship one detector id,
 // because one detector id is one signal path and two detectors writing it would
@@ -94,6 +105,7 @@ func InstallPacks(snap *authoringcatalog.Snapshot, packs []*policypack.Pack) ([]
 	sort.Strings(interactive)
 	ids := map[string]bool{}
 	detectors := map[string]string{}
+	scorerSignals := map[string]string{}
 	out := make([]InstalledPack, 0, len(packs))
 	for _, p := range packs {
 		if p == nil {
@@ -109,6 +121,12 @@ func InstallPacks(snap *authoringcatalog.Snapshot, packs []*policypack.Pack) ([]
 				return nil, fmt.Errorf("activation: policy packs %q and %q both ship detector %q; one detector id is one signal, and the two would decide each other's controls", other, id, d.ID)
 			}
 			detectors[d.ID] = id
+		}
+		for _, sc := range p.Source.Scores {
+			if other, taken := scorerSignals[sc.Signal]; taken {
+				return nil, fmt.Errorf("activation: policy packs %q and %q both threshold scorer signal %q; one signal carries one pack's threshold", other, id, sc.Signal)
+			}
+			scorerSignals[sc.Signal] = id
 		}
 		if p.Source.Approval != nil && len(interactive) == 0 {
 			return nil, &pdp.ActivationRefusal{
@@ -197,7 +215,7 @@ func packForScope(scope legacycompile.EnforcementScope, ip InstalledPack) (*pdp.
 		bySignal[legacycompile.DetectorSignalPath(d.ID)] = d
 	}
 	for _, p := range ip.Document.Policies {
-		d, err := packDetectorOf(p, bySignal)
+		category, err := packControlCategory(p, bySignal, ip.Pack)
 		if err != nil {
 			return nil, fmt.Errorf("activation: pack %q: %w", ip.Pack.Source.ID, err)
 		}
@@ -209,7 +227,7 @@ func packForScope(scope legacycompile.EnforcementScope, ip InstalledPack) (*pdp.
 			return nil, fmt.Errorf("activation: pack %q: control %q is not one its source compiles to", ip.Pack.Source.ID, p.ID)
 		}
 		for ph, a := range admits {
-			if scansPhase(phase, ph) && a.Admits(d.Category) {
+			if scansPhase(phase, ph) && a.Admits(category) {
 				out.Policies = append(out.Policies, p)
 				break
 			}
@@ -217,6 +235,27 @@ func packForScope(scope legacycompile.EnforcementScope, ip InstalledPack) (*pdp.
 	}
 	out.Attributes = schemasRead(out.Policies, ip.Document.Attributes)
 	return out, nil
+}
+
+// packControlCategory is the category a pack control is admitted by: its
+// detector's, or, for a control over an external scorer's signal (#3330), the
+// category the score control declares. A score control binds exactly where the
+// pack's own detectors of that category are loaded - the planes whose request
+// pass carries the pack's documented objects - and nowhere else, by the same
+// derivation, with no list of planes.
+func packControlCategory(p pdp.Policy, bySignal map[string]policypack.Detector, pack *policypack.Pack) (string, error) {
+	if sc, ok := pack.ScoreControl(p.ID); ok {
+		want := policypack.ScorerSignalPath(sc.Signal)
+		if paths := p.ReferencedPaths(); len(paths) != 1 || paths[0] != want {
+			return "", fmt.Errorf("score control %q reads %v; a score control reads exactly its own signal %s", p.ID, paths, want)
+		}
+		return sc.Category, nil
+	}
+	d, err := packDetectorOf(p, bySignal)
+	if err != nil {
+		return "", err
+	}
+	return d.Category, nil
 }
 
 // packDetectorOf is the one pack detector a pack control reads. A pack control

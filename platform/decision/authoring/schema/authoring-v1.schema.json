@@ -159,7 +159,14 @@
           "description": "The operator-facing name of the policy, shown in place of its identifier. Optional; a decision's reason text comes from description.",
           "type": "string"
         },
-        "description": { "type": "string" }
+        "description": { "type": "string" },
+        "binds_on": {
+          "description": "The enforcement planes this control binds on, as the engine names them (wcp, map, mcp:request, ...). Absent binds the control on every plane. An empty list, a plane the deployment does not enforce, a plane that presents none of the selected actions and a repeated plane are refused at publication.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
       }
     },
 

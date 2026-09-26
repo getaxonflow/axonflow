@@ -114,3 +114,70 @@ func TestNoAgentSeamStatesFactsOnItsCall(t *testing.T) {
 		t.Fatalf("PREMISE: found %d anchoredCall literals; the decide and response seams build at least two, so the parse read the wrong files", literals)
 	}
 }
+
+// TestOnlyTheRequestPassStatesAdmittedFacts holds the one route an agent seam
+// has to a fact that needs the ADMITTED principal (#3330): anchoredCall's
+// admittedFacts is set in decideRequestPass alone, from riskScoreFacts alone.
+// The route exists for the Engine B risk score and is not a general licence:
+// a second site, or another producer, fails here, and the enforcer refuses any
+// admitted fact outside anchoredenforcer.AdmittedFactPrefix
+// (TestAdmittedFactsAreConfinedToTheScorerNamespace). TestNoAgentSeamStatesFactsOnItsCall
+// above still forbids the older route, facts, outright.
+func TestOnlyTheRequestPassStatesAdmittedFacts(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var sites []string
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				var value ast.Expr
+				switch x := n.(type) {
+				case *ast.CompositeLit:
+					if id, ok := x.Type.(*ast.Ident); ok && id.Name == "anchoredCall" {
+						for _, el := range x.Elts {
+							if kv, ok := el.(*ast.KeyValueExpr); ok {
+								if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "admittedFacts" {
+									value = kv.Value
+								}
+							}
+						}
+					}
+				case *ast.AssignStmt:
+					for i, lhs := range x.Lhs {
+						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "admittedFacts" && i < len(x.Rhs) {
+							value = x.Rhs[i]
+						}
+					}
+				}
+				if value == nil {
+					return true
+				}
+				producer := ""
+				if call, ok := value.(*ast.CallExpr); ok {
+					if id, ok := call.Fun.(*ast.Ident); ok {
+						producer = id.Name
+					}
+				}
+				sites = append(sites, fn.Name.Name+"<-"+producer+"@"+fset.Position(value.Pos()).String())
+				return true
+			})
+		}
+	}
+	if len(sites) != 1 || !strings.HasPrefix(sites[0], "decideRequestPass<-riskScoreFacts@") {
+		t.Fatalf("admittedFacts is set at %v; want exactly once, in decideRequestPass, from riskScoreFacts", sites)
+	}
+}

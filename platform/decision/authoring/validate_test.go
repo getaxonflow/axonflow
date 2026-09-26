@@ -327,6 +327,95 @@ func rejectionCases() []rejectionCase {
 				})
 			},
 		},
+		// The scopes a control binds on (#4371). Each is checked against
+		// catalogWithPlanes, where refund is presented on decide and wcp,
+		// ticket on mcp:request and wcp, export on map.
+		{
+			code: CodeBindsOnEmpty, detail: "binds_on is []",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "perm.refund").BindsOn = &[]string{}
+			},
+		},
+		{
+			code: CodePlaneNotDeclared, detail: "workflow_step_gate",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				// The name #4371 was first written with; the engine's is wcp.
+				policyByIDIn(d, "perm.refund").BindsOn = &[]string{"workflow_step_gate"}
+			},
+		},
+		{
+			code: CodeActionNotPresentedOnPlane, detail: `"map"`,
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				// map is a scope this deployment enforces, and it presents
+				// only the export; a refund control scoped there binds nowhere.
+				policyByIDIn(d, "perm.refund").BindsOn = &[]string{"wcp", "map"}
+			},
+		},
+		{
+			code: CodeBindsOnDuplicatePlane, detail: `"wcp" more than once`,
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				policyByIDIn(d, "perm.refund").BindsOn = &[]string{"wcp", "decide", "wcp"}
+			},
+		},
+		{
+			// Absent binds_on binds everywhere, the request routes among them:
+			// warned too, which the retired wcp route-seam warning never did.
+			code: CodeBindsOnOrchestratorRequestNoHold, detail: "orchestrator_request among them, and the control selects [" + actionCompletion + "], which the orchestrator request routes (/api/v1/process, /api/v1/plan/execute) presents; those routes have no approval hold and refuses the challenge approval_required",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				d.Policies = append(d.Policies, completionApproval(nil))
+			},
+		},
+		{
+			// The refund is presented on decide, which runs the e-mail
+			// detector, and on wcp, which runs no registry detector.
+			code: CodeDetectorControlUnboundOnPlanes, detail: "[wcp] do not run",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				d.Attributes = append(d.Attributes, pdp.AttributeSchema{Path: emailSignal, Type: pdp.TypeBoolean})
+				d.Policies = append(d.Policies, emailConstraint(nil))
+			},
+		},
+		{
+			code: CodeDetectorControlBindsNowhere, detail: "binds_on names [wcp]",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				d.Attributes = append(d.Attributes, pdp.AttributeSchema{Path: emailSignal, Type: pdp.TypeBoolean})
+				d.Policies = append(d.Policies, emailConstraint(&[]string{"wcp"}))
+			},
+		},
+		{
+			// An approval requirement on the export, which only the multi-agent
+			// plane presents, named there explicitly: since #4382 a challenge
+			// there is withheld, never held (#4249 row 5774872368).
+			code: CodeBindsOnMapNoHold, detail: "binds_on names map, and the control selects [" + actionExport + "], which the multi-agent plane presents; that plane has no approval hold and withholds the step approval_requires_durable_record; confirm and step mode hold steps by their mode, asking no policy, and refuse a challenged step approval_required",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				d.Policies = append(d.Policies, exportApproval(&[]string{"map"}))
+			},
+		},
+		{
+			code: CodeBindsOnMCPResponse, detail: "binds_on is absent, so it binds on every plane, mcp:response among them, and the control selects [" + actionTicket + "], which the MCP response pass presents; that pass has no approval hold and refuses the challenge approval_required",
+			catalog: catalogWithPlanes,
+			edit: func(_ *Metadata, d *pdp.Document) {
+				// An approval requirement on the ticket read, which the MCP
+				// response pass presents, with no binds_on: it binds there too.
+				d.Policies = append(d.Policies, pdp.Policy{
+					ID:          "req.ticket.approval",
+					Authority:   contract.AuthorityRequirement,
+					Root:        pdp.RootSystem,
+					Scope:       pdp.Scope{Organization: true},
+					Actions:     pdp.ActionSelector{Actions: []contract.ID{contract.MustParseID(contract.KindAction, actionTicket)}},
+					Where:       pdp.True(),
+					Obligations: []contract.Obligation{approvalObligation("req.ticket.approval", "1", groupFinance)},
+					Mandatory:   true,
+				})
+			},
+		},
 		{
 			code: CodeCatalogDisagreement, detail: "bots",
 			after: func(d *Document) {
@@ -423,6 +512,15 @@ func rejectionCases() []rejectionCase {
 			code: CodeSystemControlNotReactionable, detail: sysDynamicControl,
 			after: func(d *Document) {
 				d.SystemControls = []SystemControlEntry{sysActioned(sysDynamicControl, legacycompile.ActionWarn)}
+			},
+		},
+		// #4259: a publication-time warning, so it is provoked by publishing, on
+		// the edition whose build runs the one forcing scope.
+		{
+			code: CodeSystemControlForcedOnScope, detail: sysForcedControl,
+			run: func(t *testing.T) Findings {
+				t.Helper()
+				return publishForcedEntry(t, EditionEnterprise)
 			},
 		},
 
@@ -728,4 +826,100 @@ func catalogWithoutDelegationDepth(t *testing.T) *Catalog {
 	e.MaxDelegationDepth = 0
 	c.Actions[actionRefund] = e
 	return c
+}
+
+// completionApproval is an approval requirement on the completion action,
+// which the orchestrator request plane presents, binding on binds (nil =
+// absent).
+func completionApproval(binds *[]string) pdp.Policy {
+	return pdp.Policy{
+		ID:          "req.completion.approval",
+		Authority:   contract.AuthorityRequirement,
+		Root:        pdp.RootSystem,
+		Scope:       pdp.Scope{Organization: true},
+		Actions:     pdp.ActionSelector{Actions: []contract.ID{contract.MustParseID(contract.KindAction, actionCompletion)}},
+		Where:       pdp.True(),
+		Obligations: []contract.Obligation{approvalObligation("req.completion.approval", "1", groupFinance)},
+		Mandatory:   true,
+		BindsOn:     binds,
+	}
+}
+
+// TestTheRequestRouteNoHoldWarningFollowsWhatBindsOnNames holds the warning
+// that replaced BINDS_ON_WCP_ROUTE_SEAM to the plane that cannot hold, per
+// binds_on (#4249 row 5706695827): naming orchestrator_request warns (absent is
+// TestSaveTimeChecks' case), and naming wcp alone - the step gate, which holds -
+// does not, because since the split wcp no longer carries the two routes.
+func TestTheRequestRouteNoHoldWarningFollowsWhatBindsOnNames(t *testing.T) {
+	cases := []struct {
+		binds []string
+		warns bool
+	}{
+		{[]string{"orchestrator_request"}, true},
+		{[]string{"wcp", "orchestrator_request"}, true},
+		{[]string{"wcp"}, false},
+		{[]string{"openai_compatible"}, false},
+	}
+	for _, tc := range cases {
+		cat := catalogWithPlanes(t)
+		binds := append([]string(nil), tc.binds...)
+		d := documentWith(t, cat, func(_ *Metadata, d *pdp.Document) {
+			d.Policies = append(d.Policies, completionApproval(&binds))
+		})
+		findings := Validate(d, cat)
+		if findings.Rejected() {
+			t.Fatalf("binds_on %v: the document was rejected: %v", tc.binds, findings.Rejections())
+		}
+		if got := findings.Has(CodeBindsOnOrchestratorRequestNoHold); got != tc.warns {
+			t.Errorf("binds_on %v: %s fired = %v, want %v\nfindings: %v", tc.binds, CodeBindsOnOrchestratorRequestNoHold, got, tc.warns, findings)
+		}
+	}
+}
+
+// emailSignal is the shipped e-mail detector's signal path, a registry
+// detector decide runs (its category is one decide's call site passes) and no
+// orchestrator plane runs.
+const emailSignal = "signal.detector.sys__pii__email"
+
+// emailConstraint refuses a refund the e-mail detector flagged, binding on
+// binds (nil = absent).
+func emailConstraint(binds *[]string) pdp.Policy {
+	return pdp.Policy{
+		ID:        "con.refund.email",
+		Authority: contract.AuthorityConstraint,
+		Root:      pdp.RootSystem,
+		Scope:     pdp.Scope{Organization: true},
+		Actions:   pdp.ActionSelector{Actions: []contract.ID{contract.MustParseID(contract.KindAction, actionRefund)}},
+		Where:     pdp.Compare(emailSignal, pdp.OpEq, true),
+		BindsOn:   binds,
+	}
+}
+
+// A control reading a registry detector whose binds_on names a plane that runs
+// it and one that does not is WARNED, not refused, and binds where it runs;
+// naming only the plane that runs it is clean.
+func TestADetectorControlIsRefusedOnlyWhenItsBindsOnRunsTheDetectorNowhere(t *testing.T) {
+	cases := []struct {
+		binds       []string
+		warn, block bool
+	}{
+		{[]string{"decide", "wcp"}, true, false},
+		{[]string{"decide"}, false, false},
+		{[]string{"wcp"}, false, true},
+	}
+	for _, tc := range cases {
+		cat := catalogWithPlanes(t)
+		binds := append([]string(nil), tc.binds...)
+		d := documentWith(t, cat, func(_ *Metadata, d *pdp.Document) {
+			d.Attributes = append(d.Attributes, pdp.AttributeSchema{Path: emailSignal, Type: pdp.TypeBoolean})
+			d.Policies = append(d.Policies, emailConstraint(&binds))
+		})
+		f := Validate(d, cat)
+		if got := f.Has(CodeDetectorControlUnboundOnPlanes); got != tc.warn {
+			t.Errorf("binds_on %v: warning = %v, want %v\n%v", tc.binds, got, tc.warn, f)
+		}
+		if got := f.Has(CodeDetectorControlBindsNowhere); got != tc.block {
+			t.Errorf("binds_on %v: refusal = %v, want %v\n%v", tc.binds, got, tc.block, f)
+		}
+	}
 }

@@ -232,6 +232,21 @@ func (p *Pipeline) analyzeOne(ctx context.Context, index int, mc *MediaContent, 
 				continue
 			}
 			if ar.result != nil {
+				// Text extracted but not scanned leaves has_pii unknown and the
+				// request refused by sys_media_pii_block; say why, or an
+				// operator sees only the refusal (R3 round 2). The reason is the
+				// analyzer's Error, which reaches the response and the audit
+				// record: an analyzer that extracts text must never put the text
+				// in Error (local OCR writes fixed reasons; pinned by
+				// TestLocalOCRRecordsWhatRan).
+				if textUnscanned(ar.result) {
+					reason := ar.result.Error
+					if reason == "" {
+						reason = "no PII detector is configured"
+					}
+					p.logger.Printf("Analyzer %s: extracted text was not scanned for PII: %s", ar.analyzerName, reason)
+					result.AddWarning(WarnMediaPIIScanNotRun, fmt.Sprintf("analyzer %s: extracted text was not scanned for PII: %s", ar.analyzerName, reason))
+				}
 				result.AnalyzerResults = append(result.AnalyzerResults, *ar.result)
 				result.EstimatedCostUSD += ar.result.EstimatedCostUSD
 			}
@@ -319,6 +334,60 @@ func (p *Pipeline) aggregateSignals(result *AggregatedMediaResult) {
 		result.PIITypes = append(result.PIITypes, t)
 	}
 	sort.Strings(result.PIITypes)
+
+	result.Scanned = scannedCapabilities(result.AnalyzerResults)
+}
+
+// textUnscanned reports whether an analyzer extracted text from an item and did
+// not scan it for PII: it neither marked the scan as run nor returned a finding,
+// which is itself evidence the detector ran. Such text leaves has_pii unknown.
+func textUnscanned(ar *MediaAnalysisResult) bool {
+	return (ar.TextExtracted || ar.ExtractedText != "") && !ar.PIIScanned && len(ar.PIIFindings) == 0
+}
+
+// scannedCapabilities lists the capabilities that RAN on an item, from what the
+// analyzers' results carry rather than what the analyzers advertise: an
+// analyzer that advertises content safety and returns no ContentSafety section
+// did not look (the cloud analyzers are stubs that return empty results).
+func scannedCapabilities(results []MediaAnalysisResult) []string {
+	set := make(map[string]bool)
+	// PII is scanned for the item only when EVERY analyzer that extracted text
+	// scanned it: text one analyzer extracted and did not scan would otherwise
+	// sit beside another analyzer's clean scan as "no PII".
+	anyTextUnscanned := false
+	for i := range results {
+		if textUnscanned(&results[i]) {
+			anyTextUnscanned = true
+		}
+	}
+	for _, ar := range results {
+		if ar.ContentSafety != nil {
+			set[ScanContentSafety] = true
+		}
+		// A finding is itself evidence the detector ran; the flags carry the
+		// runs that found nothing.
+		if ar.FacesScanned || len(ar.Faces) > 0 {
+			set[ScanFaces] = true
+		}
+		if ar.DocumentClassification != nil {
+			set[ScanDocument] = true
+		}
+		if (ar.PIIScanned || len(ar.PIIFindings) > 0) && !anyTextUnscanned {
+			set[ScanPII] = true
+		}
+		if ar.TextExtracted || ar.ExtractedText != "" {
+			set[ScanText] = true
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // buildEmptyResults creates empty results for when no analyzers are available.

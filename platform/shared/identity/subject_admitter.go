@@ -91,7 +91,7 @@ type RealmSource interface {
 // credential; an Indeterminate means the plane could not reach an answer (no
 // authenticated organization, realms that could not be established, a
 // credential the path could not verify) and the caller fails closed.
-func (a *SubjectAdmitter) AdmitDecisionSubject(ctx context.Context, in CredentialPrincipal, maxDepth int) (ActorChain, Admission) {
+func (a *SubjectAdmitter) AdmitDecisionSubject(ctx context.Context, in CredentialPrincipal, maxDepth int) (ActorChain, AdmittedSubject, Admission) {
 	return a.admitSubject(ctx, in, maxDepth, rootNeverClient)
 }
 
@@ -113,29 +113,47 @@ func (a *SubjectAdmitter) AdmitDecisionSubject(ctx context.Context, in Credentia
 // that a Client may be the root. The admitted principal is that Client (or the
 // Service an internal-service hop authenticates), and the caller records it as
 // the subject type the decision was evaluated for.
-func (a *SubjectAdmitter) AdmitCredentialSubject(ctx context.Context, in CredentialPrincipal, maxDepth int) (ActorChain, Admission) {
+func (a *SubjectAdmitter) AdmitCredentialSubject(ctx context.Context, in CredentialPrincipal, maxDepth int) (ActorChain, AdmittedSubject, Admission) {
 	if in.Path != CredentialPathAPICredential {
-		return nil, DenyAdmission(ReasonSubjectTypeRejected, fmt.Sprintf(
+		return nil, AdmittedSubject{}, DenyAdmission(ReasonSubjectTypeRejected, fmt.Sprintf(
 			"the %s path asserts a user identity; the credential principal is admitted only for a request that carries none", in.Path))
 	}
 	return a.admitSubject(ctx, in, maxDepth, rootMayBeCredential)
 }
 
-func (a *SubjectAdmitter) admitSubject(ctx context.Context, in CredentialPrincipal, maxDepth int, root chainRoot) (ActorChain, Admission) {
+func (a *SubjectAdmitter) admitSubject(ctx context.Context, in CredentialPrincipal, maxDepth int, root chainRoot) (ActorChain, AdmittedSubject, Admission) {
 	if a == nil {
-		return nil, IndeterminateAdmission(ReasonIdentityInternalError,
+		return nil, AdmittedSubject{}, IndeterminateAdmission(ReasonIdentityInternalError,
 			"no subject admitter is installed in this process, so no decision subject can be verified")
 	}
 	in.AuthenticatedOrgID = strings.TrimSpace(in.AuthenticatedOrgID)
 	prep := a.prepareCredential(ctx, in)
 	if prep.refusal != nil {
-		return nil, *prep.refusal
+		return nil, AdmittedSubject{}, *prep.refusal
 	}
 	chain, subjects, adm := verifyChain(a.registry, in.AuthenticatedOrgID, []Credential{prep.cred}, maxDepth, a.now(), a.revocations, root)
 	if adm.State.IsAdmitted() && len(subjects) == 1 && prep.staleMapping(subjects[0]) {
-		return nil, IndeterminateAdmission(ReasonIdentityInternalError, staleMappingDetail)
+		return nil, AdmittedSubject{}, IndeterminateAdmission(ReasonIdentityInternalError, staleMappingDetail)
 	}
-	return chain, adm
+	if !adm.State.IsAdmitted() || len(subjects) == 0 {
+		return chain, AdmittedSubject{}, adm
+	}
+	return chain, AdmittedSubject{Realm: subjects[0].Realm, Aliases: subjects[0].Aliases}, adm
+}
+
+// AdmittedSubject is what admission established about the root subject beside
+// its principal: the realm declaration it was verified under, and the aliases
+// that verification bound to it. It is the zero value unless the subject was
+// admitted.
+//
+// It is returned so a reader of the subject's attributes uses THIS admission's
+// answers rather than asking again. A second registry lookup after admission
+// could read a realm re-declared in between, which is the window staleMapping
+// closes for the claim mapping; and an alias re-read from the request would be
+// one nobody verified.
+type AdmittedSubject struct {
+	Realm   TrustRealm
+	Aliases []Alias
 }
 
 // preparedCredential is what the verification pipeline's shared preparation

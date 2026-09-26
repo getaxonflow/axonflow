@@ -268,7 +268,10 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 		// X-Client-ID is the v9 identity wire field (ADR-052); X-Tenant-ID
 		// is preserved as a compatibility alias and as a circuit-breaker
 		// fall-back when an older path hasn't yet been promoted.
-		if circuitBreakerInstance != nil {
+		//
+		// A connection to an upstream that has never answered is not an error
+		// this client caused (#4249 row 5681489141): see upstream_reach.go.
+		if circuitBreakerInstance != nil && upstreamErrorCountsAgainstClient(serviceName, err) {
 			orgID := r.Header.Get("X-Org-ID")
 			tenantID := r.Header.Get("X-Tenant-ID")
 			clientID := r.Header.Get("X-Client-ID")
@@ -290,6 +293,7 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		log.Printf("[Proxy] %s responded: %d %s (path: %s)", logutil.Sanitize(serviceName), resp.StatusCode, resp.Status, logutil.Sanitize(resp.Request.URL.Path))
 		stripBackendCORSHeaders(resp.Header)
+		markUpstreamReached(serviceName) // #4249 row 5681489141
 		return nil
 	}
 
@@ -684,6 +688,13 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				} else if vid != nil {
 					r.Header.Set(identityHeaderUserEmail, vid.Email)
 					r.Header.Set(identityHeaderUserID, vid.Email)
+					// The email is the validated token's, so its segment
+					// membership is established (ADR-067 step 1b). Any inbound
+					// marker was stripped with NeverClientAssertableHeaders
+					// above; a header identity never gets one.
+					if vid.Email != "" {
+						r.Header.Set(sharedidentity.HeaderIdentitySource, sharedidentity.IdentitySourceValidatedToken)
+					}
 					if vid.Role != "" {
 						r.Header.Set(sharedidentity.HeaderUserRole, vid.Role)
 					}
@@ -739,12 +750,89 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// oneDeprecationSignal wraps a proxying handler so that each deprecation header
+// (policypath.DeprecationHeaders) reaches the client once.
+//
+// WHY A WRITER AND NOT ModifyResponse. The agent stamps the response before it
+// proxies (policypath.DeprecateLegacyFunc sets the headers on our writer), and
+// the orchestrator stamps its own legacy routes; httputil.ReverseProxy then
+// copies the upstream's headers onto our writer with Add, after ModifyResponse
+// has run. ModifyResponse sees only the upstream's headers, never the ones
+// already written here, so it cannot tell a duplicate from the only copy - the
+// same limit stripBackendCORSHeaders records for Vary. The writer sees both, at
+// the moment the header is written, and keeps one copy (see collapse): for the
+// single-valued headers the FIRST, the agent's, which is policypath's own value,
+// so the kept value does not depend on the upstream's version. A response that
+// carries a header once is untouched.
+//
+// Unwrap hands http.ResponseController the underlying writer, which is how
+// ReverseProxy flushes a streamed body and hijacks an upgrade.
+func oneDeprecationSignal(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(&oneSignalWriter{ResponseWriter: w}, r)
+	}
+}
+
+type oneSignalWriter struct {
+	http.ResponseWriter
+	written bool
+}
+
+// collapse leaves one copy of the signal. Deprecation and X-AxonFlow-Removed-In
+// are single-valued, so their first value stays. Link is a list (RFC 8288) that
+// a route may legitimately extend - a paginated list's rel="next", say - so only
+// an exact repeat of a value is dropped there.
+func (o *oneSignalWriter) collapse() {
+	h := o.Header()
+	for _, name := range policypath.DeprecationHeaders() {
+		v := h.Values(name)
+		if len(v) < 2 {
+			continue
+		}
+		if name != policypath.HeaderLink {
+			h.Set(name, v[0])
+			continue
+		}
+		seen := map[string]bool{}
+		kept := make([]string, 0, len(v))
+		for _, x := range v {
+			if !seen[x] {
+				seen[x] = true
+				kept = append(kept, x)
+			}
+		}
+		h[http.CanonicalHeaderKey(name)] = kept
+	}
+}
+
+func (o *oneSignalWriter) WriteHeader(code int) {
+	o.collapse()
+	if code >= 200 {
+		o.written = true
+	}
+	o.ResponseWriter.WriteHeader(code)
+}
+
+func (o *oneSignalWriter) Write(b []byte) (int, error) {
+	if !o.written {
+		o.collapse()
+		o.written = true
+	}
+	return o.ResponseWriter.Write(b)
+}
+
+func (o *oneSignalWriter) Unwrap() http.ResponseWriter { return o.ResponseWriter }
+
 // RegisterProxyRoutes registers all proxy routes on the provided router
 // This enables Single Entry Point Architecture (ADR-024)
 func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Auth-wrapped proxy handlers
 	orchAuth := proxyAuthMiddleware(h.ProxyToOrchestrator)
 	portalAuth := proxyAuthMiddleware(h.ProxyToPortal)
+	// orchLegacy is orchAuth for the deprecated policy families: each line that
+	// uses it wraps it in policypath.DeprecateLegacyFunc, and oneDeprecationSignal
+	// keeps the orchestrator's copy of the same stamp from doubling it.
+	orchLegacy := oneDeprecationSignal(orchAuth)
 
 	// Routes proxied to Orchestrator (port 8081)
 	// Tenant policies. The orchestrator serves both prefixes (#1431); the agent
@@ -759,11 +847,15 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// explicit lines rather than a loop over policypath.Pairs - the two
 	// families are not symmetric here, and a loop would imply they are.
 	//
-	// The deprecation headers are stamped by the ORCHESTRATOR, on its legacy
-	// routes, and copied back through httputil.ReverseProxy's response header
-	// copy. Stamping them here as well would emit the header twice.
-	r.PathPrefix(policypath.LegacyTenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-	r.PathPrefix(policypath.TenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	// The deprecation headers are stamped HERE, at the edge, on every legacy
+	// family this agent proxies (#4249 row 5782131269), and by the orchestrator
+	// on its own legacy routes too. httputil.ReverseProxy copies the upstream's
+	// response headers onto ours with Add, so the two stamps would reach the
+	// client twice; oneDeprecationSignal collapses each to one value. Stamping
+	// only upstream left the signal unproven at the entry point and let a legacy
+	// registration here go unstamped with nothing to catch it.
+	r.PathPrefix(policypath.LegacyTenantPolicies).HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix(policypath.TenantPolicies).HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Typed policy authoring (#3907, ADR-065). The community write path.
 	//
@@ -809,24 +901,32 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// All plugin + SDK traffic must flow through the agent (never direct to orchestrator)
 	// per CLAUDE.md feedback_no_direct_orchestrator. These prefixes route the new
 	// platform endpoints through the proxy so plugins can reach them at port 8080.
+	//
+	// Session overrides are NOT stamped: policypath does not deprecate the family,
+	// so a stamp would write nothing. Its v12 posture is #4249 row 5765129339.
 	r.PathPrefix("/api/v1/overrides").HandlerFunc(orchAuth).Methods("GET", "POST", "DELETE", "OPTIONS")
 	r.PathPrefix("/api/v1/decisions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
 	// LLM Providers
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
-	// Policy Simulation & Impact Report (Enterprise) — must be before /api/v1/policies
-	r.PathPrefix("/api/v1/policies/simulate").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
-	r.PathPrefix("/api/v1/policies/impact-report").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
-	r.PathPrefix("/api/v1/policies/conflicts").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+	// Policy Simulation & Impact Report (Enterprise) — must be before /api/v1/policies.
+	// Deprecated families, stamped at the edge as the tenant family above is.
+	r.PathPrefix("/api/v1/policies/simulate").HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("POST", "OPTIONS")
+	r.PathPrefix("/api/v1/policies/impact-report").HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("POST", "OPTIONS")
+	r.PathPrefix("/api/v1/policies/conflicts").HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("POST", "OPTIONS")
 	// Dynamic policy CRUD via legacy /api/v1/policies path (orchestrator)
-	r.PathPrefix("/api/v1/policies/dynamic").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
-	r.PathPrefix("/api/v1/policies").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/policies/dynamic").HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("GET", "OPTIONS")
+	r.PathPrefix("/api/v1/policies").HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Evidence Export (Enterprise compliance)
 	r.PathPrefix("/api/v1/evidence").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
 
 	// RBI Compliance (India banking) - Enterprise feature
+	// The RBI policy-template catalogue is a deprecated family (policypath) that
+	// this prefix would otherwise forward unstamped; its own line, ahead of the
+	// vertical's, stamps it at the edge like every other proxied family.
+	r.PathPrefix(policypath.RBIPolicyTemplates).HandlerFunc(policypath.DeprecateLegacyFunc(orchLegacy)).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 	r.PathPrefix("/api/v1/rbi").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// SEBI Compliance (India securities) - Enterprise feature

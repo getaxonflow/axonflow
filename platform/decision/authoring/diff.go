@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
 )
 
@@ -267,6 +268,31 @@ func effectOfModification(before, after pdp.Policy, fields []FieldChange) (Effec
 				return EffectNarrowing, "the policy lost its break-glass pierce, so it is now unbreakable by construction"
 			}
 		}
+		// A binds_on edit adds or removes the whole policy on some planes
+		// (#4371), so its direction is effectOfPresence's for the planes it
+		// moves: binding on fewer planes removes the policy there, and on more
+		// adds it. Absent binds on every enforcing plane. An edit that both
+		// drops and gains planes is stated below by what it drops.
+		if _, only := changed["binds_on"]; only {
+			beforeSet, afterSet := bindingSet(before.BindsOn), bindingSet(after.BindsOn)
+			switch {
+			case strictSubset(afterSet, beforeSet):
+				e, why := effectOfPresence(after.Authority, false)
+				return e, "the policy binds on fewer planes, which removes it from the planes it left: " + why
+			case strictSubset(beforeSet, afterSet):
+				e, why := effectOfPresence(after.Authority, true)
+				return e, "the policy binds on more planes, which adds it on the planes it gained: " + why
+			}
+			// A swap drops some planes and gains others. Where removing the
+			// policy widens (a constraint, a requirement, an inspection), the
+			// dropped planes are a widening whatever was gained, and the
+			// reviewer is told which; a permission's swap stays undetermined.
+			if dropped := setMinus(beforeSet, afterSet); len(dropped) > 0 {
+				if e, why := effectOfPresence(after.Authority, false); e == EffectWidening {
+					return EffectWidening, fmt.Sprintf("the policy no longer binds on %v, which removes it there: %s", dropped, why)
+				}
+			}
+		}
 		// Obligations added to or removed from a requirement move in one
 		// direction: more to discharge is narrower, less is wider. It is stated
 		// only when the obligation set is a strict superset or subset, because
@@ -449,4 +475,45 @@ func jsonFieldName(f reflect.StructField) string {
 		return strings.ToLower(f.Name)
 	}
 	return name
+}
+
+// bindingSet is the planes a binds_on binds on: every enforcing plane when it
+// is absent.
+func bindingSet(binds *[]string) map[string]bool {
+	out := map[string]bool{}
+	if binds == nil {
+		for _, s := range legacycompile.EnforcingScopes() {
+			out[s] = true
+		}
+		return out
+	}
+	for _, s := range *binds {
+		out[s] = true
+	}
+	return out
+}
+
+// strictSubset reports whether a is a strict subset of b.
+func strictSubset(a, b map[string]bool) bool {
+	if len(a) >= len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// setMinus is the sorted members of a not in b.
+func setMinus(a, b map[string]bool) []string {
+	var out []string
+	for k := range a {
+		if !b[k] {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

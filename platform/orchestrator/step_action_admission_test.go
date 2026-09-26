@@ -269,8 +269,7 @@ func TestAConditionalWithBranchStepsIsRefusedBeforeAnyStepExecutes(t *testing.T)
 func TestEveryPlanAdmissionRefusesBeforeItExecutes(t *testing.T) {
 	fset, file := parseOrchestratorFile(t, "run.go")
 	executors := map[string]bool{
-		"ExecuteWithHITL": true, "ExecuteWorkflow": true,
-		"ExecuteWorkflowWithParallelSupport": true, "ExecuteWorkflowBalanced": true,
+		"ExecuteWorkflow": true, "ExecuteWorkflowWithParallelSupport": true, "ExecuteWorkflowBalanced": true,
 		"ExecuteWithConfirm": true, "ExecuteWithStep": true, "ExecuteSingleStep": true,
 	}
 	handlers := []string{"executeWorkflowHandler", "executePlanHandler", "resumePlanHandler"}

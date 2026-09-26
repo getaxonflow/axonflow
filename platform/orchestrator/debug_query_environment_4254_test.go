@@ -10,14 +10,20 @@ import (
 	"strings"
 	"testing"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+
+	"axonflow/platform/decision/authoring"
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/orchestrator/workflow_control"
+	"axonflow/platform/shared/anchoredenforcer"
 )
 
 // A "DEBUG" QUERY ON /api/v1/process IS DECIDED BY THE DEPLOYMENT ENVIRONMENT
 // (#4254, Q4).
 //
 // The shipped corpus's corpus:dynamic_policies:sys__dyn__debug__restrict blocks
-// on the workflow control plane's scope whenever env.environment is not
+// on the orchestrator request plane's scope (the routes' own since #4249 row
+// 5706695827; before it they shared wcp's) whenever env.environment is not
 // development and the debug detector fires. The orchestrator states
 // env.environment from its process ENVIRONMENT only, and states nothing when it
 // is unset. This pins what the route answers in each state, through the real
@@ -73,4 +79,35 @@ func TestADebugQueryOnProcessIsDecidedByTheDeploymentEnvironment(t *testing.T) {
 			t.Fatalf("allowed=%v required_actions=%v applied=%v; want allowed", r.Allowed, r.RequiredActions, r.AppliedPolicies)
 		}
 	})
+}
+
+// THE STEP GATE'S SIBLING (#4249 row 5706695827). The split moves the routes to
+// orchestrator_request and leaves the step gate on wcp, where the same shipped
+// control still blocks a debug step outside development and admits it in
+// development. The decision is counted on wcp and never on the routes' plane,
+// so neither plane took the other's block with it.
+func TestADebugStepOnTheStepGateIsStillDecidedUnderWCPByTheDeploymentEnvironment(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", string(authoring.EditionEnterprise))
+	withSeededStepGate(t, respDocuments{})
+	step := contentStep(workflow_control.StepTypeLLMCall, map[string]interface{}{"prompt": "please debug the parser"}, nil)
+	routeDeny := func() float64 {
+		return promtestutil.ToFloat64(anchoredenforcer.Decisions.WithLabelValues(orchestratorRequestSeamScope.String(), anchoredenforcer.EngineAnchored, "deny", string(contract.ReasonExplicitConstraint)))
+	}
+
+	t.Setenv("ENVIRONMENT", "production")
+	wcpBefore, routeBefore := stepGateCounter("deny", string(contract.ReasonExplicitConstraint)), routeDeny()
+	if dec := decideContentStep(t, step); !deniedBy(dec, debugRestrictControl) {
+		t.Fatalf("production: decision %s %s, matched %v; want DENY by %s", dec.State, dec.Reason, dec.Determining.MatchedConstraints, debugRestrictControl)
+	}
+	if got := stepGateCounter("deny", string(contract.ReasonExplicitConstraint)) - wcpBefore; got != 1 {
+		t.Errorf("the wcp deny series moved by %v, want 1: the step gate decides under wcp", got)
+	}
+	if got := routeDeny() - routeBefore; got != 0 {
+		t.Errorf("the orchestrator_request deny series moved by %v, want 0: a step is not a route request", got)
+	}
+
+	t.Setenv("ENVIRONMENT", "development")
+	if dec := decideContentStep(t, step); dec.State != contract.StateAllow {
+		t.Fatalf("development: decision %s %s, matched %v; want ALLOW", dec.State, dec.Reason, dec.Determining.MatchedConstraints)
+	}
 }

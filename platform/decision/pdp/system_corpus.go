@@ -812,6 +812,7 @@ func clonePolicyForTemplate(p Policy) Policy {
 		out.Obligations[i] = ob
 	}
 	out.PierceableBy = append([]contract.ID(nil), p.PierceableBy...)
+	out.BindsOn = BindingScopes(derefScopes(p.BindsOn))
 	out.Actions.Actions = append([]contract.ID(nil), p.Actions.Actions...)
 	out.Actions.RequiredTags = append([]string(nil), p.Actions.RequiredTags...)
 	out.Scope.Groups = append([]contract.ID(nil), p.Scope.Groups...)

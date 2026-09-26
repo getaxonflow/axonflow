@@ -42,8 +42,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"axonflow/platform/decision/contract"
@@ -93,6 +95,43 @@ type ApproverPool struct {
 	Group  string `json:"group"`
 }
 
+// ScoreThreshold is a pack control over an EXTERNAL SCORER's number (#3330,
+// PRD v11 §1.2 ruling R2): the scorer is a fact producer whose score arrives
+// as `signal.scorer.<signal>` (ScorerSignalPath), and this control is the
+// typed constraint that reads it.
+//
+// IT ALWAYS COMPILES TO A HOLD, NEVER TO A BLOCK. There is no action field: a
+// score at or above Threshold is a mandatory approval_challenge, so a score can
+// hold a request for a person and can never refuse one. And a MISSING score is
+// a non-match (on_absent no_match over an attribute the document declares
+// optional), so a scorer that is down, unconfigured or misconfigured makes the
+// control not apply rather than refuse every request: a probabilistic control
+// must not be able to take the gateway down (pdp combine.go, Step 4). Why the
+// score is absent is recorded beside the decision by the plane that asked.
+//
+// ThresholdRule is how Threshold was chosen, stated wherever the threshold is:
+// the compiled control's description carries it, so a reviewer reading the
+// control reads the rule and the corpus beside the number.
+//
+// AN ORGANIZATION MOVES THE THRESHOLD BY PUBLISHING THE CONTROL'S OWN ID: a
+// policy its document carries under PolicyID(pack, id) replaces the pack's copy
+// for that organization (activation.notCarried). A requirement under another id
+// can only add a hold beside this one.
+type ScoreThreshold struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Severity string `json:"severity"`
+	// Phase is the content phase the control binds on. Only request: a scorer
+	// is consulted on a request pass, before anything runs.
+	Phase string `json:"phase"`
+	// Signal names the scorer's output the control reads (ScorerSignalPath).
+	Signal        string  `json:"signal"`
+	Threshold     float64 `json:"threshold"`
+	ThresholdRule string  `json:"threshold_rule"`
+	Description   string  `json:"description"`
+}
+
 // Source is a pack's source of truth.
 type Source struct {
 	ID       string        `json:"id"`
@@ -100,7 +139,22 @@ type Source struct {
 	Approval *ApproverPool `json:"approval_pool,omitempty"`
 	// Detectors are in the pack's order, which is the compiled document's.
 	Detectors []Detector `json:"detectors"`
+	// Scores are the pack's controls over an external scorer's signal, compiled
+	// after the detectors' controls, in this order (#3330).
+	Scores []ScoreThreshold `json:"scores,omitempty"`
 }
+
+// ScorerSignalPath is the attribute path an external scorer's signal arrives
+// at: `signal.scorer.<signal>`, the signal rendered as one path segment the way
+// a detector id is. It is disjoint from `signal.detector.*`, so a score is
+// never read as a detector's verdict, and from `signal.risk_score`, the
+// platform's own content risk floor.
+func ScorerSignalPath(signal string) string {
+	return "signal.scorer." + legacycompile.SanitizePolicyID(signal)
+}
+
+// signalShape is a scorer signal name: one lowercase identifier.
+var signalShape = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // Pack is a loaded pack: its source and the committed compiled form Load held
 // to it.
@@ -184,7 +238,21 @@ func (p *Pack) ControlPhase(id string) (string, bool) {
 			}
 		}
 	}
+	if s, ok := p.ScoreControl(id); ok {
+		return s.Phase, true
+	}
 	return "", false
+}
+
+// ScoreControl is the score threshold one of this pack's controls compiles
+// from, and whether id is one.
+func (p *Pack) ScoreControl(id string) (ScoreThreshold, bool) {
+	for _, s := range p.Source.Scores {
+		if PolicyID(p.Source.ID, s.ID) == id {
+			return s, true
+		}
+	}
+	return ScoreThreshold{}, false
 }
 
 // packIDShape is a pack identifier: one lowercase segment, safe inside a
@@ -201,8 +269,8 @@ func (s *Source) Validate() error {
 	if s.Version < 1 {
 		problems = append(problems, fmt.Sprintf("pack %q declares version %d; a shipped pack starts at 1", s.ID, s.Version))
 	}
-	if len(s.Detectors) == 0 {
-		problems = append(problems, fmt.Sprintf("pack %q carries no detector", s.ID))
+	if len(s.Detectors) == 0 && len(s.Scores) == 0 {
+		problems = append(problems, fmt.Sprintf("pack %q carries no detector and no score control", s.ID))
 	}
 	shipped, err := shippedDetectorIDs()
 	if err != nil {
@@ -248,6 +316,41 @@ func (s *Source) Validate() error {
 			if legacycompile.LegacyAction(a) == legacycompile.ActionRequireApproval {
 				needsPool = true
 			}
+		}
+	}
+	signals := map[string]bool{}
+	for _, sc := range s.Scores {
+		switch {
+		case sc.ID == "":
+			problems = append(problems, "a score control has no id")
+			continue
+		case seen[sc.ID]:
+			problems = append(problems, fmt.Sprintf("control %q appears twice", sc.ID))
+		case shipped[sc.ID]:
+			problems = append(problems, fmt.Sprintf("score control %q is a shipped detector's id", sc.ID))
+		}
+		seen[sc.ID] = true
+		needsPool = true
+		if sc.Category == "" || sc.Severity == "" || sc.Name == "" {
+			problems = append(problems, fmt.Sprintf("score control %q needs a name, a category and a severity", sc.ID))
+		}
+		if sc.Phase != "request" {
+			// A scorer is consulted on a request pass only, before anything
+			// runs; a control bound elsewhere would read a score nobody asked for.
+			problems = append(problems, fmt.Sprintf("score control %q declares phase %q; a scorer is consulted on the request phase only", sc.ID, sc.Phase))
+		}
+		if !signalShape.MatchString(sc.Signal) {
+			problems = append(problems, fmt.Sprintf("score control %q reads signal %q, which is not one lowercase identifier", sc.ID, sc.Signal))
+		} else if signals[sc.Signal] {
+			problems = append(problems, fmt.Sprintf("signal %q is read by two score controls; one pack states one threshold per signal", sc.Signal))
+		}
+		signals[sc.Signal] = true
+		if math.IsNaN(sc.Threshold) || sc.Threshold <= 0 || sc.Threshold >= 1 {
+			// 0 would hold every scored request and 1 none; neither is a threshold.
+			problems = append(problems, fmt.Sprintf("score control %q's threshold %v is not strictly between 0 and 1", sc.ID, sc.Threshold))
+		}
+		if strings.TrimSpace(sc.ThresholdRule) == "" {
+			problems = append(problems, fmt.Sprintf("score control %q states no threshold_rule; a threshold ships with how it was chosen", sc.ID))
 		}
 	}
 	if needsPool {
@@ -323,6 +426,29 @@ func Compile(s *Source, eligible []string) (*pdp.Document, error) {
 			doc.Policies = append(doc.Policies, *p)
 		}
 		doc.Attributes = append(doc.Attributes, pdp.AttributeSchema{Path: path, Type: pdp.TypeBoolean})
+	}
+	for _, sc := range s.Scores {
+		path := ScorerSignalPath(sc.Signal)
+		base := pdp.Policy{
+			ID:      PolicyID(s.ID, sc.ID),
+			Root:    pdp.RootOrganization,
+			Scope:   pdp.Scope{Organization: true},
+			Actions: pdp.ActionSelector{Any: true},
+			// A MISSING SCORE IS NO MATCH: the attribute is optional and the
+			// condition says what its absence means, so the scorer's absence
+			// never makes this mandatory requirement indeterminate.
+			Where: pdp.Compare(path, pdp.OpGe, sc.Threshold).HandlingAbsence(pdp.AbsentIsNoMatch),
+			Name:  sc.Name,
+			Description: fmt.Sprintf("%s Holds for approval when %s is at least %s; the threshold was %s. A missing score does not apply this control: "+
+				"the request continues and the reason no score was stated is recorded beside the decision. Compiled from pack %s v%d, score control %s "+
+				"(category %s, severity %s, action require_approval).",
+				sc.Description, path, strconv.FormatFloat(sc.Threshold, 'g', -1, 64), sc.ThresholdRule, s.ID, s.Version, sc.ID, sc.Category, sc.Severity),
+		}
+		p := legacycompile.ApprovalPolicy(base, legacycompile.ApprovalPool{Quorum: s.Approval.Quorum, Eligible: eligible})
+		class, _ := pdp.DeriveAssurance(*p)
+		p.Assurance = class
+		doc.Policies = append(doc.Policies, *p)
+		doc.Attributes = append(doc.Attributes, pdp.AttributeSchema{Path: path, Type: pdp.TypeNumber, Optional: true})
 	}
 	return doc, nil
 }

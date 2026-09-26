@@ -90,10 +90,10 @@ func stampStepGateDecision(e *workflow_control.StepGateEvaluation, v *anchoreden
 }
 
 // anchoredDecision is the record a route's blocked audit row carries. Both
-// routes decide under the workflow control plane's scope.
+// routes decide under the orchestrator request plane's scope.
 func (d routeRequestDecision) anchoredDecision() *anchoredDecision {
 	return &anchoredDecision{
-		Plane:        wcpSeamScope.String(),
+		Plane:        orchestratorRequestSeamScope.String(),
 		Engine:       routeRequestEngine,
 		SubjectType:  d.subjectType,
 		PolicyBundle: d.policyBundle,

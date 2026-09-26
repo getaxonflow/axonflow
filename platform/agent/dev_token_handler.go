@@ -67,12 +67,13 @@ package agent
 // hand-mint needs JWT_SECRET), so defaulting to admin here would be a genuine
 // escalation. The default therefore stays own-rows; tenant-wide is the explicit,
 // logged `{"role":"admin"}` opt-in. The dev-only 404-in-prod gate does NOT by
-// itself mitigate this — dev/staging is precisely where shared-credential
-// multi-dev setups (and real eval data) live.
+// itself mitigate this — a shared development box is precisely where
+// shared-credential multi-dev setups (and real eval data) live.
 //
 // FAIL-CLOSED gating (§4): the endpoint is registered ONLY when an environment
-// signal is EXPLICITLY a known non-production value. Unset or unrecognized is
-// treated as production and the route is NOT registered (→ 404). None of the
+// signal is EXPLICITLY a development value and none states production. Unset,
+// unrecognized, staging and production are all treated as production and the
+// route is NOT registered (→ 404). None of the
 // ambient mode helpers is reused here, for two separate reasons.
 //
 //   - getDeploymentKind() (run.go) still fails OPEN on an unset value today:
@@ -148,42 +149,72 @@ const devTokenDefaultRole = "developer"
 // per-person isolation needs a provisioned per-user token (Path A/B).
 const devTokenEmailDomain = "dev-token.local"
 
-// devTokenEnvAllowlist is the set of EXPLICIT, recognized non-production values
-// accepted from ENVIRONMENT / DEPLOYMENT_KIND (the pinned set from the design
-// doc §4). Anything not in this set (including the empty string) is treated as
-// production.
+// devTokenEnvAllowlist is the set of EXPLICIT development values accepted from
+// ENVIRONMENT / DEPLOYMENT_KIND. Anything not in this set (including the empty
+// string) is treated as production.
+//
+// "staging" is NOT in it (#4249 row 5680659356). A staging stack is a deployed
+// stack, never a developer's machine: every CloudFormation environment whose
+// name does not start with "production" is typed staging
+// (deploy-cloudformation.sh) and threaded into ENVIRONMENT, so accepting it put
+// this signing oracle on every such stack. The compose files set development.
 var devTokenEnvAllowlist = map[string]bool{
 	"development": true,
 	"dev":         true,
-	"staging":     true,
 	"local":       true,
 }
 
-// isExplicitNonProd reports whether v is an explicit, recognized non-production
-// environment token. The empty string and unrecognized values return false
-// (fail closed).
-func isExplicitNonProd(v string) bool {
+// devTokenProductionValues are the values that, stated on ENVIRONMENT or
+// DEPLOYMENT_KIND, keep the endpoint off whatever else is set.
+//
+// BOTH SPELLINGS (master R3 round 1 on this PR). The veto read the exact word
+// "production", so ENVIRONMENT=prod beside DEPLOYMENT_MODE=community mounted
+// the minter - measured, not reasoned. No deployable template writes "prod",
+// so no shipped stack was affected, and the veto only ever turns the endpoint
+// OFF: recognising the short spelling can refuse a mint that would have been
+// served, never serve one that would have been refused.
+var devTokenProductionValues = map[string]bool{"production": true, "prod": true}
+
+// isExplicitProduction reports whether v states production (normalised the
+// same way isExplicitDevelopment is).
+func isExplicitProduction(v string) bool {
+	return devTokenProductionValues[strings.ToLower(strings.TrimSpace(v))]
+}
+
+// isExplicitDevelopment reports whether v is an explicit, recognized
+// DEVELOPMENT environment token (devTokenEnvAllowlist: development, dev,
+// local). The empty string and unrecognized values return false (fail closed),
+// and so does every deployed-environment word, staging included (#4249 row
+// 5680659356).
+func isExplicitDevelopment(v string) bool {
 	return devTokenEnvAllowlist[strings.ToLower(strings.TrimSpace(v))]
 }
 
 // devTokenEndpointEnabled reports whether the dev-mode token endpoint may be
-// registered. FAIL-CLOSED: returns true ONLY when at least one environment
-// signal is EXPLICITLY a known non-production value. All-unset ⇒ false
-// (production). See the file header for why the ambient mode helpers
+// registered. FAIL-CLOSED: returns true ONLY when no signal states production
+// and at least one environment signal is EXPLICITLY a development value.
+// All-unset ⇒ false (production). See the file header for why the ambient mode helpers
 // (isCommunityMode / getDeploymentKind) are NOT used -
 // getDeploymentKind still fails open on unset; isCommunityMode
 // no longer does, and is still not reused because its accepting set is narrower
 // than this gate's and is owned by the authentication posture, not by this gate.
 //
-// Recognized explicit non-prod signals (any one suffices):
-//   - ENVIRONMENT      ∈ {development, dev, staging, local, test}
-//   - DEPLOYMENT_MODE  == "community"   (an explicit local-dev/eval mode)
-//   - DEPLOYMENT_KIND  ∈ {development, dev, staging, local, test}
+// A PRODUCTION SIGNAL VETOES (#4249 row 5680659356). ENVIRONMENT=production or
+// DEPLOYMENT_KIND=production returns false whatever the other two say. Before,
+// any one development signal was enough, so ENVIRONMENT=production beside
+// DEPLOYMENT_MODE=community mounted the minter.
 //
-// ENVIRONMENT=production, DEPLOYMENT_KIND=production, and every unset/unknown
-// combination return false.
+// Otherwise, recognized explicit development signals (any one suffices):
+//   - ENVIRONMENT      ∈ {development, dev, local}
+//   - DEPLOYMENT_MODE  == "community"   (an explicit local-dev/eval mode)
+//   - DEPLOYMENT_KIND  ∈ {development, dev, local}
+//
+// Every unset/unknown combination returns false.
 func devTokenEndpointEnabled() bool {
-	if isExplicitNonProd(os.Getenv("ENVIRONMENT")) {
+	if isExplicitProduction(os.Getenv("ENVIRONMENT")) || isExplicitProduction(os.Getenv("DEPLOYMENT_KIND")) {
+		return false
+	}
+	if isExplicitDevelopment(os.Getenv("ENVIRONMENT")) {
 		return true
 	}
 	// DEPLOYMENT_MODE=community is an explicit signal. The raw value is read
@@ -197,7 +228,7 @@ func devTokenEndpointEnabled() bool {
 	}
 	// DEPLOYMENT_KIND: check the raw env value, NOT getDeploymentKind(), which
 	// defaults UNSET → "dev" (fail open).
-	if isExplicitNonProd(os.Getenv("DEPLOYMENT_KIND")) {
+	if isExplicitDevelopment(os.Getenv("DEPLOYMENT_KIND")) {
 		return true
 	}
 	return false
@@ -209,11 +240,11 @@ func devTokenEndpointEnabled() bool {
 // unregistered so the router returns 404, and the production stance is logged.
 func RegisterDevTokenHandler(router *mux.Router) {
 	if !devTokenEndpointEnabled() {
-		log.Println("🔒 dev-mode token endpoint NOT registered — no explicit non-prod ENVIRONMENT/DEPLOYMENT_MODE/DEPLOYMENT_KIND (fail-closed). POST /api/v1/dev/token → 404")
+		log.Println("🔒 dev-mode token endpoint NOT registered — production stated, or no explicit development ENVIRONMENT/DEPLOYMENT_MODE/DEPLOYMENT_KIND (fail-closed). POST /api/v1/dev/token → 404")
 		return
 	}
 	router.Handle("/api/v1/dev/token", apiAuthMiddleware(http.HandlerFunc(devTokenHandler))).Methods("POST")
-	log.Println("⚠️  DEV-ONLY: POST /api/v1/dev/token ENABLED (explicit non-production environment) — mints HS256 user_tokens from the Basic credential. MUST NOT be reachable in production.")
+	log.Println("⚠️  DEV-ONLY: POST /api/v1/dev/token ENABLED (explicit development environment) — mints HS256 user_tokens from the Basic credential. MUST NOT be reachable in production.")
 }
 
 // devTokenRequest is the optional JSON request body. A missing/empty body mints
@@ -315,7 +346,7 @@ func devTokenHandler(w http.ResponseWriter, r *http.Request) {
 	// list, so a future tenant-wide role can never be minted WITHOUT this log —
 	// the codebase's "never copy this predicate into a second site" discipline.
 	if sharedidentity.RoleCanReadTenant(role) {
-		log.Printf("⚠️  DEV-ONLY ORACLE: minted a TENANT-WIDE %q dev token for org=%s tenant=%s — it grants cross-user audit READS over the WHOLE tenant, and (for role=admin) ALSO relaxes ENFORCEMENT: the /process plane skips the CategoryAdminAccess detector for admin-role traffic. Gated to non-production; if you see this in prod, treat it as a critical exposure.",
+		log.Printf("⚠️  DEV-ONLY ORACLE: minted a TENANT-WIDE %q dev token for org=%s tenant=%s — it grants cross-user audit READS over the WHOLE tenant, and (for role=admin) ALSO relaxes ENFORCEMENT: the /process plane skips the CategoryAdminAccess detector for admin-role traffic. Gated to development environments; if you see this in prod, treat it as a critical exposure.",
 			role, logutil.Sanitize(orgID), logutil.Sanitize(username))
 	}
 

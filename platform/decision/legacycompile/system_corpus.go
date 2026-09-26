@@ -433,6 +433,11 @@ func BuildCorpus(rep Report, opts CorpusOptions) (*Corpus, error) {
 		// TypeAny.
 		doc.Attributes = deriveSchema(doc.Policies, nil)
 	}
+	attrs, err := withDeploymentDeclaredArguments(c.System.Attributes)
+	if err != nil {
+		return nil, err
+	}
+	c.System.Attributes = attrs
 	// STABLE, WITH A TOTAL TIE-BREAK. `sort.Slice` is not stable, so two
 	// divergences with an equal key would order nondeterministically and move
 	// the artifact's bytes between runs - which would turn the regeneration
@@ -1096,4 +1101,57 @@ func compilerReasons(rec Record) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// DeploymentDeclaredArguments are arguments the SYSTEM document declares with
+// no shipped policy reading them (#4249 row 5670275054).
+//
+// An organization's own document reads them. authoringcatalog.corpusArguments
+// derives every action's argument schema from the corpus's `args.*`
+// declarations, publish refuses a condition over an argument no action
+// declares (authoring.CodeArgumentNotInActionSchema), and pdp admission
+// refuses a request carrying one (ReasonSchemaViolation). A path that only a
+// customer's document reads therefore has to be declared HERE, or no
+// organization can write a constraint over it and no plane can state it.
+//
+// deriveSchema alone would drop them: it declares what the compiled policies
+// read, and a regeneration of the artifact would then delete the declaration
+// silently. So they are merged after it, by name, from this one list.
+//
+// Both are caller-typed labels: the workflow control plane and the multi-agent
+// plane forward them from the request body (`step_name`, `tool_name`), so they
+// are stated with caller provenance and a permission may not read them
+// (pdp.CallerTypedLabelPaths). Both are OPTIONAL: every request that is not a
+// step carries neither, and a condition over one must treat its absence as a
+// non-match (pdp checkCallerTypedLabels). There is deliberately no step TYPE here: a
+// step's type is the action it is presented as, selected with the action
+// selector, and a second, caller-typed spelling of it could disagree with the
+// first.
+var DeploymentDeclaredArguments = []pdp.AttributeSchema{
+	{Path: "args.context.step__name", Type: pdp.TypeString, Optional: true},
+	{Path: "args.context.tool__name", Type: pdp.TypeString, Optional: true},
+}
+
+// withDeploymentDeclaredArguments merges DeploymentDeclaredArguments into a
+// derived schema, keeping it sorted by path. A shipped policy that reads one
+// of them at another type is refused rather than widened: the declaration is
+// the contract an organization's document is written against.
+func withDeploymentDeclaredArguments(derived []pdp.AttributeSchema) ([]pdp.AttributeSchema, error) {
+	byPath := map[string]int{}
+	out := append([]pdp.AttributeSchema(nil), derived...)
+	for i, a := range out {
+		byPath[a.Path] = i
+	}
+	for _, d := range DeploymentDeclaredArguments {
+		if i, seen := byPath[d.Path]; seen {
+			if out[i].Type != d.Type || out[i].Optional != d.Optional {
+				return nil, fmt.Errorf("legacycompile: a shipped policy reads the deployment-declared argument %q as %s (optional %t); it is declared %s (optional %t)",
+					d.Path, out[i].Type, out[i].Optional, d.Type, d.Optional)
+			}
+			continue
+		}
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }

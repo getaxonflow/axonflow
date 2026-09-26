@@ -229,7 +229,7 @@ func IsDeprecated(path string) bool {
 //   - Link (RFC 8288) with rel="successor-version": the typed authoring route.
 //   - HeaderRemovedIn: the release that removes the surface. No registered
 //     header carries a RELEASE: RFC 8594's Sunset is a DATE after which the
-//     resource may stop answering, and v11.1 has no agreed date. When it has
+//     resource may stop answering, and v12.0.0 has no agreed date. When it has
 //     one, Sunset is added beside this header from one more constant.
 const (
 	HeaderDeprecation = "Deprecation"
@@ -243,7 +243,7 @@ const (
 	Successor = legacyfreeze.TypedAuthoringRoute
 	// RemovalRelease is the release that removes the deprecated surface, once
 	// the SDK train has moved its callers to the typed route (PRD §1.11).
-	RemovalRelease = "v11.1"
+	RemovalRelease = "v12.0"
 
 	// DeprecatedInRelease is the release that deprecates the surface, in the
 	// form the repository's VERSION file carries.

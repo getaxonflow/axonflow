@@ -1,9 +1,10 @@
-# report-main-red (#4041): the last step of every job that runs after the
-# merge. Which runs speak for main - a push to main or a schedule - is decided
-# in report-main-red.sh, so a job ends with this step under `if: always()` and
+# report-main-red (#4041, #4169): the last step of every job whose run speaks
+# for main or for a release. Which runs those are - a push to main or a
+# schedule (main), a push of a tag (a release) - is decided in
+# report-main-red.sh, so a job ends with this step under `if: always()` and
 # restates nothing. The job's token needs `issues: write`.
-name: Report a job that is red on main
-description: Opens or re-opens the job's main-red issue when it fails on a push to main or a schedule, and closes it on the job's next green run (#4041).
+name: Report a job that is red on main or on a release tag
+description: Opens or re-opens the job's main-red issue when it fails on a push to main or a schedule, and its release-red issue when it fails or is cancelled on a release tag; closes each on the job's next green run (a release-red one on the same or a later tag) (#4041, #4169).
 inputs:
   status:
     description: The job's status, `job.status`.
@@ -18,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Report to the job's main-red issue
+    - name: Report to the job's main-red or release-red issue
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}

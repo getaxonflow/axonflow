@@ -215,7 +215,7 @@ var (
 // both answers from one statement, and PlaneSpec.Admission becomes their union
 // rather than a second declaration that could disagree with it.
 var siteAdmissions = map[string]CategoryAdmission{
-	"cowork_ingest|EvaluateResponse|coworkRedactDefault":          piiOnlyAdmission,
+	"cowork_ingest|EvaluateResponse|decideCoworkContent":          piiOnlyAdmission,
 	"decide|EvaluateRequest|evaluateInputPolicies":                inputPoliciesAdmission,
 	"gateway_request|EvaluateRequest|handlePolicyPreCheck":        preCheckAdmission,
 	"mcp|EvaluateRequest|evaluateInputPolicies":                   inputPoliciesAdmission,

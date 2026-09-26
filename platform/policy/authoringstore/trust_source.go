@@ -74,8 +74,23 @@ type refreshingTrust struct {
 	// unknown key would otherwise start one database round trip per row, all
 	// asking the same question.
 	reloading bool
-	// lastReload rate-limits them; see reloadFloor.
+	// lastReload rate-limits them; see reloadFloor. It is stamped when a
+	// reload COMPLETES, so it is also when the trust in force was last read.
 	lastReload time.Time
+	// reloadStarted is when the reload in flight (or the last one) BEGAN,
+	// stamped under the lock where reloading is set.
+	//
+	// The since rule needs it, and lastReload cannot answer for it (master R3
+	// round 1 on #4398): a read that JOINS a reload already in flight is
+	// answered by a reload that read the keys BEFORE that read began, so a key
+	// another replica authorized in that window is reported terminal (500
+	// unverifiable) where main answered a retriable 503. Keying on the START
+	// makes such a join fall through to the floored branch and a fresh reload.
+	reloadStarted time.Time
+	// settled is closed when the reload in flight completes, so a reader the
+	// reload deferred can wait for it (reloadWaiting, #4272). Replaced at the
+	// start of each reload.
+	settled chan struct{}
 	// lastErr is why the most recent reload failed, carried so a read refused
 	// by the floor still reports the real reason. Without it, a sustained
 	// outage surfaces the storage error on one read per reloadFloor and the
@@ -162,6 +177,9 @@ func (r *refreshingTrust) reloadDeferring(ctx context.Context) (changed, deferre
 		return false, deferred, err
 	}
 	r.reloading = true
+	r.reloadStarted = time.Now()
+	settled := make(chan struct{})
+	r.settled = settled
 	load := r.load
 	r.mu.Unlock()
 
@@ -180,6 +198,7 @@ func (r *refreshingTrust) reloadDeferring(ctx context.Context) (changed, deferre
 	completed := false
 	defer func() {
 		r.mu.Lock()
+		defer close(settled)
 		r.reloading = false
 		r.lastReload = time.Now()
 		if !completed {
@@ -221,6 +240,89 @@ func (r *refreshingTrust) reloadDeferring(ctx context.Context) (changed, deferre
 	return true, false, nil
 }
 
+// reloadWaiting is reloadDeferring that, instead of answering "deferred" at
+// once, WAITS for the deferral to resolve, bounded by reloadFloor (#4272):
+// for the reload in flight to complete, or for the floor to pass so a reload
+// can run. The caller then classifies against the trust that reload produced,
+// definitively: the key is loaded, it is not authorized, or the re-read
+// failed. Before, every read that landed in another read's floor answered
+// 503 key_not_loaded, so under several concurrent readers a capped retry loop
+// could end on key_not_loaded for an integrity fault no retry clears.
+//
+// since is when the caller's own read began. A reload that STARTED after that
+// read the keys no earlier than this call, so its answer is taken without
+// waiting: a listing of many artifacts signed by one unknown key waits once,
+// not once per artifact. A reload that started BEFORE it read the keys before
+// the read arrived and cannot settle a key authorized in between, so this read
+// falls through to a fresh one (master R3 round 1 on #4398). changed reports
+// whether the trust in force may differ from what the caller verified against
+// (a reload succeeded since), so the caller retries its load.
+//
+// deferred is true only when the wait itself ran out (a reload in flight took
+// longer than the floor, or the context ended): the one case left for
+// ErrSigningKeyNotLoaded.
+//
+// THE BOUND, stated as the START rule leaves it (master R3 round 2 on #4398,
+// NEW-1; the earlier wording was one leg short and a measurement caught it at
+// 4.20s against a stated 4s): a read waits for at most a reload it joins, one
+// floor, plus one floor for a fresh reload it then runs or joins.
+func (r *refreshingTrust) reloadWaiting(ctx context.Context, since time.Time) (changed, deferred bool, err error) {
+	for {
+		changed, deferred, err := r.reloadDeferring(ctx)
+		if !deferred {
+			return changed, false, err
+		}
+		r.mu.Lock()
+		// THE READ THAT RAN OR JOINED A RELOAD STARTED AFTER IT ARRIVED takes
+		// that reload's result. The rule keys on when the reload BEGAN, not
+		// when it completed: a reload already in flight when this read arrived
+		// read the keys before the read began, so its answer cannot settle a
+		// key authorized in between (master R3 round 1 on #4398). Such a join
+		// falls through to the floored branch and a fresh reload.
+		if !r.reloading && !r.reloadStarted.IsZero() && !r.reloadStarted.Before(since) {
+			lastErr := r.lastErr
+			r.mu.Unlock()
+			return lastErr == nil, false, lastErr
+		}
+		if r.reloading {
+			// JOIN THE RELOAD IN FLIGHT, bounded by the floor. One that takes
+			// longer is the one case left for key_not_loaded.
+			settled := r.settled
+			r.mu.Unlock()
+			timer := time.NewTimer(reloadFloor)
+			select {
+			case <-settled:
+				timer.Stop()
+				continue // its result is taken by the since rule above
+			case <-timer.C:
+				return false, true, err
+			case <-ctx.Done():
+				timer.Stop()
+				return false, true, err
+			}
+		}
+		// FLOORED: wait for the floor to pass, then run (or join) a reload. A
+		// floor is at most reloadFloor, and it is waited for at most once: the
+		// reload that follows completes after since, so the since rule answers
+		// the next pass. A timer can fire a hair before the floor has elapsed
+		// by the clock reloadDeferring reads, so the wait is at least a
+		// millisecond and the pass that finds the floor still (just) in force
+		// waits again rather than giving up.
+		floor := reloadFloor - time.Since(r.lastReload)
+		r.mu.Unlock()
+		if floor < time.Millisecond {
+			floor = time.Millisecond
+		}
+		timer := time.NewTimer(floor)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return false, true, err
+		}
+	}
+}
+
 // reload is reloadDeferring without the deferral: the reloadable contract,
 // which the tests and every other caller read.
 func (r *refreshingTrust) reload(ctx context.Context) (bool, error) {
@@ -244,6 +346,13 @@ type deferringReloadable interface {
 	reloadDeferring(ctx context.Context) (changed, deferred bool, err error)
 }
 
+// waitingReloadable is a deferringReloadable that can also wait for a
+// deferral to resolve (reloadWaiting, #4272). refreshingTrust implements it;
+// a source that does not keeps the deferring behaviour.
+type waitingReloadable interface {
+	reloadWaiting(ctx context.Context, since time.Time) (changed, deferred bool, err error)
+}
+
 // loadVerified turns a stored row back into a verified artifact, retrying once
 // if the only thing wrong was a key this process had not yet heard of.
 //
@@ -264,7 +373,7 @@ type deferringReloadable interface {
 // availability problem, which gets investigated as the wrong thing entirely.
 // errors.Join carries both facts in one error and leaves errors.Is(err,
 // ErrKeyNotAuthorized) true, so callers keyed on the sentinel are unaffected.
-func (s *Store) loadVerified(ctx context.Context, raw []byte) (*authoring.Artifact, error) {
+func (s *Store) loadVerified(ctx context.Context, raw []byte, since time.Time) (*authoring.Artifact, error) {
 	art, err := authoring.LoadArtifact(raw, s.trust.Current())
 	if err == nil {
 		return art, nil
@@ -278,7 +387,9 @@ func (s *Store) loadVerified(ctx context.Context, raw []byte) (*authoring.Artifa
 	}
 	var changed, deferred bool
 	var reloadErr error
-	if d, ok := r.(deferringReloadable); ok {
+	if w, ok := r.(waitingReloadable); ok {
+		changed, deferred, reloadErr = w.reloadWaiting(ctx, since)
+	} else if d, ok := r.(deferringReloadable); ok {
 		changed, deferred, reloadErr = d.reloadDeferring(ctx)
 	} else {
 		changed, reloadErr = r.reload(ctx)

@@ -214,6 +214,12 @@ type BuiltinRealmDeployment struct {
 	// channel here - true today, and the thing the CAEP receiver
 	// (caep_receiver.go) exists to change.
 	HasCAEP bool
+	// HasOIDC reports whether the deployment wires the enterprise OIDC realm
+	// source, so an `oidc`-realm principal can be admitted. It is set from
+	// OIDCRealmSourceWiring and read only by the deployment vocabulary
+	// (DeclaredOIDCRealm): BuiltinRealms does not read it, because the OIDC
+	// realm is registered per organization by its own source, never here.
+	HasOIDC bool
 }
 
 // NOTE ON A KNOB THAT IS NOT HERE. An earlier revision carried a

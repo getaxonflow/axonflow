@@ -210,7 +210,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 				}
 
 				// Record violation
-				e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
+				e.metrics.RecordViolation(ctx, opts, policy, *match, PhaseRequest)
 			}
 		}
 	}
@@ -267,7 +267,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 						result.Blocked = true
 						result.BlockedBy = policy
 						result.BlockReason = fmt.Sprintf("Blocked by policy %s in parameter '%s'", policy.Name, key)
-						e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
+						e.metrics.RecordViolation(ctx, opts, policy, *match, PhaseRequest)
 					}
 				}
 			}
@@ -407,7 +407,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 				if result.BlockReason == "" {
 					result.BlockReason = fmt.Sprintf("Blocked by policy: %s", policy.Name)
 				}
-				e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
+				e.metrics.RecordViolation(ctx, opts, policy, match, PhaseResponse)
 
 			case ActionRedact:
 				redactionPlans = append(redactionPlans, RedactionPlan{
@@ -511,6 +511,23 @@ func capRedactionPlans(plans []RedactionPlan, max int, dropped func(RedactionPla
 //   - a span plan the cap would drop - the obligation would be discharged for
 //     some spans and not others while the record says it was discharged.
 func (e *UnifiedPolicyEngine) RedactDecided(ctx context.Context, content interface{}, phase Phase, opts EvalOptions, policyIDs []string) (*ResponseResult, error) {
+	results, err := e.RedactDecidedBatch(ctx, []interface{}{content}, phase, opts, policyIDs)
+	if err != nil {
+		return nil, err
+	}
+	return results[0], nil
+}
+
+// RedactDecidedBatch is RedactDecided over several contents under ONE load:
+// the policies are loaded, filtered and resolved to the named set once, then
+// each content is redacted on its own, in order (#4264: the MCP request pass
+// masks its statement and each parameter's scan text by the same decision, and
+// a per-text reload could see a different policy set between two of them). The
+// failure shapes are RedactDecided's, per call: a named policy the phase does
+// not load fails the whole batch; a span plan the cap would drop fails it too,
+// naming the content's policies. RedactDecided is this with one content, so the
+// two cannot disagree.
+func (e *UnifiedPolicyEngine) RedactDecidedBatch(ctx context.Context, contents []interface{}, phase Phase, opts EvalOptions, policyIDs []string) ([]*ResponseResult, error) {
 	if phase != PhaseRequest && phase != PhaseResponse {
 		return nil, fmt.Errorf("policy engine: redacting needs the request or the response phase, got %q", phase)
 	}
@@ -532,20 +549,44 @@ func (e *UnifiedPolicyEngine) RedactDecided(ctx context.Context, content interfa
 	for _, id := range policyIDs {
 		want[id] = true
 	}
+	var named []*CompiledPolicy
+	for i := range policies {
+		if want[policies[i].PolicyID] {
+			delete(want, policies[i].PolicyID)
+			named = append(named, &policies[i])
+		}
+	}
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for id := range want {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("policy engine: the decision requires redacting what %v matched, and the %s phase does not load them under these options", missing, phase)
+	}
+	results := make([]*ResponseResult, 0, len(contents))
+	for _, content := range contents {
+		r, err := e.redactOne(content, phase, opts, named, len(loaded))
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
+// redactOne masks one content with the named policies RedactDecidedBatch
+// resolved.
+func (e *UnifiedPolicyEngine) redactOne(content interface{}, phase Phase, opts EvalOptions, named []*CompiledPolicy, evaluated int) (*ResponseResult, error) {
 	result := &ResponseResult{
 		Content:           content,
 		RedactedFields:    make([]RedactedField, 0),
 		MatchedPolicies:   make([]PolicyMatch, 0),
-		PoliciesEvaluated: len(loaded),
+		PoliciesEvaluated: evaluated,
 	}
 	scannable := e.toScannable(content)
 	var plans []RedactionPlan
-	for i := range policies {
-		policy := &policies[i]
-		if !want[policy.PolicyID] {
-			continue
-		}
-		delete(want, policy.PolicyID)
+	for _, policy := range named {
 		if scannable == "" {
 			continue
 		}
@@ -562,14 +603,6 @@ func (e *UnifiedPolicyEngine) RedactDecided(ctx context.Context, content interfa
 				Strategy: GetRedactionStrategy(policy.Category, policy.Severity),
 			})
 		}
-	}
-	if len(want) > 0 {
-		missing := make([]string, 0, len(want))
-		for id := range want {
-			missing = append(missing, id)
-		}
-		sort.Strings(missing)
-		return nil, fmt.Errorf("policy engine: the decision requires redacting what %v matched, and the %s phase does not load them under these options", missing, phase)
 	}
 	if len(plans) == 0 {
 		return result, nil

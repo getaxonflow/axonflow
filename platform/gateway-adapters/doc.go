@@ -21,17 +21,21 @@
 //     redaction on the request body, engine response-governance on the
 //     response body.
 //
-// Seam capabilities (#2958): every decide call declares what the CALLING PATH
-// can actually discharge (pep.Capability*), so the PDP only emits obligations
-// this adapter can carry out. Capability is a property of the path, not the
-// adapter: ext_proc is body-capable when it has a body to rewrite, and
+// Seam capabilities (#2958, #3704): every decide call declares what the CALLING
+// PATH can actually discharge, on two axes - #2958's seam mechanics
+// (pep.Capability*) and an ADR-065 capability handshake
+// (X-Axonflow-PEP-Handshake), which every seam presents by default (see
+// Config.PEPAudience) - so the PDP only hands this adapter obligations it can
+// carry out. Capability is a property of the path, not the adapter: ext_proc is
+// body-capable when it has a body to rewrite (it declares field_redact@1), and
 // headers-only on a BODYLESS request, where the only content is the request
-// line and ext_proc cannot rewrite :path/:method.
+// line and ext_proc cannot rewrite :path/:method (it declares the empty set).
 //
 // What happens to content a policy wanted masked on a path that cannot mask is
-// the PDP's decision, NOT this package's: it applies the org's
-// obligation-fallback posture (log => allow + audit the suppressed redaction;
-// block => deny). This adapter enforces the verdict it is handed.
+// the PDP's decision, NOT this package's: a v11 PDP refuses the request
+// unsupported_obligation (ADR-065 invariant 8); an older >=9.11.0 one applies
+// the org's obligation-fallback posture (log => allow + audit the suppressed
+// redaction; block => deny). This adapter enforces the verdict it is handed.
 //
 // Until 9.11.0 ext_authz answered that question locally, converting the PDP's
 // `allow` into a client-facing 403 whenever the verdict carried an obligation

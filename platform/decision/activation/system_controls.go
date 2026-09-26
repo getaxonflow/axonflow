@@ -5,6 +5,7 @@ package activation
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -26,6 +27,15 @@ import (
 // THE FOLD RUNS BEFORE foldOverrides, so a control the document names is no
 // longer in the restriction the category fold reads: per-policy control takes
 // precedence over the recorded category posture on the same control.
+//
+// A SCOPE THAT FORCES AN ACTION IS THE EXCEPTION (#4259). Where the scope's
+// plane coerces an action for a policy's category (legacycompile.PlaneSpec.
+// Forces: the cowork ingest storage plane masks every pii-* category), the
+// entry neither removes nor re-actions that policy there: it stays in the
+// restriction as shipped, and the effect names it as kept (Forced). The entry
+// is legitimate on every other plane it reaches, so publication warns of it
+// (authoring.CodeSystemControlForcedOnScope) rather than refusing it, and the
+// guarantee is this fold with refuseForcedControlMissing behind it.
 
 // OrganizationControlPolicyIDPrefix begins the id of every policy the
 // organization root carries because the organization's document re-actioned a
@@ -43,6 +53,10 @@ type SystemControlEffect struct {
 	// Policies are the shipped policies the entry displaced on this scope,
 	// sorted: empty when no policy of the control binds here.
 	Policies []string
+	// Forced are the shipped policies of the control this scope keeps as
+	// shipped, sorted, because the scope forces an action on their category
+	// (#4259): empty on every scope that forces nothing.
+	Forced []string `json:",omitempty"`
 }
 
 // systemControlFold is a scope's restriction with the controlled policies left
@@ -86,7 +100,11 @@ func foldSystemControls(scope legacycompile.EnforcementScope, restricted *pdp.Do
 	if err != nil {
 		return fold, err
 	}
-	displaced := map[string][]string{}
+	spec, err := legacycompile.SpecFor(scope.Plane)
+	if err != nil {
+		return fold, fmt.Errorf("activation: %w", err)
+	}
+	displaced, forced := map[string][]string{}, map[string][]string{}
 	kept := &pdp.Document{Root: restricted.Root, Version: restricted.Version, InteractiveRealms: restricted.InteractiveRealms}
 	for _, p := range restricted.Policies {
 		control, _, isCorpus := legacycompile.CorpusControlOf(p.ID)
@@ -95,12 +113,17 @@ func foldSystemControls(scope legacycompile.EnforcementScope, restricted *pdp.Do
 			kept.Policies = append(kept.Policies, p)
 			continue
 		}
+		_, fact, censused := censusFactFor(p, census)
+		if _, does := spec.Forces(fact.category); censused && does {
+			forced[control] = append(forced[control], p.ID)
+			kept.Policies = append(kept.Policies, p)
+			continue
+		}
 		displaced[control] = append(displaced[control], p.ID)
 		if entry.Disabled() {
 			fold.disabled = append(fold.disabled, p)
 			continue
 		}
-		_, fact, censused := censusFactFor(p, census)
 		if !censused {
 			return fold, fmt.Errorf("activation: the organization's document assigns %q to %s, whose policy %s reads no censused detector, so no replacement can be compiled for it",
 				entry.Action, control, p.ID)
@@ -135,19 +158,65 @@ func foldSystemControls(scope legacycompile.EnforcementScope, restricted *pdp.Do
 	parts := make([]string, 0, len(controls))
 	for _, c := range controls {
 		e := named[c]
-		policies := displaced[c]
+		policies, keptForced := displaced[c], forced[c]
 		sort.Strings(policies)
-		fold.effects = append(fold.effects, SystemControlEffect{Control: c, Disabled: e.Disabled(), Action: e.Action, Policies: policies})
+		sort.Strings(keptForced)
+		fold.effects = append(fold.effects, SystemControlEffect{Control: c, Disabled: e.Disabled(), Action: e.Action, Policies: policies, Forced: keptForced})
 		instruction := "disabled"
 		if !e.Disabled() {
 			instruction = "action=" + string(e.Action)
 		}
-		if len(policies) == 0 {
+		switch {
+		case len(policies) == 0 && len(keptForced) == 0:
 			parts = append(parts, fmt.Sprintf("%s %s binds nowhere on %s", c, instruction, scope))
-		} else {
+		case len(policies) > 0:
 			parts = append(parts, fmt.Sprintf("%s %s displaces %d shipped policy(ies)", c, instruction, len(policies)))
+		}
+		if len(keptForced) > 0 {
+			parts = append(parts, fmt.Sprintf("%s %s is not applied to %d shipped policy(ies) on %s, which forces %s on their category",
+				c, instruction, len(keptForced), scope, spec.ForcedAction))
 		}
 	}
 	fold.reason = "the organization's document controls the shipped set (PRD v11 §1.5): " + strings.Join(parts, "; ")
 	return fold, nil
+}
+
+// RefusalForcedControlMissing is the code Activate refuses with when a shipped
+// control whose category the scope forces (legacycompile.PlaneSpec.Forces) is
+// missing from the restriction the engine would enforce after every fold
+// (#4259). It holds by construction, so it names a defect.
+const RefusalForcedControlMissing = "FORCED_CONTROL_MISSING"
+
+// refuseForcedControlMissing is the backstop behind foldSystemControls: every
+// policy of the scope's restriction whose category the scope forces must still
+// be in folded, byte-identical, or the activation refuses.
+func refuseForcedControlMissing(scope legacycompile.EnforcementScope, restricted, folded *pdp.Document) error {
+	spec, err := legacycompile.SpecFor(scope.Plane)
+	if err != nil {
+		return fmt.Errorf("activation: %w", err)
+	}
+	if spec.ForcedAction == "" {
+		return nil
+	}
+	census, err := detectorCensusBySignalPath()
+	if err != nil {
+		return err
+	}
+	kept := make(map[string]pdp.Policy, len(folded.Policies))
+	for _, p := range folded.Policies {
+		kept[p.ID] = p
+	}
+	for _, p := range restricted.Policies {
+		_, fact, censused := censusFactFor(p, census)
+		if _, does := spec.Forces(fact.category); !censused || !does {
+			continue
+		}
+		if got, ok := kept[p.ID]; !ok || !reflect.DeepEqual(got, p) {
+			return &pdp.ActivationRefusal{Code: RefusalForcedControlMissing, Detail: fmt.Sprintf(
+				"%s forces %s on category %q, and the shipped policy %s is not enforced here as shipped after the organization's "+
+					"system controls and overrides were folded; the plane refuses rather than store content it was built to mask",
+				scope, spec.ForcedAction, fact.category, p.ID)}
+		}
+	}
+	return nil
 }

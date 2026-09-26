@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"axonflow/platform/common/usage"
+	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/shared/legacyfreeze"
@@ -135,18 +136,16 @@ type mcpTool struct {
 
 // FreeUsageLimit defines a graduated cap that Free-tier callers must obey on
 // a given MCP tool. Used by tools/call dispatch (PR2 of umbrella #1958) to
-// enforce object-count limits ("2 active custom policies") and rolling-
-// window action limits ("1 HITL approval per 7 days").
+// enforce rolling-window action limits (hitl_approvals_window: HITL approvals
+// per 7 days); enforceMCPToolGate refuses a LimitType it does not enforce.
 //
-// Zero-valued fields are ignored:
-//   - MaxCount=0 means no object-count cap (use WindowSeconds+MaxInWindow instead)
-//   - WindowSeconds=0 means no time-window cap (use MaxCount instead)
+// Zero-valued fields are ignored: WindowSeconds=0 means no time-window cap.
 //
 // LimitType drives the response envelope rendering — must match one of the
 // LimitType* constants in community_saas_ratelimit_response.go so plugin-side
 // parsers see a consistent shape.
 type FreeUsageLimit struct {
-	MaxCount      int    // for object-creation limits (e.g. 2 active policies)
+	MaxCount      int    // unused: no gate reads it
 	WindowSeconds int    // for time-windowed action limits (e.g. 604800 = 7d)
 	MaxInWindow   int    // count threshold within window
 	LimitType     string // one of LimitType* constants — passed to writeFreeLimitError on enforcement
@@ -743,6 +742,20 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the caller has valid credentials for this session's tenant
 	_, _, _, _, _, clientID, _, auth, err := authenticateMCPServerRequest(r)
+	// #4249 row 5682255301: a tier admission refusal keeps its own status and
+	// headers here too, not the 401 an unauthenticated delete gets. It is read
+	// BEFORE the community branch below, because Community authenticates no
+	// caller but still ADMITS every principal against its ceiling
+	// (Authenticate's admitPrincipal runs on its default client), and that
+	// ceiling is the one that binds - initialize and tools/call both refuse a
+	// past-ceiling Community client, and this route answered it 200.
+	if _, refused := admissionRefusalOf(err); refused {
+		auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
+			mcpVerdictBlocked, "tier admission refused", []string{"tier_limit_refused"},
+			time.Since(startTime).Milliseconds())
+		writeMCPAdmissionRefusedNoBody(w, err)
+		return
+	}
 	if err != nil && !isCommunityMode() {
 		// #4261: the pre-credential limiter's refusal keeps its 429 and
 		// Retry-After here too. A DELETE carries no JSON-RPC body.
@@ -798,6 +811,11 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, idInputs, err := authenticateMCPSession(r)
 	if err != nil {
 		if writeMCPAuthRateLimited(w, req.ID, err) {
+			return
+		}
+		// #4249 row 5682255301: a valid credential past its organization's
+		// ceiling is refused as the tier limit it is, not as a 401.
+		if writeMCPAdmissionRefused(w, req.ID, err) {
 			return
 		}
 		writeJSONRPCAuthError(w, req.ID, err.Error())
@@ -948,7 +966,7 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	// Captured up front so the usage_events row (#2758) records the true
 	// end-to-end handler latency for this governed call.
 	startTime := time.Now()
-	session, r, rateLimited := requireMCPAuthOrRateLimit(w, r, req)
+	session, r, refusal := requireMCPAuthOrRateLimit(w, r, req)
 	if session == nil {
 		// #2641 (MCPSRV-UNAUTH-JSONRPC): an unauthenticated tools/call is a denied
 		// governance attempt that previously left no audit trail. Record it under the
@@ -958,9 +976,15 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		// #4261: a credential the pre-credential limiter refused was answered
 		// 429 per_minute, so its row says so; the tenant stays the sentinel,
 		// since the credential was never checked.
+		// #4249 row 5682255301: a tier admission refusal was a VALID
+		// credential, answered as the tier limit, so its row says that, under
+		// the marker the decide plane files the same refusal under.
 		policyID, reason, query := "unauthenticated", "authentication required for tools/call", "mcp tools/call: unauthenticated"
-		if rateLimited {
+		switch refusal {
+		case mcpRefusedRateLimited:
 			policyID, reason, query = LimitTypePerMinute, "per-minute rate limit exceeded", "mcp tools/call: rate limited before authentication"
+		case mcpRefusedTierLimit:
+			policyID, reason, query = "tier_limit_refused", "tier admission refused", "mcp tools/call: tier admission refused"
 		}
 		writeMCPDecisionAudit(r.Context(), usageDB,
 			uuid.New().String(), "",
@@ -1094,7 +1118,9 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 
 	switch params.Name {
 	case "check_policy":
-		result, toolErr = mcpToolCheckPolicy(r.Context(), session, params.Arguments, pepHandshake)
+		// The retry's approval id may ride the header (#4370); the tool body
+		// sees no request, so the header travels on the context.
+		result, toolErr = mcpToolCheckPolicy(withApprovalIDHeader(r.Context(), r), session, params.Arguments, pepHandshake)
 	case "check_output":
 		result, toolErr = mcpToolCheckOutput(r.Context(), session, params.Arguments, pepHandshake)
 	case "audit_tool_call":
@@ -1122,7 +1148,7 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	case mcpToolNameRequestApproval:
 		result, toolErr = mcpToolRequestApproval(r.Context(), authDB, session, params.Arguments)
 	case mcpToolNameCreateTenantPolicy:
-		result, toolErr = mcpToolCreateTenantPolicy(r.Context(), session, params.Arguments)
+		result, toolErr = mcpToolCreateTenantPolicy(session, params.Arguments)
 	case mcpToolNameGetCostEstimate:
 		result, toolErr = mcpToolGetCostEstimate(session, params.Arguments)
 	case mcpToolNameListProFeatures:
@@ -1291,17 +1317,34 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 	return session, r
 }
 
-// requireMCPAuthOrRateLimit is requireMCPAuth that also reports whether the
-// refusal it wrote was the pre-credential limiter's per-minute answer
-// (#4261), so tools/call can audit it as that rather than as unauthenticated.
-func requireMCPAuthOrRateLimit(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) (*mcpSession, *http.Request, bool) {
+// mcpAuthRefusal is which answer requireMCPAuthOrRateLimit wrote when it
+// returned no session, so tools/call audits the refusal as what it was.
+type mcpAuthRefusal int
+
+const (
+	// mcpRefusedUnauthenticated: the 401 "Authentication required".
+	mcpRefusedUnauthenticated mcpAuthRefusal = iota
+	// mcpRefusedRateLimited: the pre-credential limiter's per-minute 429 (#4261).
+	mcpRefusedRateLimited
+	// mcpRefusedTierLimit: a tier admission refusal (#4249 row 5682255301).
+	mcpRefusedTierLimit
+)
+
+// requireMCPAuthOrRateLimit is requireMCPAuth that also reports which refusal
+// it wrote: the pre-credential limiter's per-minute answer (#4261), a tier
+// admission refusal (#4249 row 5682255301), or the 401. The last value is
+// meaningful only when the session is nil.
+func requireMCPAuthOrRateLimit(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) (*mcpSession, *http.Request, mcpAuthRefusal) {
 	session, err := resolveMCPSessionWithErr(r)
 	if session == nil {
 		if writeMCPAuthRateLimited(w, req.ID, err) {
-			return nil, r, true
+			return nil, r, mcpRefusedRateLimited
+		}
+		if writeMCPAdmissionRefused(w, req.ID, err) {
+			return nil, r, mcpRefusedTierLimit
 		}
 		writeJSONRPCAuthError(w, req.ID, "Authentication required")
-		return nil, r, false
+		return nil, r, mcpRefusedUnauthenticated
 	}
 	// Stamp auth context for downstream telemetry/audit consistency.
 	// session.client may be nil for legacy sessions (created pre-#2305-finish);
@@ -1315,7 +1358,7 @@ func requireMCPAuthOrRateLimit(w http.ResponseWriter, r *http.Request, req *json
 	if session.clientSessionID != "" {
 		r = r.WithContext(withClientSessionID(r.Context(), session.clientSessionID))
 	}
-	return session, r, false
+	return session, r, mcpRefusedUnauthenticated
 }
 
 // authenticateMCPServerRequest is the 9-return convenience form of
@@ -1767,22 +1810,53 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		evaluated, params,
 		mcpDetectionCfg)
 	observation := observationOf(outcome.StaticResult)
-	enforced := enforceMCPRequest(ctx, requestPassInput{
+	// A challenge holds as a pending approval bound to exactly this call
+	// (#4370): the governed tool, its connector, the operation, the statement
+	// as governed (after the #2803 metadata strip, before any masking) and its
+	// parameters. The approval id is read beside them and never bound.
+	approvalArg, _ := args[approvalIDArgument].(string)
+	approvalID, approvalIDConflict := approvalIDFor(approvalIDHeaderFrom(ctx), approvalArg)
+	enforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
 		orgID:       session.orgID,
 		decisionID:  decisionID,
 		query:       evaluated,
 		observation: observation,
+		finCrime:    finCrimeParametersFromContext(params),
 		// The session's principal: the per-user token a validator accepted
 		// when the session was created, else its client credential.
 		subject: sessionSubject(session),
-	}, pepHandshake)
+	}, pepHandshake, &approvalHoldCall{
+		plane:              approvalHoldPlaneMCPRequest,
+		route:              "check_policy",
+		orgID:              session.orgID,
+		tenantID:           session.tenantID,
+		clientID:           session.clientID,
+		userEmail:          sessionValidatedEmail(session),
+		input:              mcpStatementInput(connectorType, tool, operation, statement, params),
+		approvalID:         approvalID,
+		approvalIDConflict: approvalIDConflict,
+		descriptor:         fmt.Sprintf("mcp check_policy: %s", connectorType),
+		label:              mcpHoldLabel(connectorType, tool),
+		// The wire's refusals of an allow, run against the approval's permit
+		// before it is spent, on a throwaway seam so they record nothing.
+		preflight: func(allowed requestPassEnforcement) (string, string) {
+			p := projectMCPStatement(withMCPRequestSeam(ctx), session.orgID, allowed, pepHandshake, statement, evaluated, outcome.Options, observation)
+			if p.unavailable != "" {
+				return approvalPreflightOutage, p.unavailable
+			}
+			if !p.allowed {
+				return p.reasonCode, p.blockReason
+			}
+			return "", ""
+		},
+	})
 	projected := projectMCPStatement(ctx, session.orgID, enforced, pepHandshake, statement, evaluated, outcome.Options, observation)
 	descriptor := fmt.Sprintf("mcp check_policy: %s", connectorType)
 
 	if projected.unavailable != "" {
 		// FAIL CLOSED (PRD v11 §1.7): the JSON-RPC error names the cause, and the
 		// canonical "error" row keeps the attempt portal-visible (#2641).
-		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, "unavailable", projected.unavailable)
+		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, anchoredenforcer.VerdictUnavailable, projected.unavailable)
 		writeMCPDecisionAudit(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
@@ -1817,6 +1891,10 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		if len(matches) > 0 {
 			resp["policy_matches"] = matches
 		}
+		if held.pending != nil {
+			// Pending is not allow: allowed stays false, and nothing runs.
+			resp["pending_approval"] = held.pending
+		}
 		// Dual-write so explainDecision(id) resolves against audit_logs. The
 		// query column carries a NON-PII descriptor; the statement hash keeps it
 		// correlatable (#2641).
@@ -1834,13 +1912,42 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	}
 
 	recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, VerdictAllow, projected.reasonCode)
+	if held.outcome == approvalSpentOutcome && !projected.redacted {
+		// An approval admitted this call: an allow the plane otherwise leaves
+		// unrecorded gets a row, so every spend is countable per organization
+		// with the approval that paid for it (the redacted arm below writes
+		// its own row, which carries the same reasons).
+		_, pids, reasons, pnames := mcpInputDecisionVerdict(enforced, false)
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", descriptor, computeStatementHash(descriptor),
+			mcpVerdictAllowed,
+			pids,
+			reasons,
+			nil,
+			"",
+			pnames,
+			time.Since(startTime).Milliseconds(),
+			connectorType, tool)
+	}
+	if held.outcome == approvalSpentOutcome {
+		// Every answer an approval admitted names it, the redacted arm too.
+		resp["approval_id"] = held.approvalID
+	}
 	// The anchored decision ran and its redaction, if any, was discharged here,
 	// so a plugin fulfilling a redact_pii obligation may forward what it is
 	// handed (#2563 B1, #2746).
 	resp["redaction_evaluated"] = true
 	if projected.redacted {
 		resp["requires_redaction"] = true
-		resp["redacted_statement"] = projected.statement
+		if projected.statementRedacted {
+			resp["redacted_statement"] = projected.statement
+		}
+		if len(projected.redactedParameters) > 0 {
+			resp["redacted_parameters"] = projected.redactedParameters
+		}
 		// A redact-and-allow is its own verdict, not a clean allow (#2641 MCPIN);
 		// the query column is a non-PII descriptor.
 		_, pids, reasons, pnames := mcpInputDecisionVerdict(enforced, true)
@@ -1852,7 +1959,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			mcpVerdictRedacted,
 			pids,
 			reasons,
-			[]string{"statement"},
+			projected.redactedFields(),
 			"",                                   // MCP-server session has no inbound traceparent → singleton
 			pnames,                               // #3365
 			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
@@ -2425,8 +2532,8 @@ func mcpProxyToLocal(session *mcpSession, method, url string) (interface{}, erro
 	req.Header.Set("X-Tenant-ID", session.tenantID)
 	req.Header.Set("X-Client-ID", session.clientID)
 	req.Header.Set("X-Org-ID", session.orgID)
-	req.Header.Set(internalServiceIDHeader, serviceauth.ClientID)
-	req.Header.Set(internalServiceTokenHeader, serviceauth.GetInternalServiceToken(proxyTokenGenerator))
+	req.Header.Set(serviceauth.ServiceIDHeader, serviceauth.ClientID)
+	req.Header.Set(serviceauth.ServiceTokenHeader, serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 
 	resp, err := orchestratorHTTPClient.Do(req)
 	if err != nil {

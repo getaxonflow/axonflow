@@ -72,15 +72,26 @@ type AuditEntry struct {
 }
 
 // PolicyEvaluationEntry represents a policy evaluation event.
+//
+// #4249 row 5705939628: the agent writes it as one policy_metrics row per
+// matched policy, a daily hit count keyed by organization, policy and date.
+// OrgID is the organization that row is written under: EvalOptions.OrgID, the
+// same key and the same rule a violation row uses, never the policy-load scope
+// OrganizationID (types.go's EvalOptions.OrgID explains why the two are not
+// interchangeable). BlockedPolicies names the matched
+// policies whose APPLIED action was block, so the row's block_count counts
+// that policy's blocks and not another policy's.
 type PolicyEvaluationEntry struct {
 	Type              string
 	Timestamp         time.Time
 	TenantID          string
 	OrganizationID    *string
+	OrgID             string
 	ConnectorName     string
 	UserID            string
 	PoliciesEvaluated int
 	MatchedPolicies   []string
+	BlockedPolicies   []string
 	Blocked           bool
 	BlockReason       string
 	RedactionsApplied int
@@ -128,15 +139,20 @@ func (m *MetricsCollector) RecordEvaluation(
 			Timestamp:         time.Now(),
 			TenantID:          opts.TenantID,
 			OrganizationID:    opts.OrgScope,
+			OrgID:             opts.OrgID,
 			ConnectorName:     opts.ConnectorName,
 			UserID:            opts.UserID,
 			PoliciesEvaluated: len(matches),
 			MatchedPolicies:   extractPolicyIDs(matches),
+			BlockedPolicies:   blockedPolicyIDs(matches),
 			Blocked:           blocked,
 			ProcessingTimeMs:  processingTimeMs,
 		}
 
-		// Non-blocking log (errors are ignored)
+		// Non-blocking. The error is not dropped silently: the queue's
+		// implementation counts and logs every entry it cannot keep (the
+		// agent's SharedPolicyAuditAdapter, audit_drop.go), and this caller
+		// runs on a goroutine with nobody to return it to.
 		_ = m.auditQueue.LogPolicyEvaluation(entry)
 	}
 }
@@ -146,17 +162,53 @@ func (m *MetricsCollector) RecordRedaction(count int) {
 	atomic.AddInt64(&m.redactionsApplied, int64(count))
 }
 
-// RecordViolation records a policy violation for compliance.
+// RecordViolation records a policy violation for compliance: one
+// policy_violations row, a table regulator exports read (the EU AI Act export,
+// the SEBI report) and keep for five years.
+//
+// THE ROW SAYS WHAT HAPPENED, IN THE PHASE IT HAPPENED (#4249 row 5705939628).
+// It used to stamp the policy's REQUEST-phase action on every violation,
+// response-phase ones included, so a response block was persisted with the
+// request column's action (warn, for the shipped SSN row) or, where that column
+// is NULL, the category fallback. Now:
+//
+//   - action is the detector layer's resolved action (match.Action: the
+//     phase's stored action after EvalOptions.ActionOverrides), the action that
+//     made this engine record a violation;
+//   - stored_action is the phase's explicit stored column (match.StoredAction,
+//     empty when the row stores NULL for that phase), so an override that
+//     displaced it is visible;
+//   - phase is the phase evaluated ("request" or "response");
+//   - decided_by is "detector_layer". In v11 this engine authors no verdict: on
+//     every enforcing plane its result is the anchored engine's input, and the
+//     anchored engine's decision replaces it (the MCP response pass:
+//     mcp_response_enforcing_seam.go enforceMCPResponse). The row records what
+//     the detector layer resolved, and says so; the verdict the caller received
+//     is the audit_logs decision row's.
+//
+// action keeps its name: the SEBI report reads details->>'action'.
+//
+// description is the policy's description (its name when it has none), so the
+// column stops being NULL. The match text is deliberately NOT written: it is
+// the content that matched (a card number, a statement), and this row outlives
+// the request by five years in a table exported to regulators.
+//
+// No client id is set: EvalOptions carries none, so client_id stays empty.
 func (m *MetricsCollector) RecordViolation(
 	ctx context.Context,
 	opts EvalOptions,
 	policy *CompiledPolicy,
-	matchText string,
+	match PolicyMatch,
+	phase Phase,
 ) {
 	if m.auditQueue == nil {
 		return
 	}
 
+	description := policy.Description
+	if description == "" {
+		description = policy.Name
+	}
 	entry := AuditEntry{
 		Type:      "violation",
 		Timestamp: time.Now(),
@@ -169,10 +221,17 @@ func (m *MetricsCollector) RecordViolation(
 			"policy_name":    policy.Name,
 			"category":       string(policy.Category),
 			"connector_name": opts.ConnectorName,
-			"action":         string(policy.GetActionForPhase(PhaseRequest)),
+			"action":         string(match.Action),
+			"stored_action":  string(match.StoredAction),
+			"phase":          string(phase),
+			"decided_by":     "detector_layer",
+			"description":    description,
 		},
 	}
 
+	// The error is counted and logged by the queue's implementation (the
+	// agent's SharedPolicyAuditAdapter, audit_drop.go); the evaluation that
+	// produced the violation does not fail on it.
 	_ = m.auditQueue.LogViolation(entry)
 }
 
@@ -238,6 +297,17 @@ func extractPolicyIDs(matches []PolicyMatch) []string {
 	ids := make([]string, len(matches))
 	for i, m := range matches {
 		ids[i] = m.PolicyID
+	}
+	return ids
+}
+
+// blockedPolicyIDs extracts the ids of the matches whose applied action is block.
+func blockedPolicyIDs(matches []PolicyMatch) []string {
+	var ids []string
+	for _, m := range matches {
+		if m.Action == ActionBlock {
+			ids = append(ids, m.PolicyID)
+		}
 	}
 	return ids
 }

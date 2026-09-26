@@ -31,6 +31,20 @@ type Repository interface {
 	// Returns ErrPlanAlreadyRun if the status doesn't match (race condition prevention)
 	UpdatePlanStatusAtomic(ctx context.Context, planID string, expectedStatus, newStatus PlanStatus) error
 
+	// MarkExecutingWithPendingBinding atomically moves a PENDING plan to
+	// executing and, when the plan's STORED execution mode is confirm or step,
+	// records an empty workflow binding in the same statement (#4249). The mode
+	// is read by the statement itself, so a mode changed between a caller's
+	// read and the mark cannot leave a confirm/step plan executing without a
+	// binding. Returns ErrPlanAlreadyRun when the plan is not pending.
+	MarkExecutingWithPendingBinding(ctx context.Context, planID string) error
+
+	// BindExecutionWorkflow fills, once, the empty binding
+	// MarkExecutingWithPendingBinding recorded, with the workflow-control
+	// workflow the confirm/step executor created (#4249). Anything else (not
+	// executing, no binding, already filled) returns ErrPlanWorkflowBindRefused.
+	BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error
+
 	// DeletePlan removes a plan
 	DeletePlan(ctx context.Context, planID string) error
 
@@ -250,6 +264,55 @@ func (r *PostgresRepository) UpdatePlanStatusAtomic(ctx context.Context, planID 
 		return ErrPlanAlreadyRun
 	}
 
+	return nil
+}
+
+// MarkExecutingWithPendingBinding moves a pending plan to executing with an
+// empty workflow binding, in one statement (#4249). See
+// Repository.MarkExecutingWithPendingBinding.
+func (r *PostgresRepository) MarkExecutingWithPendingBinding(ctx context.Context, planID string) error {
+	if planID == "" {
+		return ErrInvalidPlanID
+	}
+	result, err := executionBinding("")
+	if err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE plans SET status = $1,
+		   execution_result = CASE WHEN execution_mode IN ('confirm', 'step') THEN $2::jsonb ELSE execution_result END,
+		   updated_at = NOW()
+		 WHERE plan_id = $3 AND status = $4`,
+		string(PlanStatusExecuting), string(result), planID, string(PlanStatusPending))
+	if err != nil {
+		return fmt.Errorf("failed to mark plan executing: %w", err)
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrPlanAlreadyRun
+	}
+	return nil
+}
+
+// BindExecutionWorkflow fills the executing plan's empty binding with the
+// executor's workflow id, once (#4249). See Repository.BindExecutionWorkflow.
+func (r *PostgresRepository) BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error {
+	if planID == "" || workflowID == "" {
+		return ErrInvalidPlanID
+	}
+	result, err := executionBinding(workflowID)
+	if err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE plans SET execution_result = $1, updated_at = NOW()
+		 WHERE plan_id = $2 AND status = $3 AND execution_result->>'wcp_workflow_id' = ''`,
+		string(result), planID, string(PlanStatusExecuting))
+	if err != nil {
+		return fmt.Errorf("failed to bind the plan's workflow: %w", err)
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrPlanWorkflowBindRefused
+	}
 	return nil
 }
 
@@ -478,6 +541,16 @@ func (r *NoOpRepository) UpdatePlanStatus(ctx context.Context, planID string, st
 
 // UpdatePlanStatusAtomic is a no-op
 func (r *NoOpRepository) UpdatePlanStatusAtomic(ctx context.Context, planID string, expectedStatus, newStatus PlanStatus) error {
+	return nil
+}
+
+// MarkExecutingWithPendingBinding is a no-op: a no-op repository stores no plan.
+func (r *NoOpRepository) MarkExecutingWithPendingBinding(ctx context.Context, planID string) error {
+	return nil
+}
+
+// BindExecutionWorkflow is a no-op: a no-op repository stores no plan to bind.
+func (r *NoOpRepository) BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error {
 	return nil
 }
 

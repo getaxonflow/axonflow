@@ -216,3 +216,26 @@ func TestRedactor_JSONSafe_NoHTMLEscapeOnRepair(t *testing.T) {
 		t.Errorf("unmatched HTML string was altered: %s", got)
 	}
 }
+
+// A text that is ONE bare number is valid JSON but is not a serialized document:
+// it is a card, phone, NIK or account number, or a number's decimal text (#4264
+// round 1 M2). It is masked in place, flat, never coerced to a quoted JSON string
+// literal, and a quoted string or an object holding the number keeps its walk.
+func TestRedactor_JSONSafe_ABareNumberTextIsMaskedInPlaceUnquoted(t *testing.T) {
+	r := NewFieldRedactor()
+	mask := func(s string) string {
+		t.Helper()
+		out, _ := r.applyToRows([]map[string]interface{}{{"statement": s}}, sixDigitPlan(StrategyMask))
+		return out.([]map[string]interface{})[0]["statement"].(string)
+	}
+	got := mask("369318")
+	if strings.ContainsAny(got, `"`) || len(got) != len("369318") || got == "369318" || !strings.Contains(got, "*") {
+		t.Fatalf("a bare number text came back %q; want it masked in place, same length, unquoted", got)
+	}
+	if quoted := mask(`"369318"`); !strings.HasPrefix(quoted, `"`) || !strings.HasSuffix(quoted, `"`) || strings.Contains(quoted, "369318") {
+		t.Fatalf("a JSON string literal came back %q; want it masked inside its quotes", quoted)
+	}
+	if doc := mask(`{"n":369318}`); !json.Valid([]byte(doc)) || strings.Contains(doc, "369318") {
+		t.Fatalf("a document holding the number came back %q; want valid JSON with it masked", doc)
+	}
+}

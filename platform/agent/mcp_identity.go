@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-
 	"axonflow/platform/shared/deploymode"
 	sharedidentity "axonflow/platform/shared/identity"
 )
@@ -133,6 +132,15 @@ func registerFleetValidators() {
 		noteIdentityWiring(nil, nil, true)
 	} else if !errors.Is(attrsErr, sharedidentity.ErrEnterpriseOnly) {
 		log.Printf("[MCP-Server] identity attribute resolver unavailable: %v", attrsErr)
+		// The directory is this build's to wire and it failed, which is not
+		// the same fact as a deployment with no directory. The realms still
+		// declare one, and the group closure projection is the failed one
+		// (setFleetSegmentResolverFailure), so a member's groups are UNKNOWN
+		// naming the failure. Declaring None instead would make every closure
+		// an authoritative empty set, and a group-scoped constraint would stop
+		// applying to its members because a constructor failed at boot.
+		setFleetSegmentResolverFailure(attrsErr)
+		noteIdentityWiring(nil, nil, true)
 	}
 
 	// Path B — IdP-issued OIDC/JWKS tokens, role resolved from the SCIM-synced
@@ -142,12 +150,16 @@ func registerFleetValidators() {
 	// embeds RoleResolver, so it satisfies NewOIDCVerifier's dependency
 	// unmodified, and the role logic it delegates to is byte-for-byte the same
 	// scimRoleResolver as before this change.
-	cfg, cfgErr := sharedidentity.NewDBOIDCConfigProvider(db)
-	if cfgErr == nil {
+	cfg, oidcWired, cfgErr := sharedidentity.OIDCRealmSourceWiring(db)
+	if oidcWired {
 		// #3550: the tenant OIDC realm is derived from this same provider, so
 		// EX-47 is real on that path without a second configuration surface:
 		// an org with no enabled OIDC row declares no OIDC realm, and a
 		// validly signed IdP token from it is UNKNOWN_REALM.
+		//
+		// #4249: the same call is the predicate behind HasOIDC, which declares
+		// the `oidc` realm in the deployment vocabulary the anchored engine
+		// admits against; the orchestrator and the portal take it from here too.
 		noteIdentityWiring(nil, cfg, false)
 	}
 
@@ -239,7 +251,23 @@ func extractPerUserToken(r *http.Request) string {
 var (
 	fleetSegmentResolverMu sync.RWMutex
 	fleetSegmentResolver   sharedidentity.IdentityAttributeResolver
+	// fleetSegmentResolverErr is why the resolver could not be constructed in a
+	// build that wires one; nil when it was, or when this build has none.
+	fleetSegmentResolverErr error //nolint:unused // read by getFleetSegmentResolverFailure, whose caller is group_closure_enterprise.go (enterprise build)
 )
+
+func setFleetSegmentResolverFailure(err error) {
+	fleetSegmentResolverMu.Lock()
+	fleetSegmentResolverErr = err
+	fleetSegmentResolverMu.Unlock()
+}
+
+//nolint:unused // called by groupClosureResolver in group_closure_enterprise.go (enterprise build)
+func getFleetSegmentResolverFailure() error {
+	fleetSegmentResolverMu.RLock()
+	defer fleetSegmentResolverMu.RUnlock()
+	return fleetSegmentResolverErr
+}
 
 func setFleetSegmentResolver(r sharedidentity.IdentityAttributeResolver) {
 	fleetSegmentResolverMu.Lock()
@@ -256,6 +284,7 @@ func getFleetSegmentResolver() sharedidentity.IdentityAttributeResolver {
 // ResetFleetSegmentResolverForTest clears the wired resolver. Test-only.
 func ResetFleetSegmentResolverForTest() {
 	setFleetSegmentResolver(nil)
+	setFleetSegmentResolverFailure(nil)
 }
 
 // resolveUserSegments itself now lives in segment_policy_gate.go (#3473

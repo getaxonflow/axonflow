@@ -209,6 +209,8 @@ The probe now makes **two** requests:
 
 #### `map` needs one more thing, and it is not in this repo's control
 
+> **Since v11.1.0 (#4382) this section describes history.** The checker is wired onto the declarative workflow engine on every deployment and posture, `AXONFLOW_HITL_ENABLED` is ignored, and the census row for `map` reads `reachable`.
+
 Fixing the `plan_id` is **necessary and not sufficient** for the `map` plane. `map` has exactly one legacy evaluation call site in the tree - `MAPHITLPolicyChecker.CheckPolicy`, `platform/orchestrator/map_hitl_adapter.go:50`, per `platform/decision/legacycompile/legacy_call_sites.tsv` - and that checker is only constructed when `AXONFLOW_HITL_ENABLED == "true"` (`platform/orchestrator/run.go:1618`). **No CloudFormation template in this repository sets that variable**; the only default in the tree is `false` (`docker-compose.yml:468`). With it unset, `hitlWorkflowEngine` is nil, `hitl_execution.go:406` never calls the checker, and `map` is never evaluated whatever this canary sends.
 
 So `map`'s silence alongside repeated "covered" readings has **two** causes stacked: the probe never evaluated (fixed here), and the plane's only evaluator is not wired on the deployed stacks (an operator action, and a live question for #3555). Until it is, `map` appears in `planes_inferred_only` - reached by a multi-plane probe, and nothing more than that - and never in `planes_covered`, which is exactly the distinction the split above exists to make visible.

@@ -658,41 +658,6 @@ func ScanEffectivePolicyRows(ctx context.Context, tx *sql.Tx, tierPredicate stri
 	return out, rows.Err()
 }
 
-// CountActive counts active (enabled=true) dynamic_policies rows for a
-// tenant, RLS-scoped identically to the bespoke read it replaces
-// (platform/agent/mcp_v1_pro_tools.go's deleted countActiveTenantPolicies).
-//
-// #3296 Step E / epic #3293 item #22: the substrate (this package) is a
-// shared library that spans the agent and orchestrator services, so this is
-// an IN-PROCESS method call from the agent, never a cross-service RPC. It
-// counts dynamic_policies (NOT static_policies -- the Free-tier
-// active_policies quota this backs is about custom dynamic policies, per the
-// original bespoke read's own doc comment), so it lives on PolicyLoader as an
-// additive capability rather than folding into the static effective-policy
-// read above.
-//
-// Callers MUST keep the fail-open contract the bespoke read had (return 0 on
-// error so a transient DB blip does not block a Free user) but MUST also
-// observe the returned error to emit a metric -- a silent fail-open is a
-// silent quota bypass (#3039/#2230 family). This method itself returns the
-// error rather than swallowing it, so the metric emission stays at the
-// call site (platform/agent, which owns the metric registration).
-func (l *PolicyLoader) CountActive(ctx context.Context, tenantID string) (int, error) {
-	if l.db == nil {
-		return 0, fmt.Errorf("database connection not available")
-	}
-	var count int
-	err := rls.WithOrgScope(ctx, l.db, tenantID, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND enabled = true`,
-			tenantID).Scan(&count)
-	})
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
 // =============================================================================
 // Dynamic-policy gate-cache read (#3319 / epic #3293) -- the verdict-path
 // read DatabaseDynamicPolicyEngine (platform/orchestrator) needs to rebuild

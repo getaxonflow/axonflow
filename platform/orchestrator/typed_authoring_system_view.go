@@ -39,3 +39,34 @@ func (h *TypedAuthoringRouteHandler) handleSystem(w http.ResponseWriter, r *http
 	}
 	typedAuthoringJSON(w, http.StatusOK, map[string]any{"success": true, "system": view})
 }
+
+// handleTemplate serves the shipped organization template, read-only (#4249 row
+// 5672856881): the document a new organization draft starts from, so an
+// API-only author can seed a document that keeps the template's controls
+// instead of copying them out of the source tree. A published organization
+// document REPLACES the template, and activating one that omits template
+// policies now requires naming them (activation.RequireTemplateOmissionAcknowledgement).
+//
+// It is the portal's HandleTemplate on this route set: the same rendering,
+// authoring.ShippedOrganizationTemplateView, and the same envelope
+// {"success": true, "template": view}, so one client reads both. It is gated as
+// handleSystem is gated - a gateway-stamped caller, no configured vocabulary -
+// because the template is a build constant, the same document on every edition.
+// It registers GET only; no transport writes the template.
+func (h *TypedAuthoringRouteHandler) handleTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		typedAuthoringCORS(w, r)
+		return
+	}
+	if _, _, ok := h.callerIdentity(w, r); !ok {
+		return
+	}
+	view, err := authoring.ShippedOrganizationTemplateView()
+	if err != nil {
+		typedAuthoringJSON(w, http.StatusInternalServerError, map[string]any{
+			"success": false, "reason": "organization_template_unavailable", "error": err.Error(),
+		})
+		return
+	}
+	typedAuthoringJSON(w, http.StatusOK, map[string]any{"success": true, "template": view})
+}

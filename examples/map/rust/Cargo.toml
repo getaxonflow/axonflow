@@ -9,5 +9,5 @@ name = "axonflow-map-rust"
 path = "main.rs"
 
 [dependencies]
-axonflow-sdk-rust = "0.9.0"
+axonflow-sdk-rust = "0.11.0"
 tokio = { version = "1", features = ["full"] }

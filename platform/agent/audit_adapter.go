@@ -31,7 +31,7 @@ func (a *SharedPolicyAuditAdapter) LogViolation(entry sharedpolicy.AuditEntry) e
 	if a.queue == nil {
 		return nil
 	}
-	return a.queue.LogViolation(AuditEntry{
+	err := a.queue.LogViolation(AuditEntry{
 		Type:      entry.Type,
 		Timestamp: entry.Timestamp,
 		Severity:  entry.Severity,
@@ -41,6 +41,16 @@ func (a *SharedPolicyAuditAdapter) LogViolation(entry sharedpolicy.AuditEntry) e
 		TenantID:  entry.TenantID,
 		Details:   entry.Details,
 	})
+	if err != nil {
+		// The shared engine discards this error (it has nobody to return it
+		// to), so this is where a violation that was not written is counted:
+		// in compliance mode the write is synchronous and its failure, an
+		// entry with no organization included, arrives here (#4249 row
+		// 5705939628).
+		recordAuditDrop(auditDropViolationWriteFailed, "policy_violations row for policy %v (org %q) was not written: %v",
+			entry.Details["policy_id"], entry.OrgID, err)
+	}
+	return err
 }
 
 // LogMetric logs a performance metric through the agent's audit queue.
@@ -60,29 +70,56 @@ func (a *SharedPolicyAuditAdapter) LogMetric(entry sharedpolicy.AuditEntry) erro
 	})
 }
 
-// LogPolicyEvaluation logs a policy evaluation event through the agent's audit queue.
+// LogPolicyEvaluation writes a shared-engine evaluation as policy_metrics
+// rows: one per matched policy, each a daily hit (and, when that policy's
+// applied action was block, a block) for the evaluation's organization.
+//
+// #4249 row 5705939628: it used to build one entry with no policy_id and no
+// organization, which flushMetricsBatch skips without a word, so no evaluation
+// was ever recorded. policy_metrics is a daily aggregate keyed by (org_id,
+// policy_id, date) (migrations/core/186), so the entry carries exactly the
+// columns that key and its counts need; phase, connector and timing have no
+// column there. A policy matched more than once in one evaluation (a response
+// with the same PII in several fields) is one hit. An evaluation that matched
+// nothing writes nothing. policy_evaluations is not written: nothing in the
+// tree writes it, and that is a separate row on #4249.
 func (a *SharedPolicyAuditAdapter) LogPolicyEvaluation(entry sharedpolicy.PolicyEvaluationEntry) error {
 	if a.queue == nil {
 		return nil
 	}
 
-	// Convert to AuditEntry for the existing queue infrastructure
-	auditEntry := AuditEntry{
-		Type:      "policy_evaluation",
-		Timestamp: time.Now(),
-		Details: map[string]interface{}{
-			"phase":              entry.Type,
-			"tenant_id":          entry.TenantID,
-			"policies_evaluated": entry.PoliciesEvaluated,
-			"matched_policies":   entry.MatchedPolicies,
-			"blocked":            entry.Blocked,
-			"processing_time_ms": entry.ProcessingTimeMs,
-		},
+	blocked := make(map[string]bool, len(entry.BlockedPolicies))
+	for _, id := range entry.BlockedPolicies {
+		blocked[id] = true
 	}
-
-	if err := a.queue.LogMetric(auditEntry); err != nil {
-		log.Printf("[AuditAdapter] Failed to log policy evaluation: %v", err)
-		return err
+	seen := make(map[string]bool, len(entry.MatchedPolicies))
+	// A failed LogMetric does not stop the loop: the remaining matched
+	// policies are still queued, and the first error is returned after them.
+	var firstErr error
+	for _, policyID := range entry.MatchedPolicies {
+		if policyID == "" || seen[policyID] {
+			continue
+		}
+		seen[policyID] = true
+		// LogMetric counts its own drops (a full channel); flushMetricsBatch
+		// counts an entry with no organization and a write that fails.
+		if err := a.queue.LogMetric(AuditEntry{
+			Type:      AuditTypeMetric,
+			Timestamp: time.Now(),
+			UserID:    entry.UserID,
+			TenantID:  entry.TenantID,
+			OrgID:     entry.OrgID,
+			Details: map[string]interface{}{
+				"policy_id": policyID,
+				"blocked":   blocked[policyID],
+			},
+		}); err != nil {
+			log.Printf("[AuditAdapter] Failed to log policy evaluation for policy %s: %v", policyID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 	}
-	return nil
+	return firstErr
 }

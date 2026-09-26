@@ -285,6 +285,11 @@ func censusInventory() []censusRow {
 		{"identity", "(*DirectoryGraph).Closure", formMapKey, "map[PrincipalID]WitnessPath", classClassified, reasonGraphNode},
 		{"identity", "(*DirectoryGraph).Closure", formMapKey, "map[PrincipalID]bool", classClassified, reasonGraphNode},
 		{"identity", "(*DirectoryGraph).expandParents", formCompare, "parent == node", classClassified, reasonGraphNode},
+		{"identity", "(ClosureSubject).Alias", formCompare, "a.Principal == s.Principal", classClassified,
+			"an alias is read only when it is bound to exactly the principal it is read for, and both sides come from ONE " +
+				"verification (VerifiedSubject: buildAliases binds each alias to the principal that verification produced), " +
+				"so the classification is not a second source's; exact equality is the restrictive direction, because a " +
+				"mismatch yields no email and the group closure is Unknown, never an empty set (#4249)"},
 		{"identity", "(*DirectoryGraph).membershipLoopsAmong", formCompare, "last == node", classClassified, reasonGraphNode},
 		{"identity", "(*DirectoryGraph).membershipLoopsAmong", formMapKey, "map[PrincipalID]bool", classClassified, reasonGraphNode},
 		{"identity", "(*DirectoryGraph).membershipLoopsAmong", formMapKey, "map[PrincipalID]int", classClassified, reasonGraphNode},

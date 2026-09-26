@@ -1,0 +1,25 @@
+-- Migration 187: the cut-over instant for step-mode first-step records
+-- Date: 2026-09-22
+-- Purpose: A step-mode multi-agent plan runs its first step ungated, by design.
+--          Before this release that run left no workflow_steps row, so the plan
+--          resume could not tell "the first step ran" from "it never ran", and
+--          another caller's gate on a later step, written before the first
+--          resume, made the resume run the later step and never the first
+--          (#4249 row 5701284807). From this release the resume writes the first
+--          step's row before it runs it (decision allow, no approval status,
+--          decision_reason step_mode_first_step_ungated).
+--
+-- THIS MIGRATION CHANGES NO SCHEMA. Its schema_migrations.applied_at is the
+-- cut-over instant: the orchestrator's boot pass (step_mode_first_step_backfill.go)
+-- writes the missing first-step row, decision_reason backfilled_at_upgrade, only
+-- for a step-mode plan whose workflow was created BEFORE this instant, is not
+-- terminal, has no row for its first step and has a row for a later step of its
+-- own - a plan in flight at the upgrade whose first step already ran. A plan
+-- created after the instant writes its own record and is never backfilled. The
+-- migration runner skips an applied migration, so the instant does not move on
+-- a later boot.
+--
+-- One statement, because the runner skips a file with nothing to execute and
+-- would then record no applied_at.
+
+SELECT 1;

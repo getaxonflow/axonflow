@@ -13,6 +13,8 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
+
+	"axonflow/platform/shared/policypath"
 )
 
 func TestNewReverseProxyHandler(t *testing.T) {
@@ -632,8 +634,9 @@ func TestStripBackendCORSHeaders(t *testing.T) {
 	h.Set("Access-Control-Expose-Headers", "X-Backend")
 	h.Set("Access-Control-Max-Age", "600")
 	// ...alongside headers that MUST survive. Deprecation and Link are the
-	// #1431 signal: the orchestrator stamps them on the legacy tenant-policy
-	// routes and they only reach the client through this copy.
+	// #1431 signal: the orchestrator stamps them on its legacy routes, and the
+	// agent stamps the families it proxies as well (oneDeprecationSignal keeps
+	// one copy). The strip must never be what removes the upstream's copy.
 	h.Set("Content-Type", "application/json")
 	h.Set("Deprecation", "true")
 	h.Set("Link", "</api/v1/tenant-policies>; rel=\"successor-version\"")
@@ -650,8 +653,8 @@ func TestStripBackendCORSHeaders(t *testing.T) {
 		t.Errorf("Content-Type = %q; want application/json - the strip is too wide", got)
 	}
 	if got := h.Get("Deprecation"); got != "true" {
-		t.Errorf("Deprecation = %q; want true - the #1431 signal is stamped by the ORCHESTRATOR "+
-			"and only reaches the client through this response copy", got)
+		t.Errorf("Deprecation = %q; want true - the #1431 signal the ORCHESTRATOR stamps "+
+			"must survive the CORS strip", got)
 	}
 	if got := h.Get("Link"); got == "" {
 		t.Error("Link was stripped - the successor URL never reaches the client")
@@ -751,5 +754,295 @@ func TestProxiedResponseCarriesOneAllowOrigin(t *testing.T) {
 	// The upstream's deprecation signal still gets through.
 	if got := rr.Header().Get("Deprecation"); got != "true" {
 		t.Errorf("Deprecation = %q; want true", got)
+	}
+}
+
+// wantDeprecationSignal is the value policypath writes for each header, read
+// from policypath rather than spelled here, so the cell asserts the stamp's
+// identity and not a copy of it.
+func wantDeprecationSignal(t *testing.T) map[string]string {
+	t.Helper()
+	want := map[string]string{
+		policypath.HeaderLink:      policypath.LinkSuccessor(policypath.Successor),
+		policypath.HeaderRemovedIn: policypath.RemovalRelease,
+	}
+	if v, ok := policypath.DeprecationValue(policypath.DeprecatedSince); ok {
+		want[policypath.HeaderDeprecation] = v
+	}
+	if len(want) != len(policypath.DeprecationHeaders()) {
+		t.Fatalf("policypath writes %d headers and this cell knows %d; name the new one here", len(policypath.DeprecationHeaders()), len(want))
+	}
+	return want
+}
+
+// proxyRouter is the agent's real RegisterProxyRoutes on a router, proxying to
+// backend.
+func proxyRouter(t *testing.T, backend *httptest.Server) *mux.Router {
+	t.Helper()
+	h, err := NewReverseProxyHandler(ProxyConfig{OrchestratorInternalURL: backend.URL, PortalInternalURL: backend.URL})
+	if err != nil {
+		t.Fatalf("NewReverseProxyHandler: %v", err)
+	}
+	r := mux.NewRouter()
+	h.RegisterProxyRoutes(r)
+	return r
+}
+
+// TestAProxiedLegacyRouteCarriesOneDeprecationSignal (#4249 row 5782131269):
+// every deprecated family the agent proxies to the orchestrator answers with the
+// deprecation signal exactly ONCE. Twice is the ReverseProxy Add of the
+// orchestrator's copy on top of the agent's; zero is an unstamped registration.
+func TestAProxiedLegacyRouteCarriesOneDeprecationSignal(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	want := wantDeprecationSignal(t)
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	// stamping is the orchestrator's own shape: its legacy subrouter runs
+	// policypath.DeprecateLegacy (platform/orchestrator/legacy_policy_routes.go).
+	stamping := httptest.NewServer(policypath.DeprecateLegacy(ok))
+	defer stamping.Close()
+	// silent is an upstream that stamps nothing, so what arrives is the agent's.
+	silent := httptest.NewServer(ok)
+	defer silent.Close()
+
+	stamped := []struct{ method, path string }{
+		{"GET", "/api/v1/dynamic-policies"},
+		{"GET", "/api/v1/tenant-policies/abc"},
+		{"POST", "/api/v1/policies/simulate"},
+		{"POST", "/api/v1/policies/impact-report"},
+		{"POST", "/api/v1/policies/conflicts"},
+		{"GET", "/api/v1/policies/dynamic"},
+		{"GET", "/api/v1/policies"},
+		{"PUT", "/api/v1/policies/p1"},
+		{"GET", "/api/v1/rbi/policies/templates"},
+		{"GET", "/api/v1/rbi/policies/templates/t1"},
+	}
+	for _, upstream := range []struct {
+		name string
+		srv  *httptest.Server
+	}{{"upstream stamps too", stamping}, {"upstream stamps nothing", silent}} {
+		r := proxyRouter(t, upstream.srv)
+		for _, c := range stamped {
+			t.Run(upstream.name+" "+c.method+" "+c.path, func(t *testing.T) {
+				rr := httptest.NewRecorder()
+				r.ServeHTTP(rr, httptest.NewRequest(c.method, c.path, nil))
+				if rr.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200 - the headers below would be about an error", rr.Code)
+				}
+				for name, v := range want {
+					if got := rr.Header().Values(name); len(got) != 1 || got[0] != v {
+						t.Errorf("%s = %q; want exactly one, %q (2 = the orchestrator's copy added onto the agent's, 0 = an unstamped registration)", name, got, v)
+					}
+				}
+			})
+		}
+	}
+
+	// Not deprecated by policypath, so nothing is stamped - at either hop.
+	r := proxyRouter(t, stamping)
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/overrides"},      // session overrides: #4249 row 5765129339
+		{"GET", "/api/v1/connectors"},     // not a policy family at all
+		{"GET", "/api/v1/typed-policies"}, // the successor
+	} {
+		t.Run("unstamped "+c.method+" "+c.path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, httptest.NewRequest(c.method, c.path, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rr.Code)
+			}
+			for name := range want {
+				if got := rr.Header().Values(name); len(got) != 0 {
+					t.Errorf("%s = %q; want none on a route policypath does not deprecate", name, got)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryDeprecatedFamilyTheProxyForwardsIsStamped enumerates the families from
+// policypath rather than listing them here, so a deprecated family the agent's
+// router forwards without a stamp - a parent prefix such as /api/v1/rbi that
+// swallows one, or a family added to policypath later - reds without anyone
+// remembering to add it (R3 round 2 found the RBI catalogue exactly that way).
+// A family the agent does not forward is not matched by this router and is not
+// this test's: the system family and its /api/v1/policy-overrides alias, which
+// the agent serves itself, and /api/v1/templates, which it does not route.
+func TestEveryDeprecatedFamilyTheProxyForwardsIsStamped(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	want := wantDeprecationSignal(t)
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer silent.Close()
+	r := proxyRouter(t, silent)
+	forwarded := 0
+	for _, family := range policypath.DeprecatedFamilies() {
+		for _, path := range []string{family, family + "/p1"} {
+			// GET, else POST: a family forwarded for writes only is still forwarded.
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			var m mux.RouteMatch
+			if !r.Match(req, &m) {
+				if req = httptest.NewRequest(http.MethodPost, path, nil); !r.Match(req, &mux.RouteMatch{}) {
+					continue
+				}
+			}
+			forwarded++
+			t.Run(path, func(t *testing.T) {
+				rr := httptest.NewRecorder()
+				r.ServeHTTP(rr, req)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200", rr.Code)
+				}
+				for name, v := range want {
+					if got := rr.Header().Values(name); len(got) != 1 || got[0] != v {
+						t.Errorf("%s = %q; want exactly one, %q - the agent forwards this deprecated family without stamping it", name, got, v)
+					}
+				}
+			})
+		}
+	}
+	// Anti-vacuity: the router forwards four families today - both tenant
+	// spellings, the policies family and the RBI catalogue - at two paths each;
+	// a router that matched nothing would pass every assertion.
+	if forwarded < 8 {
+		t.Fatalf("the router forwarded only %d deprecated family paths; the enumeration is not reaching the proxy", forwarded)
+	}
+}
+
+// TestARefusedLegacyRequestStillCarriesTheSignal: a request the agent refuses
+// before proxying (no credentials on an enterprise deployment) never reaches the
+// orchestrator, so the agent's stamp is the only one - and it is there.
+func TestARefusedLegacyRequestStillCarriesTheSignal(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "in-vpc-enterprise")
+	want := wantDeprecationSignal(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the orchestrator was reached without credentials")
+	}))
+	defer backend.Close()
+	r := proxyRouter(t, backend)
+	// Every method the lines register, so narrowing a line's methods drops a
+	// refused request to the unstamped prefix behind it and fails here.
+	var refused []struct{ method, path string }
+	for _, path := range []string{"/api/v1/policies", "/api/v1/rbi/policies/templates"} {
+		for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
+			refused = append(refused, struct{ method, path string }{method, path})
+		}
+	}
+	for _, c := range refused {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, httptest.NewRequest(c.method, c.path, nil))
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rr.Code)
+			}
+			for name, v := range want {
+				if got := rr.Header().Values(name); len(got) != 1 || got[0] != v {
+					t.Errorf("%s = %q; want exactly one, %q", name, got, v)
+				}
+			}
+		})
+	}
+}
+
+// TestTheRBICatalogueLineChangesOnlyTheHeaders: the stamped line added ahead of
+// the vertical's /api/v1/rbi prefix must not change what an RBI route ANSWERS.
+// Each request goes once through the real router and once through the chain
+// the /api/v1/rbi line always used (orchAuth, unstamped), to an upstream that
+// stamps its template reads as the orchestrator's RBI module does
+// (platform/orchestrator/rbi/wire.go) and echoes the path with its own status.
+// Status and body are identical; the template read carries the signal once, a
+// non-template RBI route carries none.
+func TestTheRBICatalogueLineChangesOnlyTheHeaders(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	want := wantDeprecationSignal(t)
+	upstream := httptest.NewServer(policypath.DeprecateLegacy(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		w.WriteHeader(http.StatusNonAuthoritativeInfo)
+		_, _ = w.Write([]byte("rbi:" + q.Method + " " + q.URL.Path))
+	})))
+	defer upstream.Close()
+	// The portal is a DIFFERENT server with a different answer, so a line that
+	// forwarded the catalogue to the wrong upstream would change the answer.
+	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("portal"))
+	}))
+	defer portal.Close()
+	h, err := NewReverseProxyHandler(ProxyConfig{OrchestratorInternalURL: upstream.URL, PortalInternalURL: portal.URL})
+	if err != nil {
+		t.Fatalf("NewReverseProxyHandler: %v", err)
+	}
+	r := mux.NewRouter()
+	h.RegisterProxyRoutes(r)
+	before := proxyAuthMiddleware(h.ProxyToOrchestrator)
+	for _, c := range []struct {
+		method, path string
+		stamped      bool
+	}{
+		{"GET", "/api/v1/rbi/policies/templates", true},
+		{"GET", "/api/v1/rbi/policies/templates/t1", true},
+		{"POST", "/api/v1/rbi/policies/templates", true},
+		{"GET", "/api/v1/rbi/checks", false},
+		{"POST", "/api/v1/rbi/fraud-reports", false},
+	} {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			now, was := httptest.NewRecorder(), httptest.NewRecorder()
+			r.ServeHTTP(now, httptest.NewRequest(c.method, c.path, nil))
+			before(was, httptest.NewRequest(c.method, c.path, nil))
+			if now.Code != was.Code || now.Body.String() != was.Body.String() {
+				t.Fatalf("answer changed: %d %q, was %d %q", now.Code, now.Body.String(), was.Code, was.Body.String())
+			}
+			if now.Code != http.StatusNonAuthoritativeInfo {
+				t.Fatalf("status = %d; the request did not reach the upstream", now.Code)
+			}
+			for name, v := range want {
+				got := now.Header().Values(name)
+				if c.stamped && (len(got) != 1 || got[0] != v) {
+					t.Errorf("%s = %q; want exactly one, %q", name, got, v)
+				}
+				if !c.stamped && len(got) != 0 {
+					t.Errorf("%s = %q; want none on a route policypath does not deprecate", name, got)
+				}
+			}
+		})
+	}
+}
+
+// TestOneSignalWriterKeepsTheFirstValueAndStillFlushes pins the writer's other
+// properties: it keeps the FIRST value (the agent's) of a single-valued header
+// when the two differ, drops only an exact repeat from the Link list, leaves
+// every other repeated header alone, and hands ResponseController the
+// underlying writer so a streamed proxy body still flushes.
+func TestOneSignalWriterKeepsTheFirstValueAndStillFlushes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := oneDeprecationSignal(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(policypath.HeaderRemovedIn, "v12.0")
+		w.Header().Add(policypath.HeaderRemovedIn, "v99.0")
+		w.Header().Add("Vary", "Origin")
+		w.Header().Add("Vary", "Origin")
+		// Link is a list: the successor twice (agent + upstream) and a page link.
+		w.Header().Add(policypath.HeaderLink, policypath.LinkSuccessor(policypath.Successor))
+		w.Header().Add(policypath.HeaderLink, "</api/v1/policies?page=2>; rel=\"next\"")
+		w.Header().Add(policypath.HeaderLink, policypath.LinkSuccessor(policypath.Successor))
+		w.WriteHeader(http.StatusOK) // ReverseProxy writes the header before it flushes a body
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("Flush through the wrapper: %v", err)
+		}
+	})
+	h(rec, httptest.NewRequest("GET", "/api/v1/policies", nil))
+	if got := rec.Header().Values(policypath.HeaderRemovedIn); len(got) != 1 || got[0] != "v12.0" {
+		t.Errorf("%s = %q; want the first value alone", policypath.HeaderRemovedIn, got)
+	}
+	wantLink := []string{policypath.LinkSuccessor(policypath.Successor), "</api/v1/policies?page=2>; rel=\"next\""}
+	if got := rec.Header().Values(policypath.HeaderLink); !slices.Equal(got, wantLink) {
+		t.Errorf("Link = %q; want the repeated successor dropped and the page link kept: %q", got, wantLink)
+	}
+	if got := rec.Header().Values("Vary"); len(got) != 2 {
+		t.Errorf("Vary = %q; the writer must touch the deprecation headers only", got)
+	}
+	if !rec.Flushed {
+		t.Error("the flush did not reach the underlying writer")
 	}
 }

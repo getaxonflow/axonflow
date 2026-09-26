@@ -118,6 +118,12 @@ type ActionRecord struct {
 	// which policies happen to be published. It is the action's own statement
 	// of what enforcing it requires.
 	RequiredCapabilities []contract.Capability `json:"required_capabilities,omitempty"`
+	// Planes are the enforcement scopes that present this action, as
+	// legacycompile.EnforcementScope renders them; see pdp.ActionEntry.Planes.
+	// The registry cannot read the scope model (legacycompile imports this
+	// package), so it checks the list's form and the deployment vocabulary
+	// supplies its content.
+	Planes []string `json:"planes,omitempty"`
 }
 
 // Validate checks the record in isolation. Cross-record rules, such as whether
@@ -160,6 +166,19 @@ func (a ActionRecord) Validate() Findings {
 		}
 	}
 	out = append(out, validateCapabilities(subject, "required capability", a.RequiredCapabilities)...)
+	seenPlane := map[string]bool{}
+	for _, p := range a.Planes {
+		if strings.TrimSpace(p) != p || p == "" {
+			out = out.errorf(CodeIdentifierInvalid, subject,
+				"plane %q is blank or padded; a scope a document names in binds_on is matched exactly", p)
+			continue
+		}
+		if seenPlane[p] {
+			out = out.errorf(CodeIdentifierInvalid, subject,
+				"plane %q is declared twice; one scope presents an action once", p)
+		}
+		seenPlane[p] = true
+	}
 	return out
 }
 
@@ -229,6 +248,7 @@ func (a ActionRecord) entry() pdp.ActionEntry {
 		Irreversible:       a.Effects.Irreversible.Yes(),
 		DataEgress:         a.Effects.DataEgress.Yes(),
 		Privileged:         a.Effects.Privileged.Yes(),
+		Planes:             sortedStrings(a.Planes),
 	}
 }
 
@@ -247,6 +267,7 @@ func (a ActionRecord) clone() ActionRecord {
 	out.RequiredArguments = append([]string(nil), a.RequiredArguments...)
 	out.PayloadLeaves = append([]string(nil), a.PayloadLeaves...)
 	out.RequiredCapabilities = append([]contract.Capability(nil), a.RequiredCapabilities...)
+	out.Planes = sortedStrings(a.Planes)
 	if a.Arguments != nil {
 		out.Arguments = make(map[string]pdp.ValueType, len(a.Arguments))
 		for k, v := range a.Arguments {

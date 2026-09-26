@@ -81,6 +81,24 @@ const (
 	// idempotency_key on a /complete (or repeat /gate) call does not match
 	// the key recorded on the step's earlier /gate (Issue #1673 Phase 2).
 	ErrorCodeIdempotencyKeyMismatch = "IDEMPOTENCY_KEY_MISMATCH"
+
+	// ErrorCodeApprovalHold is returned with HTTP 409 when a re-evaluation (a
+	// step gate that does not return the cached decision, or a checkpoint
+	// resume) meets a step whose approval hold is pending, rejected or expired
+	// (#4249, ADR-067 Decision 5). The hold is left as it was. It is sent in
+	// the triplet envelope ({error, code, message}): the checkpoint-resume
+	// routes document only triplet conflicts, and on the gate route every
+	// conflict but IDEMPOTENCY_KEY_MISMATCH is triplet, so no family is added
+	// to any operation (openapi_error_family_test.go). The message names the
+	// step and its approval status.
+	ErrorCodeApprovalHold = "APPROVAL_HOLD"
+
+	// ErrorCodeStepInputMismatch is returned with HTTP 409 when an idempotent
+	// repeat /gate, or a first /gate that raced another, presents a step_input
+	// or a tool_context that differs from the one the step's decision was made
+	// over (#4249 rows 5666236540 and 5706152777): both are the content the
+	// decision was made over, so a decision is never served for other content.
+	ErrorCodeStepInputMismatch = "STEP_INPUT_MISMATCH"
 )
 
 // APIErrorDetails carries structured fields for debugging / typed SDK errors.
@@ -474,8 +492,12 @@ type ListWorkflowsOptions struct {
 	TenantID string          `json:"tenant_id,omitempty"`
 	OrgID    string          `json:"org_id,omitempty"`
 	TraceID  string          `json:"trace_id,omitempty"`
-	Limit    int             `json:"limit,omitempty"`
-	Offset   int             `json:"offset,omitempty"`
+	// WorkflowName filters by exact name. Internal (#4249): the plan resume's
+	// fallback selection reads only the workflows named for its plan. It is
+	// not bound from any HTTP query parameter.
+	WorkflowName string `json:"-"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // ListWorkflowsResponse is the response for listing workflows

@@ -44,6 +44,10 @@ func (m *mockPolicyEngineForWCP) ListActivePoliciesForTenant(_ string, _ []strin
 	return []DynamicPolicy{}
 }
 
+func (m *mockPolicyEngineForWCP) ListActivePoliciesForOrgInEverySegment(_ string) []DynamicPolicy {
+	return []DynamicPolicy{}
+}
+
 func (m *mockPolicyEngineForWCP) IsHealthy() bool {
 	return true
 }
@@ -638,49 +642,50 @@ func TestCreateHITLApproval_WithToolContext(t *testing.T) {
 	}
 }
 
-// #4254: every held step-gate approval is queued with severity "low" in v11.0.0,
-// BECAUSE the step gate presents no query. The risk score a held step's severity
-// derives from is computed from the request's query alone
-// (RiskCalculator.CalculateRiskScore), and the gate sends none.
-//
-// This test is meant to fail the day the gate presents content (the v11.1.0
-// content row on #4249). That is when severity on this plane needs revisiting,
-// and when the risk floor the seam carries onto a held step becomes observable.
-func TestAHeldStepGateApprovalIsQueuedLowBecauseTheGatePresentsNoQuery(t *testing.T) {
-	mock := &mockHITLApprovalCreator{
-		resp: &HITLApprovalResponse{ApprovalID: uuid.New(), Status: "pending"},
-	}
-	withStepGateEngine(t, heldStepVerdict())
-	adapter := NewWCPPolicyAdapter()
-	adapter.SetHITLApproval(mock)
-
+// A held step's approval is queued at the severity its CONTENT derives (#4249
+// row 5666236540): the step gate presents the step's input, so the risk floor
+// the seam carries is computed over it. Before that row the gate presented no
+// query and every held step queued low, whatever its input said.
+func TestAHeldStepGateApprovalIsQueuedAtTheSeverityItsContentDerives(t *testing.T) {
 	const riskyText = "SELECT * FROM users WHERE password = 'x' OR 1=1"
-	stepCtx := &workflow_control.StepGateContext{
-		WorkflowID: "wf_low",
-		StepID:     "step_low",
-		StepName:   "export_users",
-		StepType:   workflow_control.StepTypeToolCall,
-		OrgID:      "org-1",
-		TenantID:   "tenant-1",
-		StepInput:  map[string]interface{}{"query": riskyText},
+	held := func(input map[string]interface{}) string {
+		t.Helper()
+		mock := &mockHITLApprovalCreator{
+			resp: &HITLApprovalResponse{ApprovalID: uuid.New(), Status: "pending"},
+		}
+		withStepGateEngine(t, heldStepVerdict())
+		adapter := NewWCPPolicyAdapter()
+		adapter.SetHITLApproval(mock)
+		adapter.EvaluateStepGate(wcpSubjectContext(), &workflow_control.StepGateContext{
+			WorkflowID: "wf_sev",
+			StepID:     "step_sev",
+			StepName:   "export_users",
+			StepType:   workflow_control.StepTypeToolCall,
+			OrgID:      "org-1",
+			TenantID:   "tenant-1",
+			StepInput:  input,
+		})
+		if mock.lastReq == nil {
+			t.Fatal("no approval was created for a held step")
+		}
+		return mock.lastReq.Severity
 	}
 
-	if q := adapter.convertToOrchestratorRequest(stepCtx).Query; q != "" {
-		t.Fatalf("the step gate now presents a query (%q): held-step severity on this plane needs revisiting, and the risk floor the seam carries is now observable", q)
+	content, err := contentProjection(map[string]interface{}{"query": riskyText})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// PREMISE: the same text, presented as a query, scores well above "low", so
-	// the "low" below is the absence of content and not a harmless input.
-	if floor := dbRiskCalculator.CalculateRiskScore(OrchestratorRequest{Query: riskyText}); floor < 0.3 {
-		t.Fatalf("PREMISE: %q scores %v as a query; this test needs text that would not derive low", riskyText, floor)
+	want := deriveSeverityFromResult(&PolicyEvaluationResult{RiskScore: dbRiskCalculator.CalculateRiskScore(OrchestratorRequest{Query: string(content)})})
+	// PREMISE: the presented content scores above "low", so the severity below
+	// is the content's and not a default.
+	if want == "low" {
+		t.Fatalf("PREMISE: %s derives low; this test needs content that does not", content)
 	}
-
-	adapter.EvaluateStepGate(wcpSubjectContext(), stepCtx)
-
-	if mock.lastReq == nil {
-		t.Fatal("no approval was created for a held step")
+	if got := held(map[string]interface{}{"query": riskyText}); got != want {
+		t.Errorf("a held step with risky input was queued %q, want %q (derived from its content)", got, want)
 	}
-	if mock.lastReq.Severity != "low" {
-		t.Errorf("a held step-gate approval was queued with severity %q; with no query presented it can only be low", mock.lastReq.Severity)
+	if got := held(nil); got != "low" {
+		t.Errorf("a held step with no input was queued %q, want low", got)
 	}
 }
 

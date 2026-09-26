@@ -375,8 +375,10 @@ func planToExecutionStatus(plan *planning.Plan) *execution.ExecutionStatus {
 		"version":            plan.Version,
 	}
 
-	// Preserve execution_result and workflow_definition for legacy path enrichment
-	if len(plan.ExecutionResult) > 0 {
+	// Preserve execution_result and workflow_definition for legacy path enrichment.
+	// #4249: while a plan executes, execution_result holds its confirm/step
+	// workflow binding, not a result; it is not projected until the plan has one.
+	if len(plan.ExecutionResult) > 0 && plan.Status != planning.PlanStatusExecuting {
 		metadata["execution_result"] = plan.ExecutionResult
 	}
 	if len(plan.WorkflowDefinition) > 0 {

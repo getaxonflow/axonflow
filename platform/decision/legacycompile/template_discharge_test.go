@@ -17,11 +17,13 @@ import (
 // dischargeScopes and noDischargeScopes are the scopes as measured at #4131:
 // a plane profile carrying field_redact@1 (mcp, orchestrator_response,
 // cowork_ingest) or a wire that hands it to a declaring caller (decide and the
-// gateway pre-check deliver the decision wire), and every other scope. They are
+// gateway pre-check deliver the decision wire), and every other scope -
+// orchestrator_request among them since #4249 row 5706695827 (immutable_audit
+// only, as wcp). They are
 // typed here rather than derived, so the rule is held to the measurement.
 var (
 	dischargeScopes   = []string{"cowork_ingest", "decide", "gateway_request", "mcp:request", "mcp:response", "orchestrator_response"}
-	noDischargeScopes = []string{"map", "openai_compatible", "policy_simulation", "policy_test", "proxy_request", "wcp"}
+	noDischargeScopes = []string{"map", "openai_compatible", "orchestrator_request", "policy_simulation", "policy_test", "proxy_request", "wcp"}
 )
 
 func TestWhichScopesCanDischargeAFieldRedact(t *testing.T) {

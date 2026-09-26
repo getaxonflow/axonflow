@@ -196,7 +196,9 @@ func (a *API) PublishAdmitting(ctx context.Context, d *Document, opts PublishOpt
 		if ask := a.selfApprovalFor(ctx); ask != nil {
 			granted, err := ask()
 			if err != nil {
-				return nil, nil, fmt.Errorf("authoring: deciding whether this organization may self-approve: %w", err)
+				// The approver directory could not be read: the deployment's
+				// store, not the author's document (#4283).
+				return nil, nil, fmt.Errorf("authoring: deciding whether this organization may self-approve: %w", storeFailure(err))
 			}
 			opts.selfApprovalGranted = granted
 		}
@@ -401,12 +403,9 @@ func (a *API) runActivator(ctx context.Context, kind ActivationKind, root pdp.Ro
 	if a.activator == nil {
 		return nil
 	}
-	art, ok, err := a.store.Get(ctx, root, digest)
+	art, err := a.store.loadArtifact(ctx, root, digest, candidateArtifact)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		return fmt.Errorf("authoring: digest %s is not admitted under root %q; a digest is activated only after it has been verified", digest, root)
 	}
 	if err := a.activator(ctx, kind, art); err != nil {
 		return fmt.Errorf("authoring: refusing to %s %s: %w", kind, digest, err)
