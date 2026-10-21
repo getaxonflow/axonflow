@@ -152,26 +152,32 @@ func TestEverySeamPresentsWhatScopeActionsStates(t *testing.T) {
 	}
 	observed[mcpResponseSeamScope.String()] = respActions
 
-	// The cowork ingest storage pass (the Enterprise build's, #4259) decides
-	// each content event as the action coworkActionFor returns, read from that
-	// function's return statements. The file is read whatever this binary's
-	// build, because it is the one statement of what the pass presents.
-	coworkSrc, err := os.ReadFile("cowork_ingest_enforcing_seam.go")
-	if err != nil {
-		t.Fatal(err)
+	// The cowork ingest storage pass is registered only in Enterprise builds.
+	// Read its source only when this binary actually includes that seam; the
+	// Community mirror intentionally excludes the Enterprise-only source file.
+	coworkScope := legacycompile.MustScopeFor(legacycompile.PlaneCoworkIngest, "")
+	for _, seam := range enforcingSeams {
+		if seam.scope != coworkScope {
+			continue
+		}
+		coworkSrc, err := os.ReadFile("cowork_ingest_enforcing_seam.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := regexp.MustCompile(`(?s)func coworkActionFor\(event string\) string \{(.*?)\n\}`).FindSubmatch(coworkSrc)
+		if fn == nil {
+			t.Fatal("cowork_ingest_enforcing_seam.go has no coworkActionFor; the census read nothing")
+		}
+		coworkActions := map[string]bool{}
+		for _, m := range regexp.MustCompile(`return authoringcatalog\.(Action\w+)`).FindAllStringSubmatch(string(fn[1]), -1) {
+			coworkActions[actionLocal[m[1]]] = true
+		}
+		if len(coworkActions) == 0 {
+			t.Fatal("coworkActionFor returns no action the census can read")
+		}
+		observed[coworkScope.String()] = coworkActions
+		break
 	}
-	fn := regexp.MustCompile(`(?s)func coworkActionFor\(event string\) string \{(.*?)\n\}`).FindSubmatch(coworkSrc)
-	if fn == nil {
-		t.Fatal("cowork_ingest_enforcing_seam.go has no coworkActionFor; the census read nothing")
-	}
-	coworkActions := map[string]bool{}
-	for _, m := range regexp.MustCompile(`return authoringcatalog\.(Action\w+)`).FindAllStringSubmatch(string(fn[1]), -1) {
-		coworkActions[actionLocal[m[1]]] = true
-	}
-	if len(coworkActions) == 0 {
-		t.Fatal("coworkActionFor returns no action the census can read")
-	}
-	observed[legacycompile.MustScopeFor(legacycompile.PlaneCoworkIngest, "").String()] = coworkActions
 
 	if sites < 6 {
 		t.Fatalf("read %d enforceRequestPass call sites; the census read nothing it can trust", sites)
