@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/common/usage"
 	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
@@ -1817,11 +1818,12 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	approvalArg, _ := args[approvalIDArgument].(string)
 	approvalID, approvalIDConflict := approvalIDFor(approvalIDHeaderFrom(ctx), approvalArg)
 	enforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
-		orgID:       session.orgID,
-		decisionID:  decisionID,
-		query:       evaluated,
-		observation: observation,
-		finCrime:    finCrimeParametersFromContext(params),
+		orgID:          session.orgID,
+		decisionID:     decisionID,
+		query:          evaluated,
+		observation:    observation,
+		finCrime:       finCrimeParametersFromContext(params),
+		finCrimeTarget: fincrime.Target{ClientID: session.clientID, Plane: "mcp", Server: connectorType, Tool: tool, Operation: operation},
 		// The session's principal: the per-user token a validator accepted
 		// when the session was created, else its client credential.
 		subject: sessionSubject(session),

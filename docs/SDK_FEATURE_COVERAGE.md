@@ -220,15 +220,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.11.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, the Decision Mode PEP (`decide` / `fulfill_request` / `decide_and_fulfill`, engine-only fail-closed redaction), and the AuthZEN-native decide surface (generated wire types, typed refusals); feature parity is being filled in over subsequent releases - track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.12.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, the Decision Mode PEP (`decide` / `fulfill_request` / `decide_and_fulfill`, engine-only fail-closed redaction), and the AuthZEN-native decide surface (generated wire types, typed refusals); feature parity is being filled in over subsequent releases - track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v9.4.0 | ~45 | ✅ |
-| Python | v9.4.0 | ~45 | ✅ |
-| TypeScript | v9.4.0 | ~46 | ✅ (+protect) |
-| Java | v9.4.0 | ~45 | ✅ |
-| Rust _(preview)_ | v0.11.0 | ~21 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID` + Decision Mode PEP + AuthZEN-native decide surface) |
+| Go | v9.5.0 | ~45 | ✅ |
+| Python | v9.5.0 | ~45 | ✅ |
+| TypeScript | v9.5.0 | ~46 | ✅ (+protect) |
+| Java | v9.5.0 | ~45 | ✅ |
+| Rust _(preview)_ | v0.12.0 | ~21 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID` + Decision Mode PEP + AuthZEN-native decide surface) |
 
 ### Infrastructure (v4.1.0)
 

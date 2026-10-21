@@ -254,7 +254,7 @@ func RenderCensus(r *Registry, narratives Narratives) string {
 	p := func(f string, a ...any) { fmt.Fprintf(&b, f, a...) }
 
 	p("# AxonFlow Edition Capability Census\n\n")
-	p("**Platform version:** %s  \n", r.Platform)
+	p("**Platform version:** %s\\\n", r.Platform)
 	p("**Registry schema:** %s  \n", r.Schema)
 	p("**Generated:** %s\n\n", r.Generated)
 	p("> GENERATED FILE — do not edit. Every number, row and finding below is\n")

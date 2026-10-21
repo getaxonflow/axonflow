@@ -16,14 +16,11 @@ import (
 )
 
 // finCrimeParametersFromContext lifts the documented fincrime context objects
-// out of DecideRequest.Context into the parameters map handed to the shared
-// evaluation path, so the FinCrime pack's detectors evaluate over the same
-// canonical parameter JSON on /decide as on the MCP planes (where callers
-// place the same keys in request parameters).
+// out of DecideRequest.Context for the typed FinCrime fact evaluator. The
+// target and admitted identity determine whether that evaluator applies.
 //
-// Returns nil when the caller sent neither key: /decide then passes the same
-// nil parameters it always has, and the static engine's parameter scan is
-// byte-identical to today for non-fincrime traffic.
+// Returns nil when the caller sent neither key. A covered payment action then
+// gets an invalid-context fact, while unrelated traffic stays outside the pack.
 // Only the two documented keys are lifted; the rest of the request context
 // remains audit-only (canonicalizeRequestContext), never evaluated.
 func finCrimeParametersFromContext(reqContext map[string]interface{}) map[string]interface{} {

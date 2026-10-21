@@ -1,0 +1,17 @@
+# Retired licence-verification PUBLIC keys (hex). Read by .githooks/pre-commit-signing-seed
+# (as "$SIGNING_SEED_GUARD_PIN/retired") through signing_seed_guard.go -retired.
+#
+# A key belongs here once a rotation has retired it: its seed is already public
+# (in git history and forks), nothing that ships trusts it any more, and a branch
+# cut before the rotation still carries that seed in its test files. Listing it
+# stops the pre-commit hook refusing every commit on such a branch, while a key
+# that is in NEITHER this list NOR the pin makes the hook refuse loudly (the pin
+# is stale). Values are read from origin/main's four verifier sites before #4470.
+#
+# evaluation, generated 2026-02-09, retired by #4470 (seed public since 2026-02-10)
+99bed4d7a250d8a08b2a79714f52f059d579a07af8163f3e854f4b5e7ff62a85
+# enterprise, generated 2026-04-09 for #1541, retired by #4470 (seed public since 2026-04-11)
+48acd8d132af9d4fef3e6a9249b6db2fe8072145d2af2cfb42b8c7221e04a4b6
+# enterprise, generated 2026-02-09, retired 2026-04-09 by #1541; still trusted by the
+# Marketplace license-validator Lambda source until #4470 (seed public in history)
+9ab6f6b2dec1cdbb66266ccda05ffb0ba72b14c052a5cb5879f8cfddd0068ad3

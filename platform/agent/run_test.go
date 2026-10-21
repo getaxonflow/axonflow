@@ -923,21 +923,9 @@ func setOAuth2BasicAuth(r *http.Request, clientID string, clientSecret string) {
 // Helper function to generate valid Ed25519-signed test license keys.
 // Format: AXON-{BASE64URL(JSON_PAYLOAD)}.{BASE64URL(ED25519_SIGNATURE)}
 func generateTestLicenseKey(orgID string, tier string, expiryDate string) string {
-	// Ed25519 private key seeds matching the public keys in tier.go.
-	// These are TEST keys — the production private keys stay in AWS Secrets Manager.
-	// Enterprise seed rotated 2026-04-09 (issue #1541).
-	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
-	entSeed, _ := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
-
-	var seed []byte
-	switch tier {
-	case "Evaluation":
-		seed = evalSeed
-	default: // Enterprise, Professional, Plus
-		seed = entSeed
-	}
-
-	privateKey := ed25519.NewKeyFromSeed(seed)
+	// Signed with the package's ephemeral key for tier, whose public half
+	// TestMain installed in the verifier (process_defaults_main_test.go, #4470).
+	privateKey := testLicenseSigningKeyForTier(tier)
 
 	// Create Ed25519 service license payload
 	payload := map[string]interface{}{

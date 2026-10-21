@@ -3,6 +3,13 @@
 # CI also runs these on every PR.
 #
 # Issue #1541: gitleaks rule prevents hardcoded Ed25519 signing keys.
+#
+# Issue #4470: the gitleaks rule above did NOT catch the production licence
+# signing seeds committed as "test seeds" in platform/agent/*_test.go (it keys
+# on a `*_SIGNING_KEY=` assignment and allowlists `_test.go`). The local
+# licence-signing-seed-guard hook below derives the Ed25519 public key of every
+# 32-byte literal in the tree and refuses one that equals a key the verifiers
+# trust. Needs `go` on PATH; a missing toolchain refuses the commit.
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
@@ -12,3 +19,11 @@ repos:
         name: Detect hardcoded secrets
         description: Scan for hardcoded keys, tokens, and Ed25519 signing seeds
         args: ["--config=.gitleaks.toml"]
+  - repo: local
+    hooks:
+      - id: licence-signing-seed-guard
+        name: Refuse a trusted licence-verification key's private seed (#4470)
+        entry: bash tests/regression-test-required/lib/check-signing-seed.sh
+        language: system
+        pass_filenames: false
+        always_run: true

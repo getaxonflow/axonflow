@@ -697,21 +697,11 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 // ==================================================================
 
 // generateTestServiceLicenseKey creates a valid Ed25519-signed service license for testing.
-// Service licenses are self-contained with Ed25519 signature validation.
+// Service licenses are self-contained with Ed25519 signature validation. It signs
+// with the package's ephemeral key for tier (process_defaults_main_test.go),
+// whose public half TestMain installed in the verifier (#4470).
 func generateTestServiceLicenseKey(orgID, tier, serviceName, serviceType string, permissions []string, expiryDate string) string {
-	// Ed25519 private key seeds matching the public keys in license_community.go
-	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
-	entSeed, _ := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
-
-	var seed []byte
-	switch tier {
-	case "Evaluation":
-		seed = evalSeed
-	default: // Enterprise, Professional, Plus
-		seed = entSeed
-	}
-
-	privateKey := ed25519.NewKeyFromSeed(seed)
+	privateKey := testLicenseSigningKeyForTier(tier)
 
 	payload := map[string]interface{}{
 		"tier":         tier,

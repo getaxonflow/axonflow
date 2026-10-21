@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: September 2026** | **Platform Version:** v11.1.0 | **SDK Version:** v9.4.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.11.0 (preview)
+**Last Updated: September 2026** | **Platform Version:** v11.2.0 | **SDK Version:** v9.5.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.12.0 (preview)
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -190,7 +190,7 @@ pip install axonflow
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>9.4.0</version>
+    <version>9.5.0</version>
 </dependency>
 ```
 
@@ -206,7 +206,7 @@ cargo add axonflow-sdk-rust
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v9.4.0. Rust is in preview at v0.11.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction).
+Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v9.5.0. Rust is in preview at v0.12.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction).
 
 #### Go
 
@@ -847,4 +847,4 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: September 2026 | Platform: v11.0.0 | SDKs: v9.4.0*
+*Last Updated: October 2026 | Platform: v11.2.0 | SDKs: v9.5.0*

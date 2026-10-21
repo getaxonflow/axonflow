@@ -32,15 +32,13 @@ import (
 // + captureArg are shared with the sibling MCP-plane audit tests in this package.
 // =============================================================================
 
-// craftServiceLicense signs a service license with the enterprise test seed
-// (matches TestValidateServiceLicense_EnterpriseMode_* in mcp_handler_test.go).
+// craftServiceLicense signs a service license with the package's ephemeral
+// enterprise key, whose public half TestMain installed in the verifier
+// (process_defaults_main_test.go, #4470); the same key signs
+// TestValidateServiceLicense_EnterpriseMode_* in mcp_handler_test.go.
 func craftServiceLicense(t *testing.T, permissions []string) string {
 	t.Helper()
-	entSeed, err := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
-	if err != nil {
-		t.Fatalf("decode seed: %v", err)
-	}
-	privKey := ed25519.NewKeyFromSeed(entSeed)
+	privKey := testEntLicenseSigningKey
 	payload := map[string]interface{}{
 		"tier":         "Enterprise",
 		"tenant_id":    "test-tenant",

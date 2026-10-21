@@ -64,6 +64,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/authoring"
 	"axonflow/platform/decision/authoringcatalog"
@@ -534,6 +535,9 @@ type requestPassInput struct {
 	// (finCrimeParametersFromContext): what the Engine B scorer is asked about
 	// (riskScoreFacts). Nil when the request declares none.
 	finCrime map[string]interface{}
+	// finCrimeTarget is the operation presented to the policy pack. Org and
+	// client are replaced with the admitted identities before lookup.
+	finCrimeTarget fincrime.Target
 }
 
 // requestPassEnforcement is the seam's answer for one request, rendered on the
@@ -600,7 +604,8 @@ type requestPassEnforcement struct {
 	// riskScore is what the pass stated for the Engine B risk score and why,
 	// for the audit record (#3330); zero - so omitted - where no control read
 	// the score.
-	riskScore riskScoreRecord
+	riskScore        riskScoreRecord
+	finCrimeDecision *fincrimeDecisionRecord
 }
 
 // enforceRequestPass is THE ONE PATH a single-phase request pass's verdict is
@@ -621,6 +626,21 @@ func enforceRequestPass(ctx context.Context, scope legacycompile.EnforcementScop
 // decideRequestPass maps one request on scope onto the enforcer and its answer
 // back onto the Decision API.
 func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacycompile.EnforcementScope, in requestPassInput, out requestPassEnforcement) requestPassEnforcement {
+	if installedFincrimeRegistry != nil && in.finCrimeTarget.Plane != "" {
+		target := in.finCrimeTarget
+		target.OrgID = in.orgID
+		if in.auth != nil {
+			target.ClientID = in.auth.ClientID
+		}
+		result := installedFincrimeRegistry.Evaluate(target, in.finCrime)
+		in.observation = applyFincrimeFacts(in.observation, result)
+		if result.Covered {
+			out.finCrimeDecision = &fincrimeDecisionRecord{Version: 3, RegistryDigest: installedFincrimeRegistry.Digest, Class: result.Class, Reason: result.Reason}
+		}
+		if !result.Covered || result.Reason != "" || result.Class == "investigate" {
+			in.finCrime = nil
+		}
+	}
 	call := anchoredCall{
 		scope: scope, orgID: in.orgID, requestID: in.decisionID,
 		subject: requestSubject(in.orgID, in.auth, in.user, in.userIdentity),

@@ -145,7 +145,8 @@ type mcpPassSeam struct {
 	actionName      string
 	// riskScore is what the REQUEST pass stated for the Engine B risk score and
 	// why (#3330); nil on the response pass, and where no control read it.
-	riskScore *riskScoreRecord
+	riskScore        *riskScoreRecord
+	finCrimeDecision *fincrimeDecisionRecord
 }
 
 type mcpResponseSeamKey struct{}
@@ -182,6 +183,7 @@ func (s *mcpPassSeam) recordRequestPass(enforced requestPassEnforcement, reason 
 	s.packs = append([]string(nil), enforced.policyPacks...)
 	s.identities, s.documentVersion, s.actionName = enforced.policyIdentities, enforced.documentVersion, enforced.actionName
 	s.riskScore = enforced.riskScore.auditDetail()
+	s.finCrimeDecision = enforced.finCrimeDecision
 }
 
 // noteIdentity keeps what the anchored decision named, for the audit row.
@@ -364,9 +366,13 @@ func mergeRiskScore(ctx context.Context, details map[string]interface{}) {
 	}
 	s.mu.Lock()
 	record := s.riskScore
+	fincrimeRecord := s.finCrimeDecision
 	s.mu.Unlock()
 	if _, set := details[riskScoreAuditKey]; record != nil && !set {
 		details[riskScoreAuditKey] = record
+	}
+	if _, set := details["fincrime_decision"]; fincrimeRecord != nil && !set {
+		details["fincrime_decision"] = fincrimeRecord
 	}
 }
 

@@ -4,7 +4,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.1.0 | **SDKs:** 9.4.0
+**Platform Version:** 11.2.0 | **SDKs:** 9.5.0
 
 The Policy Templates API enables programmatic access to pre-defined policy templates. Templates provide a starting point for creating policies with configurable variables, reducing the complexity of policy creation.
 

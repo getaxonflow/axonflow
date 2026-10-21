@@ -1495,8 +1495,7 @@ func TestValidateServiceLicense_EnterpriseMode_WithServiceLicense(t *testing.T) 
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	// Craft a valid Ed25519-signed service license
-	entSeed, _ := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
-	privKey := ed25519.NewKeyFromSeed(entSeed)
+	privKey := testEntLicenseSigningKey // ephemeral, installed by TestMain (#4470)
 
 	payload := map[string]interface{}{
 		"tier":         "Enterprise",
@@ -1540,8 +1539,7 @@ func TestValidateServiceLicense_EnterpriseMode_ServicePermissionDenied(t *testin
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	// Craft a valid Ed25519-signed service license with permissions for a DIFFERENT connector
-	entSeed, _ := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
-	privKey := ed25519.NewKeyFromSeed(entSeed)
+	privKey := testEntLicenseSigningKey // ephemeral, installed by TestMain (#4470)
 
 	payload := map[string]interface{}{
 		"tier":         "Enterprise",

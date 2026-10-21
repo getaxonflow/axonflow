@@ -237,6 +237,10 @@ func declaredDigestReaders() []digestReader {
 		// trees. Everything below is a .Digest on something that is not a
 		// pdp.Bundle; the value of the rows is that a bundle read appearing
 		// here in future is UNDECLARED.
+		{"platform/agent/decision_enforcing_seam.go", "decideRequestPass", "installedFincrimeRegistry", classNotABundle,
+			"the trusted FinCrime registry's SHA-256 digest is computed from the registry file at boot, then recorded with covered decisions; it is not a policy bundle digest", 0, false},
+		{"platform/agent/fincrime/typed.go", "ParseRegistry", "r", classNotABundle,
+			"r is the trusted FinCrime registry; ParseRegistry computes this digest from the file bytes for audit and approval binding, not from a policy bundle", 0, false},
 		{"platform/shared/requirements/approval/challenge.go", "IssueChallenge", "req", classNotABundle,
 			"req is an approval challenge request; its Digest binds the challenge to the decision, not to a policy bundle", 0, true},
 		{"platform/shared/requirements/reservation/memory.go", "Reserve", "req.Key", classNotABundle,

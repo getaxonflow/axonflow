@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
@@ -1748,14 +1749,15 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		mcpDetectionCfg)
 	queryApprovalID, queryApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
 	requestEnforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
-		orgID:        client.OrgID,
-		decisionID:   auditEntry.DecisionID,
-		query:        statement,
-		auth:         auth,
-		user:         user,
-		userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
-		observation:  observationOf(inputOutcome.StaticResult),
-		finCrime:     finCrimeParametersFromContext(req.Parameters),
+		orgID:          client.OrgID,
+		decisionID:     auditEntry.DecisionID,
+		query:          statement,
+		auth:           auth,
+		user:           user,
+		userIdentity:   callerUserIdentity(auth.Kind, userErr, req.UserToken),
+		observation:    observationOf(inputOutcome.StaticResult),
+		finCrime:       finCrimeParametersFromContext(req.Parameters),
+		finCrimeTarget: fincrime.Target{Plane: "mcp", Server: req.Connector, Tool: req.Operation, Operation: "query"},
 	}, pepHandshakeResolution{}, // this route resolves no capability handshake
 		&approvalHoldCall{
 			plane:     approvalHoldPlaneMCPRequest,
@@ -2200,14 +2202,15 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		mcpDetectionCfg)
 	executeApprovalID, executeApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
 	requestEnforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
-		orgID:        client.OrgID,
-		decisionID:   auditEntry.DecisionID,
-		query:        req.Statement,
-		auth:         auth,
-		user:         user,
-		userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
-		observation:  observationOf(inputOutcome.StaticResult),
-		finCrime:     finCrimeParametersFromContext(req.Parameters),
+		orgID:          client.OrgID,
+		decisionID:     auditEntry.DecisionID,
+		query:          req.Statement,
+		auth:           auth,
+		user:           user,
+		userIdentity:   callerUserIdentity(auth.Kind, userErr, req.UserToken),
+		observation:    observationOf(inputOutcome.StaticResult),
+		finCrime:       finCrimeParametersFromContext(req.Parameters),
+		finCrimeTarget: fincrime.Target{Plane: "mcp", Server: req.Connector, Tool: req.Operation, Operation: "execute"},
 	}, pepHandshakeResolution{}, // this route resolves no capability handshake
 		&approvalHoldCall{
 			plane:     approvalHoldPlaneMCPRequest,
@@ -2949,14 +2952,15 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		observation := observationOf(outcome.StaticResult)
 		approvalID, approvalIDConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
 		enforced, held := enforceMCPRequestHolding(ctx, requestPassInput{
-			orgID:        orgID,
-			decisionID:   decisionID,
-			query:        evaluated,
-			auth:         auth,
-			user:         user,
-			userIdentity: callerUserIdentity(auth.Kind, userErr, req.UserToken),
-			observation:  observation,
-			finCrime:     finCrimeParametersFromContext(req.Parameters),
+			orgID:          orgID,
+			decisionID:     decisionID,
+			query:          evaluated,
+			auth:           auth,
+			user:           user,
+			userIdentity:   callerUserIdentity(auth.Kind, userErr, req.UserToken),
+			observation:    observation,
+			finCrime:       finCrimeParametersFromContext(req.Parameters),
+			finCrimeTarget: fincrime.Target{Plane: "mcp", Server: req.ConnectorType, Tool: req.Tool, Operation: operation},
 		}, pepHandshake, &approvalHoldCall{
 			plane:              approvalHoldPlaneMCPRequest,
 			route:              "mcp_check_input",

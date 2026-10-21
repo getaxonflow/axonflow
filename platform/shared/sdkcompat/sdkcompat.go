@@ -76,6 +76,11 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 11.2.0 train moves python/typescript/go/java 9.4.0 -> 9.5.0 and rust
+//     0.11.0 -> 0.12.0: the typed Decision API payment action target and
+//     approval hold/retry fields used by the FinCrime v3 example. The SDK tags
+//     follow the platform and Community release in the release train.
+//
 //   - the 11.0.0 train moves python/typescript/go/java 9.3.0 -> 9.4.0 and rust
 //     0.10.0 -> 0.11.0: the tags carrying the v11 decision provenance on every
 //     governed response, the PEP capability handshake, and the typed policy
@@ -113,11 +118,11 @@ var minVersion = map[string]string{
 // Nothing in this repository validates a recommended value against the registry
 // it names, so when an SDK publishes, move this map in the same round.
 var recommendedVersion = map[string]string{
-	"python":     "9.4.0",
-	"typescript": "9.4.0",
-	"go":         "9.4.0",
-	"java":       "9.4.0",
-	"rust":       "0.11.0",
+	"python":     "9.5.0",
+	"typescript": "9.5.0",
+	"go":         "9.5.0",
+	"java":       "9.5.0",
+	"rust":       "0.12.0",
 }
 
 // MinVersions returns the floor map.

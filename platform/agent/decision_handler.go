@@ -42,6 +42,7 @@ import (
 	"unicode/utf8"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/shared/anchoredenforcer"
 	sharedaudit "axonflow/platform/shared/audit"
@@ -1273,6 +1274,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// decide: the anchored engine authors this verdict and reads no segments
 	// (PRD v11 §1.1, §1.2).
 	fincrimeParams := finCrimeParametersFromContext(req.Context)
+	// FinCrime governs actual tool actions. A non-tool request can carry
+	// server/tool-shaped fields or quote payment context without being one.
+	fincrimeTarget := fincrime.Target{Plane: "decide"}
+	if stage == DecisionStageTool && strings.EqualFold(req.Target.Type, pep.TargetTypeTool) {
+		fincrimeTarget.Server, fincrimeTarget.Tool = toolServer, toolIdentity
+	}
 
 	outcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID),
@@ -1299,6 +1306,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		pep:                 pepHandshake.requestProfile(),
 		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
 		finCrime:            fincrimeParams,
+		finCrimeTarget:      fincrimeTarget,
 	})
 	// #4370: a challenge holds as a pending approval bound to exactly this
 	// decision's input (the stage, the target, the query and the context the
@@ -1362,6 +1370,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	decisionAudit.decisionPolicyBundle = enforced.policyBundle
 	decisionAudit.decisionPolicyPacks = enforced.policyPacks
 	decisionAudit.fincrimeRiskScore = enforced.riskScore.auditDetail()
+	decisionAudit.fincrimeDecision = enforced.finCrimeDecision
 	decisionAudit.carryAnchoredIdentity(enforced)
 	decisionAudit.decisionReasonCode = enforced.reasonCode
 	verdict, reasons, obligations, triggeredPolicies := enforced.verdict, enforced.reasons, enforced.obligations, enforced.evaluatedPolicies
@@ -2242,6 +2251,7 @@ type decisionAuditInput struct {
 	// why (#3330), at policy_details->'fincrime_risk_score'; nil - so omitted -
 	// when no control read the score.
 	fincrimeRiskScore *riskScoreRecord
+	fincrimeDecision  *fincrimeDecisionRecord
 	// policyIdentities, documentVersion and actionName are what an anchored
 	// decision named (PRD v11 §1.14), set by carryAnchoredIdentity and written
 	// by stampAnchoredIdentity.
@@ -2540,6 +2550,9 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 	}
 	if audit.fincrimeRiskScore != nil {
 		details[riskScoreAuditKey] = audit.fincrimeRiskScore
+	}
+	if audit.fincrimeDecision != nil {
+		details["fincrime_decision"] = audit.fincrimeDecision
 	}
 	stampAnchoredIdentity(details, audit.policyIdentities, audit.documentVersion, audit.actionName)
 	if audit.decisionReasonCode != "" {

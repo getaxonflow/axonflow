@@ -523,6 +523,17 @@ jobs:
 
           swagger-cli --version
 
+      # signing_seed_guard_test.sh builds lib/signing_seed_guard.go, the scanner
+      # that refuses a trusted licence-verification key's seed (#4470). The job
+      # had no Go before, so a missing toolchain fails the test rather than
+      # skipping it; this step is what gives it one. cache: false per
+      # fleet_setup_go_cache_is_off_test.sh (a stdlib-only build needs no cache).
+      - name: Set up Go (signing_seed_guard_test.sh builds its scanner)
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
       - name: Execute tests/regression-test-required/*.sh
         env:
           # required_check_name_uniqueness_test.sh reads ruleset 9199766 to

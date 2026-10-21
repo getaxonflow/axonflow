@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# pre-commit-signing-seed - refuse a commit whose STAGED content carries the
+# private seed of a licence-verification key the shipped binaries trust (#4470).
+#
+# Call it from a pre-commit hook; it is not a hook by itself, because this
+# repository's clones set core.hooksPath to a directory of their own hooks (the
+# enterprise clone's .git/hooks holds a session-file blocker). Enable it by
+# appending ONE line to the pre-commit hook that core.hooksPath points at
+# (`git config --get core.hooksPath`; `.git/hooks` when unset):
+#
+#   "$(git rev-parse --show-toplevel)/.githooks/pre-commit-signing-seed" || exit 1
+#
+# placed BEFORE that hook's final `exit 0`. A clone with no pre-commit hook of
+# its own can instead run `git config core.hooksPath .githooks` and copy this
+# file to .githooks/pre-commit. technical-docs/runbooks/ED25519_KEY_ROTATION.md
+# ("The guard") has both procedures and the pinned copy described below.
+#
+# WHAT IT SCANS: exactly what the commit would record. The staged blobs of every
+# path that is not a deletion (added, copied, modified, renamed, and TYPE-CHANGED:
+# a symlink replaced by a regular file) are exported from the INDEX (never the
+# work tree, so an unstaged edit can neither hide nor fake a finding) into a
+# temp directory, and tests/regression-test-required/lib/signing_seed_guard.go
+# scans that directory. Nothing is stashed and the work tree is not touched.
+#
+# WHICH KEYS. With SIGNING_SEED_GUARD_PIN set, the trusted keys are the pin's
+# ("$PIN/keys", the four verifier sources of the current rotation) plus the work
+# tree's own, MINUS the keys listed in "$PIN/retired" (keys a rotation retired,
+# whose seeds are already public; the versioned list is
+# .githooks/retired-licence-public-keys). A branch cut before a rotation trusts
+# only retired keys, so a commit there that touches the test files still
+# carrying the retired seeds is not refused - refusing it would block every
+# other lane until it rebases while protecting nothing. A work-tree key that is
+# neither pinned nor retired means the pin is STALE (the work tree has moved to
+# a newer rotation): the guard refuses the commit and says so, rather than
+# quietly protecting only the old keys. A pin without keys/ or retired refuses
+# the commit rather than being dropped. The mirror paths and CI still check each
+# tree strictly against its own keys. With no pin, the work tree's keys are
+# used alone (-keys-root-union, so a pre-rotation tree whose verifier sites
+# disagree does not make every commit an instrument failure).
+# With a pin, "$PIN/signing_seed_guard.go" is the program run (it matches the
+# flags this hook passes); without one, the work tree's.
+#
+# Exit: 0 nothing trusted is staged; 1 a finding, or the guard could not run
+# (a missing toolchain refuses the commit rather than passing it unchecked).
+set -uo pipefail
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "signing-seed hook: not inside a git work tree" >&2
+  exit 1
+}
+pin="${SIGNING_SEED_GUARD_PIN:-}"
+
+if [ -n "$pin" ]; then
+  src="$pin/signing_seed_guard.go"
+else
+  src="$top/tests/regression-test-required/lib/signing_seed_guard.go"
+fi
+if [ ! -f "$src" ]; then
+  echo "signing-seed hook: no guard program (neither the work tree nor SIGNING_SEED_GUARD_PIN carries signing_seed_guard.go); refusing" >&2
+  exit 1
+fi
+
+keys=()
+if [ -n "$pin" ]; then
+  if [ ! -d "$pin/keys" ]; then
+    echo "signing-seed hook: SIGNING_SEED_GUARD_PIN=$pin has no keys/ directory; refusing rather than dropping the pin" >&2
+    exit 1
+  fi
+  if [ ! -f "$pin/retired" ]; then
+    echo "signing-seed hook: SIGNING_SEED_GUARD_PIN=$pin has no retired list; refusing rather than guessing which work-tree keys are known-public" >&2
+    exit 1
+  fi
+  keys+=(-keys-root "$pin/keys" -retired "$pin/retired" -require-known)
+  if [ -f "$top/platform/agent/license/tier.go" ]; then
+    keys+=(-keys-root-union "$top")
+  fi
+elif [ -f "$top/platform/agent/license/tier.go" ]; then
+  keys+=(-keys-root-union "$top")
+fi
+if [ "${#keys[@]}" -eq 0 ]; then
+  echo "signing-seed hook: no verifier sources to read trusted keys from (work tree or \$SIGNING_SEED_GUARD_PIN/keys); refusing" >&2
+  exit 1
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "signing-seed hook: go is not installed, so the staged content cannot be checked; refusing (git commit --no-verify bypasses every hook)" >&2
+  exit 1
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/signing-seed-hook.XXXXXX")" || exit 1
+trap 'rm -rf "$work"' EXIT
+
+git diff --cached --name-only -z --diff-filter=d >"$work/paths" || {
+  echo "signing-seed hook: could not list the staged paths; refusing" >&2
+  exit 1
+}
+if [ ! -s "$work/paths" ]; then
+  exit 0 # a deletion-only commit adds no content
+fi
+mkdir -p "$work/staged"
+if ! git checkout-index -z --stdin --prefix="$work/staged/" <"$work/paths"; then
+  echo "signing-seed hook: could not export the staged content; refusing" >&2
+  exit 1
+fi
+
+# A commit that stages only symlinks or submodule pointers exports no regular
+# file; there is no content to scan (the guard would refuse "nothing scanned").
+if [ -z "$(find "$work/staged" -type f -print -quit)" ]; then
+  exit 0
+fi
+
+if ! (cd "$work" && GOWORK=off GOFLAGS= go build -o "$work/guard" "$src"); then
+  echo "signing-seed hook: the guard does not build; refusing" >&2
+  exit 1
+fi
+"$work/guard" -root "$work/staged" -walk "${keys[@]}"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "" >&2
+  if [ "$rc" -eq 1 ]; then
+    echo "COMMIT REFUSED (#4470): the staged content carries the private seed of a trusted licence-verification key (paths above are relative to the staged files)." >&2
+    echo "Unstage it, and treat the key as EXPOSED: technical-docs/runbooks/ED25519_KEY_ROTATION.md." >&2
+  else
+    echo "COMMIT REFUSED (#4470): the signing-seed guard could not run (exit $rc, see above)." >&2
+  fi
+  exit 1
+fi
+exit 0

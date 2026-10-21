@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/decision/activation"
 	"axonflow/platform/decision/policypack"
 	"axonflow/platform/shared/deploymode"
@@ -68,8 +69,9 @@ var policyPackDir = "/opt/axonflow/policy-packs"
 // are set once by installPolicyPacks, before the engine and the enforcer that
 // read them are built.
 var (
-	installedPolicyPacks   []*policypack.Pack
-	installedPackDetectors []sharedpolicy.CompiledPolicy
+	installedPolicyPacks      []*policypack.Pack
+	installedPackDetectors    []sharedpolicy.CompiledPolicy
+	installedFincrimeRegistry *fincrime.Registry
 )
 
 // installPolicyPacks loads the installed packs and compiles their detectors, or
@@ -83,7 +85,29 @@ func installPolicyPacks() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", EnvPolicyPacks, err)
 	}
+	var fincrimeRegistry *fincrime.Registry
+	for _, p := range packs {
+		if p.Source.ID != "fincrime" {
+			continue
+		}
+		if p.Source.Version != 3 || os.Getenv("AXONFLOW_FINCRIME_EXPECTED_VERSION") != "3" {
+			return fmt.Errorf("fincrime: v3 requires AXONFLOW_FINCRIME_EXPECTED_VERSION=3; review the action registry and organization overrides before upgrading")
+		}
+		path := os.Getenv("AXONFLOW_FINCRIME_REGISTRY_FILE")
+		if path == "" {
+			return fmt.Errorf("fincrime: AXONFLOW_FINCRIME_REGISTRY_FILE is required for v3")
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("fincrime: read action registry: %w", err)
+		}
+		fincrimeRegistry, err = fincrime.ParseRegistry(raw)
+		if err != nil {
+			return err
+		}
+	}
 	installedPolicyPacks, installedPackDetectors = packs, detectors
+	installedFincrimeRegistry = fincrimeRegistry
 	for _, p := range packs {
 		log.Printf("✅ [POLICY-PACK] installed %s v%d: %d detector(s) (PRD v11 §1.9)", p.Source.ID, p.Source.Version, len(p.Source.Detectors))
 	}

@@ -10,6 +10,28 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.2.0] - 2026-10-21: license key rotation and FinCrime v3 payment controls
+
+> **Upgrade.** The v11.1.0 to v11.2.0 upgrade rotates both Enterprise license verifier keys without a dual-key window. Existing licenses must be reissued and deployed in lockstep with the new images. The FinCrime add-on changes from pack v2 to v3 and requires a reviewed v3 action registry and `AXONFLOW_FINCRIME_EXPECTED_VERSION=3`.
+
+### Security
+
+- **Rotate evaluation and Enterprise license verification keys** *(Enterprise and shared verifier code)*. The old signing seeds were exposed in public test history. Tests now use ephemeral keys and a guard refuses a trusted signing seed in source. There is no dual-key grace period. Licensed deployments must obtain replacement licenses before changing images.
+
+### Enterprise
+
+- **Govern exact payment actions with FinCrime v3**. The pack matches registered Decision API and MCP payment tools by organization, client, plane, server, tool, and operation. It validates versioned transaction and cohort context, decimal major-unit amounts, and ISO currency precision. Missing or contradictory facts deny. Configured per-currency limits, jurisdiction lists, and payment execution approvals are evaluated through typed controls. Audit rows record the registry digest and decision reason; unrelated prose and unregistered tools do not activate the pack.
+- **Synthetic payment exception workflow**. The Enterprise example combines evidence reconciliation, a constrained operator screen, Decision API policy and approval binding, named portal review, a fake retry executor, and a separate synthetic provider outcome. Production-configured Docker proof covered the operator and Agent paths. The example has no real payment provider or executor and makes no customer savings claim.
+
+### Community
+
+- The Community mirror includes shared FinCrime parser and evaluator source but no Enterprise pack, registry, or payment exception example. A Community build refuses `AXONFLOW_POLICY_PACKS=fincrime` at startup. Runtime end-to-end test cases for existing Decision API approval holds were also strengthened.
+
+### Migration
+
+- **Licensed deployments:** arrange replacement evaluation or Enterprise licenses with AxonFlow before switching to v11.2.0 images. Switch each image and its matching license together; keep the v11.1.0 image and license together for rollback. Self-serve evaluation licenses also require reissue.
+- **FinCrime v2 deployments:** a v3 image with `AXONFLOW_POLICY_PACKS=fincrime` refuses a v2 pin or registry at startup. Install the reviewed organization and client action registry, set `AXONFLOW_FINCRIME_EXPECTED_VERSION=3`, and keep the v2 image plus its configuration as the rollback pair. Review organization overrides under `pack:fincrime:*` because the stable control IDs now read typed facts.
+
 ## [11.1.0] - 2026-09-25 (the FinCrime Engine B risk score returns as a fact the pack holds on; decide and the MCP request plane hold an approval for one retry; typed controls declare the planes they bind on; every multi-agent step and every step's content is decided)
 
 > **Who this affects.** The FinCrime add-on's Engine B risk score is back on Enterprise, as a fact the FinCrime pack holds on: it is advisory and never a verdict. An approval requirement on `/api/v1/decide` and the MCP request plane now holds the call as a pending approval that one retry spends (Enterprise). A typed control can declare the planes it binds on. Every multi-agent step is decided on every deployment, and the workflow and multi-agent step planes decide a step's content. `/api/v1/process` and `/api/v1/plan/execute` decide under a plane of their own, `orchestrator_request`. Four migrations ship; `enterprise/161` expects every customer portal and agent to be on v11 first (see Migration).
