@@ -38,6 +38,9 @@ var hostedCustomerDataTables = []string{
 	"usage_events", "usage_hourly", "usage_daily", "usage_monthly",
 	"grafana_organizations", "api_keys", "hosted_portal_members",
 	"hosted_portal_login_tokens",
+	// Legacy child tables carry no direct customer key. Keep them explicit so
+	// dropping their last policy cannot make them disappear from the census.
+	"customer_agent_versions", "mas_kill_switch_history", "scim_group_members",
 }
 
 func verifyHostedCustomerDataRLS(ctx context.Context, db *sql.DB) error {
@@ -178,6 +181,9 @@ var hostedIndirectGuardExpressions = map[string]string{
 	"hosted_portal_login_tokens": `EXISTS (SELECT 1 FROM hosted_portal_members m WHERE m.member_id = hosted_portal_login_tokens.member_id AND m.org_id = current_setting('app.current_org_id', true))`,
 	"static_policy_versions":     `EXISTS (SELECT 1 FROM static_policies p WHERE p.id = static_policy_versions.policy_id AND p.org_id = current_setting('app.current_org_id', true))`,
 	"policy_versions":            `EXISTS (SELECT 1 FROM dynamic_policies p WHERE p.policy_id = policy_versions.policy_id AND p.org_id = current_setting('app.current_org_id', true))`,
+	"customer_agent_versions":    `EXISTS (SELECT 1 FROM customer_agents ca WHERE ca.id = customer_agent_versions.agent_id AND ca.org_id = current_setting('app.current_org_id', true))`,
+	"mas_kill_switch_history":    `EXISTS (SELECT 1 FROM mas_kill_switches m WHERE m.id = mas_kill_switch_history.kill_switch_id AND m.org_id = current_setting('app.current_org_id', true))`,
+	"scim_group_members":         `EXISTS (SELECT 1 FROM scim_groups g WHERE g.id = scim_group_members.group_id AND g.tenant_id = current_setting('app.current_org_id', true))`,
 }
 
 var hostedCompositeGuardExpressions = map[string]string{

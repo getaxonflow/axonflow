@@ -10,6 +10,62 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.1] - 2026-10-28: Hosted rollout safety corrections
+
+> **Safe-off patch.** This patch corrects defects found by the first v11.3.0
+> production rollout. It does not enable the paid gate, a public cohort, or
+> real-money movement.
+> See the [v11.3.0 release notes](https://github.com/getaxonflow/axonflow/releases/tag/v11.3.0)
+> for the complete feature release; this entry contains only the patch delta.
+
+### Community
+
+- **No platform runtime change for self-hosted Community.** Released in
+  lockstep at v11.3.1 so Community and Enterprise keep contiguous tag
+  histories. The rollout fixes below apply only to AxonFlow-operated Hosted
+  infrastructure; the shared source keeps its version and release notes
+  aligned.
+- **Keep the Spring Boot example dependency floor enforceable.** Update its
+  regression guard for the v11.3 move to Spring Boot 4.0.9, whose reviewed
+  dependency management resolves Tomcat 11.0.27. The guard now rejects either
+  an older parent or an unsafe explicit override instead of requiring the
+  retired Tomcat 10.1 override and leaving the release branch permanently red.
+
+### Enterprise and AxonFlow Hosted
+
+#### Security
+
+- **Complete the production Hosted RLS catalog.** Community SaaS migration 197
+  gives three legacy parent-scoped child tables a forced restrictive tenant
+  guard and restores tenant-scoped usability to legacy direct-key tables that
+  had a restrictive guard but no permissive policy. The migration mirrors the
+  existing restrictive expression rather than creating an allow-all policy.
+  Startup now explicitly requires the three child stores so dropping their last
+  policy cannot make them disappear from the dynamic census.
+
+#### Operations and migration
+
+- **Make the production CloudFormation template executable.** Quote numeric
+  operands in `Rules`-section `Fn::Equals` expressions. CloudFormation rejects
+  non-string rule operands before changing resources even though its template
+  validator and `cfn-lint` accept them; a mutation-proof repository gate now
+  covers the exact failure shape.
+- **Deploy the released platform before public clients.** The Hosted launch
+  runbook now requires safe-off production migrations, RLS, billing-route,
+  rollback, and oldest-supported-client compatibility proof before SDKs,
+  plugins, integrations, docs, or landing changes are published.
+- Apply Community SaaS migration 197 after migrations 192-196. Keep the paid
+  gate off and acceptance/module settings empty until the remaining launch
+  gates are accepted.
+
+### CI / Testing (this repository only)
+
+- **Keep Enterprise-only CloudFormation coverage out of the Community mirror.**
+  The v11.3.1 Rules regression reads templates under `infrastructure/` and
+  `ee/`, which the public sync intentionally strips. Exclude that test from the
+  staged Community tree so its anti-vacuity guard remains meaningful instead
+  of making the public regression suite fail over subjects it cannot contain.
+
 ## [11.3.0] - 2026-10-27: paid Hosted Starter and governed outcome workflows
 
 > **Safe-off upgrade.** This release ships the Hosted billing, person identity,

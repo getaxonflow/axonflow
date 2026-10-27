@@ -1,6 +1,6 @@
 # Identity-Compat Mode and the Identity Comparison (retired in v11)
 
-**Platform Version:** v11.3.0. v11.0.0 retires the identity-compat mode: it and its comparison shipped in v10.2.0, dark and `off` by default.
+**Platform Version:** v11.3.1. v11.0.0 retires the identity-compat mode: it and its comparison shipped in v10.2.0, dark and `off` by default.
 
 **Status:** Retired. This page states what replaced them and what a deployment that configured them has to change.
 

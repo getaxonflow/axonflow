@@ -31,7 +31,7 @@ ARG TARGETARCH
 # emitter contract is to swallow a non-2xx. The adapter's startup ping would
 # therefore have been dropped with HTTP 400, silently, forever — the exact
 # invisibility this train is closing.
-ARG AXONFLOW_VERSION=11.3.0
+ARG AXONFLOW_VERSION=11.3.1
 
 RUN apk add --no-cache git ca-certificates
 
@@ -98,7 +98,7 @@ WORKDIR /go/src/axonflow
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=11.3.0
+ARG AXONFLOW_VERSION=11.3.1
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
