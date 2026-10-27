@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/agent/rls"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -34,7 +35,7 @@ var (
 // This is the work that used to live in `plugin_claim_middleware.go`
 // (deleted in the same PR that introduced this helper); it folds inline
 // into the auth path per ADR-049 §3 + ADR-050 §9 Pattern B.
-func lookupActivePluginLicenseTier(ctx context.Context, db pluginLicenseRowReader, jti, tenantID string) (license.Tier, error) {
+func lookupActivePluginLicenseTier(ctx context.Context, db *sql.DB, jti, tenantID string) (license.Tier, error) {
 	if db == nil {
 		return "", errors.New("plugin_user_licenses lookup: db is nil")
 	}
@@ -46,11 +47,13 @@ func lookupActivePluginLicenseTier(ctx context.Context, db pluginLicenseRowReade
 		rowTenantID  string
 		rowRevokedAt *time.Time
 	)
-	err := db.QueryRowContext(lookupCtx, `
-		SELECT tier, tenant_id, revoked_at
-		  FROM plugin_user_licenses
-		 WHERE license_token_jti = $1`, jti,
-	).Scan(&rowTier, &rowTenantID, &rowRevokedAt)
+	err := rls.WithOrgScope(lookupCtx, db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(lookupCtx, `
+			SELECT tier, tenant_id, revoked_at
+			  FROM plugin_user_licenses
+			 WHERE license_token_jti = $1`, jti,
+		).Scan(&rowTier, &rowTenantID, &rowRevokedAt)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errPluginLicenseNotFound
 	}
@@ -91,11 +94,4 @@ func mapPluginLicenseLookupError(err error, jti string) *CommunitySaasAuthError 
 			Message:    fmt.Sprintf("license_lookup_unavailable (jti=%s)", logutil.Sanitize(jti)),
 		}
 	}
-}
-
-// pluginLicenseRowReader is the minimal interface lookupActivePluginLicenseTier
-// needs from *sql.DB. Pulled out so unit tests can pass a sqlmock without
-// depending on the concrete *sql.DB type.
-type pluginLicenseRowReader interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

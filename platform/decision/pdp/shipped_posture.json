@@ -2,7 +2,7 @@
   "schema_version": 1,
   "provenance": {
     "derived_by": "platform/decision/activation TestTheShippedPostureArtifactIsDerivedFromTheCorpus",
-    "system_corpus_digest": "sha256:5b28395be964d2c4158d0c6dd7ee24cc99b4f0d7451d496846fcba5f5dda1138",
+    "system_corpus_digest": "sha256:a3d1f1d6d8021aa7d5f869fd9da66c7841626a16279badd9db8ef7d8329dfe3f",
     "inputs": [
       {
         "path": "platform/decision/legacycompile/legacy_call_sites.tsv",
@@ -10,7 +10,7 @@
       },
       {
         "path": "platform/decision/pdp/system_corpus.json",
-        "sha256": "946a02546307f6abe2d56a096818f79aac2a3c4426f202d7c9deaadb98774207"
+        "sha256": "0de84e8b3e22930399278851c8e4b1fca8c8d7450db818dfd82ca7af48ef4406"
       },
       {
         "path": "platform/decision/registry/detectors_census.tsv",

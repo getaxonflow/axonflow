@@ -285,6 +285,10 @@ type DecideRequest struct {
 	Query          string                 `json:"query"`
 	UserToken      string                 `json:"user_token,omitempty"`
 	Context        map[string]interface{} `json:"context,omitempty"`
+	// ExpectedPolicyBundle pins the request to the exact composed policy
+	// bundle reviewed by the caller. The server refuses a stale pin before an
+	// approval can be queued or consumed.
+	ExpectedPolicyBundle string `json:"expected_policy_bundle,omitempty"`
 	// FulfillmentCapabilities advertises what this PEP's SEAM can discharge, so
 	// the PDP never emits an obligation the caller cannot fulfill (#2958). Use
 	// the Capability* constants, wrapped by AdvertiseCapabilities.

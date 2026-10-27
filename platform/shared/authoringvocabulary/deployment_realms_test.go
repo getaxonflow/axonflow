@@ -66,13 +66,16 @@ import (
 // are their own enforcement scope, orchestrator_request, so llm.completion and
 // agent.invoke each state one scope more. That is edition-independent, unlike
 // #4259's, so BOTH pins below move and DeploymentCatalogVersion goes to 7.
-const communityBaseDigest = "sha256:2552e410b695fc2ffdbb5d58b6d3ea5681240852c0a08bb62b968ef4bba892ec"
+// IT MOVED WITH v11.3's Hosted billing capability metadata, and the deployment
+// catalog version moves with it to 8.
+const communityBaseDigest = "sha256:6ae1158f0e13ca223dbe7de5de96472521d9ac0e544836cb84ba96e251557835"
 
 // enterprisePlaneBaseDigest is the digest of the vocabulary a deployment with
 // NOTHING wired resolves to under an Enterprise-category deployment mode
 // (enterprise, saas): communityBaseDigest's content plus cowork_ingest on
 // llm.completion and tool.call (#4259), computed at #4259's head.
-const enterprisePlaneBaseDigest = "sha256:1e1638394c74d8825f534ace35a24b9c048d8f474a05e96d1b3a114941de0bc4"
+// v11.3 adds the same Hosted billing capability metadata to this projection.
+const enterprisePlaneBaseDigest = "sha256:be1ddcd9c8efbd31c6039ff2b4bc7598c8f9dca7573108fa736f2ef0b52525c3"
 
 var builtinQualifiers = []string{"axonflow-api-credential", "axonflow-community", "axonflow-internal-service", "axonflow-minted", "axonflow-trusted-header"}
 

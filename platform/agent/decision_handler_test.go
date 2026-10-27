@@ -990,7 +990,7 @@ func TestHandleDecide_AuditsDecodeError_AsError(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "development")
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1010,7 +1010,7 @@ func TestHandleDecide_AuditsInvalidStage_AsError(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "development")
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1029,7 +1029,7 @@ func TestHandleDecide_AuditsEmptyQuery_AsError(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "development")
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1068,7 +1068,7 @@ func TestHandleDecide_AuditsTenantImpersonation_AsBlocked(t *testing.T) {
 	args := decideAuditInsertArgs(AuditVerdictBlocked,
 		decideSecurityDetailsMatcher{wantEvent: "tenant_impersonation", wantAttemptedTenant: "victim-tenant"})
 	args[7] = "auth-tenant" // tenant_id COLUMN = actual authenticated identity
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1097,7 +1097,7 @@ func TestHandleDecide_AuditsOrgImpersonation_AsBlocked(t *testing.T) {
 
 	args := decideAuditInsertArgs(AuditVerdictBlocked,
 		decideSecurityDetailsMatcher{wantEvent: "org_impersonation", wantAttemptedOrg: "victim-org"})
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1128,7 +1128,7 @@ func TestHandleDecide_AuditsUserTokenRejected_AsBlocked(t *testing.T) {
 	t.Cleanup(func() { jwtSecret = origSecret })
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictBlocked,
 			decideSecurityDetailsMatcher{wantEvent: "user_token_rejected"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1167,7 +1167,7 @@ func TestHandleDecide_AuditsTenantMismatch_AsBlocked(t *testing.T) {
 	args := decideAuditInsertArgs(AuditVerdictBlocked,
 		decideSecurityDetailsMatcher{wantEvent: "tenant_mismatch", wantAttemptedTenant: "other-tenant"})
 	args[7] = "ent-tenant" // tenant_id COLUMN = actual authenticated identity
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1200,7 +1200,7 @@ func TestWriteDecisionAuditLog_PersistsRedactedFields(t *testing.T) {
 
 	args := decideAuditInsertArgs(AuditVerdictAllowed, nil)
 	args[18] = redactedFieldsMatcher{want: "$.customer.ssn"} // redacted_fields column
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -1236,7 +1236,7 @@ func TestWriteDecisionAuditLog_InsertFailureIncrementsMetric(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer mockDB.Close()
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnError(errors.New("boom"))
+	expectOrgScopedExecError(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnError(errors.New("boom"))
 
 	before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
 	writeDecisionAuditLog(context.Background(), mockDB,

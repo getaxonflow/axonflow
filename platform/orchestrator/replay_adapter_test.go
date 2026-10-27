@@ -57,7 +57,7 @@ func TestReplayServiceAdapter_RecordStep(t *testing.T) {
 	adapter := NewReplayServiceAdapter(service)
 
 	ctx := context.Background()
-	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 3, "", "", "")
+	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 3, "org-1", "tenant-1", "user-1")
 
 	// Record a step
 	now := time.Now()
@@ -121,7 +121,7 @@ func TestReplayServiceAdapter_CompleteExecution(t *testing.T) {
 	adapter := NewReplayServiceAdapter(service)
 
 	ctx := context.Background()
-	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "user-1")
 
 	outputSummary := json.RawMessage(`{"result": "success"}`)
 	err := adapter.CompleteExecution(ctx, "req-123", outputSummary)
@@ -145,7 +145,7 @@ func TestReplayServiceAdapter_FailExecution(t *testing.T) {
 	adapter := NewReplayServiceAdapter(service)
 
 	ctx := context.Background()
-	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "user-1")
 
 	err := adapter.FailExecution(ctx, "req-123", "something went wrong")
 	if err != nil {
@@ -168,7 +168,7 @@ func TestReplayServiceAdapter_RecordStep_TypeConversion(t *testing.T) {
 	adapter := NewReplayServiceAdapter(service)
 
 	ctx := context.Background()
-	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = adapter.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "user-1")
 
 	// Test all field mappings
 	now := time.Now()

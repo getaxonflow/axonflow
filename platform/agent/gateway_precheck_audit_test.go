@@ -91,7 +91,7 @@ func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
 			defer func() { usageDB = origDB }()
 
 			const contextID = "ctx-abc-123"
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(
 					"decide_"+contextID,                // id (PK keyed by contextID)
 					contextID,                          // request_id (audit.requestID empty → defaults to decisionID)
@@ -208,7 +208,7 @@ func setupPreCheckAuditTest(t *testing.T) (sqlmock.Sqlmock, func()) {
 // expectGatewayAuditRow registers the single canonical INSERT the handler must
 // perform, asserting plane=gateway + the expected policy_decision + request_type.
 func expectGatewayAuditRow(mock sqlmock.Sqlmock, wantDecision string) {
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id

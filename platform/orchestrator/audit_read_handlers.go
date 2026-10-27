@@ -41,6 +41,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
 
+	"axonflow/platform/agent/rls"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
@@ -70,6 +71,14 @@ const auditExportMaxRows = 50000
 // migration core/129 (#2754) and is populated by the write path (X-Session-Id →
 // audit_logs.session_id). COALESCE keeps pre-129 rows returning "".
 func (l *AuditLogger) GetAuditLogByID(id, tenantID string) (*AuditEntry, error) {
+	return l.GetAuditLogByIDScoped(context.Background(), id, tenantID, tenantID)
+}
+
+// GetAuditLogByIDScoped separates the organization RLS key from the tenant
+// predicate. Enterprise deployments may have multiple tenant identifiers in
+// one organization; Community SaaS intentionally supplies the same cs_* value
+// for both.
+func (l *AuditLogger) GetAuditLogByIDScoped(ctx context.Context, id, orgID, tenantID string) (*AuditEntry, error) {
 	if l.db == nil {
 		return nil, ErrAuditLogNotFound
 	}
@@ -91,14 +100,16 @@ func (l *AuditLogger) GetAuditLogByID(id, tenantID string) (*AuditEntry, error) 
 	var responseTime, tokensUsed sql.NullInt64
 	var cost sql.NullFloat64
 
-	err := l.db.QueryRow(q, id, tenantID).Scan(
-		&entry.ID, &entry.RequestID, &entry.Timestamp, &entry.UserID,
-		&entry.UserEmail, &entry.UserRole, &entry.ClientID, &entry.TenantID,
-		&entry.OrgID, &entry.RequestType, &entry.Query, &entry.PolicyDecision,
-		&policyDetailsJSON, &provider, &model, &responseTime, &tokensUsed, &cost,
-		&redactedFieldsJSON, &errorMessage, &responseSample, &complianceFlagsJSON,
-		&entry.CorrelationID, &entry.DecisionID, &entry.Plane, &entry.SessionID,
-	)
+	err := rls.WithOrgScope(ctx, l.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, q, id, tenantID).Scan(
+			&entry.ID, &entry.RequestID, &entry.Timestamp, &entry.UserID,
+			&entry.UserEmail, &entry.UserRole, &entry.ClientID, &entry.TenantID,
+			&entry.OrgID, &entry.RequestType, &entry.Query, &entry.PolicyDecision,
+			&policyDetailsJSON, &provider, &model, &responseTime, &tokensUsed, &cost,
+			&redactedFieldsJSON, &errorMessage, &responseSample, &complianceFlagsJSON,
+			&entry.CorrelationID, &entry.DecisionID, &entry.Plane, &entry.SessionID,
+		)
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAuditLogNotFound
 	}
@@ -177,7 +188,11 @@ func auditGetByIDHandler(w http.ResponseWriter, r *http.Request) {
 	scope := resolveCallerReadScope(r)
 	applyReadScopeHeader(w, r, scope)
 
-	entry, err := auditLogger.GetAuditLogByID(id, tenantID)
+	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
+	if orgID == "" {
+		orgID = tenantID
+	}
+	entry, err := auditLogger.GetAuditLogByIDScoped(r.Context(), id, orgID, tenantID)
 	if errors.Is(err, ErrAuditLogNotFound) {
 		sendErrorResponse(w, "audit record not found", http.StatusNotFound)
 		return
@@ -318,45 +333,51 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 	// Fetch cap+1 so we can report truncation without a second COUNT query.
 	query += fmt.Sprintf(" ORDER BY timestamp DESC LIMIT %d", rowCap+1)
 
-	rows, err := l.db.Query(query, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer func() { _ = rows.Close() }()
-
 	entries := make([]*AuditEntry, 0, rowCap)
-	for rows.Next() {
-		entry := &AuditEntry{}
-		var policyDetailsJSON, redactedFieldsJSON []byte
-		var provider, model, errorMessage, responseSample sql.NullString
-		var responseTime, tokensUsed sql.NullInt64
-		var cost sql.NullFloat64
-
-		if err := rows.Scan(
-			&entry.ID, &entry.RequestID, &entry.Timestamp, &entry.UserID,
-			&entry.UserEmail, &entry.UserRole, &entry.ClientID, &entry.TenantID,
-			&entry.OrgID, &entry.RequestType, &entry.Query, &entry.PolicyDecision,
-			&policyDetailsJSON, &provider, &model, &responseTime, &tokensUsed, &cost,
-			&redactedFieldsJSON, &errorMessage, &responseSample, &entry.CorrelationID,
-			&entry.SessionID,
-		); err != nil {
-			log.Printf("[audit/export] error scanning row: %v", err)
-			continue
-		}
-
-		entry.Provider = provider.String
-		entry.Model = model.String
-		entry.ErrorMessage = errorMessage.String
-		entry.ResponseSample = responseSample.String
-		entry.ResponseTime = nullLatencyPtr(responseTime)
-		entry.TokensUsed = nullTokensPtr(tokensUsed)
-		entry.Cost = nullCostPtr(cost)
-		_ = json.Unmarshal(policyDetailsJSON, &entry.PolicyDetails)
-		_ = json.Unmarshal(redactedFieldsJSON, &entry.RedactedFields)
-
-		entries = append(entries, entry)
+	orgID := strings.TrimSpace(crit.OrgID)
+	if orgID == "" {
+		orgID = crit.TenantID
 	}
-	if err := rows.Err(); err != nil {
+	err := rls.WithOrgScope(context.Background(), l.db, orgID, func(tx *sql.Tx) error {
+		rows, queryErr := tx.Query(query, args...)
+		if queryErr != nil {
+			return queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			entry := &AuditEntry{}
+			var policyDetailsJSON, redactedFieldsJSON []byte
+			var provider, model, errorMessage, responseSample sql.NullString
+			var responseTime, tokensUsed sql.NullInt64
+			var cost sql.NullFloat64
+
+			if scanErr := rows.Scan(
+				&entry.ID, &entry.RequestID, &entry.Timestamp, &entry.UserID,
+				&entry.UserEmail, &entry.UserRole, &entry.ClientID, &entry.TenantID,
+				&entry.OrgID, &entry.RequestType, &entry.Query, &entry.PolicyDecision,
+				&policyDetailsJSON, &provider, &model, &responseTime, &tokensUsed, &cost,
+				&redactedFieldsJSON, &errorMessage, &responseSample, &entry.CorrelationID,
+				&entry.SessionID,
+			); scanErr != nil {
+				log.Printf("[audit/export] error scanning row: %v", scanErr)
+				continue
+			}
+
+			entry.Provider = provider.String
+			entry.Model = model.String
+			entry.ErrorMessage = errorMessage.String
+			entry.ResponseSample = responseSample.String
+			entry.ResponseTime = nullLatencyPtr(responseTime)
+			entry.TokensUsed = nullTokensPtr(tokensUsed)
+			entry.Cost = nullCostPtr(cost)
+			_ = json.Unmarshal(policyDetailsJSON, &entry.PolicyDetails)
+			_ = json.Unmarshal(redactedFieldsJSON, &entry.RedactedFields)
+
+			entries = append(entries, entry)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, false, err
 	}
 
@@ -434,6 +455,7 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 		PolicyName: body.PolicyName,
 		OverrideID: body.OverrideID,
 		TenantID:   tenantID,
+		OrgID:      strings.TrimSpace(r.Header.Get("X-Org-ID")),
 		StartTime:  body.StartTime,
 		EndTime:    body.EndTime,
 		Limit:      auditExportMaxRows,

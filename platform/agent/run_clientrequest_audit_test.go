@@ -94,7 +94,7 @@ func TestClientRequestHandler_BudgetDeny_WritesCanonicalAgentAudit(t *testing.T)
 	userToken := generateTestJWT(1, "budget-test", []string{"query"}, "agent")
 
 	// Expect the canonical plane=agent 'blocked' row (request_type=decision_llm).
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),    // id
 			sqlmock.AnyArg(),    // request_id

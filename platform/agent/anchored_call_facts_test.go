@@ -60,23 +60,22 @@ func TestEvaluateCarriesTheCallsFactsToTheSharedEnforcer(t *testing.T) {
 	}
 }
 
-// TestNoAgentSeamStatesFactsOnItsCall holds, as a fact about this package's
-// source, that no agent seam states facts on its call.
+// TestOnlyTheRequestPassStatesRefundFacts holds the sole agent seam that may
+// state caller arguments on its call.
 //
 // The shared enforcer refuses a fact at a detector path only when it built that
 // detector for the request, so a seam that ran an observation could state, as a
 // fact, a detector it chose not to run. Every agent seam hands the engine its
-// detector facts through the observation alone, and this test is what makes
-// that a fact rather than an assumption. The first seam that needs facts
-// deletes this test on purpose, and says in its change why its facts cannot
-// contradict its observation.
-func TestNoAgentSeamStatesFactsOnItsCall(t *testing.T) {
+// detector facts through the observation alone. The refund amount is a caller
+// argument, not a detector finding, so it cannot contradict the observation.
+func TestOnlyTheRequestPassStatesRefundFacts(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
 	literals := 0
+	refundSites := 0
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -96,7 +95,11 @@ func TestNoAgentSeamStatesFactsOnItsCall(t *testing.T) {
 				for _, el := range x.Elts {
 					if kv, ok := el.(*ast.KeyValueExpr); ok {
 						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "facts" {
-							t.Errorf("%s: an anchoredCall states facts", fset.Position(kv.Pos()))
+							value, ok := kv.Value.(*ast.SelectorExpr)
+							if name != "decision_enforcing_seam.go" || !ok || value.Sel.Name != "refundFacts" {
+								t.Errorf("%s: an anchoredCall states facts outside the refund argument seam", fset.Position(kv.Pos()))
+							}
+							refundSites++
 						}
 					}
 				}
@@ -113,6 +116,9 @@ func TestNoAgentSeamStatesFactsOnItsCall(t *testing.T) {
 	if literals < 2 {
 		t.Fatalf("PREMISE: found %d anchoredCall literals; the decide and response seams build at least two, so the parse read the wrong files", literals)
 	}
+	if refundSites != 1 {
+		t.Fatalf("found %d refund fact seam sites, want one", refundSites)
+	}
 }
 
 // TestOnlyTheRequestPassStatesAdmittedFacts holds the one route an agent seam
@@ -121,8 +127,8 @@ func TestNoAgentSeamStatesFactsOnItsCall(t *testing.T) {
 // The route exists for the Engine B risk score and is not a general licence:
 // a second site, or another producer, fails here, and the enforcer refuses any
 // admitted fact outside anchoredenforcer.AdmittedFactPrefix
-// (TestAdmittedFactsAreConfinedToTheScorerNamespace). TestNoAgentSeamStatesFactsOnItsCall
-// above still forbids the older route, facts, outright.
+// (TestAdmittedFactsAreConfinedToTheScorerNamespace). The caller refund
+// argument route above is separate and cannot state a scorer or detector fact.
 func TestOnlyTheRequestPassStatesAdmittedFacts(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {

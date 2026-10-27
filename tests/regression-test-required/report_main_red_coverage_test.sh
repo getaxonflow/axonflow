@@ -47,6 +47,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export PYTHONDONTWRITEBYTECODE=1
+PYTHON_CACHE_ROOT="$(mktemp -d)"
+export PYTHONPYCACHEPREFIX="$PYTHON_CACHE_ROOT"
+trap 'rm -rf "$PYTHON_CACHE_ROOT"' EXIT
 
 python3 - "$REPO_ROOT" <<'PY'
 import fnmatch
@@ -74,9 +78,9 @@ relevance_exemption = _gen.relevance_exemption
 
 # The measured counts, asserted exactly and moved in the same PR as any change
 # to the population (2026-09-23, #4169): 20 workflows on main or a schedule plus
-# 76 that run on a release tag; the mirror carries 5 of them, build-community.yml
+# 77 that run on a release tag; the mirror carries 5 of them, build-community.yml
 # (exempt) among them.
-SELECTED_ENTERPRISE = 97
+SELECTED_ENTERPRISE = 98
 SELECTED_MIRROR = 5
 SYNC_WORKFLOW = os.path.join(ROOT, ".github/workflows/sync-community-repo.yml")
 ON_ENTERPRISE = os.path.isfile(SYNC_WORKFLOW)
@@ -270,9 +274,13 @@ def mirror_selected(sync_workflow):
         probe = os.path.join(tmp, "probe")
         os.makedirs(os.path.join(probe, ".github/workflows"))
         os.makedirs(os.path.join(probe, "ee"))
+        os.makedirs(os.path.join(probe, "minio"))
         for q in paths:
             shutil.copy(q, os.path.join(probe, ".github/workflows", os.path.basename(q)))
         open(os.path.join(probe, "ee/.witness"), "w").write("witness\n")
+        open(os.path.join(probe, "docker-compose.yml"), "w").write(
+            "services:\n  fixture:\n    build:\n      context: ./minio\n")
+        open(os.path.join(probe, "minio/Dockerfile"), "w").write("FROM scratch\n")
         env = dict(os.environ, SYNC_SOURCE_ROOT=probe, SYNC_WORKFLOW=sync_workflow)
         r = subprocess.run(["bash", os.path.join(ROOT, "scripts/ci/simulate-community-mirror.sh"),
                             os.path.join(tmp, "staged")], env=env, capture_output=True, text=True)

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -614,6 +615,21 @@ func TestDecideEnforcingSeam(t *testing.T) {
 	})
 }
 
+func TestExpectedPolicyBundleValidation(t *testing.T) {
+	for _, value := range []string{
+		"sha256:short",
+		"sha256:" + strings.Repeat("G", 64),
+		"SHA256:" + strings.Repeat("0", 64),
+	} {
+		if validPolicyBundleDigest(value) {
+			t.Errorf("validPolicyBundleDigest(%q) = true; want false", value)
+		}
+	}
+	if value := "sha256:" + strings.Repeat("a", 64); !validPolicyBundleDigest(value) {
+		t.Errorf("validPolicyBundleDigest(%q) = false; want true", value)
+	}
+}
+
 // enfPostureMatcher asserts the audit row's policy_details carries the engine,
 // the subject type and a policy bundle, and no retired `mode`.
 type enfPostureMatcher struct{ engine, subjectType string }
@@ -650,7 +666,7 @@ func TestDecideWritesEngineSubjectTypeAndBundleOnTheAuditRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(decideAuditInsertArgs(AuditVerdictAllowed, enfPostureMatcher{engine: decisionEngineAnchored, subjectType: tc.subjectType})...).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 			r := enfDecide(t, tc.org, tc.token, DecisionStageLLM, "What is the weather today?")

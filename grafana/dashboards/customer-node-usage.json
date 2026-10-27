@@ -1,0 +1,365 @@
+{
+  "title": "Customer Node Usage",
+  "uid": "customer-node-usage",
+  "tags": [
+    "customer",
+    "nodes",
+    "enforcement",
+    "monitoring"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Current Node Count by Organization",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT \n  o.org_id as \"Organization ID\",\n  o.name as \"Name\",\n  COUNT(DISTINCT CASE WHEN h.instance_type = 'agent' THEN h.instance_id END) as \"Agents\",\n  COUNT(DISTINCT CASE WHEN h.instance_type = 'orchestrator' THEN h.instance_id END) as \"Orchestrators\",\n  COUNT(DISTINCT h.instance_id) as \"Total\",\n  o.max_nodes as \"Limit\",\n  ROUND((COUNT(DISTINCT h.instance_id)::float / NULLIF(o.max_nodes, 0)) * 100, 1) as \"Usage %\",\n  CASE\n    WHEN COUNT(DISTINCT h.instance_id) > o.max_nodes THEN 'VIOLATION'\n    WHEN (COUNT(DISTINCT h.instance_id)::float / NULLIF(o.max_nodes, 0)) >= 0.9 THEN 'WARNING'\n    WHEN (COUNT(DISTINCT h.instance_id)::float / NULLIF(o.max_nodes, 0)) >= 0.8 THEN 'CAUTION'\n    ELSE 'OK'\n  END as \"Status\"\nFROM organizations o\nLEFT JOIN agent_heartbeats h ON o.org_id = h.org_id \n  AND h.last_heartbeat > NOW() - INTERVAL '5 minutes'\nWHERE o.org_id != 'admin'\nGROUP BY o.org_id, o.name, o.max_nodes\nORDER BY \"Usage %\" DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Usage %"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "gradient-gauge"
+              },
+              {
+                "id": "max",
+                "value": 120
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "green"
+                    },
+                    {
+                      "value": 80,
+                      "color": "yellow"
+                    },
+                    {
+                      "value": 90,
+                      "color": "orange"
+                    },
+                    {
+                      "value": 100,
+                      "color": "red"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "value": "OK",
+                    "text": "OK",
+                    "color": "green"
+                  },
+                  {
+                    "type": "value",
+                    "value": "CAUTION",
+                    "text": "CAUTION",
+                    "color": "yellow"
+                  },
+                  {
+                    "type": "value",
+                    "value": "WARNING",
+                    "text": "WARNING",
+                    "color": "orange"
+                  },
+                  {
+                    "type": "value",
+                    "value": "VIOLATION",
+                    "text": "VIOLATION",
+                    "color": "red"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "Node Usage Percentage",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT \n  o.name as metric,\n  ROUND((COUNT(DISTINCT h.instance_id)::float / NULLIF(o.max_nodes, 0)) * 100, 1) as value\nFROM organizations o\nLEFT JOIN agent_heartbeats h ON o.org_id = h.org_id \n  AND h.last_heartbeat > NOW() - INTERVAL '5 minutes'\nWHERE o.org_id != 'admin'\nGROUP BY o.name, o.max_nodes\nHAVING COUNT(DISTINCT h.instance_id) > 0\nORDER BY value DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 120,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 70,
+                "color": "semi-dark-green"
+              },
+              {
+                "value": 80,
+                "color": "yellow"
+              },
+              {
+                "value": 90,
+                "color": "orange"
+              },
+              {
+                "value": 100,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Node Count Trends (24h)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT \n  date_trunc('minute', h.last_heartbeat) as time,\n  o.name as metric,\n  COUNT(DISTINCT h.instance_id) as value\nFROM agent_heartbeats h\nJOIN organizations o ON h.org_id = o.org_id\nWHERE h.last_heartbeat > NOW() - INTERVAL '24 hours'\n  AND o.org_id != 'admin'\nGROUP BY time, o.name\nORDER BY time ASC",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "Active Nodes",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          },
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Node Violations (Last 24h)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT \n  nv.org_id as \"Organization\",\n  o.name as \"Name\",\n  nv.tier as \"Tier\",\n  nv.actual_node_count as \"Actual Nodes\",\n  nv.max_nodes_allowed as \"Limit\",\n  nv.excess_nodes as \"Excess\",\n  CASE\n    WHEN nv.resolved = TRUE THEN 'RESOLVED'\n    ELSE 'ACTIVE'\n  END as \"Status\",\n  nv.violation_start as \"Started\",\n  nv.violation_end as \"Resolved\",\n  CASE\n    WHEN nv.resolved = TRUE THEN EXTRACT(EPOCH FROM (nv.violation_end - nv.violation_start)) / 3600\n    ELSE EXTRACT(EPOCH FROM (NOW() - nv.violation_start)) / 3600\n  END as \"Duration (hours)\"\nFROM node_violations nv\nJOIN organizations o ON nv.org_id = o.org_id\nWHERE nv.violation_start > NOW() - INTERVAL '24 hours'\nORDER BY nv.violation_start DESC\nLIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "value": "ACTIVE",
+                    "text": "ACTIVE",
+                    "color": "red"
+                  },
+                  {
+                    "type": "value",
+                    "value": "RESOLVED",
+                    "text": "RESOLVED",
+                    "color": "green"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Excess"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "text"
+                    },
+                    {
+                      "value": 1,
+                      "color": "red"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration (hours)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "h"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "style": "dark"
+}

@@ -99,14 +99,12 @@ const limitTypeDecisionListSize = "decision_list_size"
 // the Pro replacement value, no coercive language.
 const wordingDecisionListSize = "Free tier shows the last 5 decisions in 24h. Pro raises this to 100 decisions in the last 30 days."
 
-// V1 Plugin Pro upgrade-prompt URLs — duplicated from
-// platform/agent/community_saas_ratelimit_response.go because both files
-// are part of the same "6-surface drift" group per
-// feedback_cross_surface_drift_check_categorized.md. Updates to either
-// constant must update both surfaces in the same release train.
+// Legacy upgrade-prompt URLs. The retired direct payment link must not be
+// emitted. Gated hosted callers receive the authenticated POST checkout
+// action from the Agent before this handler is reached.
 const (
 	v11UpgradeCompareURL = "https://getaxonflow.com/pricing/"
-	v11UpgradeBuyURL     = "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"
+	v11UpgradeBuyURL     = v11UpgradeCompareURL
 )
 
 // decisionListUpgrade is the upgrade-prompt block carried in the 429

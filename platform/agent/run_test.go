@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -2490,9 +2491,12 @@ func TestGetOrchestratorURL(t *testing.T) {
 	t.Run("local mode without docker", func(t *testing.T) {
 		oldURL := os.Getenv("ORCHESTRATOR_URL")
 		oldHost := os.Getenv("HOSTNAME")
+		oldDockerEnvMarkerPath := dockerEnvMarkerPath
 		os.Unsetenv("ORCHESTRATOR_URL")
 		os.Setenv("HOSTNAME", "my-macbook")
+		dockerEnvMarkerPath = filepath.Join(t.TempDir(), "absent-dockerenv")
 		defer func() {
+			dockerEnvMarkerPath = oldDockerEnvMarkerPath
 			if oldURL != "" {
 				os.Setenv("ORCHESTRATOR_URL", oldURL)
 			}

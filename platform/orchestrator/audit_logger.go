@@ -27,9 +27,12 @@ import (
 // breaking change to test callers while still letting the handler carry the
 // JSON tags it needs for request decoding.
 type auditSearchCriteria struct {
-	UserEmail  string
-	ClientID   string
-	TenantID   string
+	UserEmail string
+	ClientID  string
+	TenantID  string
+	// OrgID is the RLS scope. It can differ from TenantID in Enterprise; only
+	// Community SaaS deliberately uses the same cs_* identifier for both.
+	OrgID      string
 	StartTime  time.Time
 	EndTime    time.Time
 	DecisionID string

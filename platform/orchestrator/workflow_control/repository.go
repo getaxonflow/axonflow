@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -70,7 +71,8 @@ type Repository interface {
 
 // PostgresRepository implements Repository using PostgreSQL
 type PostgresRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	adminDB *sql.DB
 }
 
 // NewPostgresRepository creates a new PostgreSQL repository
@@ -78,8 +80,88 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 	return &PostgresRepository{db: db}
 }
 
+// SetAdminDB wires the BYPASSRLS pool used by explicitly named reconciliation
+// reads. Request handlers continue to use the tenant-scoped methods.
+func (r *PostgresRepository) SetAdminDB(db *sql.DB) { r.adminDB = db }
+
+func workflowOrgScope(ctx context.Context) (string, error) {
+	s, err := tenantscope.FromContext(ctx)
+	if err != nil {
+		return "", ErrWorkflowNotFound
+	}
+	return s.OrgID, nil
+}
+
+func (r *PostgresRepository) execScoped(ctx context.Context, query string, args ...interface{}) (result sql.Result, err error) {
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query, args...)
+		return execErr
+	})
+	return result, err
+}
+
+func (r *PostgresRepository) queryRowScoped(ctx context.Context, query string, args []interface{}, dest ...interface{}) error {
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	return rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, args...).Scan(dest...)
+	})
+}
+
+func (r *PostgresRepository) queryScoped(ctx context.Context, query string, args []interface{}, consume func(*sql.Rows) error) error {
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	return rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		return consume(rows)
+	})
+}
+
+type workflowScopedRow struct {
+	repo  *PostgresRepository
+	ctx   context.Context
+	query string
+	args  []interface{}
+}
+
+func (r workflowScopedRow) Scan(dest ...interface{}) error {
+	return r.repo.queryRowScoped(r.ctx, r.query, r.args, dest...)
+}
+func (r *PostgresRepository) rowScoped(ctx context.Context, query string, args ...interface{}) workflowScopedRow {
+	return workflowScopedRow{repo: r, ctx: ctx, query: query, args: args}
+}
+
 // Create inserts a new workflow
 func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) error {
+	if workflow == nil {
+		return fmt.Errorf("workflow is required")
+	}
+	if workflow.OrgID == "" || workflow.TenantID == "" {
+		if scope, err := tenantscope.FromContext(ctx); err == nil {
+			if workflow.OrgID == "" {
+				workflow.OrgID = scope.OrgID
+			}
+			if workflow.TenantID == "" {
+				workflow.TenantID = scope.TenantID
+			}
+		}
+	}
+	if err := tenantscope.ValidateRowKeys(workflow.OrgID, workflow.TenantID); err != nil {
+		return fmt.Errorf("refusing to persist workflow without org/tenant scope: %w", err)
+	}
 	if workflow.WorkflowID == "" {
 		workflow.WorkflowID = NewWorkflowID()
 	}
@@ -116,23 +198,26 @@ func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) err
 		traceID = sql.NullString{String: workflow.TraceID, Valid: true}
 	}
 
-	_, err := r.db.ExecContext(ctx, query,
-		workflow.WorkflowID,
-		workflow.WorkflowName,
-		workflow.Source,
-		workflow.Status,
-		workflow.CurrentStepIndex,
-		workflow.TotalSteps,
-		workflow.OrgID,
-		workflow.TenantID,
-		workflow.UserID,
-		workflow.ClientID,
-		traceID,
-		metadata,
-		workflow.StartedAt,
-		workflow.CreatedAt,
-		workflow.UpdatedAt,
-	)
+	err := rls.WithOrgScope(ctx, r.db, workflow.OrgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, query,
+			workflow.WorkflowID,
+			workflow.WorkflowName,
+			workflow.Source,
+			workflow.Status,
+			workflow.CurrentStepIndex,
+			workflow.TotalSteps,
+			workflow.OrgID,
+			workflow.TenantID,
+			workflow.UserID,
+			workflow.ClientID,
+			traceID,
+			metadata,
+			workflow.StartedAt,
+			workflow.CreatedAt,
+			workflow.UpdatedAt,
+		)
+		return e
+	})
 
 	return err
 }
@@ -140,7 +225,11 @@ func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) err
 // Delete removes a workflow record by ID.
 func (r *PostgresRepository) Delete(ctx context.Context, workflowID string) error {
 	query := `DELETE FROM workflows WHERE workflow_id = $1`
-	_, err := r.db.ExecContext(ctx, query, workflowID)
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error { _, e := tx.ExecContext(ctx, query, workflowID); return e })
 	return err
 }
 
@@ -161,24 +250,30 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	var traceID sql.NullString
 
 	var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
-	err := r.db.QueryRowContext(ctx, query, workflowID).Scan(
-		&workflow.WorkflowID,
-		&workflow.WorkflowName,
-		&workflow.Source,
-		&workflow.Status,
-		&workflow.CurrentStepIndex,
-		&totalSteps,
-		&wfOrgID,
-		&wfTenantID,
-		&wfUserID,
-		&wfClientID,
-		&traceID,
-		&workflow.Metadata,
-		&workflow.StartedAt,
-		&completedAt,
-		&workflow.CreatedAt,
-		&workflow.UpdatedAt,
-	)
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, workflowID).Scan(
+			&workflow.WorkflowID,
+			&workflow.WorkflowName,
+			&workflow.Source,
+			&workflow.Status,
+			&workflow.CurrentStepIndex,
+			&totalSteps,
+			&wfOrgID,
+			&wfTenantID,
+			&wfUserID,
+			&wfClientID,
+			&traceID,
+			&workflow.Metadata,
+			&workflow.StartedAt,
+			&completedAt,
+			&workflow.CreatedAt,
+			&workflow.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
@@ -213,6 +308,65 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	return &workflow, nil
 }
 
+// GetByIDUnscoped is reserved for in-process reconciliation whose result is
+// authorized before it is returned to a caller. It requires the dedicated
+// BYPASSRLS pool and never falls back to the application pool.
+func (r *PostgresRepository) GetByIDUnscoped(ctx context.Context, workflowID string) (*Workflow, error) {
+	if r.adminDB == nil {
+		return nil, fmt.Errorf("unscoped workflow reconciliation requires the platform-admin database pool")
+	}
+	query := `
+		SELECT workflow_id, workflow_name, source, status,
+			   current_step_index, total_steps,
+			   org_id, tenant_id, user_id, client_id,
+			   trace_id, metadata, started_at, completed_at, created_at, updated_at
+		FROM workflows WHERE workflow_id = $1`
+	var workflow Workflow
+	var totalSteps sql.NullInt64
+	var completedAt sql.NullTime
+	var traceID, orgID, tenantID, userID, clientID sql.NullString
+	if err := r.adminDB.QueryRowContext(ctx, query, workflowID).Scan(
+		&workflow.WorkflowID, &workflow.WorkflowName, &workflow.Source, &workflow.Status,
+		&workflow.CurrentStepIndex, &totalSteps,
+		&orgID, &tenantID, &userID, &clientID,
+		&traceID, &workflow.Metadata, &workflow.StartedAt, &completedAt,
+		&workflow.CreatedAt, &workflow.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+		}
+		return nil, err
+	}
+	workflow.OrgID, workflow.TenantID = orgID.String, tenantID.String
+	workflow.UserID, workflow.ClientID = userID.String, clientID.String
+	if totalSteps.Valid {
+		v := int(totalSteps.Int64)
+		workflow.TotalSteps = &v
+	}
+	if completedAt.Valid {
+		workflow.CompletedAt = &completedAt.Time
+	}
+	if traceID.Valid {
+		workflow.TraceID = traceID.String
+	}
+	rows, err := r.adminDB.QueryContext(ctx, `SELECT `+stepSelectColumns+` FROM workflow_steps WHERE workflow_id = $1 ORDER BY step_index ASC`, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		step, err := scanWorkflowStepRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		workflow.Steps = append(workflow.Steps, *step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &workflow, nil
+}
+
 // GetByPlanID resolves a WCP workflow from a MAP plan id. MAP's confirm / step
 // executor stores plan_id in metadata when creating the workflow; this lookup
 // reverses that association so the plan-scoped HITL endpoints can surface
@@ -239,24 +393,30 @@ func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*W
 	var traceID sql.NullString
 
 	var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
-	err := r.db.QueryRowContext(ctx, query, planID).Scan(
-		&workflow.WorkflowID,
-		&workflow.WorkflowName,
-		&workflow.Source,
-		&workflow.Status,
-		&workflow.CurrentStepIndex,
-		&totalSteps,
-		&wfOrgID,
-		&wfTenantID,
-		&wfUserID,
-		&wfClientID,
-		&traceID,
-		&workflow.Metadata,
-		&workflow.StartedAt,
-		&completedAt,
-		&workflow.CreatedAt,
-		&workflow.UpdatedAt,
-	)
+	orgID, err := workflowOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, planID).Scan(
+			&workflow.WorkflowID,
+			&workflow.WorkflowName,
+			&workflow.Source,
+			&workflow.Status,
+			&workflow.CurrentStepIndex,
+			&totalSteps,
+			&wfOrgID,
+			&wfTenantID,
+			&wfUserID,
+			&wfClientID,
+			&traceID,
+			&workflow.Metadata,
+			&workflow.StartedAt,
+			&completedAt,
+			&workflow.CreatedAt,
+			&workflow.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("plan %s: %w", planID, ErrWorkflowNotFound)
@@ -293,7 +453,7 @@ func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*W
 // UpdateStatus updates a workflow's status
 func (r *PostgresRepository) UpdateStatus(ctx context.Context, workflowID string, status WorkflowStatus) error {
 	query := `UPDATE workflows SET status = $1, updated_at = $2 WHERE workflow_id = $3`
-	result, err := r.db.ExecContext(ctx, query, status, time.Now(), workflowID)
+	result, err := r.execScoped(ctx, query, status, time.Now(), workflowID)
 	if err != nil {
 		return err
 	}
@@ -319,7 +479,7 @@ func (r *PostgresRepository) Complete(ctx context.Context, workflowID string) er
 		SET status = $1, completed_at = $2, updated_at = $3,
 		    total_steps = COALESCE(total_steps, current_step_index)
 		WHERE workflow_id = $4`
-	result, err := r.db.ExecContext(ctx, query, WorkflowStatusCompleted, now, now, workflowID)
+	result, err := r.execScoped(ctx, query, WorkflowStatusCompleted, now, now, workflowID)
 	if err != nil {
 		return err
 	}
@@ -353,7 +513,7 @@ func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reaso
 	if jsonErr != nil {
 		return fmt.Errorf("marshal abort reason: %w", jsonErr)
 	}
-	result, err := r.db.ExecContext(ctx, query, WorkflowStatusAborted, now, now, string(reasonJSON), workflowID)
+	result, err := r.execScoped(ctx, query, WorkflowStatusAborted, now, now, string(reasonJSON), workflowID)
 	if err != nil {
 		return err
 	}
@@ -386,7 +546,7 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 	if jsonErr != nil {
 		return fmt.Errorf("marshal failure reason: %w", jsonErr)
 	}
-	result, err := r.db.ExecContext(ctx, query, WorkflowStatusFailed, now, now, string(reasonJSON), workflowID)
+	result, err := r.execScoped(ctx, query, WorkflowStatusFailed, now, now, string(reasonJSON), workflowID)
 	if err != nil {
 		return err
 	}
@@ -404,71 +564,34 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 
 // List retrieves workflows with optional filters
 func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([]Workflow, int, error) {
-	// #3065 (R3 round 2): the tenancy conditions below are appended only when
-	// non-empty, so an unscoped call built `SELECT ... FROM workflows` with no
-	// WHERE at all — every tenant's rows. Service.ListWorkflows refuses first,
-	// but relying on that leaves the mock STRICTER than production: a future
-	// second caller reaching this method directly would be denied in
-	// mock-based tests and served tenant-wide in production. Guard the
-	// invariant here too, where the SQL is built.
 	if err := tenantscope.ValidateRowKeys(opts.OrgID, opts.TenantID); err != nil {
 		return nil, 0, fmt.Errorf("cannot list workflows without an authenticated org and tenant: %w", err)
 	}
 
-	// Build query with filters
 	var conditions []string
-	var args []interface{}
+	var filterArgs []interface{}
 	argNum := 1
-
-	if opts.TenantID != "" {
-		conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argNum))
-		args = append(args, opts.TenantID)
+	add := func(column string, value interface{}) {
+		conditions = append(conditions, fmt.Sprintf("%s = $%d", column, argNum))
+		filterArgs = append(filterArgs, value)
 		argNum++
 	}
-
-	if opts.OrgID != "" {
-		conditions = append(conditions, fmt.Sprintf("org_id = $%d", argNum))
-		args = append(args, opts.OrgID)
-		argNum++
-	}
-
+	add("tenant_id", opts.TenantID)
+	add("org_id", opts.OrgID)
 	if opts.Status != nil {
-		conditions = append(conditions, fmt.Sprintf("status = $%d", argNum))
-		args = append(args, *opts.Status)
-		argNum++
+		add("status", *opts.Status)
 	}
-
 	if opts.Source != nil {
-		conditions = append(conditions, fmt.Sprintf("source = $%d", argNum))
-		args = append(args, *opts.Source)
-		argNum++
+		add("source", *opts.Source)
 	}
-
 	if opts.TraceID != "" {
-		conditions = append(conditions, fmt.Sprintf("trace_id = $%d", argNum))
-		args = append(args, opts.TraceID)
-		argNum++
+		add("trace_id", opts.TraceID)
 	}
-
 	if opts.WorkflowName != "" {
-		conditions = append(conditions, fmt.Sprintf("workflow_name = $%d", argNum))
-		args = append(args, opts.WorkflowName)
-		argNum++
+		add("workflow_name", opts.WorkflowName)
 	}
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
 
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM workflows %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	// Get workflows with pagination
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
@@ -476,7 +599,6 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 	if limit > 100 {
 		limit = 100
 	}
-
 	query := fmt.Sprintf(`
 		SELECT workflow_id, workflow_name, source, status,
 			   current_step_index, total_steps,
@@ -487,73 +609,66 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		ORDER BY created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argNum, argNum+1)
+	queryArgs := append(append([]interface{}{}, filterArgs...), limit, opts.Offset)
 
-	args = append(args, limit, opts.Offset)
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	var workflows []Workflow
+	var total int
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM workflows %s", whereClause)
+		if err := tx.QueryRowContext(ctx, countQuery, filterArgs...).Scan(&total); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, query, queryArgs...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var workflow Workflow
+			var totalSteps sql.NullInt64
+			var completedAt sql.NullTime
+			var traceID sql.NullString
+			var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
+			if err := rows.Scan(
+				&workflow.WorkflowID, &workflow.WorkflowName, &workflow.Source, &workflow.Status,
+				&workflow.CurrentStepIndex, &totalSteps,
+				&wfOrgID, &wfTenantID, &wfUserID, &wfClientID,
+				&traceID, &workflow.Metadata, &workflow.StartedAt, &completedAt,
+				&workflow.CreatedAt, &workflow.UpdatedAt,
+			); err != nil {
+				return err
+			}
+			workflow.OrgID = wfOrgID.String
+			workflow.TenantID = wfTenantID.String
+			workflow.UserID = wfUserID.String
+			workflow.ClientID = wfClientID.String
+			if totalSteps.Valid {
+				v := int(totalSteps.Int64)
+				workflow.TotalSteps = &v
+			}
+			if completedAt.Valid {
+				workflow.CompletedAt = &completedAt.Time
+			}
+			if traceID.Valid {
+				workflow.TraceID = traceID.String
+			}
+			workflows = append(workflows, workflow)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
-	var workflows []Workflow
-	for rows.Next() {
-		var workflow Workflow
-		var totalSteps sql.NullInt64
-		var completedAt sql.NullTime
-		var traceID sql.NullString
-
-		var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
-		err := rows.Scan(
-			&workflow.WorkflowID,
-			&workflow.WorkflowName,
-			&workflow.Source,
-			&workflow.Status,
-			&workflow.CurrentStepIndex,
-			&totalSteps,
-			&wfOrgID,
-			&wfTenantID,
-			&wfUserID,
-			&wfClientID,
-			&traceID,
-			&workflow.Metadata,
-			&workflow.StartedAt,
-			&completedAt,
-			&workflow.CreatedAt,
-			&workflow.UpdatedAt,
-		)
+	// Load steps after the listing transaction closes. Each read establishes
+	// the same transaction-local RLS scope through GetStepsForWorkflow.
+	for i := range workflows {
+		steps, err := r.GetStepsForWorkflow(ctx, workflows[i].WorkflowID)
 		if err != nil {
 			return nil, 0, err
 		}
-
-		workflow.OrgID = wfOrgID.String
-		workflow.TenantID = wfTenantID.String
-		workflow.UserID = wfUserID.String
-		workflow.ClientID = wfClientID.String
-
-		if totalSteps.Valid {
-			ts := int(totalSteps.Int64)
-			workflow.TotalSteps = &ts
-		}
-		if completedAt.Valid {
-			workflow.CompletedAt = &completedAt.Time
-		}
-		if traceID.Valid {
-			workflow.TraceID = traceID.String
-		}
-
-		steps, err := r.GetStepsForWorkflow(ctx, workflow.WorkflowID)
-		if err != nil {
-			return nil, 0, err
-		}
-		workflow.Steps = steps
-
-		workflows = append(workflows, workflow)
+		workflows[i].Steps = steps
 	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate workflow rows: %w", err)
-	}
-
 	return workflows, total, nil
 }
 
@@ -676,7 +791,7 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 	var firstAttemptAt sql.NullTime
 	var returnedIdempotencyKey sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query,
+	err := r.rowScoped(ctx, query,
 		step.WorkflowID,
 		step.StepID,
 		step.StepIndex,
@@ -727,7 +842,7 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 		SET current_step_index = $1, updated_at = $2
 		WHERE workflow_id = $3 AND current_step_index < $1
 	`
-	_, _ = r.db.ExecContext(ctx, updateQuery, step.StepIndex, now, step.WorkflowID)
+	_, _ = r.execScoped(ctx, updateQuery, step.StepIndex, now, step.WorkflowID)
 
 	return nil
 }
@@ -752,7 +867,7 @@ func (r *PostgresRepository) BumpGateCountCached(ctx context.Context, workflowID
 		WHERE workflow_id = $2 AND step_id = $3
 		RETURNING ` + stepSelectColumns + `
 	`
-	row := r.db.QueryRowContext(ctx, query, now, workflowID, stepID)
+	row := r.rowScoped(ctx, query, now, workflowID, stepID)
 	step, err := scanWorkflowStepRow(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
@@ -874,7 +989,7 @@ func scanWorkflowStepRow(row interface {
 // GetStep retrieves a specific step
 func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
 	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 AND step_id = $2`
-	row := r.db.QueryRowContext(ctx, query, workflowID, stepID)
+	row := r.rowScoped(ctx, query, workflowID, stepID)
 	step, err := scanWorkflowStepRow(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
@@ -887,7 +1002,7 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 // making it suitable for the cache-lookup path where "not found" is a normal outcome.
 func (r *PostgresRepository) GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
 	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 AND step_id = $2`
-	row := r.db.QueryRowContext(ctx, query, workflowID, stepID)
+	row := r.rowScoped(ctx, query, workflowID, stepID)
 	step, err := scanWorkflowStepRow(row)
 	if err == sql.ErrNoRows {
 		return nil, nil // Not found is normal — means no cached decision
@@ -907,7 +1022,7 @@ func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID,
 	if comment != "" {
 		commentVal = comment
 	}
-	result, err := r.db.ExecContext(ctx, query, status, approvedBy, now, commentVal, workflowID, stepID)
+	result, err := r.execScoped(ctx, query, status, approvedBy, now, commentVal, workflowID, stepID)
 	if err != nil {
 		return err
 	}
@@ -964,7 +1079,7 @@ func (r *PostgresRepository) MarkStepCompleted(ctx context.Context, workflowID, 
 		    completion_count = completion_count + 1
 		WHERE workflow_id = $2 AND step_id = $3
 	`
-	result, err := r.db.ExecContext(ctx, query, now, workflowID, stepID, tokensIn, tokensOut, costUSD, stepOutput)
+	result, err := r.execScoped(ctx, query, now, workflowID, stepID, tokensIn, tokensOut, costUSD, stepOutput)
 	if err != nil {
 		return err
 	}
@@ -983,25 +1098,20 @@ func (r *PostgresRepository) MarkStepCompleted(ctx context.Context, workflowID, 
 // GetStepsForWorkflow retrieves all steps for a workflow
 func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error) {
 	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 ORDER BY step_index ASC`
-
-	rows, err := r.db.QueryContext(ctx, query, workflowID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	var steps []WorkflowStep
-	for rows.Next() {
-		step, scanErr := scanWorkflowStepRow(rows)
-		if scanErr != nil {
-			return nil, scanErr
+	err := r.queryScoped(ctx, query, []interface{}{workflowID}, func(rows *sql.Rows) error {
+		for rows.Next() {
+			step, err := scanWorkflowStepRow(rows)
+			if err != nil {
+				return err
+			}
+			steps = append(steps, *step)
 		}
-		steps = append(steps, *step)
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("iterate step rows: %w", err)
 	}
-
 	return steps, nil
 }
 
@@ -1023,63 +1133,59 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 		LIMIT $2
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	var results []PendingApprovalResponse
-	for rows.Next() {
-		var item PendingApprovalResponse
-		var approvalStatus sql.NullString
-		// step_name/step_type/decision_reason are nullable columns (a tool_call
-		// step legitimately has NULL model/name); step_input is nullable JSONB.
-		var stepName, stepType, decisionReason sql.NullString
-		var stepInput []byte
+	err := r.queryScoped(ctx, query, []interface{}{tenantID, limit}, func(rows *sql.Rows) error {
+		for rows.Next() {
+			var item PendingApprovalResponse
+			var approvalStatus sql.NullString
+			// step_name/step_type/decision_reason are nullable columns (a tool_call
+			// step legitimately has NULL model/name); step_input is nullable JSONB.
+			var stepName, stepType, decisionReason sql.NullString
+			var stepInput []byte
 
-		err := rows.Scan(
-			&item.WorkflowID,
-			&item.StepID,
-			&item.StepIndex,
-			&stepName,
-			&stepType,
-			&item.Decision,
-			&decisionReason,
-			&item.PoliciesMatched,
-			&approvalStatus,
-			&stepInput,
-			&item.CreatedAt,
-			&item.WorkflowName,
-		)
-		if err != nil {
-			return nil, err
-		}
+			err := rows.Scan(
+				&item.WorkflowID,
+				&item.StepID,
+				&item.StepIndex,
+				&stepName,
+				&stepType,
+				&item.Decision,
+				&decisionReason,
+				&item.PoliciesMatched,
+				&approvalStatus,
+				&stepInput,
+				&item.CreatedAt,
+				&item.WorkflowName,
+			)
+			if err != nil {
+				return err
+			}
 
-		item.StepName = stepName.String
-		item.StepType = StepType(stepType.String)
-		item.DecisionReason = decisionReason.String
-		if stepInput != nil {
-			item.StepInput = json.RawMessage(stepInput)
-		}
-		if approvalStatus.Valid {
-			as := ApprovalStatus(approvalStatus.String)
-			item.ApprovalStatus = &as
-		}
+			item.StepName = stepName.String
+			item.StepType = StepType(stepType.String)
+			item.DecisionReason = decisionReason.String
+			if stepInput != nil {
+				item.StepInput = json.RawMessage(stepInput)
+			}
+			if approvalStatus.Valid {
+				as := ApprovalStatus(approvalStatus.String)
+				item.ApprovalStatus = &as
+			}
 
-		results = append(results, item)
-	}
-	if err := rows.Err(); err != nil {
+			results = append(results, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("iterate pending approval rows: %w", err)
 	}
-
 	return results, nil
 }
 
 // CountPendingApprovals returns the total number of pending approvals for a tenant.
 func (r *PostgresRepository) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
 	var count int
-	err := r.db.QueryRowContext(ctx,
+	err := r.rowScoped(ctx,
 		`SELECT COUNT(*) FROM workflow_steps ws
 		 JOIN workflows w ON ws.workflow_id = w.workflow_id
 		 WHERE ws.approval_status = 'pending' AND w.tenant_id = $1`, tenantID).Scan(&count)
@@ -1115,60 +1221,56 @@ func (r *PostgresRepository) GetPendingPlanApprovals(ctx context.Context, tenant
 		args = append(args, limit)
 	}
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	var results []PendingApprovalResponse
-	for rows.Next() {
-		var item PendingApprovalResponse
-		var approvalStatus sql.NullString
-		var planID sql.NullString
-		// Nullable columns (see GetPendingApprovals): guard against NULL scan.
-		var stepName, stepType, decisionReason sql.NullString
-		var stepInput []byte
+	err := r.queryScoped(ctx, query, args, func(rows *sql.Rows) error {
+		for rows.Next() {
+			var item PendingApprovalResponse
+			var approvalStatus sql.NullString
+			var planID sql.NullString
+			// Nullable columns (see GetPendingApprovals): guard against NULL scan.
+			var stepName, stepType, decisionReason sql.NullString
+			var stepInput []byte
 
-		err := rows.Scan(
-			&item.WorkflowID,
-			&item.StepID,
-			&item.StepIndex,
-			&stepName,
-			&stepType,
-			&item.Decision,
-			&decisionReason,
-			&item.PoliciesMatched,
-			&approvalStatus,
-			&stepInput,
-			&item.CreatedAt,
-			&item.WorkflowName,
-			&planID,
-		)
-		if err != nil {
-			return nil, err
-		}
+			err := rows.Scan(
+				&item.WorkflowID,
+				&item.StepID,
+				&item.StepIndex,
+				&stepName,
+				&stepType,
+				&item.Decision,
+				&decisionReason,
+				&item.PoliciesMatched,
+				&approvalStatus,
+				&stepInput,
+				&item.CreatedAt,
+				&item.WorkflowName,
+				&planID,
+			)
+			if err != nil {
+				return err
+			}
 
-		item.StepName = stepName.String
-		item.StepType = StepType(stepType.String)
-		item.DecisionReason = decisionReason.String
-		if stepInput != nil {
-			item.StepInput = json.RawMessage(stepInput)
-		}
-		if approvalStatus.Valid {
-			as := ApprovalStatus(approvalStatus.String)
-			item.ApprovalStatus = &as
-		}
-		if planID.Valid {
-			item.PlanID = planID.String
-		}
+			item.StepName = stepName.String
+			item.StepType = StepType(stepType.String)
+			item.DecisionReason = decisionReason.String
+			if stepInput != nil {
+				item.StepInput = json.RawMessage(stepInput)
+			}
+			if approvalStatus.Valid {
+				as := ApprovalStatus(approvalStatus.String)
+				item.ApprovalStatus = &as
+			}
+			if planID.Valid {
+				item.PlanID = planID.String
+			}
 
-		results = append(results, item)
-	}
-	if err := rows.Err(); err != nil {
+			results = append(results, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("iterate pending plan approval rows: %w", err)
 	}
-
 	return results, nil
 }
 
@@ -1186,6 +1288,6 @@ func (r *PostgresRepository) CountPendingPlanApprovals(ctx context.Context, tena
 		query += ` AND w.metadata->>'plan_id' = $2`
 		args = append(args, planIDFilter)
 	}
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := r.queryRowScoped(ctx, query, args, &count)
 	return count, err
 }

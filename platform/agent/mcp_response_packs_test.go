@@ -93,7 +93,7 @@ func expectMCPDetailsRow(t *testing.T, columns int) (read func(t *testing.T) map
 		args[i] = sqlmock.AnyArg()
 	}
 	args[13], args[15] = captureArg{dst: &details}, PlaneMCP
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
 	return func(t *testing.T) map[string]json.RawMessage {
 		t.Helper()
 		if err := mock.ExpectationsWereMet(); err != nil {

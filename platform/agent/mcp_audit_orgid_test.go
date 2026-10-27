@@ -25,7 +25,7 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 
 	const wantOrgID = "cs_demo_org"
 
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO audit_logs")).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), regexp.QuoteMeta("INSERT INTO audit_logs")).
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id

@@ -51,7 +51,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.2.0
+  version: 11.3.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -11875,7 +11875,7 @@ components:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.9.1"
+            openclaw: "2.10.0"
             claude-code: "1.13.0"
             cursor: "1.9.0"
             codex: "1.9.0"

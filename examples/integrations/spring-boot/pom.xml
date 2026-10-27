@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.14</version>
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
 
@@ -21,24 +21,6 @@
 
     <properties>
         <java.version>17</java.version>
-        <!-- Override Tomcat version to fix CVE-2026-29145, CVE-2026-29129, CVE-2026-34483,
-             CVE-2026-34487 and, from #3116, CVE-2026-41293 / CVE-2026-43512 / CVE-2026-43515
-             (CRITICAL) plus CVE-2026-41284 / CVE-2026-42498 / CVE-2026-43513 (HIGH), and
-             CVE-2026-65182 (CRITICAL) / CVE-2026-65905 / CVE-2026-68525 fixed in 10.1.58,
-             which Maven Central never published; 10.1.59 is the first release above it -->
-        <tomcat.version>10.1.59</tomcat.version>
-        <!-- Override Spring Framework to fix CVE-2025-41249 and, from the
-             #3038 security scan, CVE-2026-41850 (spring-expression DoS via
-             crafted SpEL expressions), CVE-2026-41842 (spring-webmvc DoS
-             resolving static resources) and CVE-2026-41845 (spring-webmvc
-             XSS via incorrect JavaScript escaping) -->
-        <spring-framework.version>6.2.19</spring-framework.version>
-        <!-- Override Jackson to fix GHSA-72hv-8253-57qq -->
-        <jackson-bom.version>2.22.1</jackson-bom.version>
-        <!-- Override Micrometer to fix CVE-2026-40983 / CVE-2026-40984
-             (micrometer-core Denial of Service; pulled transitively via
-             spring-boot-starter-actuator), published 2026-08-07 -->
-        <micrometer.version>1.15.12</micrometer.version>
     </properties>
 
     <dependencyManagement>
@@ -46,28 +28,28 @@
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>2.22.1</version>
+                <version>2.22.3</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
-                <version>2.22.1</version>
+                <version>2.22.3</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
 
     <dependencies>
-        <!-- Override transitive jackson-databind for CVE fix (CVE-2026-54512, CVE-2026-54513) -->
+        <!-- Keep the Jackson 2 family used by the AxonFlow SDK on the patched line. -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.22.1</version>
+            <version>2.22.3</version>
         </dependency>
 
         <!-- Spring Boot -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

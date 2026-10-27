@@ -452,14 +452,15 @@ func mapPendingApprovalsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	approvals, err := workflowControlService.GetPendingPlanApprovals(r.Context(), tenantID, planIDFilter, limit)
+	orgID := r.Header.Get("X-Org-ID")
+	approvals, err := workflowControlService.GetPendingPlanApprovals(r.Context(), tenantID, orgID, planIDFilter, limit)
 	if err != nil {
 		log.Printf("[MAP-HITL] GetPendingPlanApprovals error: %v", err)
 		sendErrorResponse(w, "Failed to get pending plan approvals", http.StatusInternalServerError)
 		return
 	}
 
-	total, countErr := workflowControlService.CountPendingPlanApprovals(r.Context(), tenantID, planIDFilter)
+	total, countErr := workflowControlService.CountPendingPlanApprovals(r.Context(), tenantID, orgID, planIDFilter)
 	if countErr != nil {
 		log.Printf("[MAP-HITL] CountPendingPlanApprovals error: %v", countErr)
 		total = len(approvals)

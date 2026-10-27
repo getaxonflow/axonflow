@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/agent/rls"
 
 	"github.com/gorilla/mux"
 )
@@ -152,34 +153,35 @@ func (h *MediaGovernanceAuditHandler) queryMediaAuditRecords(ctx context.Context
 		LIMIT 10000
 	`
 
-	rows, err := h.db.QueryContext(ctx, query, tenantID, from, to)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	var records []MediaAuditRecord
-	for rows.Next() {
-		var rec MediaAuditRecord
-		var analysisJSON, actionsJSON []byte
-		if err := rows.Scan(&rec.RequestID, &rec.TenantID, &rec.Timestamp,
-			&rec.MediaType, &analysisJSON, &actionsJSON, &rec.Blocked); err != nil {
-			return nil, err
+	err := rls.WithOrgScope(ctx, h.db, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID, from, to)
+		if err != nil {
+			return err
 		}
-		if len(analysisJSON) > 0 {
-			if err := json.Unmarshal(analysisJSON, &rec.AnalysisResults); err != nil {
-				log.Printf("[MediaGovernanceAudit] Warning: failed to unmarshal analysis results: %v", err)
+		defer rows.Close()
+		for rows.Next() {
+			var rec MediaAuditRecord
+			var analysisJSON, actionsJSON []byte
+			if err := rows.Scan(&rec.RequestID, &rec.TenantID, &rec.Timestamp,
+				&rec.MediaType, &analysisJSON, &actionsJSON, &rec.Blocked); err != nil {
+				return err
 			}
-		}
-		if len(actionsJSON) > 0 {
-			if err := json.Unmarshal(actionsJSON, &rec.PolicyActions); err != nil {
-				log.Printf("[MediaGovernanceAudit] Warning: failed to unmarshal policy actions: %v", err)
+			if len(analysisJSON) > 0 {
+				if err := json.Unmarshal(analysisJSON, &rec.AnalysisResults); err != nil {
+					log.Printf("[MediaGovernanceAudit] Warning: failed to unmarshal analysis results: %v", err)
+				}
 			}
+			if len(actionsJSON) > 0 {
+				if err := json.Unmarshal(actionsJSON, &rec.PolicyActions); err != nil {
+					log.Printf("[MediaGovernanceAudit] Warning: failed to unmarshal policy actions: %v", err)
+				}
+			}
+			records = append(records, rec)
 		}
-		records = append(records, rec)
-	}
-
-	return records, rows.Err()
+		return rows.Err()
+	})
+	return records, err
 }
 
 func (h *MediaGovernanceAuditHandler) writeCSV(w http.ResponseWriter, records []MediaAuditRecord) {

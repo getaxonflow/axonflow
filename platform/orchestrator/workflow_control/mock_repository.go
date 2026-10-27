@@ -93,6 +93,17 @@ func (m *MockRepository) GetByID(ctx context.Context, workflowID string) (*Workf
 	return &copy, nil
 }
 
+// GetByIDUnscoped supports explicitly named in-process reconciliation tests.
+func (m *MockRepository) GetByIDUnscoped(ctx context.Context, workflowID string) (*Workflow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workflow, exists := m.workflows[workflowID]
+	if !exists {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
+	return workflow, nil
+}
+
 // GetByPlanID looks up a workflow by metadata.plan_id — the in-memory mirror
 // of the Postgres metadata->>'plan_id' lookup used by the MAP HITL endpoints
 // (Issue #1677).

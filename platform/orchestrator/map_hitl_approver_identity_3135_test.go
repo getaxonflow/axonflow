@@ -141,7 +141,7 @@ func setupMAPApproverEnv(t *testing.T, caseName string) *mapApproverEnv {
 	if err := planRepo.MarkExecutingWithPendingBinding(context.Background(), planID); err != nil {
 		t.Fatalf("mark executing: %v", err)
 	}
-	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, wfID); err != nil {
+	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, wfID, "org-1"); err != nil {
 		t.Fatalf("BindExecutionWorkflow: %v", err)
 	}
 

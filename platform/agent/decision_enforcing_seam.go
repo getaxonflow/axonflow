@@ -538,6 +538,9 @@ type requestPassInput struct {
 	// finCrimeTarget is the operation presented to the policy pack. Org and
 	// client are replaced with the admitted identities before lookup.
 	finCrimeTarget fincrime.Target
+	// refundFacts are caller-typed money arguments for the exact refund tool on
+	// the decide plane. The payment and detector facts remain separate.
+	refundFacts contract.AttributeSet
 }
 
 // requestPassEnforcement is the seam's answer for one request, rendered on the
@@ -645,6 +648,7 @@ func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacyco
 		scope: scope, orgID: in.orgID, requestID: in.decisionID,
 		subject: requestSubject(in.orgID, in.auth, in.user, in.userIdentity),
 		query:   in.query, observation: in.observation, pep: in.pep,
+		facts: in.refundFacts,
 	}
 	if in.subject != nil {
 		call.subject = in.subject
@@ -1191,7 +1195,7 @@ func violationFeedsCircuitBreaker(reasonCode string) bool {
 		contract.ReasonApprovalRequired, contract.ReasonObligationConflict, contract.ReasonEvaluationError:
 		return false
 	}
-	return true
+	return reasonCode != reasonPolicyBundleMismatch
 }
 
 // --- posture: /health ---

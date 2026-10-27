@@ -76,6 +76,10 @@ func installAuthZENPIIWorld(t *testing.T, piiAction string) {
 	installCircuitBreakerWithMockDB(t)
 }
 
+func expectAuthZENPIIDetection(mock sqlmock.Sqlmock) {
+	expectIndonesiaPIIDetectionEvent(mock)
+}
+
 func decodeAuthZENResponse(t *testing.T, rr *httptest.ResponseRecorder) contract.AuthZENResponse {
 	t.Helper()
 	if rr.Code != http.StatusOK {
@@ -556,7 +560,8 @@ func TestAuthZENWithheldObligationDenyIsAuditedAsBlocked(t *testing.T) {
 	// The premise: the fixture is an allow carrying a mandatory obligation.
 	// Asserted against a negotiated caller, whose own audit row is an ordinary
 	// un-amended `allowed`.
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectAuthZENPIIDetection(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(authzenAuditInsertArgs(AuditVerdictAllowed)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	ref := decodeAuthZENResponse(t, authzenPIIForTest(t, body, negotiated()))
@@ -565,7 +570,8 @@ func TestAuthZENWithheldObligationDenyIsAuditedAsBlocked(t *testing.T) {
 		t.Fatalf("the fixture is not an allow carrying one mandatory obligation: %s", authzenBody(t, ref))
 	}
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectAuthZENPIIDetection(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(authzenAuditInsertArgs(AuditVerdictAllowed)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// The amendment. The regexp pins the three things that make the row honest
@@ -574,7 +580,7 @@ func TestAuthZENWithheldObligationDenyIsAuditedAsBlocked(t *testing.T) {
 	// PRESERVED rather than overwritten - an amended row that lost "policy
 	// permitted this" would answer one auditor's question by destroying
 	// another's.
-	mock.ExpectExec(`UPDATE audit_logs[\s\S]*authzen_evaluated_policy_decision[\s\S]*authzen_obligation_withheld`).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), `UPDATE audit_logs[\s\S]*authzen_evaluated_policy_decision[\s\S]*authzen_obligation_withheld`).
 		WithArgs(AuditVerdictBlocked, sqlmock.AnyArg(), PlaneAccessEvaluation).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -614,7 +620,8 @@ func TestAuthZENAmendsNothingItDidNotWithhold(t *testing.T) {
 			installAuthZENPIIWorld(t, tc.piiAction)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectAuthZENPIIDetection(mock)
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(authzenAuditInsertArgs(tc.verdict)...).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -649,10 +656,11 @@ func TestAuthZENAmendsNothingItDidNotWithhold(t *testing.T) {
 func TestAmendAuditForWithheldObligationReportsAMissingRow(t *testing.T) {
 	t.Run("the row is not there", func(t *testing.T) {
 		mock := withMockUsageDB(t)
-		mock.ExpectExec("UPDATE audit_logs").WillReturnResult(sqlmock.NewResult(0, 0))
+		expectOrgScopedExec(mock, "test-org", "UPDATE audit_logs").WillReturnResult(sqlmock.NewResult(0, 0))
 
 		before := authzenAmendFailureCounts(t)
-		amendAuditForWithheldObligation(context.Background(), usageDB, []string{"dec-1"})
+		ctx := context.WithValue(context.Background(), ContextKeyOrgID, "test-org")
+		amendAuditForWithheldObligation(ctx, usageDB, []string{"dec-1"})
 		after := authzenAmendFailureCounts(t)
 
 		if got := after[authzenAuditAmendNoRow] - before[authzenAuditAmendNoRow]; got != 1 {
@@ -667,10 +675,11 @@ func TestAmendAuditForWithheldObligationReportsAMissingRow(t *testing.T) {
 
 	t.Run("the UPDATE errors", func(t *testing.T) {
 		mock := withMockUsageDB(t)
-		mock.ExpectExec("UPDATE audit_logs").WillReturnError(errors.New("connection reset"))
+		expectOrgScopedExecError(mock, "test-org", "UPDATE audit_logs").WillReturnError(errors.New("connection reset"))
 
 		before := authzenAmendFailureCounts(t)
-		amendAuditForWithheldObligation(context.Background(), usageDB, []string{"dec-1"})
+		ctx := context.WithValue(context.Background(), ContextKeyOrgID, "test-org")
+		amendAuditForWithheldObligation(ctx, usageDB, []string{"dec-1"})
 		after := authzenAmendFailureCounts(t)
 
 		if got := after[authzenAuditAmendFailed] - before[authzenAuditAmendFailed]; got != 1 {

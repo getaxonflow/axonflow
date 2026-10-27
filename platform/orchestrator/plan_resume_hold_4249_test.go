@@ -126,7 +126,7 @@ func executeRealPlanBinding(t *testing.T, planID, mode string, wrap func(*workfl
 	}
 	if bind {
 		// What executePlanHandler does after the executor returns.
-		if err := planService.BindExecutionWorkflow(context.Background(), planID, res.WorkflowID); err != nil {
+		if err := planService.BindExecutionWorkflow(context.Background(), planID, res.WorkflowID, "org-1"); err != nil {
 			t.Fatalf("bind: %v", err)
 		}
 	}
@@ -915,7 +915,7 @@ func TestABoundPlanIsAuthorizedByItsBoundWorkflowsTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute as tenant_2: %v", err)
 	}
-	if err := planService.BindExecutionWorkflow(ctx, plan.PlanID, res.WorkflowID); err != nil {
+	if err := planService.BindExecutionWorkflow(ctx, plan.PlanID, res.WorkflowID, "org-1"); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	resumeAs := func(tenant string) *httptest.ResponseRecorder {

@@ -28,8 +28,8 @@ import (
 // vocabulary with the version unmoved and the weld green (#4249 row filed by
 // S1, found by S3's design).
 const (
-	weldedCommunityDigest  = "sha256:8c8262fe1b433110cc2f75333eff560f530eb8674071d5591c547fa9dfe228c2"
-	weldedEnterpriseDigest = "sha256:e8466d4ef51c3ea1f71ac9d9f0ce6506545071cc104a9f89268e35ed1a7dd66d"
+	weldedCommunityDigest  = "sha256:e20b3f69b132877b17dd4bc6a5b257de2439b6e87e69af85d91387fa4b1304d1"
+	weldedEnterpriseDigest = "sha256:68afe32dc9719b9788214bd759c965e60c9eeb7f001f372a53bf63199041c5d9"
 )
 
 // weldHistory is every pair of digests the weld has pinned, with the version
@@ -82,6 +82,9 @@ var weldHistory = []struct {
 	// what the pre-split compatibility rule compares against
 	// (legacycompile.RouteSeamSplitCatalogVersion).
 	{"sha256:8c8262fe1b433110cc2f75333eff560f530eb8674071d5591c547fa9dfe228c2", "sha256:e8466d4ef51c3ea1f71ac9d9f0ce6506545071cc104a9f89268e35ed1a7dd66d", 7},
+	// v11.3 Hosted billing exposes checkout, portal and subscription-status
+	// capabilities in the deployment vocabulary; both edition digests move.
+	{"sha256:e20b3f69b132877b17dd4bc6a5b257de2439b6e87e69af85d91387fa4b1304d1", "sha256:68afe32dc9719b9788214bd759c965e60c9eeb7f001f372a53bf63199041c5d9", 8},
 }
 
 // weldModes are the deployment modes the weld resolves under, one per plane

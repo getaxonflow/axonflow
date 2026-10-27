@@ -244,7 +244,7 @@ func expectDecisionRow(t *testing.T, verdict string) (sqlmock.Sqlmock, *[]byte) 
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
 	details := new([]byte)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(verdict, captureArg{dst: details})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	return mock, details
@@ -418,7 +418,7 @@ func TestACallerThatPresentsNoHandshakeKeepsItsRefusalWhenTheAuditStoreFails(t *
 	t.Run("the insert fails: refused, and the failed write is counted", func(t *testing.T) {
 		mock := withMockUsageDB(t)
 		mock.MatchExpectationsInOrder(false)
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnError(errAuditStoreDown)
+		expectOrgScopedExecError(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnError(errAuditStoreDown)
 		before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
 		code, resp, body := decideAsEnforcementPoint(t, content, "", nil)
 		if code != http.StatusOK || resp.Verdict != VerdictDeny || !slices.Equal(resp.Reasons, []string{string(contract.ReasonUnsupportedObligation)}) {

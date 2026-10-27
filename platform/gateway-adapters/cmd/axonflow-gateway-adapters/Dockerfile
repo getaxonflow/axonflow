@@ -13,7 +13,7 @@
 
 # Cross-compile on the build platform (CGO_ENABLED=0 → no emulation needed for
 # the compile step; TARGETOS/TARGETARCH are provided by buildx per platform leg).
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -31,7 +31,7 @@ ARG TARGETARCH
 # emitter contract is to swallow a non-2xx. The adapter's startup ping would
 # therefore have been dropped with HTTP 400, silently, forever — the exact
 # invisibility this train is closing.
-ARG AXONFLOW_VERSION=11.2.0
+ARG AXONFLOW_VERSION=11.3.0
 
 RUN apk add --no-cache git ca-certificates
 
@@ -83,18 +83,22 @@ WORKDIR /go/src/axonflow
 # ECS container healthCheck): the adapter serves standard gRPC health
 # (grpc.health.v1.Health) but a gRPC service has no HTTP /health for curl.
 # Built from source (pinned) so the probe is also static and multi-arch.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go install github.com/grpc-ecosystem/grpc-health-probe@v0.4.53 && \
-    if [ -x "/go/bin/${TARGETOS}_${TARGETARCH}/grpc-health-probe" ]; then \
-      cp "/go/bin/${TARGETOS}_${TARGETARCH}/grpc-health-probe" /out/grpc_health_probe; \
-    else \
-      cp /go/bin/grpc-health-probe /out/grpc_health_probe; \
-    fi
+WORKDIR /tmp/grpc-health-probe
+RUN go mod init axonflow.local/grpc-health-probe-build && \
+    go get github.com/grpc-ecosystem/grpc-health-probe@v0.4.53 && \
+    go get google.golang.org/grpc@v1.83.2 && \
+    go get golang.org/x/net@v0.60.0 && \
+    go get golang.org/x/text@v0.42.0 && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags="-s -w" \
+      -o /out/grpc_health_probe github.com/grpc-ecosystem/grpc-health-probe
+
+WORKDIR /go/src/axonflow
 
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=11.2.0
+ARG AXONFLOW_VERSION=11.3.0
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}

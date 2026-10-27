@@ -11,6 +11,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"axonflow/platform/agent/rls"
 )
 
 // MediaGovernanceConfig represents per-tenant media governance configuration.
@@ -47,45 +49,18 @@ func NewMediaGovernanceConfigStore(db *sql.DB) (*MediaGovernanceConfigStore, err
 
 	// media_governance_config table created by migration 059_runtime_tables_to_migrations.sql
 
-	if err := store.loadAll(); err != nil {
-		log.Printf("[MediaGovernanceConfig] Warning: failed to load configs: %v", err)
-	}
-
 	return store, nil
 }
 
 func (s *MediaGovernanceConfigStore) loadAll() error {
-	rows, err := s.db.Query("SELECT tenant_id, enabled, allowed_analyzers, updated_at, COALESCE(updated_by, '') FROM media_governance_config")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for rows.Next() {
-		var cfg MediaGovernanceConfig
-		var analyzersJSON []byte
-		if err := rows.Scan(&cfg.TenantID, &cfg.Enabled, &analyzersJSON, &cfg.UpdatedAt, &cfg.UpdatedBy); err != nil {
-			return err
-		}
-		if len(analyzersJSON) > 0 {
-			if err := json.Unmarshal(analyzersJSON, &cfg.AllowedAnalyzers); err != nil {
-				log.Printf("[MediaGovernanceConfig] Warning: failed to parse analyzers for tenant %s: %v", cfg.TenantID, err)
-			}
-		}
-		s.cache[cfg.TenantID] = &cfg
-	}
-
-	return rows.Err()
+	return fmt.Errorf("cross-tenant media governance preload is disabled; use GetFromDB with a tenant scope")
 }
 
 // Get returns the media governance config for a tenant. Returns nil if no override exists.
 func (s *MediaGovernanceConfigStore) Get(tenantID string) *MediaGovernanceConfig {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if cfg, ok := s.cache[tenantID]; ok {
+		s.mu.RUnlock()
 		cfgCopy := *cfg
 		if cfg.AllowedAnalyzers != nil {
 			cfgCopy.AllowedAnalyzers = make([]string, len(cfg.AllowedAnalyzers))
@@ -93,17 +68,24 @@ func (s *MediaGovernanceConfigStore) Get(tenantID string) *MediaGovernanceConfig
 		}
 		return &cfgCopy
 	}
-	return nil
+	s.mu.RUnlock()
+	cfg, err := s.GetFromDB(context.Background(), tenantID)
+	if err != nil {
+		log.Printf("[MediaGovernanceConfig] tenant-scoped lookup failed for %q: %v", tenantID, err)
+	}
+	return cfg
 }
 
 // GetFromDB fetches the config directly from the database (bypasses cache).
 func (s *MediaGovernanceConfigStore) GetFromDB(ctx context.Context, tenantID string) (*MediaGovernanceConfig, error) {
 	var cfg MediaGovernanceConfig
 	var analyzersJSON []byte
-	err := s.db.QueryRowContext(ctx,
-		"SELECT tenant_id, enabled, allowed_analyzers, updated_at, COALESCE(updated_by, '') FROM media_governance_config WHERE tenant_id = $1",
-		tenantID,
-	).Scan(&cfg.TenantID, &cfg.Enabled, &analyzersJSON, &cfg.UpdatedAt, &cfg.UpdatedBy)
+	err := rls.WithOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			"SELECT tenant_id, enabled, allowed_analyzers, updated_at, COALESCE(updated_by, '') FROM media_governance_config WHERE tenant_id = $1",
+			tenantID,
+		).Scan(&cfg.TenantID, &cfg.Enabled, &analyzersJSON, &cfg.UpdatedAt, &cfg.UpdatedBy)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -117,6 +99,10 @@ func (s *MediaGovernanceConfigStore) GetFromDB(ctx context.Context, tenantID str
 			return nil, fmt.Errorf("failed to parse allowed analyzers: %w", err)
 		}
 	}
+	s.mu.Lock()
+	cacheCopy := cfg
+	s.cache[tenantID] = &cacheCopy
+	s.mu.Unlock()
 
 	return &cfg, nil
 }
@@ -130,7 +116,8 @@ func (s *MediaGovernanceConfigStore) Upsert(ctx context.Context, cfg *MediaGover
 
 	now := time.Now()
 
-	_, err = s.db.ExecContext(ctx, `
+	err = rls.WithOrgScope(ctx, s.db, cfg.TenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, `
 		INSERT INTO media_governance_config (tenant_id, enabled, allowed_analyzers, updated_at, updated_by)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (tenant_id) DO UPDATE SET
@@ -138,7 +125,9 @@ func (s *MediaGovernanceConfigStore) Upsert(ctx context.Context, cfg *MediaGover
 			allowed_analyzers = EXCLUDED.allowed_analyzers,
 			updated_at = EXCLUDED.updated_at,
 			updated_by = EXCLUDED.updated_by
-	`, cfg.TenantID, cfg.Enabled, analyzersJSON, now, cfg.UpdatedBy)
+		`, cfg.TenantID, cfg.Enabled, analyzersJSON, now, cfg.UpdatedBy)
+		return execErr
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to upsert media governance config: %w", err)
@@ -161,7 +150,10 @@ func (s *MediaGovernanceConfigStore) Upsert(ctx context.Context, cfg *MediaGover
 
 // Delete removes the media governance config for a tenant.
 func (s *MediaGovernanceConfigStore) Delete(ctx context.Context, tenantID string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM media_governance_config WHERE tenant_id = $1", tenantID)
+	err := rls.WithOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, "DELETE FROM media_governance_config WHERE tenant_id = $1", tenantID)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete media governance config: %w", err)
 	}

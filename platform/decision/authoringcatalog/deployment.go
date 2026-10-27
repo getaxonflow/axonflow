@@ -75,7 +75,7 @@ import (
 // own enforcement scope, orchestrator_request, so llm.completion and
 // agent.invoke each state one scope more - on EVERY edition and mode, unlike
 // 6, so both welded digests move.
-const DeploymentCatalogVersion int64 = 7
+const DeploymentCatalogVersion int64 = 8
 
 // Stage action identifiers. THESE STRINGS ARE OWNED BY THE DECISION SURFACE:
 // platform/agent/authzen_adapter.go maps exactly these three names onto the

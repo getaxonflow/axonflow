@@ -24,9 +24,44 @@
         "optional": false
       },
       {
+        "path": "args.refund.amount_minor",
+        "type": "number",
+        "optional": true
+      },
+      {
+        "path": "args.refund.currency",
+        "type": "string",
+        "optional": true
+      },
+      {
+        "path": "args.refund.operation",
+        "type": "string",
+        "optional": true
+      },
+      {
         "path": "args.request_type",
         "type": "string",
         "optional": false
+      },
+      {
+        "path": "args.step_input.amount_minor",
+        "type": "number",
+        "optional": true
+      },
+      {
+        "path": "args.step_input.currency",
+        "type": "string",
+        "optional": true
+      },
+      {
+        "path": "args.tool_input.amount_minor",
+        "type": "number",
+        "optional": true
+      },
+      {
+        "path": "args.tool_input.currency",
+        "type": "string",
+        "optional": true
       },
       {
         "path": "env.environment",

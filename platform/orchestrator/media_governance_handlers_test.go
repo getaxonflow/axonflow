@@ -21,6 +21,34 @@ import (
 	"github.com/gorilla/mux"
 )
 
+func expectMediaConfigQuery(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedQuery {
+	expectAuditReadScope(mock, orgID)
+	q := mock.ExpectQuery("SELECT")
+	mock.ExpectCommit()
+	return q
+}
+
+func expectMediaConfigQueryRollback(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedQuery {
+	expectAuditReadScope(mock, orgID)
+	q := mock.ExpectQuery("SELECT")
+	mock.ExpectRollback()
+	return q
+}
+
+func expectMediaConfigExec(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedExec {
+	expectAuditReadScope(mock, orgID)
+	e := mock.ExpectExec("INSERT INTO media_governance_config")
+	mock.ExpectCommit()
+	return e
+}
+
+func expectMediaConfigExecRollback(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedExec {
+	expectAuditReadScope(mock, orgID)
+	e := mock.ExpectExec("INSERT INTO media_governance_config")
+	mock.ExpectRollback()
+	return e
+}
+
 // newTestHandlerWithMockDB creates a MediaGovernanceHandler backed by a sqlmock DB.
 // Returns the handler, the sqlmock instance for expectation setup, and a cleanup func.
 func newTestHandlerWithMockDB(t *testing.T, tier license.Tier) (*MediaGovernanceHandler, sqlmock.Sqlmock, func()) {
@@ -285,7 +313,7 @@ func TestHandleGetConfig_NoDBRow_ReturnsDefaultConfig(t *testing.T) {
 	defer cleanup()
 
 	// Simulate no row found in DB (sql.ErrNoRows triggers nil config return)
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-new").
 		WithArgs("tenant-new").
 		WillReturnError(sql.ErrNoRows)
 
@@ -323,7 +351,7 @@ func TestHandleGetConfig_DBError_Returns500(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-err").
 		WithArgs("tenant-err").
 		WillReturnError(fmt.Errorf("connection refused"))
 
@@ -365,7 +393,7 @@ func TestHandleGetConfig_ExistingConfig_ReturnsStoredConfig(t *testing.T) {
 		"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
 	}).AddRow("tenant-existing", false, []byte(`["nsfw","text-in-image"]`), time.Date(2026, 2, 18, 10, 0, 0, 0, time.UTC), "admin@example.com")
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQuery(mock, "tenant-existing").
 		WithArgs("tenant-existing").
 		WillReturnRows(rows)
 
@@ -608,12 +636,12 @@ func TestHandleUpdateConfig_EnterpriseTier_EnabledAllowed(t *testing.T) {
 	defer cleanup()
 
 	// GetFromDB returns no existing config
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-ent").
 		WithArgs("tenant-ent").
 		WillReturnError(sql.ErrNoRows)
 
 	// Upsert inserts the new config
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExec(mock, "tenant-ent").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	r := mux.NewRouter()
@@ -656,12 +684,12 @@ func TestHandleUpdateConfig_EnterpriseTier_SetAnalyzers(t *testing.T) {
 	defer cleanup()
 
 	// GetFromDB returns no existing config
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-ent").
 		WithArgs("tenant-ent").
 		WillReturnError(sql.ErrNoRows)
 
 	// Upsert
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExec(mock, "tenant-ent").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	r := mux.NewRouter()
@@ -696,7 +724,7 @@ func TestHandleUpdateConfig_EnterpriseTier_DBGetError(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-ent").
 		WithArgs("tenant-ent").
 		WillReturnError(fmt.Errorf("db connection lost"))
 
@@ -724,12 +752,12 @@ func TestHandleUpdateConfig_EnterpriseTier_DBUpsertError(t *testing.T) {
 	defer cleanup()
 
 	// GetFromDB returns no row
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-ent").
 		WithArgs("tenant-ent").
 		WillReturnError(sql.ErrNoRows)
 
 	// Upsert fails
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExecRollback(mock, "tenant-ent").
 		WillReturnError(fmt.Errorf("disk full"))
 
 	r := mux.NewRouter()
@@ -775,11 +803,11 @@ func TestHandleUpdateConfig_UserID_FromHeader(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-uid").
 		WithArgs("tenant-uid").
 		WillReturnError(sql.ErrNoRows)
 
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExec(mock, "tenant-uid").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	r := mux.NewRouter()
@@ -811,11 +839,11 @@ func TestHandleUpdateConfig_UserID_DefaultsToSystem(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "tenant-sys").
 		WithArgs("tenant-sys").
 		WillReturnError(sql.ErrNoRows)
 
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExec(mock, "tenant-sys").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	r := mux.NewRouter()
@@ -1154,11 +1182,11 @@ func TestHandleUpdateConfig_XOrgID_Fallback(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "org-tenant").
 		WithArgs("org-tenant").
 		WillReturnError(sql.ErrNoRows)
 
-	mock.ExpectExec("INSERT INTO media_governance_config").
+	expectMediaConfigExec(mock, "org-tenant").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	r := mux.NewRouter()
@@ -1196,7 +1224,7 @@ func TestHandleGetConfig_XOrgID_Fallback(t *testing.T) {
 	handler, mock, cleanup := newTestHandlerWithMockDB(t, license.TierEnterprise)
 	defer cleanup()
 
-	mock.ExpectQuery("SELECT").
+	expectMediaConfigQueryRollback(mock, "org-get-tenant").
 		WithArgs("org-get-tenant").
 		WillReturnError(sql.ErrNoRows)
 

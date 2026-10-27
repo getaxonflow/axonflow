@@ -60,6 +60,10 @@ func (m *MockRepository) GetPlan(ctx context.Context, planID string) (*Plan, err
 	return plan, nil
 }
 
+func (m *MockRepository) GetPlanUnscoped(ctx context.Context, planID string) (*Plan, error) {
+	return m.GetPlan(ctx, planID)
+}
+
 // UpdatePlanStatus updates a plan's status in mock storage
 func (m *MockRepository) UpdatePlanStatus(ctx context.Context, planID string, status PlanStatus, result json.RawMessage, errorMsg string) error {
 	if m.err != nil {

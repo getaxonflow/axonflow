@@ -1,0 +1,416 @@
+{
+  "id": null,
+  "uid": "axonflow-claude-code",
+  "title": "AxonFlow — Claude Code Governance (Allowed / Blocked / Redacted by Integration)",
+  "tags": [
+    "axonflow",
+    "claude-code",
+    "decision-mode",
+    "governance"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "10s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "origin",
+        "label": "Caller origin",
+        "type": "custom",
+        "description": "Low-cardinality caller-integration bucket (WS-5, #2761). Defaults to claude-code so this dashboard isolates Claude Code traffic; switch to compare or view all.",
+        "query": "claude-code,claude-desktop,sdk,plugin,gateway,unknown",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "claude-code",
+          "value": "claude-code"
+        },
+        "options": [
+          { "text": "claude-code", "value": "claude-code", "selected": true },
+          { "text": "claude-desktop", "value": "claude-desktop", "selected": false },
+          { "text": "sdk", "value": "sdk", "selected": false },
+          { "text": "plugin", "value": "plugin", "selected": false },
+          { "text": "gateway", "value": "gateway", "selected": false },
+          { "text": "unknown", "value": "unknown", "selected": false }
+        ]
+      },
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "query",
+        "datasource": { "uid": "prometheus" },
+        "description": "Decision stage (llm | tool | agent). Applies to the request-count / verdict / RPS panels; the latency and top-blocked panels are keyed on origin only (their metrics carry no stage label to keep cardinality bounded).",
+        "query": "label_values(axonflow_decision_requests_total{origin=~\"$origin\"}, stage)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Outcomes — $origin (selected range)",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "title": "Allowed",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\", verdict=\"allow\"}[$__range]))",
+          "legendFormat": "allowed",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Blocked",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\", verdict=\"deny\"}[$__range]))",
+          "legendFormat": "blocked",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "red", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Needs approval",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\", verdict=\"needs_approval\"}[$__range]))",
+          "legendFormat": "needs_approval",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "yellow", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Redactions (PII obligations)",
+      "type": "stat",
+      "description": "Count of allow verdicts that carried a redact_pii obligation (redaction is an obligation on allow, not a distinct wire verdict). Source: axonflow_decision_obligations_total.",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(axonflow_decision_obligations_total{obligation=\"redact_pii\", origin=~\"$origin\", stage=~\"$stage\"}[$__range]))",
+          "legendFormat": "redacted",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "orange", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Rate & distribution",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 7,
+      "title": "Decision rate by verdict",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 7, "w": 10, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (verdict) (rate(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\"}[$__rate_interval]))",
+          "legendFormat": "{{ verdict }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": false }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "deny" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "needs_approval" }, "properties": [ { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } } ] }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "title": "Requests per second (total)",
+      "type": "timeseries",
+      "gridPos": { "x": 10, "y": 7, "w": 8, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\"}[$__rate_interval]))",
+          "legendFormat": "decisions/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Verdict distribution",
+      "type": "piechart",
+      "gridPos": { "x": 18, "y": 7, "w": 6, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (verdict) (increase(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\"}[$__range]))",
+          "legendFormat": "{{ verdict }}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right" },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "fieldConfig": {
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "allow" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "deny" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "needs_approval" }, "properties": [ { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } } ] }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Latency & enforcement",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "title": "Decision latency — P50 / P95 / P99",
+      "type": "timeseries",
+      "description": "Handler latency for $origin traffic. The duration histogram carries the origin label only (no stage), so this panel is not stage-filtered.",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(axonflow_decision_duration_milliseconds_bucket{origin=~\"$origin\"}[$__rate_interval])))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(axonflow_decision_duration_milliseconds_bucket{origin=~\"$origin\"}[$__rate_interval])))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(axonflow_decision_duration_milliseconds_bucket{origin=~\"$origin\"}[$__rate_interval])))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": false, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 25 }, { "color": "red", "value": 100 } ] },
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Top blocked policies",
+      "type": "table",
+      "description": "Ranks the single blocking system policy per deny for $origin traffic. Source: axonflow_decision_blocks_total (policy label is the bounded seeded system-policy id; origin-scoped, no stage label).",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (policy) (increase(axonflow_decision_blocks_total{origin=~\"$origin\"}[$__range])))",
+          "legendFormat": "{{ policy }}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": { "policy": "Blocking policy", "Value": "Blocks" },
+            "excludeByName": { "Time": true }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Decisions by stage",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (stage) (rate(axonflow_decision_requests_total{origin=~\"$origin\", stage=~\"$stage\"}[$__rate_interval]))",
+          "legendFormat": "{{ stage }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars", "stacking": { "mode": "normal" } }
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "PII redaction rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(axonflow_decision_obligations_total{obligation=\"redact_pii\", origin=~\"$origin\", stage=~\"$stage\"}[$__rate_interval]))",
+          "legendFormat": "redactions/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Per-user breakdown (OTel spanmetrics)",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 16,
+      "title": "Decisions per user — $origin",
+      "type": "table",
+      "description": "Per-user allow/deny volume for $origin traffic, from the OTel spanmetrics path (calls_total, span axonflow.decision, dimension decision_origin — emitted by WS-5). The user_email split POPULATES once WS-1 propagates the authenticated user into the decision AND OTEL WS-6 adds user.email as a spanmetrics dimension; until then this shows the per-verdict aggregate for the origin (user_email column empty). Requires the OTel/Grafana observability overlay (docker-compose.otel-grafana.yml).",
+      "gridPos": { "x": 0, "y": 33, "w": 24, "h": 9 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (user_email, decision_verdict) (increase(calls_total{span_name=\"axonflow.decision\", decision_origin=~\"$origin\"}[$__range]))",
+          "legendFormat": "{{ user_email }} / {{ decision_verdict }}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": { "user_email": "User", "decision_verdict": "Verdict", "Value": "Decisions" },
+            "excludeByName": { "Time": true }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } }
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Annotations & Alerts",
+        "datasource": { "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "type": "dashboard"
+      }
+    ]
+  }
+}

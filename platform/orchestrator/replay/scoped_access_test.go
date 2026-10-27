@@ -157,9 +157,13 @@ func TestPostgresRepository_GetSummaryScoped_SQL(t *testing.T) {
 	// pin. The old expectation was
 	//   AND ($2 = <empty> OR org_id IS NULL OR org_id = <empty> OR org_id = $2)
 	// which admitted every row when the caller supplied nothing.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-b").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`FROM execution_summaries\s+WHERE request_id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("req-a", "org-b", "tenant-b").
 		WillReturnRows(sqlmock.NewRows([]string{"request_id"}))
+	mock.ExpectRollback()
 
 	if _, err := repo.GetSummaryScoped(context.Background(), "req-a", AccessScope{OrgID: "org-b", TenantID: "tenant-b"}); err != ErrNotFound {
 		t.Fatalf("scoped miss must be ErrNotFound, got %v", err)
@@ -188,9 +192,13 @@ func TestPostgresRepository_GetSummaryScoped_SameOrgRow(t *testing.T) {
 	}).AddRow("req-a", "wf", "completed", 2, 2, now, now, 120, 500, 1.25,
 		"org-a", "tenant-a", "42", "agent-1", []byte(`{"q":"in"}`), []byte(`{"a":"out"}`), "boom", now, now)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`FROM execution_summaries\s+WHERE request_id = \$1`).
 		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	summary, err := repo.GetSummaryScoped(context.Background(), "req-a", AccessScope{OrgID: "org-a", TenantID: "tenant-a"})
 	if err != nil {
@@ -224,6 +232,8 @@ func TestPostgresRepository_DeleteExecutionScoped_CrossOrgRollsBack(t *testing.T
 	repo := NewPostgresRepository(db)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-b").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
 		WithArgs("req-a", "org-b", "tenant-b").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -261,6 +271,8 @@ func TestPostgresRepository_DeleteExecutionScoped_SnapshotDeleteFailureRollsBack
 	repo := NewPostgresRepository(db)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
 		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -286,6 +298,8 @@ func TestPostgresRepository_DeleteExecutionScoped_CommitFailureSurfaces(t *testi
 	repo := NewPostgresRepository(db)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
 		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -308,6 +322,8 @@ func TestPostgresRepository_DeleteExecutionScoped_SameOrgDeletesBoth(t *testing.
 	repo := NewPostgresRepository(db)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
 		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))

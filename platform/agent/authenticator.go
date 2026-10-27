@@ -102,11 +102,13 @@ type AuthResult struct {
 // REST handlers render JSON, MCP JSON-RPC renders jsonrpc error objects,
 // proxy writes raw JSON.
 type AuthError struct {
-	Code       string // machine-readable: "missing_credentials", "invalid_credentials", "rate_limited", "client_disabled"
-	Message    string // human-readable error message
-	HTTPStatus int    // suggested HTTP status code
-	RetryAfter string // non-empty → rate limited, caller should set Retry-After header
-	Limit      int    // the per-minute limit a rate_limited refusal reached; 0 otherwise
+	Code        string // machine-readable: "missing_credentials", "invalid_credentials", "rate_limited", "client_disabled"
+	Message     string // human-readable error message
+	HTTPStatus  int    // suggested HTTP status code
+	CheckoutURL string // set only for hosted payment-required responses
+	TenantID    string // authenticated tenant context for payment-required responses
+	RetryAfter  string // non-empty → rate limited, caller should set Retry-After header
+	Limit       int    // the per-minute limit a rate_limited refusal reached; 0 otherwise
 
 	// admission is the tier-scale decision behind a tier-limit refusal
 	// (tierLimitRefusal.AuthError), nil for every other AuthError. The MCP
@@ -249,17 +251,22 @@ func authenticateLegacy(r *http.Request, hints *AuthHints) (*AuthResult, *AuthEr
 				retryAfter = csErr.RetryAfter
 			}
 			code := "invalid_credentials"
-			if csErr.StatusCode == http.StatusTooManyRequests {
+			if csErr.Code != "" {
+				code = csErr.Code
+			}
+			if csErr.Code == "" && csErr.StatusCode == http.StatusTooManyRequests {
 				code = "rate_limited"
-			} else if csErr.StatusCode == http.StatusUnauthorized && csErr.Message == "Registration required. POST to /api/v1/register to get credentials." {
+			} else if csErr.Code == "" && csErr.StatusCode == http.StatusUnauthorized && csErr.Message == "Registration required. POST to /api/v1/register to get credentials." {
 				code = "missing_credentials"
 			}
 			return nil, &AuthError{
-				Code:       code,
-				Message:    csErr.Message,
-				HTTPStatus: csErr.StatusCode,
-				RetryAfter: retryAfter,
-				Limit:      csErr.Limit,
+				Code:        code,
+				Message:     csErr.Message,
+				HTTPStatus:  csErr.StatusCode,
+				RetryAfter:  retryAfter,
+				Limit:       csErr.Limit,
+				CheckoutURL: csErr.CheckoutURL,
+				TenantID:    csErr.TenantID,
 			}
 		}
 

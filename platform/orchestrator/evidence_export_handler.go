@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -317,18 +318,6 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 
 	var counts EvidenceCounts
 
-	_ = h.db.QueryRow(
-		`SELECT COUNT(*) FROM audit_logs WHERE tenant_id = $1 AND created_at >= $2`,
-		tenantID, since,
-	).Scan(&counts.AuditLogs)
-
-	_ = h.db.QueryRow(
-		`SELECT COUNT(*) FROM workflow_steps ws
-		 JOIN workflows w ON ws.workflow_id = w.workflow_id
-		 WHERE w.tenant_id = $1 AND ws.gate_checked_at >= $2`,
-		tenantID, since,
-	).Scan(&counts.WorkflowSteps)
-
 	// #3048: hitl_approval_queue is RLS-enabled (mig 025) — the bare COUNT
 	// read 0 under axonflow_app_role and evidence summaries under-reported.
 	// Scope by the validated caller org when present (R3 HIGH-3), else the
@@ -338,7 +327,21 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 		summaryScope = tenantID
 	}
 	_ = agent.WithOrgScope(r.Context(), h.db, summaryScope, func(tx *sql.Tx) error {
-		return tx.QueryRow(
+		if err := tx.QueryRowContext(r.Context(),
+			`SELECT COUNT(*) FROM audit_logs WHERE tenant_id = $1 AND created_at >= $2`,
+			tenantID, since,
+		).Scan(&counts.AuditLogs); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(r.Context(),
+			`SELECT COUNT(*) FROM workflow_steps ws
+			 JOIN workflows w ON ws.workflow_id = w.workflow_id
+			 WHERE w.tenant_id = $1 AND ws.gate_checked_at >= $2`,
+			tenantID, since,
+		).Scan(&counts.WorkflowSteps); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(r.Context(),
 			`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND created_at >= $2`,
 			tenantID, since,
 		).Scan(&counts.HITLApprovals)
@@ -371,8 +374,14 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 // `blocked` is derived from the canonical `policy_decision` vocab (migs 122/123),
 // and `risk_score` is read from the `policy_details` JSONB (NULL when absent).
 func (h *EvidenceExportHandler) queryAuditLogs(r *http.Request, tenantID string, start, end time.Time, limit int) ([]map[string]interface{}, error) {
-	rows, err := h.db.QueryContext(r.Context(),
-		`SELECT id, tenant_id, client_id, request_type, query,
+	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
+	if orgID == "" {
+		orgID = tenantID
+	}
+	var out []map[string]interface{}
+	err := agent.WithOrgScope(r.Context(), h.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(r.Context(),
+			`SELECT id, tenant_id, client_id, request_type, query,
 		        (policy_decision = 'blocked') AS blocked,
 		        policy_details->>'risk_score' AS risk_score,
 		        created_at
@@ -380,32 +389,44 @@ func (h *EvidenceExportHandler) queryAuditLogs(r *http.Request, tenantID string,
 		 WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
 		 ORDER BY created_at DESC
 		 LIMIT $4`,
-		tenantID, start, end, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanRowsToMaps(rows)
+			tenantID, start, end, limit,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out, err = scanRowsToMaps(rows)
+		return err
+	})
+	return out, err
 }
 
 // queryWorkflowSteps queries workflow_steps for the given tenant and date range.
 // Note: workflow_steps doesn't have tenant_id directly — we join through workflows.
 func (h *EvidenceExportHandler) queryWorkflowSteps(r *http.Request, tenantID string, start, end time.Time, limit int) ([]map[string]interface{}, error) {
-	rows, err := h.db.QueryContext(r.Context(),
-		`SELECT ws.id, ws.workflow_id, ws.step_id, ws.step_type, ws.decision AS status, w.tenant_id, ws.gate_checked_at AS started_at, ws.step_completed_at AS completed_at
+	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
+	if orgID == "" {
+		orgID = tenantID
+	}
+	var out []map[string]interface{}
+	err := agent.WithOrgScope(r.Context(), h.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(r.Context(),
+			`SELECT ws.id, ws.workflow_id, ws.step_id, ws.step_type, ws.decision AS status, w.tenant_id, ws.gate_checked_at AS started_at, ws.step_completed_at AS completed_at
 		 FROM workflow_steps ws
 		 JOIN workflows w ON ws.workflow_id = w.workflow_id
 		 WHERE w.tenant_id = $1 AND ws.gate_checked_at >= $2 AND ws.gate_checked_at <= $3
 		 ORDER BY ws.gate_checked_at DESC
 		 LIMIT $4`,
-		tenantID, start, end, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanRowsToMaps(rows)
+			tenantID, start, end, limit,
+		)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out, err = scanRowsToMaps(rows)
+		return err
+	})
+	return out, err
 }
 
 // queryHITLApprovals queries hitl_approval_queue for the given tenant and date range.
@@ -477,13 +498,16 @@ func scanRowsToMaps(rows *sql.Rows) ([]map[string]interface{}, error) {
 
 // recordExport saves the export metadata to the evidence_exports table.
 func (h *EvidenceExportHandler) recordExport(exportID, tenantID string, resp EvidenceExportResponse) {
-	_, err := h.db.Exec(
-		`INSERT INTO evidence_exports (id, tenant_id, export_type, record_count, date_range_start, date_range_end, tier, disclaimer, created_at)
+	err := agent.WithOrgScope(context.Background(), h.db, tenantID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(),
+			`INSERT INTO evidence_exports (id, tenant_id, export_type, record_count, date_range_start, date_range_end, tier, disclaimer, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		exportID, tenantID, "bundled", resp.RecordCount,
-		resp.DateRange.Start, resp.DateRange.End,
-		resp.Tier, resp.Disclaimer, resp.ExportedAt,
-	)
+			exportID, tenantID, "bundled", resp.RecordCount,
+			resp.DateRange.Start, resp.DateRange.End,
+			resp.Tier, resp.Disclaimer, resp.ExportedAt,
+		)
+		return err
+	})
 	if err != nil {
 		log.Printf("[EvidenceExport] Failed to record export: %v", err)
 	}

@@ -307,6 +307,12 @@ func rlsGatedReadTables() map[string]bool {
 func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 	allowFiles = map[string]string{}
 	allowFuncs = map[string]string{
+		"platform/agent/billing/webhook.go::*":                                     "admin-pool: Stripe webhook resolves signed events across tenants before tenant identity exists; run.go wires platform admin.",
+		"ee/platform/agent/billing/webhook.go::*":                                  "admin-pool: EE Stripe webhook mirror; signed pre-auth cross-tenant event processing.",
+		"platform/agent/plugin_license_metrics.go::*":                              "admin-pool: deployment-wide paid-license metrics poll; run.go wires platform admin.",
+		"platform/orchestrator/step_mode_first_step_backfill.go::sqlStepModePlans": "admin-pool: boot reconciliation lists in-flight step-mode plans across organizations; run.go passes the asserted rls3039 platform-admin pool.",
+		"platform/orchestrator/planning/repository.go::GetPlanUnscoped":            "admin-pool: explicitly named unified-execution reconciliation read; PostgresRepository refuses unless run.go wires rls3039AdminDB, and the HTTP layer post-authorizes the result.",
+		"platform/orchestrator/workflow_control/repository.go::GetByIDUnscoped":    "admin-pool: explicitly named unified-execution reconciliation read; PostgresRepository refuses unless run.go wires rls3039AdminDB, and the HTTP layer post-authorizes the result.",
 		// ── Dual-shape readers: the flagged line is the BARE branch of a
 		// function whose scoped branch sits alongside it (#3048). The bare
 		// branch runs only when the caller org is genuinely unknown —

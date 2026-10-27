@@ -108,15 +108,15 @@ func TestDockerRunArgsLabelEveryContainerWithItsOwner(t *testing.T) {
 	owner := TestOwnerLabelKey + "=" + host + ":" + strconv.Itoa(os.Getpid())
 
 	t.Setenv(TestRunIDEnv, "")
-	got := DockerRunArgs(t, "--name", "c1", "postgres:15")
-	want := []string{"run", "-d", "--label", TestContainerLabel, "--label", owner, "--name", "c1", "postgres:15"}
+	got := DockerRunArgs(t, "--name", "c1", "alpine:3.21")
+	want := []string{"run", "-d", "--label", TestContainerLabel, "--label", owner, "--name", "c1", "alpine:3.21"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("no run id: args = %q, want %q", got, want)
 	}
 
 	t.Setenv(TestRunIDEnv, "run-7")
-	got = DockerRunArgs(t, "postgres:15")
-	want = []string{"run", "-d", "--label", TestContainerLabel, "--label", owner, "--label", TestRunLabelKey + "=run-7", "postgres:15"}
+	got = DockerRunArgs(t, "alpine:3.21")
+	want = []string{"run", "-d", "--label", TestContainerLabel, "--label", owner, "--label", TestRunLabelKey + "=run-7", "alpine:3.21"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("with a run id: args = %q, want %q", got, want)
 	}

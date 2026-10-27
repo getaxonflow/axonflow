@@ -177,7 +177,7 @@ func TestMCPCheckOutputHandler_BlockEmitsAuditLogsDecisionRow(t *testing.T) {
 	// per request (decision_id is a fresh uuid) → AnyArg; the columns this
 	// feature exists to guarantee are pinned: request_type='decision_tool'
 	// (DecisionStageTool) and policy_decision='deny'.
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id (decide_<decision_id>)
 			sqlmock.AnyArg(), // request_id
@@ -200,8 +200,8 @@ func TestMCPCheckOutputHandler_BlockEmitsAuditLogsDecisionRow(t *testing.T) {
 			// traceparent's W3C trace-id so this block groups with the other stages
 			// of the SAME logical tool call. Pinned to prove the threading.
 			"0af7651916cd43dd8448eb211c80319c",
-			nil, // redacted_fields (#2643): MCP block has none → NULL
-			nil, // session_id (#2896): no trusted client session id → NULL
+			nil,              // redacted_fields (#2643): MCP block has none → NULL
+			nil,              // session_id (#2896): no trusted client session id → NULL
 			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -264,7 +264,7 @@ func TestMCPCheckOutputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
 	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id

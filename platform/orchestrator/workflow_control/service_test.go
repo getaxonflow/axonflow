@@ -758,7 +758,7 @@ func TestGetPendingApprovals(t *testing.T) {
 	}
 
 	// Get pending approvals
-	pending, err := svc.GetPendingApprovals(ctx, "tenant-1", 10)
+	pending, err := svc.GetPendingApprovals(ctx, "tenant-1", "org-1", 10)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

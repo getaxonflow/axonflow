@@ -50,7 +50,7 @@ func TestReadOnlyPosture_WriteBlockedAtGate(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), "client-1", "tenant-1", "org-1",

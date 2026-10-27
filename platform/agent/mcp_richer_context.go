@@ -236,6 +236,20 @@ const (
 // for security audit.
 const mcpUnauthenticatedTenant = "unauthenticated"
 
+// unattributedAuditOrg is an internal, non-customer RLS partition for security
+// events recorded before authentication establishes an organization. Leaving
+// org_id blank would make FORCE-RLS reject the write; borrowing a caller-sent
+// tenant would let an unauthenticated request inject into a customer's audit
+// feed. Only the platform-admin pool can read this partition.
+const unattributedAuditOrg = "__axonflow_unattributed__"
+
+func auditRLSOrgID(orgID string) string {
+	if strings.TrimSpace(orgID) == "" {
+		return unattributedAuditOrg
+	}
+	return orgID
+}
+
 // writeMCPDecisionAudit persists a canonical audit_logs row for an MCP-plane
 // terminal verdict that carries no rich policy-match payload — i.e. every hole
 // AUDIT-C (#2641) closes: a dynamic-only block, a SQLi block, a redact-and-allow,
@@ -431,7 +445,9 @@ func writeMCPDecisionAudit(
 		sessionIDArg = sid
 	}
 
-	_, err = db.ExecContext(ctx, `
+	orgID = auditRLSOrgID(orgID)
+	err = WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
@@ -439,27 +455,29 @@ func writeMCPDecisionAudit(
 			redacted_fields, session_id, response_time_ms
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`,
-		"audit_mcp_"+decisionID,                  // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
-		requestID,                                // request_id
-		time.Now().UTC(),                         // timestamp
-		userIDInt,                                // user_id
-		userEmail,                                // user_email
-		userRole,                                 // user_role
-		clientID,                                 // client_id
-		tenantID,                                 // tenant_id
-		orgID,                                    // org_id (nullable)
-		requestType,                              // request_type - e.g. "mcp_check_output"
-		query,                                    // query - non-PII descriptor (NEVER raw statement/response)
-		queryHash,                                // query_hash
-		policyDecision,                           // policy_decision - canonical past-tense vocab (#2641/#2638)
-		detailsJSON,                              // policy_details (JSONB)
-		decisionID,                               // decision_id (first-class column; #2592)
-		PlaneMCP,                                 // plane (#2592)
-		correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
-		redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2641)
-		sessionIDArg,                             // session_id (first-class column or NULL; #2753)
-		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
-	)
+			"audit_mcp_"+decisionID,                  // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
+			requestID,                                // request_id
+			time.Now().UTC(),                         // timestamp
+			userIDInt,                                // user_id
+			userEmail,                                // user_email
+			userRole,                                 // user_role
+			clientID,                                 // client_id
+			tenantID,                                 // tenant_id
+			orgID,                                    // org_id (nullable)
+			requestType,                              // request_type - e.g. "mcp_check_output"
+			query,                                    // query - non-PII descriptor (NEVER raw statement/response)
+			queryHash,                                // query_hash
+			policyDecision,                           // policy_decision - canonical past-tense vocab (#2641/#2638)
+			detailsJSON,                              // policy_details (JSONB)
+			decisionID,                               // decision_id (first-class column; #2592)
+			PlaneMCP,                                 // plane (#2592)
+			correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
+			redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2641)
+			sessionIDArg,                             // session_id (first-class column or NULL; #2753)
+			sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
+		)
+		return execErr
+	})
 	if err != nil {
 		log.Printf("mcp decision audit: insert failed: %v", err)
 	}
@@ -622,7 +640,9 @@ func writeExplainableAuditLog(
 	if sid := clientSessionIDFromContext(ctx); sid != "" {
 		sessionIDArg = sid
 	}
-	_, err = db.ExecContext(ctx, `
+	orgID = auditRLSOrgID(orgID)
+	err = WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
@@ -630,33 +650,35 @@ func writeExplainableAuditLog(
 			session_id, response_time_ms
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`,
-		"audit_"+decisionID, // id
-		requestID,           // request_id
-		time.Now().UTC(),    // timestamp
-		userIDInt,           // user_id
-		userEmail,           // user_email
-		userRole,            // user_role
-		clientID,            // client_id
-		tenantID,            // tenant_id
-		orgID,               // org_id
-		requestType,         // request_type — e.g. "mcp_check_input"
-		statement,           // query
-		statementHash,       // query_hash
-		// #2641 (AUDIT-C) vocabulary contract (#2638): a check-input/output static
-		// block is a "blocked" verdict in the canonical past-tense vocab the portal
-		// decisions feed + audit-summary mapping key on — NOT the legacy "deny" this
-		// writer used to hardcode, which the audit-summary only mapped to a block by
-		// special-case and which the audit-page action filter ('blocked') never
-		// matched. All three callers of this writer are static-block paths, so the
-		// literal is unconditionally "blocked".
-		mcpVerdictBlocked,                        // policy_decision
-		detailsJSON,                              // policy_details (JSONB) - decision_id still mirrored here
-		decisionID,                               // decision_id (first-class column; #2592)
-		PlaneMCP,                                 // plane
-		correlationIDArg,                         // correlation_id (#2598)
-		sessionIDArg,                             // session_id (#2753)
-		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
-	)
+			"audit_"+decisionID, // id
+			requestID,           // request_id
+			time.Now().UTC(),    // timestamp
+			userIDInt,           // user_id
+			userEmail,           // user_email
+			userRole,            // user_role
+			clientID,            // client_id
+			tenantID,            // tenant_id
+			orgID,               // org_id
+			requestType,         // request_type — e.g. "mcp_check_input"
+			statement,           // query
+			statementHash,       // query_hash
+			// #2641 (AUDIT-C) vocabulary contract (#2638): a check-input/output static
+			// block is a "blocked" verdict in the canonical past-tense vocab the portal
+			// decisions feed + audit-summary mapping key on — NOT the legacy "deny" this
+			// writer used to hardcode, which the audit-summary only mapped to a block by
+			// special-case and which the audit-page action filter ('blocked') never
+			// matched. All three callers of this writer are static-block paths, so the
+			// literal is unconditionally "blocked".
+			mcpVerdictBlocked,                        // policy_decision
+			detailsJSON,                              // policy_details (JSONB) - decision_id still mirrored here
+			decisionID,                               // decision_id (first-class column; #2592)
+			PlaneMCP,                                 // plane
+			correlationIDArg,                         // correlation_id (#2598)
+			sessionIDArg,                             // session_id (#2753)
+			sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
+		)
+		return execErr
+	})
 	if err != nil {
 		log.Printf("explainable audit log: insert failed: %v", err)
 	}

@@ -324,6 +324,10 @@ func (s *Service) logAudit(ctx context.Context, entry *WorkflowAuditEntry) {
 	}
 }
 
+func bindWorkflowScope(ctx context.Context, tenantID, orgID string) (context.Context, error) {
+	return tenantscope.WithContext(ctx, orgID, tenantID)
+}
+
 // trackExecution calls the unified execution tracker if configured
 // Errors are logged but don't fail the operation (best-effort tracking)
 func (s *Service) trackExecution(ctx context.Context, op string, fn func() error) {
@@ -337,6 +341,11 @@ func (s *Service) trackExecution(ctx context.Context, op string, fn func() error
 
 // CreateWorkflow registers a new workflow from an external orchestrator
 func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest, tenantID, orgID, userID, clientID string) (*Workflow, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
 	if req.WorkflowName == "" {
 		return nil, fmt.Errorf("workflow_name is required")
 	}
@@ -439,6 +448,11 @@ func isConcurrentLimitError(err error) bool {
 // Returns ErrWorkflowNotFound if the workflow exists but belongs to a different
 // tenant or org — 404-style response prevents tenant-existence side-channel leaks.
 func (s *Service) GetWorkflow(ctx context.Context, workflowID, tenantID, orgID string) (*Workflow, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
@@ -461,7 +475,14 @@ func (s *Service) GetWorkflow(ctx context.Context, workflowID, tenantID, orgID s
 // Never call this from a request handler. The name is the guard: an unscoped
 // read that must look like one.
 func (s *Service) GetWorkflowUnscoped(ctx context.Context, workflowID string) (*Workflow, error) {
-	return s.repo.GetByID(ctx, workflowID)
+	type unscopedRepository interface {
+		GetByIDUnscoped(context.Context, string) (*Workflow, error)
+	}
+	repo, ok := s.repo.(unscopedRepository)
+	if !ok {
+		return nil, fmt.Errorf("unscoped workflow reconciliation repository is not configured")
+	}
+	return repo.GetByIDUnscoped(ctx, workflowID)
 }
 
 // workflowBelongsTo returns true if the workflow is owned by the given
@@ -870,6 +891,11 @@ func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string, include
 // StepGate checks if a workflow step is allowed to proceed
 // This is the core governance function - called before each step in an external workflow
 func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string, req *StepGateRequest, tenantID, orgID, userID, clientID string) (*StepGateResponse, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	// Get the workflow
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
@@ -1265,6 +1291,11 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 // tenant / org — preventing existence side-channel leaks. Used by the approve
 // handlers after a mutation to build a rich StepGateHTTPResponse (Issue #1677).
 func (s *Service) GetStep(ctx context.Context, workflowID, stepID, tenantID, orgID string) (*WorkflowStep, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
@@ -1283,6 +1314,11 @@ func (s *Service) GetStep(ctx context.Context, workflowID, stepID, tenantID, org
 // exists for the plan (the in-memory MAP HITL flow callers once fell back to is
 // retired, #4249 row 5774060413).
 func (s *Service) GetWorkflowByPlanID(ctx context.Context, planID, tenantID, orgID string) (*Workflow, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("%s: %w", planID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByPlanID(ctx, planID)
 	if err != nil {
 		return nil, err
@@ -1295,6 +1331,11 @@ func (s *Service) GetWorkflowByPlanID(ctx context.Context, planID, tenantID, org
 
 // ApproveStep approves a step that requires approval (Enterprise feature)
 func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID, orgID, approvedBy, comment string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	// Multi-tenant isolation: verify the workflow belongs to the caller
 	// before allowing approval. Without this check, any authenticated
 	// client could approve any other tenant's pending step.
@@ -1399,6 +1440,11 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID,
 
 // RejectStep rejects a step that requires approval (Enterprise feature)
 func (s *Service) RejectStep(ctx context.Context, workflowID, stepID, tenantID, orgID, rejectedBy, reason string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	// Multi-tenant isolation: verify ownership before allowing rejection.
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
@@ -1501,6 +1547,11 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID, tenantID, 
 
 // ResumeWorkflow attempts to resume a workflow that was waiting for approval
 func (s *Service) ResumeWorkflow(ctx context.Context, workflowID, tenantID, orgID string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
@@ -1548,6 +1599,11 @@ func (s *Service) ResumeWorkflow(ctx context.Context, workflowID, tenantID, orgI
 
 // AbortWorkflow aborts a workflow, scoped to the caller's tenant and org.
 func (s *Service) AbortWorkflow(ctx context.Context, workflowID, reason, tenantID, orgID string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
@@ -1597,6 +1653,11 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID, reason, tenantI
 
 // CompleteWorkflow marks a workflow as completed, scoped to the caller's tenant and org.
 func (s *Service) CompleteWorkflow(ctx context.Context, workflowID, tenantID, orgID string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
@@ -1657,6 +1718,11 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID, tenantID, or
 
 // FailWorkflow marks a workflow as failed
 func (s *Service) FailWorkflow(ctx context.Context, workflowID, reason, tenantID, orgID string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
@@ -1713,6 +1779,11 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID, reason, tenantID
 // same fail-open shape as the by-id compare, one layer down. Refuse the call
 // instead of narrowing it silently: a caller with no tenancy has no listing.
 func (s *Service) ListWorkflows(ctx context.Context, opts ListWorkflowsOptions) (*ListWorkflowsResponse, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, opts.TenantID, opts.OrgID)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
 	if err := tenantscope.ValidateRowKeys(opts.OrgID, opts.TenantID); err != nil {
 		return nil, fmt.Errorf("cannot list workflows without an authenticated org and tenant: %w", err)
 	}
@@ -1746,16 +1817,24 @@ func (s *Service) ListWorkflows(ctx context.Context, opts ListWorkflowsOptions) 
 
 // GetPendingApprovals returns steps awaiting approval for a tenant.
 // #3065: an empty tenant is a denial, never a tenant-wide listing.
-func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error) {
+func (s *Service) GetPendingApprovals(ctx context.Context, tenantID, orgID string, limit int) ([]PendingApprovalResponse, error) {
 	if err := requireTenant(tenantID); err != nil {
+		return nil, err
+	}
+	ctx, err := bindWorkflowScope(ctx, tenantID, orgID)
+	if err != nil {
 		return nil, err
 	}
 	return s.repo.GetPendingApprovals(ctx, tenantID, limit)
 }
 
 // CountPendingApprovals returns the total number of pending approvals for a tenant
-func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
+func (s *Service) CountPendingApprovals(ctx context.Context, tenantID, orgID string) (int, error) {
 	if err := requireTenant(tenantID); err != nil {
+		return 0, err
+	}
+	ctx, err := bindWorkflowScope(ctx, tenantID, orgID)
+	if err != nil {
 		return 0, err
 	}
 	return s.repo.CountPendingApprovals(ctx, tenantID)
@@ -1776,8 +1855,12 @@ func requireTenant(tenantID string) error {
 // GetPendingPlanApprovals returns MAP-backed pending approvals for a tenant,
 // optionally scoped to a specific plan_id. Each entry has PlanID populated.
 // Issue #1680 — the MAP-plane counterpart to GetPendingApprovals.
-func (s *Service) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
+func (s *Service) GetPendingPlanApprovals(ctx context.Context, tenantID, orgID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
 	if err := requireTenant(tenantID); err != nil {
+		return nil, err
+	}
+	ctx, err := bindWorkflowScope(ctx, tenantID, orgID)
+	if err != nil {
 		return nil, err
 	}
 	return s.repo.GetPendingPlanApprovals(ctx, tenantID, planIDFilter, limit)
@@ -1785,8 +1868,12 @@ func (s *Service) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDF
 
 // CountPendingPlanApprovals returns the count of MAP-backed pending approvals
 // for a tenant, optionally scoped to a specific plan_id.
-func (s *Service) CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error) {
+func (s *Service) CountPendingPlanApprovals(ctx context.Context, tenantID, orgID, planIDFilter string) (int, error) {
 	if err := requireTenant(tenantID); err != nil {
+		return 0, err
+	}
+	ctx, err := bindWorkflowScope(ctx, tenantID, orgID)
+	if err != nil {
 		return 0, err
 	}
 	return s.repo.CountPendingPlanApprovals(ctx, tenantID, planIDFilter)
@@ -1797,6 +1884,11 @@ func (s *Service) CountPendingPlanApprovals(ctx context.Context, tenantID, planI
 // Validates idempotency_key match before writing (Issue #1673 Phase 2); mismatch returns
 // *IdempotencyKeyMismatchError which handlers map to HTTP 409.
 func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest, tenantID, orgID string) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	// Get workflow for audit logging and ownership check
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
@@ -1933,6 +2025,11 @@ func (s *Service) ResumeFromLastCheckpoint(ctx context.Context, workflowID, tena
 // email is the trust-gated X-User-Email carried by THIS resume request (see
 // resumeFromCheckpointInternal).
 func (s *Service) ResumeFromCheckpoint(ctx context.Context, workflowID string, checkpointID int64, tenantID, orgID, email string) (*ResumeFromCheckpointResponse, error) {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, tenantID, orgID)
+	if scopeErr != nil {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err

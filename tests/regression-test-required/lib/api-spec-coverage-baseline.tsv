@@ -84,6 +84,14 @@
 # typed-policies (11 routes) is deliberately NOT documented yet: its handlers are
 # being changed by live v11 lanes, and a spec written against them this week would
 # be wrong next week. Its rows stay here until it settles.
+#
+# The two billing rows below are browser return pages, not API operations. They
+# return text/html after Stripe Checkout or Billing Portal redirects; the JSON
+# integration contract is documented at POST /api/v1/billing/checkout and POST
+# /api/v1/billing/portal. The method-aware parity guard carries the same narrow
+# allowance so these cannot become a blanket billing-family exemption.
+(mount-relative) /billing/canceled	-	source
+(mount-relative) /billing/success	-	source
 (mount-relative) /decision-proof/expected-peps/{}	-	source
 (mount-relative) /decision-proof/keys	-	source
 (mount-relative) /decision-proof/keys/{}/revoke	-	source

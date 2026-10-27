@@ -93,6 +93,11 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 11.3.0 train moves openclaw 2.9.1 -> 2.10.0. It adds the Hosted
+//     payment-required Checkout experience while preserving the governed
+//     unpaid path. The plugin is published manually after the Community
+//     platform release and the staging paid/unpaid proof completes.
+//
 //   - google-adk 1.3.0 -> 1.3.1 (corrected on the v11.1.0 train). 1.3.0 was
 //     NEVER PUBLISHED: its release run failed its runtime e2e, so PyPI has
 //     1.0.0, 1.0.2, 1.1.0, 1.2.0 and 1.3.1 and answers 404 for 1.3.0, and the
@@ -152,7 +157,7 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.9.1",
+	"openclaw":       "2.10.0",
 	"claude-code":    "1.13.0",
 	"cursor":         "1.9.0",
 	"codex":          "1.9.0",

@@ -39,6 +39,13 @@ func newMockAuditLogger(t *testing.T) (*AuditLogger, sqlmock.Sqlmock, func()) {
 	return &AuditLogger{db: db}, mock, func() { _ = db.Close() }
 }
 
+func expectAuditReadScope(mock sqlmock.Sqlmock, orgID string) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs(orgID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 // withGlobalAuditLogger swaps the package global for the duration of a handler
 // test and restores it afterward.
 func withGlobalAuditLogger(l *AuditLogger, fn func()) {
@@ -66,9 +73,11 @@ func TestGetAuditLogByID_Success_ReturnsFullRedactedRecord(t *testing.T) {
 		[]byte(`[]`), "corr-1", "dec-1", "mcp", "sess-1",
 	)
 	// The tenant id MUST be an argument — this is the cross-tenant leak guard.
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("aud-1", "acme").
 		WillReturnRows(row)
+	mock.ExpectCommit()
 
 	entry, err := al.GetAuditLogByID("aud-1", "acme")
 	if err != nil {
@@ -97,11 +106,28 @@ func TestGetAuditLogByID_Success_ReturnsFullRedactedRecord(t *testing.T) {
 func TestGetAuditLogByID_NotFound(t *testing.T) {
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("missing", "acme").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	_, err := al.GetAuditLogByID("missing", "acme")
+	if err != ErrAuditLogNotFound {
+		t.Fatalf("want ErrAuditLogNotFound, got %v", err)
+	}
+}
+
+func TestGetAuditLogByIDScoped_UsesOrgForRLSAndTenantForPredicate(t *testing.T) {
+	al, mock, done := newMockAuditLogger(t)
+	defer done()
+	expectAuditReadScope(mock, "org-acme")
+	mock.ExpectQuery("SELECT id, request_id, timestamp").
+		WithArgs("missing", "tenant-acme").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := al.GetAuditLogByIDScoped(context.Background(), "missing", "org-acme", "tenant-acme")
 	if err != ErrAuditLogNotFound {
 		t.Fatalf("want ErrAuditLogNotFound, got %v", err)
 	}
@@ -133,8 +159,10 @@ func TestAuditGetByIDHandler_MissingTenant_401(t *testing.T) {
 func TestAuditGetByIDHandler_NotFound_404(t *testing.T) {
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("nope", "acme").WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/audit/nope", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "nope"})
@@ -178,9 +206,11 @@ func TestExportAuditLogs_TruncationDetected(t *testing.T) {
 			"org", "llm_call", "q", "allowed", []byte(`{}`), "", "", int64(0), 0, 0.0,
 			[]byte(`[]`), "", "", "", "")
 	}
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	got, truncated, err := al.ExportAuditLogs(crit)
 	if err != nil {
@@ -242,8 +272,10 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 		"aud-9", "req-9", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "tool_call", "Tool: bash", "blocked", []byte(`{}`), "", "",
 		int64(5), 137, 0.0, []byte(`[]`), "", "resp [REDACTED:ssn]", "corr-9", "sess-9")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme").WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=csv", strings.NewReader(`{}`))
@@ -311,7 +343,9 @@ func TestAuditExportHandler_JSON_Body(t *testing.T) {
 		"aud-j", "req-j", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "llm_call", "hi", "allowed", []byte(`{}`), "", "", int64(1), 0, 0.0,
 		[]byte(`[]`), "", "", "", "")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json", strings.NewReader(`{}`))
@@ -364,9 +398,11 @@ func TestAuditExportHandler_SessionIDFilter(t *testing.T) {
 		"org", "llm_call", "session query", "allowed", []byte(`{}`), "", "",
 		int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-s", "sess-42")
 	// Tenant from the trusted header ($1), session filter from the body ($2).
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp(.+)session_id = ").
 		WithArgs("acme", "sess-42").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json",
@@ -431,9 +467,11 @@ func TestAuditExportHandler_PluginBatch1Filters(t *testing.T) {
 				"org", "llm_call", "q", "blocked", []byte(`{}`), "", "",
 				int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-b", "sess-b")
 			// Tenant from the trusted header ($1), the filter value from the body ($2).
+			expectAuditReadScope(mock, "acme")
 			mock.ExpectQuery("SELECT id, request_id, timestamp(.+)"+tc.sqlFrag).
 				WithArgs("acme", tc.argVal).
 				WillReturnRows(rows)
+			mock.ExpectCommit()
 			withGlobalAuditLogger(al, func() {
 				req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json",
 					strings.NewReader(tc.body))
@@ -472,7 +510,9 @@ func TestAuditExportHandler_CSV_SessionColumn(t *testing.T) {
 		"aud-c", "req-c", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "llm_call", "q", "allowed", []byte(`{}`), "", "",
 		int64(0), 0, 0.0, []byte(`[]`), "", "", "corr-c", "sess-c1")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
+	mock.ExpectCommit()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=csv", strings.NewReader(`{}`))
 		req.Header.Set("X-Tenant-ID", "acme")
@@ -653,7 +693,9 @@ func TestAuditGetByIDHandler_Success_200(t *testing.T) {
 		"aud-ok", "req", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "llm_call", "hi", "allowed", []byte(`{}`), "", "", int64(1), 0, 0.0,
 		[]byte(`[]`), "", "", []byte(`[]`), "", "", "", "")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("aud-ok", "acme").WillReturnRows(row)
+	mock.ExpectCommit()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/audit/aud-ok", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "aud-ok"})
@@ -713,9 +755,11 @@ func TestExportAuditLogs_AllFilterBranches(t *testing.T) {
 	end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	rows := sqlmock.NewRows(auditExportColumns)
 	// tenant, userEmail, clientID, start, end, action-array
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme", "dev@acme.com", "cli", start, end, sqlmock.AnyArg()).
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 	_, _, err := al.ExportAuditLogs(auditSearchCriteria{
 		TenantID: "acme", UserEmail: "dev@acme.com", ClientID: "cli",
 		Action: "blocked", StartTime: start, EndTime: end,
@@ -858,7 +902,9 @@ func TestAuditExportHandler_NoTruncationHeaderOnSmallResult(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"id", "req", ts, 1, "u@a.com", "agent", "acme", "acme", "org",
 		"llm_call", "q", "allowed", []byte(`{}`), "", "", int64(0), 0, 0.0, []byte(`[]`), "", "", "", "")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
+	mock.ExpectCommit()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json", strings.NewReader(`{}`))
 		req.Header.Set("X-Tenant-ID", "acme")
@@ -881,8 +927,10 @@ func TestAuditExportHandler_DBError_500(t *testing.T) {
 
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").
 		WillReturnError(errTestDB)
+	mock.ExpectRollback()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json", strings.NewReader(`{}`))
 		req.Header.Set("X-Tenant-ID", "acme")
@@ -938,7 +986,9 @@ func TestAuditExportHandler_CSV_NeutralizesFormula(t *testing.T) {
 		"aud-x", "req", ts, 1, "dev@acme.com", "agent", "acme", "acme", "org",
 		"tool_call", "=cmd|'/c calc'!A1", "blocked", []byte(`{}`), "", "",
 		int64(0), 0, 0.0, []byte(`[]`), "", "", "", "")
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
+	mock.ExpectCommit()
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=csv", strings.NewReader(`{}`))
 		req.Header.Set("X-Tenant-ID", "acme")

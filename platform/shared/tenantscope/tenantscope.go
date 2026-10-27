@@ -45,19 +45,55 @@
 //
 // # Relationship to RLS
 //
-// None. Do not reason about Postgres RLS as a backstop here: `plans`,
-// `budgets`, `webhook_subscriptions` and `workflows` have no RLS at all, and
-// where RLS does exist its policies key on `org_id` while handlers scope on
-// `tenant_id` — different values under a single enterprise license (#3071).
-// Application-level scoping is the only thing between a coding mistake and a
-// cross-tenant leak on these surfaces.
+// This package remains mandatory even where RLS exists. Hosted migration 192
+// adds forced, restrictive database guards to these customer-data tables, but
+// other deployment chains may not apply that migration, and Enterprise can
+// legitimately use different `org_id` and `tenant_id` values (#3071).
+// Application authorization and database RLS are independent layers; neither
+// is a reason to omit the other.
 package tenantscope
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 )
+
+type contextKey struct{}
+
+// WithContext binds a validated in-process scope to ctx for repository calls
+// that cannot safely rediscover tenancy from a row protected by RLS.
+func WithContext(ctx context.Context, orgID, tenantID string) (context.Context, error) {
+	s, err := New(orgID, tenantID)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, contextKey{}, s), nil
+}
+
+// WithOrgContext binds the org-only form used by plans, whose repository
+// contract historically carries no tenant argument.
+func WithOrgContext(ctx context.Context, orgID string) (context.Context, error) {
+	s := NewOrgOnly(orgID)
+	if !usable(s.OrgID) {
+		return ctx, ErrNoCallerScope
+	}
+	return context.WithValue(ctx, contextKey{}, s), nil
+}
+
+// FromContext returns only explicitly bound in-process scope. HTTP code must
+// continue to use Bind so raw request context values cannot become trusted.
+func FromContext(ctx context.Context) (Scope, error) {
+	if ctx == nil {
+		return Scope{}, ErrNoCallerScope
+	}
+	s, ok := ctx.Value(contextKey{}).(Scope)
+	if !ok || !usable(s.OrgID) {
+		return Scope{}, ErrNoCallerScope
+	}
+	return s, nil
+}
 
 // Header names carrying the authenticated caller scope. Both are Set (never
 // Add) by the authenticating hop, so a client-supplied value is always

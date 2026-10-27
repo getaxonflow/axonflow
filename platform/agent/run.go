@@ -101,6 +101,17 @@ func isCommunitySaasMode() bool {
 	return deploymode.CurrentIsCommunitySaasPosture()
 }
 
+// selfHostedEnterpriseServicesEnabled reports whether this process owns the
+// self-hosted Enterprise schema. The AxonFlow-operated Community SaaS fleet
+// deliberately runs the Enterprise binary for hosted features, but applies
+// the migrations/community-saas schema rather than migrations/enterprise.
+// Starting services backed only by Enterprise tables in that posture turns a
+// healthy boot into recurring missing-relation errors and can make governed
+// requests fail after they clear the paid gate.
+func selfHostedEnterpriseServicesEnabled() bool {
+	return !isCommunitySaasMode()
+}
+
 // getDeploymentOrgID returns the canonical deployment org_id from the ORG_ID env var.
 // This is the single source of truth for org identity — set at deployment time in
 // docker-compose or platform config. License org_id must match this value.
@@ -672,6 +683,11 @@ type Client struct {
 	// quota, capability gates) read EffectiveTier and call
 	// `license.GetTierLimits(EffectiveTier)`.
 	EffectiveTier string `json:"effective_tier,omitempty"`
+
+	// HostedPaid marks a request that passed the subscription gate. Downstream
+	// quota code uses it to avoid applying the retired daily prepaid quota on
+	// top of the monthly Hosted Starter allowance.
+	HostedPaid bool `json:"hosted_paid,omitempty"`
 }
 
 // substituteGrafanaPassword substitutes {{GRAFANA_PASSWORD}} in SQL.
@@ -1203,6 +1219,12 @@ func Run() {
 		}
 		log.Printf("✅ authDB connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
 			connectedRole, UseAppRoleEnabled(), EnvAppRoleURL, os.Getenv(EnvAppRoleURL) != "")
+		if isCommunitySaasMode() {
+			if err := verifyHostedCustomerDataRLS(bootCtx, authDB); err != nil {
+				log.Fatalf("❌ Community SaaS tenant isolation verification failed: %v", err)
+			}
+			log.Printf("✅ Community SaaS tenant isolation verified: %d-table explicit inventory plus direct-key schema census", len(hostedCustomerDataTables))
+		}
 
 		usageDB = authDB
 		log.Println("✅ Usage metering database connected")
@@ -1406,7 +1428,9 @@ func Run() {
 	// Initialize node enforcement (heartbeat + monitoring)
 	var heartbeatService *node_enforcement.HeartbeatService
 	var nodeMonitor *node_enforcement.NodeMonitor
-	if usageDB != nil {
+	if !selfHostedEnterpriseServicesEnabled() {
+		log.Println("ℹ️  Community SaaS mode - skipping self-hosted node heartbeat service")
+	} else if usageDB != nil {
 		// Determine instance type
 		instanceType := "agent"
 
@@ -1840,42 +1864,47 @@ func Run() {
 	// first second of load — they set the env vars to high numbers (or 0
 	// for "disabled" semantically — 0 still trips on the first violation
 	// per the existing logic, so use a large positive value instead).
-	cbErrorThreshold := envIntDefault("AXONFLOW_CB_ERROR_THRESHOLD", 10)
-	cbPolicyViolationThreshold := envIntDefault("AXONFLOW_CB_POLICY_VIOLATION_THRESHOLD", 20)
-	cbRepo := circuitbreaker.NewRepository(usageDB)
-	circuitBreakerInstance = circuitbreaker.New(cbRepo, circuitbreaker.Config{
-		DefaultTimeout:           5 * time.Minute,
-		MaxTimeout:               1 * time.Hour,
-		ErrorThreshold:           cbErrorThreshold,
-		PolicyViolationThreshold: cbPolicyViolationThreshold,
-		PolicyViolationWindow:    5 * time.Minute,
-		EnableAutoRecovery:       true,
-	})
-	if cbErrorThreshold != 10 || cbPolicyViolationThreshold != 20 {
-		log.Printf("[CB] thresholds overridden: error=%d policy_violation=%d (defaults are 10/20)", cbErrorThreshold, cbPolicyViolationThreshold)
-	}
-	notifService := circuitbreaker.NewNotificationService(cbRepo)
-	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
-	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
-	cbHandler.SetNotificationService(notifService)
-	cbHandler.RegisterRoutes(globalRouter, mux.MiddlewareFunc(apiAuthMiddleware))
-	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
-
-	// Load active circuits from DB so they survive agent restarts
-	if err := circuitBreakerInstance.LoadCircuits(context.Background(), ""); err != nil {
-		log.Printf("⚠️  Failed to load active circuits: %v", err)
-	}
-
-	// Background goroutine to expire open circuits after their timeout
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			if err := circuitBreakerInstance.ExpireCircuits(context.Background()); err != nil {
-				log.Printf("[CircuitBreaker] Expiration error: %v", err)
-			}
+	if !selfHostedEnterpriseServicesEnabled() {
+		circuitBreakerInstance = nil
+		log.Println("ℹ️  Community SaaS mode - skipping self-hosted circuit breaker service")
+	} else {
+		cbErrorThreshold := envIntDefault("AXONFLOW_CB_ERROR_THRESHOLD", 10)
+		cbPolicyViolationThreshold := envIntDefault("AXONFLOW_CB_POLICY_VIOLATION_THRESHOLD", 20)
+		cbRepo := circuitbreaker.NewRepository(usageDB)
+		circuitBreakerInstance = circuitbreaker.New(cbRepo, circuitbreaker.Config{
+			DefaultTimeout:           5 * time.Minute,
+			MaxTimeout:               1 * time.Hour,
+			ErrorThreshold:           cbErrorThreshold,
+			PolicyViolationThreshold: cbPolicyViolationThreshold,
+			PolicyViolationWindow:    5 * time.Minute,
+			EnableAutoRecovery:       true,
+		})
+		if cbErrorThreshold != 10 || cbPolicyViolationThreshold != 20 {
+			log.Printf("[CB] thresholds overridden: error=%d policy_violation=%d (defaults are 10/20)", cbErrorThreshold, cbPolicyViolationThreshold)
 		}
-	}()
+		notifService := circuitbreaker.NewNotificationService(cbRepo)
+		circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
+		cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
+		cbHandler.SetNotificationService(notifService)
+		cbHandler.RegisterRoutes(globalRouter, mux.MiddlewareFunc(apiAuthMiddleware))
+		// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
+
+		// Load active circuits from DB so they survive agent restarts
+		if err := circuitBreakerInstance.LoadCircuits(context.Background(), ""); err != nil {
+			log.Printf("⚠️  Failed to load active circuits: %v", err)
+		}
+
+		// Background goroutine to expire open circuits after their timeout
+		go func() {
+			ticker := time.NewTicker(1 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := circuitBreakerInstance.ExpireCircuits(context.Background()); err != nil {
+					log.Printf("[CircuitBreaker] Expiration error: %v", err)
+				}
+			}
+		}()
+	}
 
 	// Audit non-repudiation: per-record Ed25519 signing + prev_hash chain over
 	// decision_chain (#2722). The signing key is loaded from the environment;
@@ -2010,7 +2039,12 @@ func Run() {
 		// validation + IP allowlist + per-source rate limit are the auth
 		// stack. Returns early without registering when STRIPE_WEBHOOK_SIGNING_SECRET
 		// is unset (dev / test stacks routinely run without payment config).
-		RegisterBillingWebhook(globalRouter, usageDB)
+		// Stripe events arrive before an authenticated tenant scope exists and
+		// resolve tenant ownership from Stripe identifiers. Route this one
+		// cross-tenant writer through the asserted BYPASSRLS pool. Authenticated
+		// checkout, status, and portal reads stay on usageDB and set a scoped GUC.
+		RegisterBillingWebhook(globalRouter, deleteDB)
+		RegisterHostedBillingRoutes(globalRouter, usageDB)
 
 		// SaaS Plugin license validation lives inline in
 		// validateCommunitySaasAuth per ADR-049 §3 + ADR-050 §9 — there
@@ -2024,7 +2058,7 @@ func Run() {
 		// Background poll over plugin_user_licenses → Prometheus gauges
 		// (active_total, total, issued_today, expiring_7d). 60s interval.
 		// No-op on community builds (build-tagged file).
-		startPluginLicenseMetricsPoller(usageDB)
+		startPluginLicenseMetricsPoller(deleteDB)
 
 		// Usage telemetry middleware — sends to SQS (disabled when queue URL is empty).
 		// Post-#2010 the agent never writes DDB direct: the ingest Lambda
@@ -3395,10 +3429,14 @@ func getOrchestratorURL() string {
 	return LocalOrchestratorURL
 }
 
+// dockerEnvMarkerPath is a seam for tests that need to exercise the local-host
+// fallback while the test binary itself runs in a container.
+var dockerEnvMarkerPath = "/.dockerenv"
+
 // isRunningInDocker detects if the process is running inside a Docker container
 func isRunningInDocker() bool {
 	// Method 1: Check for /.dockerenv file (most reliable)
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	if _, err := os.Stat(dockerEnvMarkerPath); err == nil {
 		return true
 	}
 

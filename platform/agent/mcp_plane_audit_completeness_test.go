@@ -62,7 +62,7 @@ func TestWriteMCPDecisionAudit_RedactedPopulatesRedactedFields(t *testing.T) {
 	defer db.Close()
 
 	var redactedFieldsJSON []byte
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),                     // id (audit_mcp_<decision_id>)
 			"req-1",                              // request_id
@@ -125,14 +125,14 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), 0,
 			"unknown@axonflow.local", // user_email fallback
 			"unknown",                // user_role fallback — honest label for an unresolved role (RBAC-1 #2920)
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
-			"",                       // org_id (passed empty → stays empty/NULL-able)
+			unattributedAuditOrg,     // internal RLS partition; never a customer org
 			"mcp_check_policy",
 			"mcp check_policy: postgres",
 			sqlmock.AnyArg(), // query_hash
@@ -209,7 +209,8 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionRedact)
 
 	var redactedFieldsJSON []byte
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectIndonesiaPIIDetectionEvent(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), "client-1", "tenant-1", "org-1",
@@ -298,7 +299,7 @@ func TestAuditMCPServerDeny(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"u@e.com", "admin", "client-9", "tenant-9", "org-9",
@@ -340,12 +341,12 @@ func TestHandleMCPToolsCall_Unauthenticated_EmitsBlockedAudit(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), 0,
 			sqlmock.AnyArg(), "service", sqlmock.AnyArg(),
 			mcpUnauthenticatedTenant, // tenant_id sentinel — NOT caller-claimed
-			"",                       // org_id empty → out of every real tenant feed
+			unattributedAuditOrg,     // internal RLS partition; out of every customer feed
 			"mcp_tools_call", "mcp tools/call: unauthenticated", sqlmock.AnyArg(),
 			mcpVerdictBlocked,
 			// #4261: a genuinely unauthenticated call keeps these labels; only a
@@ -393,7 +394,7 @@ func TestMCPCheckInputHandler_UnsupportedContentType_EmitsBlockedAudit(t *testin
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), "service", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -448,7 +449,8 @@ func TestMCPCheckOutputHandler_Redaction_EmitsRedactedWithFields(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionRedact)
 
 	var redactedFieldsJSON []byte
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectIndonesiaPIIDetectionEvent(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),

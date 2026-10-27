@@ -284,7 +284,7 @@ func TestService_MarkPlanCompleted(t *testing.T) {
 	svc := NewService(repo)
 
 	result := map[string]interface{}{"output": "success"}
-	err := svc.MarkPlanCompleted(context.Background(), "plan_123", result)
+	err := svc.MarkPlanCompleted(context.Background(), "plan_123", "org_1", result)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -311,7 +311,7 @@ func TestService_MarkPlanFailed(t *testing.T) {
 	}
 	svc := NewService(repo)
 
-	err := svc.MarkPlanFailed(context.Background(), "plan_123", "execution failed")
+	err := svc.MarkPlanFailed(context.Background(), "plan_123", "org_1", "execution failed")
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -589,7 +589,7 @@ func TestService_MarkPlanCompleted_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	svc := NewService(repo)
 
-	err := svc.MarkPlanCompleted(context.Background(), "nonexistent", map[string]interface{}{})
+	err := svc.MarkPlanCompleted(context.Background(), "nonexistent", "org_1", map[string]interface{}{})
 	if err == nil {
 		t.Error("expected error for nonexistent plan")
 	}
@@ -599,7 +599,7 @@ func TestService_MarkPlanFailed_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	svc := NewService(repo)
 
-	err := svc.MarkPlanFailed(context.Background(), "nonexistent", "error")
+	err := svc.MarkPlanFailed(context.Background(), "nonexistent", "org_1", "error")
 	if err == nil {
 		t.Error("expected error for nonexistent plan")
 	}
@@ -899,7 +899,7 @@ func TestService_CancelPlan(t *testing.T) {
 			WorkflowDefinition: validWorkflowJSON(),
 			StepCount:          1,
 		})
-		_ = svc.MarkPlanCompleted(context.Background(), "plan_cancel_3", nil)
+		_ = svc.MarkPlanCompleted(context.Background(), "plan_cancel_3", "org_1", nil)
 
 		err := svc.CancelPlan(context.Background(), "plan_cancel_3", "org_1", "too late")
 		if err == nil {

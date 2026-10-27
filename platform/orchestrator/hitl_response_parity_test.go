@@ -113,7 +113,7 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 	if err := planRepo.MarkExecutingWithPendingBinding(context.Background(), planID); err != nil {
 		t.Fatalf("mark executing: %v", err)
 	}
-	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, workflowID); err != nil {
+	if err := planSvc.BindExecutionWorkflow(context.Background(), planID, workflowID, "org-1"); err != nil {
 		t.Fatalf("BindExecutionWorkflow: %v", err)
 	}
 

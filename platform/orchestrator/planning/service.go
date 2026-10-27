@@ -84,6 +84,10 @@ func (s *Service) logAudit(ctx context.Context, entry *PlanAuditEntry) {
 	}
 }
 
+func bindPlanOrg(ctx context.Context, orgID string) (context.Context, error) {
+	return tenantscope.WithOrgContext(ctx, orgID)
+}
+
 // StorePlan saves a generated plan for later execution
 func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan, error) {
 	if req.PlanID == "" {
@@ -103,6 +107,10 @@ func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan,
 	// invariant in the database.
 	if err := tenantscope.ValidateRowKeys(req.OrgID, req.TenantID); err != nil {
 		return nil, fmt.Errorf("cannot store plan without an authenticated org and tenant: %w", err)
+	}
+	ctx, err := bindPlanOrg(ctx, req.OrgID)
+	if err != nil {
+		return nil, err
 	}
 
 	ttl := req.TTL
@@ -166,6 +174,11 @@ func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan,
 // It uses atomic status update to prevent race conditions when multiple
 // ExecutePlan requests arrive for the same plan.
 func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID string) (*Plan, error) {
+	var err error
+	ctx, err = bindPlanOrg(ctx, orgID)
+	if err != nil {
+		return nil, ErrPlanNotFound
+	}
 	plan, err := s.repo.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err
@@ -242,12 +255,23 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 // created (#4249). Resume and the
 // plan-level approve/reject select that workflow by this id rather than by a
 // name or metadata a caller can write.
-func (s *Service) BindExecutionWorkflow(ctx context.Context, planID, workflowID string) error {
+
+func (s *Service) BindExecutionWorkflow(ctx context.Context, planID, workflowID, orgID string) error {
+	var err error
+	ctx, err = bindPlanOrg(ctx, orgID)
+	if err != nil {
+		return ErrPlanNotFound
+	}
 	return s.repo.BindExecutionWorkflow(ctx, planID, workflowID)
 }
 
 // MarkPlanCompleted marks a plan as completed with the execution result
-func (s *Service) MarkPlanCompleted(ctx context.Context, planID string, result interface{}) error {
+func (s *Service) MarkPlanCompleted(ctx context.Context, planID, orgID string, result interface{}) error {
+	var err error
+	ctx, err = bindPlanOrg(ctx, orgID)
+	if err != nil {
+		return ErrPlanNotFound
+	}
 	// Get plan details for audit logging
 	plan, _ := s.repo.GetPlan(ctx, planID)
 
@@ -282,7 +306,12 @@ func (s *Service) MarkPlanCompleted(ctx context.Context, planID string, result i
 }
 
 // MarkPlanFailed marks a plan as failed with an error message
-func (s *Service) MarkPlanFailed(ctx context.Context, planID string, errMsg string) error {
+func (s *Service) MarkPlanFailed(ctx context.Context, planID, orgID string, errMsg string) error {
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, orgID)
+	if bindErr != nil {
+		return ErrPlanNotFound
+	}
 	// Get plan details for audit logging
 	plan, _ := s.repo.GetPlan(ctx, planID)
 
@@ -315,6 +344,11 @@ func (s *Service) MarkPlanFailed(ctx context.Context, planID string, errMsg stri
 // CancelPlan cancels a pending or executing plan.
 // If orgID is non-empty, it validates cross-tenant authorization.
 func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, reason string) error {
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, orgID)
+	if bindErr != nil {
+		return ErrPlanNotFound
+	}
 	// Get plan details for validation and audit logging
 	plan, err := s.repo.GetPlan(ctx, planID)
 	if err != nil {
@@ -367,6 +401,11 @@ func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, r
 // fourth caller inherits it instead of forgetting it. Callers that hold no
 // request scope use GetPlanUnscoped.
 func (s *Service) GetPlan(ctx context.Context, planID, orgID string) (*Plan, error) {
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, orgID)
+	if bindErr != nil {
+		return nil, ErrPlanNotFound
+	}
 	plan, err := s.repo.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err
@@ -387,7 +426,14 @@ func (s *Service) GetPlan(ctx context.Context, planID, orgID string) (*Plan, err
 // (UnifiedExecutionHandler.checkTenantOwnership) before any byte reaches a
 // client. Never call this from a request handler.
 func (s *Service) GetPlanUnscoped(ctx context.Context, planID string) (*Plan, error) {
-	return s.repo.GetPlan(ctx, planID)
+	type unscopedRepository interface {
+		GetPlanUnscoped(context.Context, string) (*Plan, error)
+	}
+	repo, ok := s.repo.(unscopedRepository)
+	if !ok {
+		return nil, fmt.Errorf("unscoped plan reconciliation repository is not configured")
+	}
+	return repo.GetPlanUnscoped(ctx, planID)
 }
 
 // authorizePlan is the single by-id authorization for `plans` (#3065 F2/F3).
@@ -412,6 +458,11 @@ func (s *Service) UpdatePlan(ctx context.Context, req *UpdatePlanRequest) (*Plan
 	}
 	if req.ExpectedVersion < 1 {
 		return nil, fmt.Errorf("expected_version must be >= 1")
+	}
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, req.OrgID)
+	if bindErr != nil {
+		return nil, ErrPlanNotFound
 	}
 
 	// Get current plan for validation
@@ -522,6 +573,11 @@ func (s *Service) UpdatePlan(ctx context.Context, req *UpdatePlanRequest) (*Plan
 
 // GetPlanVersions retrieves version history for a plan
 func (s *Service) GetPlanVersions(ctx context.Context, planID string, orgID string) ([]PlanVersion, error) {
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, orgID)
+	if bindErr != nil {
+		return nil, ErrPlanNotFound
+	}
 	// Verify plan exists and check authorization
 	plan, err := s.repo.GetPlan(ctx, planID)
 	if err != nil {
@@ -542,6 +598,11 @@ func (s *Service) RollbackPlan(ctx context.Context, req *RollbackPlanRequest) (*
 	}
 	if req.TargetVersion < 1 {
 		return nil, fmt.Errorf("target_version must be >= 1")
+	}
+	var bindErr error
+	ctx, bindErr = bindPlanOrg(ctx, req.OrgID)
+	if bindErr != nil {
+		return nil, ErrPlanNotFound
 	}
 
 	// Get current plan for validation

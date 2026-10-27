@@ -1,0 +1,526 @@
+{
+  "id": null,
+  "uid": "axonflow-claude-code-usage",
+  "title": "AxonFlow — Claude Code Usage (Tokens / Cost / Activity by Developer & Session)",
+  "description": "Aggregate usage from the Claude Code / Cowork OTLP metrics ingest (POST /v1/metrics, Enterprise, v9.5.0+). The usage panels read usage_events rows (event_type = 'claude_code_metric') from PostgreSQL — these counters are NOT Prometheus metrics. metric_value is the delta-normalized increment, so SUM(metric_value) is always correct regardless of the exporter's temporality. The ingest-health row reads the Prometheus counter axonflow_otel_ingest_rejected_total. For per-decision detail (who did what, verdicts, redactions), use the customer portal's decisions feed / audit log — this dashboard is aggregates only.",
+  "tags": [
+    "axonflow",
+    "claude-code",
+    "usage",
+    "otel-ingest"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "org",
+        "label": "Organization",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+        "description": "Org (license) that authenticated the export. Usage rows are org-tagged from the authenticated license, never from the telemetry.",
+        "query": "SELECT DISTINCT org_id FROM usage_events WHERE event_type = 'claude_code_metric' ORDER BY 1",
+        "definition": "SELECT DISTINCT org_id FROM usage_events WHERE event_type = 'claude_code_metric' ORDER BY 1",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "%",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Usage totals — $org (selected range)",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "title": "Tokens (input + output)",
+      "type": "stat",
+      "description": "SUM of claude_code.token.usage deltas with type input/output. Cache tokens (cacheRead / cacheCreation) are excluded here — they dwarf real tokens on a typical session — and shown separately in the by-type panel and the developer table.",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"tokens\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.token.usage' AND metric_attributes->>'type' IN ('input', 'output') AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "blue", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Cost",
+      "type": "stat",
+      "description": "SUM of claude_code.cost.usage deltas (USD). metric_value is the exact authority; the estimated_cost_cents mirror column is a rounded integer.",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"cost_usd\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.cost.usage' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Active time",
+      "type": "stat",
+      "description": "SUM of claude_code.active_time.total deltas (seconds of active Claude Code use).",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"active_seconds\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.active_time.total' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "color": { "fixedColor": "purple", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Lines of code changed",
+      "type": "stat",
+      "description": "SUM of claude_code.lines_of_code.count deltas (added + removed; the type attribute distinguishes them).",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"lines_changed\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.lines_of_code.count' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "orange", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Sessions started",
+      "type": "stat",
+      "description": "SUM of claude_code.session.count deltas (CLI sessions started).",
+      "gridPos": { "x": 0, "y": 6, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"sessions\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.session.count' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "blue", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Commits",
+      "type": "stat",
+      "description": "SUM of claude_code.commit.count deltas (git commits created via Claude Code).",
+      "gridPos": { "x": 6, "y": 6, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"commits\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.commit.count' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Pull requests",
+      "type": "stat",
+      "description": "SUM of claude_code.pull_request.count deltas (PRs created via Claude Code).",
+      "gridPos": { "x": 12, "y": 6, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"pull_requests\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.pull_request.count' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Edit-tool permission decisions",
+      "type": "stat",
+      "description": "SUM of claude_code.code_edit_tool.decision deltas (accept + reject; split below).",
+      "gridPos": { "x": 18, "y": 6, "w": 6, "h": 5 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(metric_value), 0) AS \"tool_decisions\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.code_edit_tool.decision' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time)",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "fixedColor": "yellow", "mode": "fixed" }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Over time",
+      "gridPos": { "x": 0, "y": 11, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "title": "Token usage by type",
+      "type": "timeseries",
+      "description": "claude_code.token.usage deltas split by the type attribute (input / output / cacheRead / cacheCreation). Cache reads normally dominate — that is expected Claude Code behavior, not double-counting.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT $__timeGroupAlias(metric_time, $__interval), COALESCE(metric_attributes->>'type', 'unspecified') AS \"type\", SUM(metric_value) AS \"tokens\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.token.usage' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Cost over time",
+      "type": "timeseries",
+      "description": "claude_code.cost.usage deltas (USD).",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT $__timeGroupAlias(metric_time, $__interval), SUM(metric_value) AS \"cost_usd\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.cost.usage' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": { "fixedColor": "green", "mode": "fixed" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "By developer & session",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 14,
+      "title": "Usage by developer",
+      "type": "table",
+      "description": "Per-developer rollup keyed on the telemetry user.email (attribution label, not an authenticated identity). Rows attribute to '(unattributed — API-key client)' when the exporting client authenticated Anthropic-side with an API key and emitted no user.email.",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 9 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(user_email, '(unattributed — API-key client)') AS \"Developer\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.token.usage' AND metric_attributes->>'type' IN ('input', 'output')), 0) AS \"Tokens (in+out)\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.token.usage' AND metric_attributes->>'type' IN ('cacheRead', 'cacheCreation')), 0) AS \"Cache tokens\", ROUND(COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.cost.usage'), 0)::numeric, 4) AS \"Cost (USD)\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.lines_of_code.count'), 0) AS \"Lines changed\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.commit.count'), 0) AS \"Commits\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.pull_request.count'), 0) AS \"PRs\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.active_time.total'), 0) AS \"Active time (s)\", COUNT(DISTINCT session_id) AS \"Sessions\" FROM usage_events WHERE event_type = 'claude_code_metric' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1 ORDER BY 4 DESC NULLS LAST",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Cost (USD)" },
+            "properties": [ { "id": "unit", "value": "currencyUSD" } ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "title": "Usage by session (top 50 by cost)",
+      "type": "table",
+      "description": "Per-session rollup keyed on the telemetry session.id. First/last activity are datapoint event times (metric_time).",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 9 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(session_id, '(none)') AS \"Session\", COALESCE(user_email, '(unattributed)') AS \"Developer\", MIN(metric_time) AS \"First activity\", MAX(metric_time) AS \"Last activity\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.token.usage' AND metric_attributes->>'type' IN ('input', 'output')), 0) AS \"Tokens (in+out)\", ROUND(COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.cost.usage'), 0)::numeric, 4) AS \"Cost (USD)\", COALESCE(SUM(metric_value) FILTER (WHERE metric_name = 'claude_code.lines_of_code.count'), 0) AS \"Lines changed\" FROM usage_events WHERE event_type = 'claude_code_metric' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1, 2 ORDER BY 6 DESC NULLS LAST LIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Cost (USD)" },
+            "properties": [ { "id": "unit", "value": "currencyUSD" } ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Tool-permission decisions",
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 17,
+      "title": "Edit-tool decisions over time",
+      "type": "timeseries",
+      "description": "claude_code.code_edit_tool.decision deltas split by the decision attribute (accept / reject). These are Claude Code's local tool-permission prompts — for AxonFlow policy verdicts (allow / deny / needs_approval), see the Claude Code Governance dashboard.",
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT $__timeGroupAlias(metric_time, $__interval), COALESCE(metric_attributes->>'decision', 'unknown') AS \"decision\", SUM(metric_value) AS \"decisions\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.code_edit_tool.decision' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars", "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "accept" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "reject" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "title": "Decisions by tool",
+      "type": "table",
+      "description": "claude_code.code_edit_tool.decision deltas grouped by the tool_name and decision attributes.",
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "axonflow-postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(metric_attributes->>'tool_name', '(unknown)') AS \"Tool\", COALESCE(metric_attributes->>'decision', '(unknown)') AS \"Decision\", SUM(metric_value) AS \"Count\" FROM usage_events WHERE event_type = 'claude_code_metric' AND metric_name = 'claude_code.code_edit_tool.decision' AND (${org:sqlstring} = '%' OR org_id = ${org:sqlstring}) AND $__timeFilter(metric_time) GROUP BY 1, 2 ORDER BY 3 DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } }
+      }
+    },
+    {
+      "id": 19,
+      "type": "row",
+      "title": "Ingest health — rejected OTLP exports (Prometheus)",
+      "gridPos": { "x": 0, "y": 48, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "title": "Rejected exports (since agent start)",
+      "type": "stat",
+      "description": "sum(axonflow_otel_ingest_rejected_total) — every /v1/logs and /v1/metrics request rejected with status >= 400 since the agent started. The raw counter (not increase()) is used so a series born mid-window still counts its first rejects. Non-zero usually means a misconfigured exporter (bad Authorization header, wrong protocol). Scraped from the agent's /prometheus endpoint.",
+      "gridPos": { "x": 0, "y": 49, "w": 6, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(axonflow_otel_ingest_rejected_total)",
+          "legendFormat": "rejected",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 21,
+      "title": "Rejected exports by route & reason",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 49, "w": 10, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (route, reason) (rate(axonflow_otel_ingest_rejected_total[$__rate_interval]))",
+          "legendFormat": "{{ route }} — {{ reason }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": false }
+        }
+      }
+    },
+    {
+      "id": 22,
+      "title": "Top rejected tenants",
+      "type": "table",
+      "description": "Attempted Basic-auth org by reject reason, since agent start (raw counter — increase() would miss a series' first rejects). The tenant label is the ATTEMPTED username (bounded set) — corroborate with the agent's [OTELIngest] log lines before concluding a customer-side misconfig.",
+      "gridPos": { "x": 16, "y": 49, "w": 8, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (tenant, reason) (axonflow_otel_ingest_rejected_total))",
+          "legendFormat": "{{ tenant }} / {{ reason }}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": { "tenant": "Tenant (attempted)", "reason": "Reason", "Value": "Rejects" },
+            "excludeByName": { "Time": true }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } }
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Annotations & Alerts",
+        "datasource": { "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "type": "dashboard"
+      }
+    ]
+  }
+}

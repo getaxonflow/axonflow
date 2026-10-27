@@ -297,6 +297,16 @@ suites:
   - docker-compose.yml
   - docker-compose.enterprise.yml
   - .github/workflows/fincrime-engine-b-e2e.yml
+  hosted-paid-first-e2e.yml:
+  - runtime-e2e/4487_hosted_paid_first/**
+  - platform/agent/billing/**
+  - platform/agent/hosted_*.go
+  - platform/agent/auth*.go
+  - platform/agent/run.go
+  - migrations/community-saas/**
+  - migrations/core/**
+  - scripts/e2e/runtime_e2e_suites.tsv
+  - .github/workflows/hosted-paid-first-e2e.yml
   org-tier-promotion-e2e.yml:
   - migrations/core/094_v9_org_id_backfill*.sql
   - migrations/core/117_promote_deployment_org_license*.sql

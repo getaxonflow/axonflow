@@ -63,8 +63,11 @@ services:
       - axonflow-network
 
   grafana:
-    # 11.6.0 required for dashboard schemaVersion 39 (heatmap + piechart panels)
-    image: grafana/grafana:11.6.0
+    # The base stack builds the checksum-pinned AxonFlow image. It contains
+    # only the production data sources by default; this local overlay selects
+    # the optional checksum-pinned Tempo target.
+    build:
+      target: otel
     container_name: axonflow-grafana
     restart: unless-stopped
     environment:

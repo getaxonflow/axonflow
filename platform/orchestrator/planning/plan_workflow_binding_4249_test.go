@@ -11,8 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/shared/tenantscope"
 	"axonflow/platform/testutil"
 )
+
+func planBindingTestContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, err := tenantscope.WithOrgContext(context.Background(), "org_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
 
 // #4249 (row 5699811991): the confirm/step executor's workflow is bound to the
 // plan once, while the plan is executing, and read back from execution_result.
@@ -53,7 +63,7 @@ func savedPlan(t *testing.T, repo Repository, id string, status PlanStatus) {
 // executing from before the binding was marked (marked=false).
 func savedPlanInMode(t *testing.T, repo Repository, id string, status PlanStatus, mode string, marked bool) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := planBindingTestContext(t)
 	if err := repo.SavePlan(ctx, &Plan{
 		PlanID: id, Query: "q", Domain: "generic", ExecutionMode: mode, Version: 1,
 		WorkflowDefinition: []byte(`{"spec":{"steps":[]}}`), Status: PlanStatusPending,
@@ -79,7 +89,7 @@ func TestThePlanWorkflowIsBoundOnceWhileExecuting(t *testing.T) {
 	for name, newRepo := range bindingRepositories() {
 		t.Run(name, func(t *testing.T) {
 			repo := newRepo(t)
-			ctx := context.Background()
+			ctx := planBindingTestContext(t)
 			suffix := strings.ReplaceAll(t.Name(), "/", "_")
 
 			// Marked executing: an empty binding, read back as marked.
@@ -147,7 +157,7 @@ func TestGetPlanForExecutionMarksConfirmAndStepPlansWithAnEmptyBinding(t *testin
 		t.Run(name, func(t *testing.T) {
 			repo := newRepo(t)
 			svc := NewService(repo)
-			ctx := context.Background()
+			ctx := planBindingTestContext(t)
 			suffix := strings.ReplaceAll(t.Name(), "/", "_")
 			for _, tc := range []struct {
 				mode       string
@@ -193,7 +203,7 @@ func TestTheExecutingMarkFollowsTheStoredModeNotTheOneRead(t *testing.T) {
 	for name, newRepo := range bindingRepositories() {
 		t.Run(name, func(t *testing.T) {
 			repo := newRepo(t)
-			ctx := context.Background()
+			ctx := planBindingTestContext(t)
 			suffix := strings.ReplaceAll(t.Name(), "/", "_")
 			for _, tc := range []struct {
 				stored, read string

@@ -185,10 +185,12 @@ func TestExplainDecision_NonAdmin_OtherUsersDecisionIs404(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		// entry belongs to someone else.
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
 			WithArgs("dec-1", "tenant-x").
 			WillReturnRows(sqlmock.NewRows([]string{"user_email", "tenant_id", "timestamp", "policy_decision", "policy_details"}).
 				AddRow("boss@acme.com", "tenant-x", time.Now(), "blocked", `{"decision_id":"dec-1"}`))
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
@@ -212,9 +214,11 @@ func TestAuditGetByID_NonAdmin_OtherUsersRowIs404(t *testing.T) {
 	defer func() { auditLogger = oldAuditLogger }()
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		auditLogger = &AuditLogger{db: usageDB}
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT .+ FROM audit_logs\\s+WHERE id = .+ AND tenant_id").
 			WithArgs("a-1", "tenant-x").
 			WillReturnRows(auditGetByIDRow("boss@acme.com"))
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/audit/a-1", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "a-1"})
@@ -236,9 +240,11 @@ func TestAuditGetByID_NonAdmin_OwnRowIs200(t *testing.T) {
 	defer func() { auditLogger = oldAuditLogger }()
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		auditLogger = &AuditLogger{db: usageDB}
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT .+ FROM audit_logs\\s+WHERE id = .+ AND tenant_id").
 			WithArgs("a-1", "tenant-x").
 			WillReturnRows(auditGetByIDRow("Dev@Acme.com"))
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/audit/a-1", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "a-1"})
@@ -339,9 +345,11 @@ func TestAuditExport_NonAdmin_ScopedToOwnRows(t *testing.T) {
 		"org", "llm_call", "q", "allowed", []byte(`{}`), "", "",
 		int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-s", "sess-42")
 	// tenant ($1), scope email ($2) — exact canonical predicate first.
+	expectAuditReadScope(mock, "acme")
 	mock.ExpectQuery("SELECT id, request_id, timestamp(.+)LOWER\\(user_email\\) = ").
 		WithArgs("acme", "dev@acme.com").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest("POST", "/api/v1/audit/export?format=json", strings.NewReader(`{}`))

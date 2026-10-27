@@ -1274,7 +1274,7 @@ func TestStoreGatewayContext(t *testing.T) {
 	expiresAt := time.Now().Add(5 * time.Minute)
 
 	// Expect INSERT query
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExec(mock, "test-org", "INSERT INTO gateway_contexts").
 		WithArgs(
 			sqlmock.AnyArg(), // context_id
 			"test-client",
@@ -1288,7 +1288,7 @@ func TestStoreGatewayContext(t *testing.T) {
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err = storeGatewayContext(db, "ctx-123", "test-client", req, policyResult, expiresAt)
+	err = storeGatewayContext(db, "test-org", "ctx-123", "test-client", req, policyResult, expiresAt)
 	if err != nil {
 		t.Errorf("storeGatewayContext() error = %v", err)
 	}
@@ -1321,7 +1321,7 @@ func TestValidateGatewayContext(t *testing.T) {
 			setupMock: func() {
 				rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
 					AddRow("client-1", time.Now().Add(5*time.Minute))
-				mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+				expectOrgScopedQuery(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 					WithArgs("ctx-123").
 					WillReturnRows(rows)
 			},
@@ -1333,7 +1333,7 @@ func TestValidateGatewayContext(t *testing.T) {
 			contextID: "ctx-404",
 			clientID:  "client-1",
 			setupMock: func() {
-				mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+				expectOrgScopedQueryError(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 					WithArgs("ctx-404").
 					WillReturnError(sql.ErrNoRows)
 			},
@@ -1347,7 +1347,7 @@ func TestValidateGatewayContext(t *testing.T) {
 			setupMock: func() {
 				rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
 					AddRow("client-1", time.Now().Add(-10*time.Minute))
-				mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+				expectOrgScopedQuery(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 					WithArgs("ctx-old").
 					WillReturnRows(rows)
 			},
@@ -1360,7 +1360,7 @@ func TestValidateGatewayContext(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.setupMock()
 
-			valid, err := validateGatewayContext(db, tt.contextID, tt.clientID)
+			valid, err := validateGatewayContext(db, "test-org", tt.contextID, tt.clientID)
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error, got nil")
@@ -1407,7 +1407,7 @@ func TestStoreLLMCallAudit(t *testing.T) {
 	}
 
 	// Expect INSERT query
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExec(mock, "org-1", "INSERT INTO llm_call_audits").
 		WithArgs(
 			"audit-123",
 			"ctx-123",
@@ -1455,7 +1455,7 @@ func TestStoreLLMCallAudit_WithError(t *testing.T) {
 	}
 
 	// Expect INSERT to fail
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExecError(mock, "org-1", "INSERT INTO llm_call_audits").
 		WillReturnError(fmt.Errorf("database error"))
 
 	err = storeLLMCallAudit(db, "audit-456", req, 0.003, "org-1")
@@ -1489,7 +1489,7 @@ func TestQueueGatewayContext_WithAuditQueue(t *testing.T) {
 	defer func() { auditManager = oldAuditManager }()
 
 	// Setup mock expectation for gateway context insert
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExec(mock, "test-org", "INSERT INTO gateway_contexts").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := PreCheckRequest{
@@ -1507,7 +1507,7 @@ func TestQueueGatewayContext_WithAuditQueue(t *testing.T) {
 	expiresAt := time.Now().Add(5 * time.Minute)
 
 	// Queue the context
-	err = queueGatewayContext("ctx-queue-test", "test-client", req, policyResult, expiresAt)
+	err = queueGatewayContext("ctx-queue-test", "test-client", "test-org", req, policyResult, expiresAt)
 	if err != nil {
 		t.Errorf("queueGatewayContext() error = %v", err)
 	}
@@ -1547,7 +1547,7 @@ func TestQueueLLMCallAudit_WithAuditQueue(t *testing.T) {
 	defer func() { auditManager = oldAuditManager }()
 
 	// Setup mock expectation for LLM audit insert
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExec(mock, "org-1", "INSERT INTO llm_call_audits").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := AuditLLMCallRequest{
@@ -1600,7 +1600,7 @@ func TestQueueGatewayContext_FallbackToDirectDB(t *testing.T) {
 	defer func() { auditManager = oldAuditManager }()
 
 	// Expect direct DB insert via storeGatewayContext
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExec(mock, "test-org", "INSERT INTO gateway_contexts").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := PreCheckRequest{
@@ -1618,7 +1618,7 @@ func TestQueueGatewayContext_FallbackToDirectDB(t *testing.T) {
 	expiresAt := time.Now().Add(5 * time.Minute)
 
 	// Should fallback to direct DB write
-	err = queueGatewayContext("ctx-fallback-test", "test-client", req, policyResult, expiresAt)
+	err = queueGatewayContext("ctx-fallback-test", "test-client", "test-org", req, policyResult, expiresAt)
 	if err != nil {
 		t.Errorf("queueGatewayContext() error = %v (expected fallback to direct DB)", err)
 	}
@@ -1648,7 +1648,7 @@ func TestQueueLLMCallAudit_FallbackToDirectDB(t *testing.T) {
 	defer func() { auditManager = oldAuditManager }()
 
 	// Expect direct DB insert via storeLLMCallAudit
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExec(mock, "org-1", "INSERT INTO llm_call_audits").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := AuditLLMCallRequest{
@@ -1699,7 +1699,7 @@ func TestQueueGatewayContext_NoStorageAvailable(t *testing.T) {
 	expiresAt := time.Now().Add(5 * time.Minute)
 
 	// Should not error even with no storage available
-	err := queueGatewayContext("ctx-no-storage", "test-client", req, policyResult, expiresAt)
+	err := queueGatewayContext("ctx-no-storage", "test-client", "test-org", req, policyResult, expiresAt)
 	if err != nil {
 		t.Errorf("queueGatewayContext() should not error with no storage, got: %v", err)
 	}
@@ -1868,7 +1868,7 @@ func TestStoreGatewayContext_Success(t *testing.T) {
 	}
 
 	// Expect INSERT
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExec(mock, "test-org", "INSERT INTO gateway_contexts").
 		WithArgs(
 			"test-context-id",
 			"test-client",
@@ -1882,7 +1882,7 @@ func TestStoreGatewayContext_Success(t *testing.T) {
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err = storeGatewayContext(db, "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
+	err = storeGatewayContext(db, "test-org", "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
 	if err != nil {
 		t.Errorf("storeGatewayContext failed: %v", err)
 	}
@@ -1910,10 +1910,10 @@ func TestStoreGatewayContext_DBError(t *testing.T) {
 		Blocked: false,
 	}
 
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExecError(mock, "test-org", "INSERT INTO gateway_contexts").
 		WillReturnError(fmt.Errorf("database error"))
 
-	err = storeGatewayContext(db, "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
+	err = storeGatewayContext(db, "test-org", "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
 	if err == nil {
 		t.Error("Expected error when DB insert fails")
 	}
@@ -1931,11 +1931,11 @@ func TestValidateGatewayContext_NotFound(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+	expectOrgScopedQueryError(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 		WithArgs("nonexistent-context").
 		WillReturnError(sql.ErrNoRows)
 
-	valid, err := validateGatewayContext(db, "nonexistent-context", "test-client")
+	valid, err := validateGatewayContext(db, "test-org", "nonexistent-context", "test-client")
 	if err != nil {
 		t.Errorf("Expected no error for not found, got: %v", err)
 	}
@@ -1959,11 +1959,11 @@ func TestValidateGatewayContext_Expired(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
 		AddRow("test-client", time.Now().Add(-1*time.Hour)) // Expired 1 hour ago
 
-	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+	expectOrgScopedQuery(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 		WithArgs("expired-context").
 		WillReturnRows(rows)
 
-	valid, err := validateGatewayContext(db, "expired-context", "test-client")
+	valid, err := validateGatewayContext(db, "test-org", "expired-context", "test-client")
 	if err != nil {
 		t.Errorf("Expected no error for expired, got: %v", err)
 	}
@@ -1987,11 +1987,11 @@ func TestValidateGatewayContext_ClientMismatch(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
 		AddRow("different-client", time.Now().Add(5*time.Minute))
 
-	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+	expectOrgScopedQuery(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 		WithArgs("test-context").
 		WillReturnRows(rows)
 
-	_, err = validateGatewayContext(db, "test-context", "wrong-client")
+	_, err = validateGatewayContext(db, "test-org", "test-context", "wrong-client")
 	if err == nil {
 		t.Error("Expected error for client mismatch")
 	}
@@ -2012,11 +2012,11 @@ func TestValidateGatewayContext_Valid(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
 		AddRow("test-client", time.Now().Add(5*time.Minute))
 
-	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+	expectOrgScopedQuery(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 		WithArgs("valid-context").
 		WillReturnRows(rows)
 
-	valid, err := validateGatewayContext(db, "valid-context", "test-client")
+	valid, err := validateGatewayContext(db, "test-org", "valid-context", "test-client")
 	if err != nil {
 		t.Errorf("Expected no error for valid context, got: %v", err)
 	}
@@ -2051,7 +2051,7 @@ func TestStoreLLMCallAudit_Success(t *testing.T) {
 		Metadata:  map[string]interface{}{"key": "value"},
 	}
 
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExec(mock, "org-1", "INSERT INTO llm_call_audits").
 		WithArgs(
 			"test-audit-id",
 			"test-context",
@@ -2099,7 +2099,7 @@ func TestStoreLLMCallAudit_DBError(t *testing.T) {
 		LatencyMs: 1500,
 	}
 
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExecError(mock, "org-1", "INSERT INTO llm_call_audits").
 		WillReturnError(fmt.Errorf("database error"))
 
 	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005, "org-1")
@@ -2238,11 +2238,11 @@ func TestValidateGatewayContext_DBError(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+	expectOrgScopedQueryError(mock, "test-org", "SELECT client_id, expires_at FROM gateway_contexts").
 		WithArgs("test-context").
 		WillReturnError(fmt.Errorf("database error"))
 
-	_, err = validateGatewayContext(db, "test-context", "test-client")
+	_, err = validateGatewayContext(db, "test-org", "test-context", "test-client")
 	if err == nil {
 		t.Error("Expected error when DB query fails")
 	}
@@ -3210,6 +3210,10 @@ func (m *mockCostRepository) SaveAlert(ctx context.Context, alert *cost.BudgetAl
 
 func (m *mockCostRepository) GetRecentAlerts(ctx context.Context, budgetID string, limit int) ([]cost.BudgetAlert, error) {
 	return nil, nil
+}
+
+func (m *mockCostRepository) GetRecentAlertsScoped(ctx context.Context, budgetID, orgID string, limit int) ([]cost.BudgetAlert, error) {
+	return m.GetRecentAlerts(ctx, budgetID, limit)
 }
 
 func (m *mockCostRepository) GetUnacknowledgedAlerts(ctx context.Context, budgetID string) ([]cost.BudgetAlert, error) {

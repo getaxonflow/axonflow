@@ -58,6 +58,15 @@ func captureAuditDetails(t *testing.T, columns int) *[]byte {
 	return expectAuditDetails(installUsageDBMock(t), columns)
 }
 
+func captureValidatorAuditDetails(t *testing.T, columns int, validator string) *[]byte {
+	t.Helper()
+	mock := installUsageDBMock(t)
+	if validator == legacyValidatorIndonesia {
+		expectIndonesiaPIIDetectionEvent(mock)
+	}
+	return expectAuditDetails(mock, columns)
+}
+
 // expectAuditDetails is captureAuditDetails on a usage database already
 // installed (setupPreCheckAuditTest installs its own).
 func expectAuditDetails(mock sqlmock.Sqlmock, columns int) *[]byte {
@@ -68,7 +77,7 @@ func expectAuditDetails(mock sqlmock.Sqlmock, columns int) *[]byte {
 		args[i] = sqlmock.AnyArg()
 	}
 	args[13] = captureArg{dst: details}
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
 	return details
 }
 
@@ -116,7 +125,7 @@ func TestAValidatorThatBlocksAheadOfTheEngineIsNamedOnDecide(t *testing.T) {
 	} {
 		t.Run(c.name+": a recorded pii=block blocks ahead of the engine, and the record says so", func(t *testing.T) {
 			installNIKWorld(t, org, DetectionActionBlock)
-			details := captureAuditDetails(t, 21)
+			details := captureValidatorAuditDetails(t, 21, c.validator)
 			resp := decideForLegacy(t, c.query)
 			want := legacyActed(c.validator, legacyActionBlocked)
 			if resp.Verdict != VerdictDeny || !reflect.DeepEqual(resp.LegacyValidators, want) {
@@ -128,7 +137,7 @@ func TestAValidatorThatBlocksAheadOfTheEngineIsNamedOnDecide(t *testing.T) {
 		})
 		t.Run(c.name+": CONTROL, no override recorded: nothing acts ahead of the engine", func(t *testing.T) {
 			installNIKWorld(t, org, "")
-			details := captureAuditDetails(t, 21)
+			details := captureValidatorAuditDetails(t, 21, c.validator)
 			resp := decideForLegacy(t, c.query)
 			if len(resp.LegacyValidators) != 0 || resp.Engine != decisionEngineAnchored {
 				t.Fatalf("engine=%q legacy_validators=%+v; want the anchored engine's verdict and no validator acting", resp.Engine, resp.LegacyValidators)
@@ -173,7 +182,7 @@ func TestAValidatorThatBlocksAheadOfTheEngineIsNamedOnThePreCheck(t *testing.T) 
 func TestAValidatorThatActsAheadOfTheEngineIsNamedOnTheMCPResponse(t *testing.T) {
 	t.Run("a recorded pii=redact: the validator masks, the engine decides the masked content, and both are said", func(t *testing.T) {
 		withMCPPIIAction(t, DetectionActionRedact)
-		details := captureAuditDetails(t, 20)
+		details := captureValidatorAuditDetails(t, 20, legacyValidatorIndonesia)
 		m := checkOutputTool(t, map[string]interface{}{"connector_type": "postgres", "message": validNIKResponse})
 		want := legacyActed(legacyValidatorIndonesia, legacyActionMasked)
 		if m["allowed"] != true || m["engine"] != decisionEngineAnchored || !reflect.DeepEqual(m["legacy_validators"], want) {
@@ -187,7 +196,7 @@ func TestAValidatorThatActsAheadOfTheEngineIsNamedOnTheMCPResponse(t *testing.T)
 		withMCPPIIAction(t, DetectionActionBlock)
 		// The block's row is writeExplainableAuditLog's 19-column insert, and the
 		// validator is its only author: the pass never ran.
-		details := captureAuditDetails(t, 19)
+		details := captureValidatorAuditDetails(t, 19, legacyValidatorIndonesia)
 		m := checkOutputTool(t, map[string]interface{}{"connector_type": "postgres", "message": validNIKResponse})
 		want := legacyActed(legacyValidatorIndonesia, legacyActionBlocked)
 		if m["allowed"] != false || m["engine"] != nil || !reflect.DeepEqual(m["legacy_validators"], want) {
@@ -270,7 +279,7 @@ func TestAValidatorsRedactionIsCarriedOntoTheVerdictOnDecide(t *testing.T) {
 		policy := legacyValidatorPolicyIDs[c.validator]
 		t.Run(c.name+": a caller that declares redaction is allowed, and handed it", func(t *testing.T) {
 			installValidatorOnlyWorld(t, org, DetectionActionRedact)
-			details := captureAuditDetails(t, 21)
+			details := captureValidatorAuditDetails(t, 21, c.validator)
 			resp := decideForLegacyWith(t, c.query, redactionHandshake(t))
 			if resp.Verdict != VerdictAllow || requestRedactions(resp) != 1 {
 				t.Fatalf("verdict=%q obligations=%+v; want allow carrying one request-content redact_pii", resp.Verdict, resp.Obligations)
@@ -284,7 +293,7 @@ func TestAValidatorsRedactionIsCarriedOntoTheVerdictOnDecide(t *testing.T) {
 		})
 		t.Run(c.name+": a caller that declares nothing is never handed a bare allow", func(t *testing.T) {
 			installValidatorOnlyWorld(t, org, DetectionActionRedact)
-			details := captureAuditDetails(t, 21)
+			details := captureValidatorAuditDetails(t, 21, c.validator)
 			resp := decideForLegacyWith(t, c.query, "")
 			// The fail-open this closes: an allow with the identifier in it and no
 			// instruction to redact. Whether a caller that declares nothing is refused
@@ -304,7 +313,7 @@ func TestAValidatorsRedactionIsCarriedOntoTheVerdictOnDecide(t *testing.T) {
 		})
 		t.Run(c.name+": CONTROL, no override recorded: no redaction, and no validator named", func(t *testing.T) {
 			installValidatorOnlyWorld(t, org, "")
-			details := captureAuditDetails(t, 21)
+			details := captureValidatorAuditDetails(t, 21, c.validator)
 			resp := decideForLegacyWith(t, c.query, redactionHandshake(t))
 			if resp.Verdict != VerdictAllow || requestRedactions(resp) != 0 || len(resp.LegacyValidators) != 0 {
 				t.Fatalf("verdict=%q obligations=%+v legacy_validators=%+v; want a plain allow", resp.Verdict, resp.Obligations, resp.LegacyValidators)
@@ -317,7 +326,7 @@ func TestAValidatorsRedactionIsCarriedOntoTheVerdictOnDecide(t *testing.T) {
 	t.Run("a caller that declares nothing is judged exactly as for the engine's own redaction", func(t *testing.T) {
 		outcome := func(install func(*testing.T)) (string, int) {
 			install(t)
-			captureAuditDetails(t, 21)
+			captureValidatorAuditDetails(t, 21, legacyValidatorIndonesia)
 			resp := decideForLegacyWith(t, "Customer NIK is "+fixtureNIK, "")
 			return resp.Verdict, requestRedactions(resp)
 		}
@@ -331,7 +340,7 @@ func TestAValidatorsRedactionIsCarriedOntoTheVerdictOnDecide(t *testing.T) {
 	})
 	t.Run("already met: when the engine redacts the content itself, the validator adds no second instruction", func(t *testing.T) {
 		installNIKWorld(t, org, DetectionActionRedact)
-		captureAuditDetails(t, 21)
+		captureValidatorAuditDetails(t, 21, legacyValidatorIndonesia)
 		resp := decideForLegacyWith(t, "Customer NIK is "+fixtureNIK, redactionHandshake(t))
 		want := legacyActed(legacyValidatorIndonesia, legacyActionRedactionRequired)
 		if resp.Verdict != VerdictAllow || requestRedactions(resp) != 1 || !reflect.DeepEqual(resp.LegacyValidators, want) {

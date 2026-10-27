@@ -48,7 +48,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.2.0
+  version: 11.3.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -2244,6 +2244,92 @@ paths:
   # ==========================================================================
   # MCP Server (Streamable HTTP, spec 2025-06-18)
   # ==========================================================================
+
+  /api/v1/billing/checkout:
+    post:
+      tags: [Community SaaS]
+      summary: Create the authenticated tenant's Hosted Starter checkout
+      description: |
+        Creates a Stripe Checkout subscription session for the authenticated
+        Community SaaS tenant. The tenant is taken only from validated Basic
+        credentials; no tenant identifier is accepted in the body. Available
+        only when the paid-hosted launch gate and billing configuration are
+        ready. Repeated requests are idempotent within the checkout generation.
+      operationId: createHostedStarterCheckout
+      security:
+        - BasicAuth: []
+      responses:
+        '201':
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout_url, session_id, price_usd_monthly, plan]
+                properties:
+                  checkout_url: {type: string, format: uri}
+                  session_id: {type: string}
+                  price_usd_monthly: {type: string, example: '9.99'}
+                  plan: {type: object, additionalProperties: true}
+        '401': {description: Missing or invalid tenant credentials}
+        '409': {description: Tenant already has an active entitlement or recent pending checkout}
+        '503': {description: Paid launch, entitlement storage, or billing configuration is unavailable}
+
+  /api/v1/billing/status:
+    post:
+      tags: [Community SaaS]
+      summary: Read the authenticated tenant's hosted billing and usage status
+      description: |
+        Returns subscription status, current monthly governed-event usage,
+        configured Hosted Starter limits, and whether a Stripe customer portal
+        can be opened. The response is tenant-isolated by authenticated scope
+        and PostgreSQL row-level security.
+      operationId: getHostedBillingStatus
+      security:
+        - BasicAuth: []
+      responses:
+        '200':
+          description: Tenant billing status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, price_usd_monthly, plan, billing_portal_available, launch_accepted, usage]
+                properties:
+                  status: {type: string, enum: [payment_required, pending, active, prepaid_active, past_due, canceled]}
+                  paid_until: {type: string, format: date-time, nullable: true}
+                  price_usd_monthly: {type: string, example: '9.99'}
+                  plan: {type: object, additionalProperties: true}
+                  billing_portal_available: {type: boolean}
+                  launch_accepted: {type: boolean}
+                  usage: {type: object, additionalProperties: true}
+        '401': {description: Missing or invalid tenant credentials}
+        '503': {description: Billing status or usage storage is unavailable}
+
+  /api/v1/billing/portal:
+    post:
+      tags: [Community SaaS]
+      summary: Create the authenticated tenant's Stripe customer portal session
+      description: |
+        Creates a short-lived Stripe Billing Portal URL for a tenant that
+        already has a Stripe customer. The customer identifier is looked up
+        from tenant-scoped storage and is never accepted from the request.
+      operationId: createHostedBillingPortalSession
+      security:
+        - BasicAuth: []
+      responses:
+        '201':
+          description: Customer portal session created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [portal_url]
+                properties:
+                  portal_url: {type: string, format: uri}
+        '401': {description: Missing or invalid tenant credentials}
+        '404': {description: The tenant has no Stripe billing account}
+        '503': {description: Billing portal configuration is unavailable}
 
   /api/v1/register:
     post:
@@ -6355,7 +6441,7 @@ components:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.9.1"
+            openclaw: "2.10.0"
             claude-code: "1.13.0"
             cursor: "1.9.0"
             codex: "1.9.0"
@@ -7467,6 +7553,16 @@ components:
             The approval a retry spends (#4370), for a client that cannot set
             the `X-Axonflow-Approval-Id` header (see that parameter). Never
             part of what the approval binds.
+        expected_policy_bundle:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: |
+            Optional pin for the exact composed policy bundle the caller
+            reviewed. If the active bundle differs, the Agent returns a deny
+            with reason `policy_bundle_mismatch` before queueing or spending an
+            approval. The pin is part of the approval binding, so an approved
+            retry must send the same value. Use the `policy_bundle` returned by
+            `/api/v1/decide`, rather than a typed policy artifact digest.
         stage:
           type: string
           enum: [llm, tool, agent]

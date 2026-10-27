@@ -359,7 +359,7 @@ func TestEnvelopeJSONFieldOrder(t *testing.T) {
 		`"resets_at":`,
 		`"upgrade":`,
 		`"compare_url":"https://getaxonflow.com/pricing/"`,
-		`"buy_url":"https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"`,
+		`"buy_url":"https://getaxonflow.com/pricing/"`,
 	}
 	for _, k := range wantKeys {
 		if !strings.Contains(body, k) {

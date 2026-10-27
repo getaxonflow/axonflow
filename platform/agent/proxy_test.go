@@ -126,6 +126,7 @@ func TestProxyToPortal_NotConfigured(t *testing.T) {
 
 func TestProxyToOrchestrator_Success(t *testing.T) {
 	// Create a mock backend server
+	expectedHost := ""
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify headers are preserved
 		if r.Header.Get("X-Tenant-ID") != "test-tenant" {
@@ -134,12 +135,28 @@ func TestProxyToOrchestrator_Success(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("Authorization header not preserved, got: %s", r.Header.Get("Authorization"))
 		}
+		if r.Host != expectedHost {
+			t.Errorf("target Host = %q, want %q", r.Host, expectedHost)
+		}
+		if got := r.Header.Get("X-Forwarded-For"); got != "192.0.2.1" {
+			t.Errorf("X-Forwarded-For = %q, want the proxy-observed client IP", got)
+		}
+		if got := r.Header.Get("X-Forwarded-Host"); got != "example.com" {
+			t.Errorf("X-Forwarded-Host = %q, want the inbound host", got)
+		}
+		if got := r.Header.Get("X-Forwarded-Proto"); got != "http" {
+			t.Errorf("X-Forwarded-Proto = %q, want http", got)
+		}
+		if got := r.Header.Get("X-Axonflow-Proxy-Auth"); got == "" || got == "forged" {
+			t.Errorf("internal proxy token was not replaced after hop-by-hop header removal: %q", got)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"policies":[],"pagination":{"page":1,"page_size":20,"total_items":0,"total_pages":0}}`))
 	}))
 	defer backend.Close()
+	expectedHost = strings.TrimPrefix(backend.URL, "http://")
 
 	handler, err := NewReverseProxyHandler(ProxyConfig{
 		OrchestratorInternalURL: backend.URL,
@@ -151,6 +168,13 @@ func TestProxyToOrchestrator_Success(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("Authorization", "Bearer test-token")
+	// Caller-supplied forwarding metadata must not survive Rewrite, and naming
+	// the internal token as hop-by-hop must not remove the token we add there.
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Forwarded-Host", "attacker.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Axonflow-Proxy-Auth", "forged")
+	req.Header.Set("Connection", "X-Axonflow-Proxy-Auth")
 	w := httptest.NewRecorder()
 
 	handler.ProxyToOrchestrator(w, req)

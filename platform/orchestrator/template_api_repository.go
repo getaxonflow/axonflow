@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
 
 // TemplateRepository handles database operations for policy templates
@@ -203,9 +205,10 @@ func (r *TemplateRepository) RecordUsage(ctx context.Context, usage *PolicyTempl
 		VALUES ($1, $2, $3, $4, $5)
 	`
 
-	_, err := r.db.ExecContext(ctx, query,
-		usage.ID, usage.TemplateID, usage.TenantID, usage.PolicyID, usage.UsedAt,
-	)
+	err := rls.WithOrgScope(ctx, r.db, usage.TenantID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, query, usage.ID, usage.TemplateID, usage.TenantID, usage.PolicyID, usage.UsedAt)
+		return err
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to record template usage: %w", err)
@@ -225,29 +228,29 @@ func (r *TemplateRepository) GetUsageStats(ctx context.Context, tenantID string)
 		ORDER BY usage_count DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	var stats []TemplateUsageStatsResponse
+	err := rls.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var stat TemplateUsageStatsResponse
+			var lastUsed sql.NullTime
+			if err := rows.Scan(&stat.TemplateID, &stat.TemplateName, &stat.UsageCount, &lastUsed); err != nil {
+				return err
+			}
+			if lastUsed.Valid {
+				stat.LastUsedAt = lastUsed.Time
+			}
+			stats = append(stats, stat)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage stats: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var stats []TemplateUsageStatsResponse
-	for rows.Next() {
-		var stat TemplateUsageStatsResponse
-		var lastUsed sql.NullTime
-
-		err := rows.Scan(&stat.TemplateID, &stat.TemplateName, &stat.UsageCount, &lastUsed)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan usage stat: %w", err)
-		}
-
-		if lastUsed.Valid {
-			stat.LastUsedAt = lastUsed.Time
-		}
-
-		stats = append(stats, stat)
-	}
-
 	return stats, nil
 }
 
@@ -261,22 +264,25 @@ func (r *TemplateRepository) GetUsageByTenant(ctx context.Context, tenantID stri
 		LIMIT 100
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	var usages []PolicyTemplateUsage
+	err := rls.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var usage PolicyTemplateUsage
+			if err := rows.Scan(&usage.ID, &usage.TemplateID, &usage.TenantID, &usage.PolicyID, &usage.UsedAt); err != nil {
+				return err
+			}
+			usages = append(usages, usage)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage by tenant: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var usages []PolicyTemplateUsage
-	for rows.Next() {
-		var usage PolicyTemplateUsage
-		err := rows.Scan(&usage.ID, &usage.TemplateID, &usage.TenantID, &usage.PolicyID, &usage.UsedAt)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan usage: %w", err)
-		}
-		usages = append(usages, usage)
-	}
-
 	return usages, nil
 }
 

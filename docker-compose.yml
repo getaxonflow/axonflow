@@ -99,7 +99,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.2.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.3.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -333,7 +333,7 @@ services:
       # runs) and `conformance` (the ADR-065 fixture world, publishable against
       # and NEVER activatable).
       AXONFLOW_TYPED_AUTHORING_CATALOG: ${AXONFLOW_TYPED_AUTHORING_CATALOG:-deployment}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.2.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.3.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -420,7 +420,7 @@ services:
 
   # Prometheus - Metrics collection
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v3.15.1
     container_name: axonflow-prometheus
     restart: unless-stopped
     command:
@@ -429,6 +429,7 @@ services:
       - '--storage.tsdb.retention.time=15d'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.external-url=/prometheus'
     volumes:
       - ./config/prometheus-local.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -437,7 +438,7 @@ services:
     networks:
       - axonflow-network
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/prometheus/-/healthy || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -445,7 +446,9 @@ services:
   # Grafana - Metrics visualization
   # Login: admin / grafana_localdev456
   grafana:
-    image: grafana/grafana:10.2.2
+    build:
+      context: ./grafana
+    image: axonflow-grafana:local
     container_name: axonflow-grafana
     restart: unless-stopped
     environment:
@@ -457,6 +460,12 @@ services:
       GF_DATABASE_USER: grafana
       GF_DATABASE_PASSWORD: grafana_localdev456
       GF_DATABASE_SSL_MODE: disable
+      PROMETHEUS_URL: http://prometheus:9090/prometheus
+      USAGE_DB_HOST: postgres:5432
+      USAGE_DB_NAME: axonflow
+      USAGE_DB_USER: axonflow
+      USAGE_DB_PASSWORD: localdev123
+      USAGE_DB_SSL_MODE: disable
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_INSTALL_PLUGINS: ""
     ports:
@@ -468,7 +477,6 @@ services:
         condition: service_healthy
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./config/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -484,14 +492,19 @@ services:
   # MinIO (S3-compatible object storage for local development)
   # Bucket creation is handled via the entrypoint script below.
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z
+    image: axonflow-minio:local
+    build:
+      context: .
+      dockerfile: minio/Dockerfile
     entrypoint: >
       /bin/sh -c "
+      set -e;
       minio server /data --console-address ':9001' &
       MINIO_PID=$$!;
       until mc ready local 2>/dev/null; do sleep 1; done;
       mc alias set local http://localhost:9000 minioadmin minioadmin;
       mc mb --ignore-existing local/axonflow-test-bucket;
+      mc anonymous set none local/axonflow-test-bucket;
       wait $$MINIO_PID
       "
     container_name: axonflow-minio

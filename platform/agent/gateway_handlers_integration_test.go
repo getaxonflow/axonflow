@@ -218,7 +218,7 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		auditHTTP.Header.Set("X-License-Key", "test-key")
 
 		auditRR := httptest.NewRecorder()
-		handleAuditLLMCall(auditRR, auditHTTP)
+		apiAuthMiddleware(http.HandlerFunc(handleAuditLLMCall)).ServeHTTP(auditRR, auditHTTP)
 
 		// Check status
 		if auditRR.Code != http.StatusOK {

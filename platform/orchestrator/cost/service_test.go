@@ -284,6 +284,10 @@ func (m *MockRepository) GetRecentAlerts(ctx context.Context, budgetID string, l
 	return result, nil
 }
 
+func (m *MockRepository) GetRecentAlertsScoped(ctx context.Context, budgetID, orgID string, limit int) ([]BudgetAlert, error) {
+	return m.GetRecentAlerts(ctx, budgetID, limit)
+}
+
 func (m *MockRepository) Ping(ctx context.Context) error {
 	return m.pingErr
 }

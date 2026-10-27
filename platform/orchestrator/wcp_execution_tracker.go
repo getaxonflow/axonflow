@@ -522,14 +522,18 @@ func mapWCPGateDecision(d workflow_control.GateDecision) execution.GateDecision 
 // and calling it from the direct-lookup strategy instead closes the gap for
 // both id shapes.
 //
-// #3065: the underlying read is a named UNSCOPED one. This reconciliation
-// holds no request scope, and its result is authorized by the HTTP layer
-// (UnifiedExecutionHandler.checkTenantOwnership) before it reaches a client.
+// #3065: a unified execution already carries both ownership keys, so use them
+// to bind the workflow read before touching workflow_steps. This matters once
+// Hosted forces RLS on the workflow tables: an unscoped reconciliation would
+// either require a privileged pool or silently leave a stale approval in the
+// response. It also keeps this best-effort projection from becoming an
+// unnecessary cross-tenant read before the HTTP layer performs its final
+// ownership check.
 func (t *WCPExecutionTracker) ReconcileStepApprovals(ctx context.Context, workflowID string, status *execution.ExecutionStatus) {
 	if t == nil || t.wcpService == nil || status == nil || workflowID == "" || len(status.Steps) == 0 {
 		return
 	}
-	if wf, err := t.wcpService.GetWorkflowUnscoped(ctx, workflowID); err == nil && wf != nil {
+	if wf, err := t.wcpService.GetWorkflow(ctx, workflowID, status.TenantID, status.OrgID); err == nil && wf != nil {
 		reconcileStepApprovals(status.Steps, wf.Steps)
 	}
 }

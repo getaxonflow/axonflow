@@ -678,7 +678,11 @@ func amendAuditForWithheldObligation(ctx context.Context, db *sql.DB, decisionID
 	// the evaluator's verdict is captured before it is overwritten. The plane
 	// term keeps the statement from reaching a row this surface did not write,
 	// even if a decision id were ever reused on another plane.
-	res, err := db.ExecContext(ctx, `
+	orgID := OrgIDFromContext(ctx)
+	var res sql.Result
+	err := WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		res, execErr = tx.ExecContext(ctx, `
 		UPDATE audit_logs
 		   SET policy_decision = $1,
 		       policy_details = jsonb_set(
@@ -689,6 +693,8 @@ func amendAuditForWithheldObligation(ctx context.Context, db *sql.DB, decisionID
 		 WHERE decision_id = ANY($2)
 		   AND plane = $3
 	`, AuditVerdictBlocked, pq.Array(ids), PlaneAccessEvaluation)
+		return execErr
+	})
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues(authzenAuditAmendFailed).Inc()
 		log.Printf("⚠️ [AuthZEN] audit amendment failed (non-fatal): the durable record still reads %q "+

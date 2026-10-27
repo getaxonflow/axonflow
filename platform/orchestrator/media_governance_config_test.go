@@ -878,12 +878,6 @@ func TestNewMediaGovernanceConfigStore_Success(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Table created by migration 059 — loadAll returns empty result
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}))
-
 	store, err := NewMediaGovernanceConfigStore(db)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -910,16 +904,12 @@ func TestNewMediaGovernanceConfigStore_LoadAllError_StillReturnsStore(t *testing
 	}
 	defer db.Close()
 
-	// Table created by migration 059 — loadAll fails (logged as warning, does not return error)
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnError(fmt.Errorf("connection reset"))
-
 	store, err := NewMediaGovernanceConfigStore(db)
 	if err != nil {
-		t.Fatalf("expected no error (loadAll failure is non-fatal), got %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
 	if store == nil {
-		t.Fatal("expected non-nil store even when loadAll fails")
+		t.Fatal("expected non-nil store")
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -936,19 +926,25 @@ func TestNewMediaGovernanceConfigStore_LoadAllPopulatesCache(t *testing.T) {
 
 	ts := time.Date(2026, 2, 18, 10, 0, 0, 0, time.UTC)
 
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}).AddRow("tenant-1", true, []byte(`["nsfw","text-in-image"]`), ts, "admin@example.com").
-			AddRow("tenant-2", false, []byte(`[]`), ts, ""))
-
 	store, err := NewMediaGovernanceConfigStore(db)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	// Check cache populated correctly
-	cfg1 := store.Get("tenant-1")
+	// Construction must not perform an unscoped cross-tenant preload. A
+	// tenant is loaded only through a transaction carrying its own RLS scope.
+	expectAuditReadScope(mock, "tenant-1")
+	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
+		WithArgs("tenant-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
+		}).AddRow("tenant-1", true, []byte(`["nsfw","text-in-image"]`), ts, "admin@example.com"))
+	mock.ExpectCommit()
+
+	cfg1, err := store.GetFromDB(context.Background(), "tenant-1")
+	if err != nil {
+		t.Fatalf("tenant-scoped load: %v", err)
+	}
 	if cfg1 == nil {
 		t.Fatal("expected tenant-1 in cache")
 	}
@@ -960,14 +956,6 @@ func TestNewMediaGovernanceConfigStore_LoadAllPopulatesCache(t *testing.T) {
 	}
 	if cfg1.UpdatedBy != "admin@example.com" {
 		t.Errorf("expected UpdatedBy=admin@example.com, got %q", cfg1.UpdatedBy)
-	}
-
-	cfg2 := store.Get("tenant-2")
-	if cfg2 == nil {
-		t.Fatal("expected tenant-2 in cache")
-	}
-	if cfg2.Enabled {
-		t.Error("expected tenant-2 Enabled=false")
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -989,30 +977,9 @@ func TestLoadAll_Success(t *testing.T) {
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	ts := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}).AddRow("t-load-1", true, []byte(`["nsfw"]`), ts, "user1@test.com").
-			AddRow("t-load-2", false, []byte(`["violence-detection","facial-recognition"]`), ts, "user2@test.com"))
-
 	err = store.loadAll()
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if len(store.cache) != 2 {
-		t.Errorf("expected 2 entries in cache, got %d", len(store.cache))
-	}
-
-	cfg1 := store.cache["t-load-1"]
-	if cfg1 == nil || !cfg1.Enabled || len(cfg1.AllowedAnalyzers) != 1 {
-		t.Error("t-load-1 not loaded correctly")
-	}
-
-	cfg2 := store.cache["t-load-2"]
-	if cfg2 == nil || cfg2.Enabled || len(cfg2.AllowedAnalyzers) != 2 {
-		t.Error("t-load-2 not loaded correctly")
+	if err == nil || !containsSubstring(err.Error(), "cross-tenant") {
+		t.Fatalf("expected cross-tenant preload refusal, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1032,14 +999,9 @@ func TestLoadAll_EmptyResult(t *testing.T) {
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}))
-
 	err = store.loadAll()
-	if err != nil {
-		t.Fatalf("expected no error for empty result, got %v", err)
+	if err == nil || !containsSubstring(err.Error(), "cross-tenant") {
+		t.Fatalf("expected cross-tenant preload refusal, got %v", err)
 	}
 
 	if len(store.cache) != 0 {
@@ -1063,12 +1025,9 @@ func TestLoadAll_QueryError(t *testing.T) {
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnError(fmt.Errorf("connection refused"))
-
 	err = store.loadAll()
-	if err == nil {
-		t.Fatal("expected error when query fails")
+	if err == nil || !containsSubstring(err.Error(), "cross-tenant") {
+		t.Fatalf("expected cross-tenant preload refusal, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1088,16 +1047,9 @@ func TestLoadAll_ScanError(t *testing.T) {
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	// Return a row with wrong types to trigger scan error
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}).AddRow("tenant-ok", true, []byte(`["nsfw"]`), time.Now(), "user@test.com").
-			AddRow(nil, "not-a-bool", nil, nil, nil))
-
 	err = store.loadAll()
-	if err == nil {
-		t.Fatal("expected error when scan fails")
+	if err == nil || !containsSubstring(err.Error(), "cross-tenant") {
+		t.Fatalf("expected cross-tenant preload refusal, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1117,24 +1069,9 @@ func TestLoadAll_InvalidAnalyzersJSON_StillLoads(t *testing.T) {
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	ts := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
-		}).AddRow("tenant-bad-json", true, []byte(`not-valid-json`), ts, "admin"))
-
 	err = store.loadAll()
-	if err != nil {
-		t.Fatalf("expected no error (invalid JSON logged as warning), got %v", err)
-	}
-
-	// Entry should still be cached, just with nil analyzers
-	cfg := store.cache["tenant-bad-json"]
-	if cfg == nil {
-		t.Fatal("expected tenant-bad-json in cache despite invalid analyzer JSON")
-	}
-	if !cfg.Enabled {
-		t.Error("expected Enabled=true")
+	if err == nil || !containsSubstring(err.Error(), "cross-tenant") {
+		t.Fatalf("expected cross-tenant preload refusal, got %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1162,9 +1099,11 @@ func TestConfigStore_Delete_Success(t *testing.T) {
 		Enabled:  true,
 	}
 
+	expectAuditReadScope(mock, "tenant-del")
 	mock.ExpectExec("DELETE FROM media_governance_config WHERE tenant_id").
 		WithArgs("tenant-del").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	err = store.Delete(ctx, "tenant-del")
@@ -1200,9 +1139,11 @@ func TestConfigStore_Delete_DBError(t *testing.T) {
 		Enabled:  true,
 	}
 
+	expectAuditReadScope(mock, "tenant-del-err")
 	mock.ExpectExec("DELETE FROM media_governance_config WHERE tenant_id").
 		WithArgs("tenant-del-err").
 		WillReturnError(fmt.Errorf("foreign key constraint"))
+	mock.ExpectRollback()
 
 	ctx := context.Background()
 	err = store.Delete(ctx, "tenant-del-err")
@@ -1236,9 +1177,11 @@ func TestConfigStore_Delete_NonexistentTenant(t *testing.T) {
 	}
 
 	// Delete a tenant that doesn't exist - should succeed (0 rows affected)
+	expectAuditReadScope(mock, "nonexistent")
 	mock.ExpectExec("DELETE FROM media_governance_config WHERE tenant_id").
 		WithArgs("nonexistent").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	err = store.Delete(ctx, "nonexistent")

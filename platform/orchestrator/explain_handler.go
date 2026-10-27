@@ -172,14 +172,16 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		entryDetails   sql.NullString // policy_details JSON
 	)
 
-	err := usageDB.QueryRow(`
-		SELECT user_email, tenant_id, timestamp, policy_decision, policy_details
-		FROM audit_logs
-		WHERE policy_details->>'decision_id' = $1
-		  AND tenant_id = $2
-		ORDER BY timestamp DESC LIMIT 1
-	`, decisionID, callerTenant).Scan(&entryUserEmail, &entryTenant, &entryTime,
-		&entryDecision, &entryDetails)
+	err := agent.WithOrgScope(r.Context(), usageDB, callerOrg, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(r.Context(), `
+			SELECT user_email, tenant_id, timestamp, policy_decision, policy_details
+			FROM audit_logs
+			WHERE policy_details->>'decision_id' = $1
+			  AND tenant_id = $2
+			ORDER BY timestamp DESC LIMIT 1
+		`, decisionID, callerTenant).Scan(&entryUserEmail, &entryTenant, &entryTime,
+			&entryDecision, &entryDetails)
+	})
 
 	if err == sql.ErrNoRows {
 		// 404 (rather than 403) so the response shape is identical for
@@ -245,7 +247,7 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		entryDecision.String, reasonStr, details)
 
 	// Historical hit count for same (policy_id, user_email) in rolling 24h.
-	exp.HistoricalHitCountSession = queryHistoricalHitCount(callerEmail, exp.PolicyMatches, entryTime)
+	exp.HistoricalHitCountSession = queryHistoricalHitCount(r.Context(), callerOrg, callerEmail, exp.PolicyMatches, entryTime)
 
 	// V1.1: latest_policy_version. Single-row lookup against the FIRST
 	// matched policy_id; matches the same "first match" anchoring rule
@@ -426,7 +428,7 @@ func queryLatestPolicyVersion(scopeOrg, policyID string) int {
 
 // queryHistoricalHitCount returns how many times the same (policy_id,
 // user_email) combination appeared in audit_logs within the session window.
-func queryHistoricalHitCount(userEmail string, matches []ExplainPolicy, anchorTime time.Time) int {
+func queryHistoricalHitCount(ctx context.Context, orgID, userEmail string, matches []ExplainPolicy, anchorTime time.Time) int {
 	if userEmail == "" || len(matches) == 0 {
 		return 0
 	}
@@ -442,15 +444,17 @@ func queryHistoricalHitCount(userEmail string, matches []ExplainPolicy, anchorTi
 	// (@>) instead of string LIKE — LIKE would have matched "pol-1" against
 	// records containing "pol-10", which is wrong.
 	var count int
-	err := usageDB.QueryRow(`
-		SELECT COUNT(*) FROM audit_logs
-		WHERE user_email = $1
-		  AND timestamp >= $2
-		  AND (
-		        policy_details->'policy_ids' @> to_jsonb($3::text)
-		        OR policy_details->>'policy_id' = $3
-		      )
-	`, userEmail, windowStart, policyID).Scan(&count)
+	err := agent.WithOrgScope(ctx, usageDB, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM audit_logs
+			WHERE user_email = $1
+			  AND timestamp >= $2
+			  AND (
+			        policy_details->'policy_ids' @> to_jsonb($3::text)
+			        OR policy_details->>'policy_id' = $3
+			      )
+		`, userEmail, windowStart, policyID).Scan(&count)
+	})
 	if err != nil {
 		log.Printf("historical hit count: query failed: %v", err)
 		return 0

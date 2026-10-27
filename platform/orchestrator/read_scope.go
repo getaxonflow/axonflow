@@ -302,9 +302,11 @@ type callerReadScope struct {
 //     for the full argument; in short, a csaas tenant is single-operator
 //     (OrgID == TenantID == ClientID == cs_<uuid>) so "tenant-wide" is exactly
 //     that one evaluator's own data, but the tenant boundary on these reads is
-//     a SQL `tenant_id = $N` predicate fed from X-Tenant-ID — with no RLS
-//     backstop on audit_logs — so the grant is only sound when that header is
-//     agent-stamped rather than self-asserted.
+//     a SQL `tenant_id = $N` predicate fed from X-Tenant-ID. Hosted migration
+//     192 now adds a forced, restrictive org guard to audit_logs as defense in
+//     depth, but this authorization decision remains sound only when the
+//     header is agent-stamped rather than self-asserted; deployments outside
+//     the Hosted migration chain cannot assume that database backstop.
 //
 //  3. Everything else — no/invalid proxy-auth, or proxy-auth without an
 //     elevating header — is least-privilege: own-rows on the canonical

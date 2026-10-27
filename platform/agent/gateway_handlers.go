@@ -1043,7 +1043,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Store context via AuditQueue for reliable persistence
 	// Uses retry with exponential backoff and fallback file if DB fails
-	if err := queueGatewayContext(contextID, client.ID, req, policyResult, expiresAt); err != nil {
+	if err := queueGatewayContext(contextID, client.ID, client.OrgID, req, policyResult, expiresAt); err != nil {
 		log.Printf("⚠️ [Pre-check] Failed to queue context: %v (continuing)", err)
 		gatewayAuditQueuedTotal.WithLabelValues("gateway_context", "error").Inc()
 	} else {
@@ -1334,7 +1334,7 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 
 	// Validate context exists and is not expired (if DB available)
 	if authDB != nil {
-		valid, err := validateGatewayContext(authDB, req.ContextID, effectiveClientID)
+		valid, err := validateGatewayContext(authDB, OrgIDFromContext(r.Context()), req.ContextID, effectiveClientID)
 		if err != nil {
 			log.Printf("⚠️ [Audit] Context validation warning: %v", err)
 		} else if !valid {
@@ -1492,21 +1492,23 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 }
 
 // storeGatewayContext stores the pre-check context for audit linking
-func storeGatewayContext(db *sql.DB, contextID, clientID string, req PreCheckRequest, policyResult *StaticPolicyResult, expiresAt time.Time) error {
+func storeGatewayContext(db *sql.DB, orgID, contextID, clientID string, req PreCheckRequest, policyResult *StaticPolicyResult, expiresAt time.Time) error {
 	// Hash sensitive data for privacy
 	userTokenHash := hashString(req.UserToken)
 	queryHash := hashString(req.Query)
 
-	_, err := db.Exec(`
+	return WithOrgScope(context.Background(), db, orgID, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`
 		INSERT INTO gateway_contexts (
 			context_id, client_id, user_token_hash, query_hash,
 			data_sources, policies_evaluated, approved, block_reason, expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, contextID, clientID, userTokenHash, queryHash,
-		pq.Array(req.DataSources), pq.Array(policyResult.TriggeredPolicies),
-		!policyResult.Blocked, policyResult.Reason, expiresAt)
+			pq.Array(req.DataSources), pq.Array(policyResult.TriggeredPolicies),
+			!policyResult.Blocked, policyResult.Reason, expiresAt)
 
-	return err
+		return err
+	})
 }
 
 // validateGatewayContext checks if context exists and is not expired.
@@ -1523,14 +1525,16 @@ func storeGatewayContext(db *sql.DB, contextID, clientID string, req PreCheckReq
 // (blocked) never proceeds to the audit step anyway, so there is no second
 // request to gate. Wiring the column would change behavior with no decision it
 // could correctly make — hence documented-as-superseded rather than read.
-func validateGatewayContext(db *sql.DB, contextID, clientID string) (bool, error) {
+func validateGatewayContext(db *sql.DB, orgID, contextID, clientID string) (bool, error) {
 	var expiresAt time.Time
 	var storedClientID string
 
-	err := db.QueryRow(`
+	err := WithOrgScope(context.Background(), db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRow(`
 		SELECT client_id, expires_at FROM gateway_contexts
 		WHERE context_id = $1
 	`, contextID).Scan(&storedClientID, &expiresAt)
+	})
 
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -1567,17 +1571,19 @@ func validateGatewayContext(db *sql.DB, contextID, clientID string) (bool, error
 func storeLLMCallAudit(db *sql.DB, auditID string, req AuditLLMCallRequest, estimatedCost float64, orgID string) error {
 	metadataJSON, _ := json.Marshal(req.Metadata)
 
-	_, err := db.Exec(`
+	return WithOrgScope(context.Background(), db, orgID, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`
 		INSERT INTO llm_call_audits (
 			audit_id, context_id, client_id, provider, model,
 			prompt_tokens, completion_tokens, total_tokens,
 			latency_ms, estimated_cost_usd, metadata, org_id
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, auditID, req.ContextID, req.ClientID, req.Provider, req.Model,
-		req.TokenUsage.PromptTokens, req.TokenUsage.CompletionTokens, req.TokenUsage.TotalTokens,
-		req.LatencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
+			req.TokenUsage.PromptTokens, req.TokenUsage.CompletionTokens, req.TokenUsage.TotalTokens,
+			req.LatencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
 
-	return err
+		return err
+	})
 }
 
 // nullIfBlankOrg binds a blank organisation as SQL NULL.
@@ -1636,7 +1642,7 @@ func RegisterGatewayHandlers(r *mux.Router) {
 
 // queueGatewayContext queues the pre-check context via AuditQueue
 // Falls back to direct DB write if queue is unavailable
-func queueGatewayContext(contextID, clientID string, req PreCheckRequest, policyResult *StaticPolicyResult, expiresAt time.Time) error {
+func queueGatewayContext(contextID, clientID, orgID string, req PreCheckRequest, policyResult *StaticPolicyResult, expiresAt time.Time) error {
 	// Hash sensitive data for privacy
 	userTokenHash := hashString(req.UserToken)
 	queryHash := hashString(req.Query)
@@ -1651,6 +1657,7 @@ func queueGatewayContext(contextID, clientID string, req PreCheckRequest, policy
 		Type:      AuditTypeGatewayContext,
 		Timestamp: time.Now(),
 		ClientID:  clientID,
+		OrgID:     orgID,
 		Details: map[string]interface{}{
 			"context_id":         contextID,
 			"user_token_hash":    userTokenHash,
@@ -1676,7 +1683,7 @@ func queueGatewayContext(contextID, clientID string, req PreCheckRequest, policy
 
 	// Fallback to direct DB write (legacy behavior)
 	if authDB != nil {
-		return storeGatewayContext(authDB, contextID, clientID, req, policyResult, expiresAt)
+		return storeGatewayContext(authDB, orgID, contextID, clientID, req, policyResult, expiresAt)
 	}
 
 	return nil // No storage available, but don't fail the request

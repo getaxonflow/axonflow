@@ -1,5 +1,5 @@
 # Multi-stage build for AxonFlow Orchestrator
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 # Build argument for edition (community or enterprise)
 # Default to community - enterprise builds must explicitly set EDITION=enterprise
@@ -11,7 +11,7 @@ ARG EDITION=community
 # — the SAME source as the io.opencontainer.image.version label below, so the
 # baked binary version and the image label never drift. Re-declared here in the
 # builder stage (ARG scope is per-stage); the final stage declares it again.
-ARG AXONFLOW_VERSION=11.2.0
+ARG AXONFLOW_VERSION=11.3.0
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -128,6 +128,7 @@ RUN --mount=type=bind,source=.,target=/src \
       go get github.com/aws/aws-sdk-go-v2/service/marketplacemetering@v1.40.1 && \
       go get github.com/aws/aws-sdk-go-v2/service/bedrockruntime@v1.57.3 && \
       go get github.com/snowflakedb/gosnowflake@v1.19.1 && \
+      go get github.com/apache/thrift@v0.24.0 && \
       echo "Enterprise dependencies downloaded"; \
     elif [ "$EDITION" = "enterprise" ]; then \
       echo "ERROR: Enterprise build requested but ee/ directory not found" && exit 1; \
@@ -179,7 +180,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=11.2.0
+ARG AXONFLOW_VERSION=11.3.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

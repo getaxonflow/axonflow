@@ -86,7 +86,7 @@ func TestHandleDecide_RequireUserToken_FlagOn_AbsentToken_401_AuditsUserTokenReq
 	rutInstallCache(t, rutDecideOrg, true)
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictBlocked,
 			decideSecurityDetailsMatcher{wantEvent: "user_token_required"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -149,7 +149,7 @@ func TestHandleDecide_RequireUserToken_FlagOn_InvalidToken_StillAuditsUserTokenR
 	t.Cleanup(func() { jwtSecret = origSecret })
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictBlocked,
 			decideSecurityDetailsMatcher{wantEvent: "user_token_rejected"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -179,7 +179,7 @@ func TestHandleDecide_RequireUserToken_ReaderError_FailsClosed_AbsentTokenReject
 	rutInstallCacheErr(t)
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(decideAuditInsertArgs(AuditVerdictBlocked,
 			decideSecurityDetailsMatcher{wantEvent: "user_token_required"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))

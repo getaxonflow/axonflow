@@ -116,6 +116,12 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 		_, _ = w.Write(errBody)
 		return true
 	}
+	// Paid-first hosted tenants use the idempotent monthly governed-event
+	// ledger. Keep the per-minute safety cap above, but do not also apply the
+	// superseded Free/Pro daily quota from the prepaid plugin plan.
+	if auth.Client != nil && auth.Client.HostedPaid {
+		return false
+	}
 
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
@@ -184,6 +190,9 @@ func enforceMCPSessionLimits(w http.ResponseWriter, req *jsonRPCRequest, session
 		writeMinuteRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, perMinute, 60)
 		return LimitTypePerMinute
 	}
+	if session.client != nil && session.client.HostedPaid {
+		return ""
+	}
 
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
@@ -245,20 +254,22 @@ func NewReverseProxyHandler(config ProxyConfig) (*ReverseProxyHandler, error) {
 
 // createReverseProxy creates a configured httputil.ReverseProxy for a target URL
 func createReverseProxy(target *url.URL, serviceName string) *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy := &httputil.ReverseProxy{}
 
-	// Custom director to preserve headers and set correct host
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
+	// Rewrite runs after hop-by-hop and caller-supplied forwarding headers are
+	// removed, so the internal service token cannot be stripped through a
+	// malicious Connection header and forwarding metadata cannot be spoofed.
+	proxy.Rewrite = func(req *httputil.ProxyRequest) {
+		req.SetURL(target)
+		req.SetXForwarded()
 		// Preserve original headers that are important for tenant isolation
 		// X-Tenant-ID, X-User-ID, Authorization, X-License-Key are already in the request
 		// Just ensure Host header is set correctly for the target
-		req.Host = target.Host
+		req.Out.Host = target.Host
 
 		// Inject internal service token to prove request came through the Agent gateway.
 		// The orchestrator can verify this to reject direct access attempts.
-		req.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
+		req.Out.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 	}
 
 	// Custom error handler for logging and 502 responses
@@ -580,6 +591,14 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// isCommunitySaasMode() branch — community-saas users couldn't use proxy routes.
 		auth, authErr := Authenticate(r, nil)
 		if authErr != nil {
+			if authErr.Code == "hosted_payment_required" {
+				writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+				return
+			}
+			if authErr.Code == "hosted_monthly_limit_reached" {
+				writeHostedMonthlyLimitReached(w)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			if authErr.RetryAfter != "" {
 				w.Header().Set("Retry-After", authErr.RetryAfter)

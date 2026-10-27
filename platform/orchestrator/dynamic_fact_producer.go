@@ -15,6 +15,7 @@ import (
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
+	"axonflow/platform/shared/moneyfacts"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -342,6 +343,11 @@ func (p *dynamicFactProducer) Produce(ctx context.Context, req OrchestratorReque
 				facts[path] = fact
 			}
 		}
+		for path, key := range stepMoneyFacts {
+			if fact, ok := p.fact(path, key, req, state, now); ok {
+				facts[path] = fact
+			}
+		}
 	}
 	routes.SegmentNotEstablished = !established && routes.NothingPermitted() && !unsegmented.NothingPermitted()
 	return facts, routes, nil
@@ -382,6 +388,16 @@ var stepContextFacts = map[string]string{
 	"args.context.tool__name": "tool_name",
 }
 
+// stepMoneyFacts read the actual step and tool inputs copied by the workflow
+// gate. Only the two step planes state them. Absence is explicit, and malformed
+// money is unknown rather than silently coerced from text.
+var stepMoneyFacts = map[string]string{
+	"args.step_input.amount_minor": "step_input.amount_minor",
+	"args.step_input.currency":     "step_input.currency",
+	"args.tool_input.amount_minor": "tool_input.amount_minor",
+	"args.tool_input.currency":     "tool_input.currency",
+}
+
 // stepContextPaths is stepContextFacts' paths in a stable order.
 func stepContextPaths() []string {
 	out := make([]string, 0, len(stepContextFacts))
@@ -413,6 +429,23 @@ func (p *dynamicFactProducer) fact(path, field string, req OrchestratorRequest, 
 		return contract.Attribute{}, false
 	}
 	prov := factProvenance(path)
+	if key, isMoney := stepMoneyFacts[path]; isMoney {
+		if !p.statesStepContext {
+			return contract.Attribute{}, false
+		}
+		value, present := req.Context[key]
+		if !present || value == nil {
+			return contract.Absent(prov, 1, now), true
+		}
+		if typ == pdp.TypeNumber {
+			if amount, valid := moneyfacts.Minor(value); valid {
+				return contract.Known(amount, prov, 1, now), true
+			}
+		} else if currency, valid := moneyfacts.Currency(value); valid {
+			return contract.Known(currency, prov, 1, now), true
+		}
+		return contract.Unknown(contract.ReasonMalformedValue, prov, 1, now), true
+	}
 	if key, isStepContext := stepContextFacts[path]; isStepContext {
 		// STATED ONLY ON A STEP PLANE, whichever source asked. A legacy row that
 		// reads `step_name` would otherwise state the label on /api/v1/process

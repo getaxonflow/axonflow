@@ -154,7 +154,7 @@ func TestHandleMCPToolsCall_ATierGateRefusalAnswers403OnTheWire(t *testing.T) {
 	origDB := usageDB
 	usageDB = db
 	defer func() { usageDB = origDB }()
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), key, key, key,

@@ -11,6 +11,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -53,10 +54,12 @@ func (r *PostgresRepository) CreateSubscription(ctx context.Context, sub *Subscr
 	sub.CreatedAt = now
 	sub.UpdatedAt = now
 
-	_, err := r.db.ExecContext(ctx, query,
-		sub.ID, sub.URL, pq.Array(sub.Events), sub.Secret, sub.Active,
-		sub.TenantID, sub.OrgID, sub.Description, sub.CreatedAt, sub.UpdatedAt)
-	return err
+	return rls.WithOrgScope(ctx, r.db, sub.OrgID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, query,
+			sub.ID, sub.URL, pq.Array(sub.Events), sub.Secret, sub.Active,
+			sub.TenantID, sub.OrgID, sub.Description, sub.CreatedAt, sub.UpdatedAt)
+		return err
+	})
 }
 
 // GetSubscription retrieves a subscription by id, bound to the caller's
@@ -85,9 +88,11 @@ func (r *PostgresRepository) GetSubscription(ctx context.Context, id, tenantID, 
 		FROM webhook_subscriptions WHERE id = $1 AND tenant_id = $2 AND org_id = $3`
 
 	var sub Subscription
-	err := r.db.QueryRowContext(ctx, query, id, tenantID, orgID).Scan(
-		&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Active,
-		&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, id, tenantID, orgID).Scan(
+			&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Active,
+			&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt)
+	})
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("webhook subscription not found: %s", id)
 	}
@@ -112,7 +117,12 @@ func (r *PostgresRepository) UpdateSubscription(ctx context.Context, sub *Subscr
 	query := `UPDATE webhook_subscriptions SET url = $1, events = $2, active = $3, description = $4, updated_at = NOW()
 		WHERE id = $5 AND tenant_id = $6 AND org_id = $7`
 
-	result, err := r.db.ExecContext(ctx, query, sub.URL, pq.Array(sub.Events), sub.Active, sub.Description, sub.ID, tenantID, orgID)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query, sub.URL, pq.Array(sub.Events), sub.Active, sub.Description, sub.ID, tenantID, orgID)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -128,7 +138,12 @@ func (r *PostgresRepository) DeleteSubscription(ctx context.Context, id, tenantI
 		return err
 	}
 
-	result, err := r.db.ExecContext(ctx, `DELETE FROM webhook_subscriptions WHERE id = $1 AND tenant_id = $2 AND org_id = $3`, id, tenantID, orgID)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, `DELETE FROM webhook_subscriptions WHERE id = $1 AND tenant_id = $2 AND org_id = $3`, id, tenantID, orgID)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -147,22 +162,27 @@ func (r *PostgresRepository) ListSubscriptions(ctx context.Context, tenantID, or
 	query := `SELECT id, url, events, active, tenant_id, org_id, description, created_at, updated_at
 		FROM webhook_subscriptions WHERE tenant_id = $1 AND org_id = $2 ORDER BY created_at DESC`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID, orgID)
+	var subs []Subscription
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID, orgID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sub Subscription
+			if err := rows.Scan(&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Active,
+				&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
+				return err
+			}
+			subs = append(subs, sub)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var subs []Subscription
-	for rows.Next() {
-		var sub Subscription
-		if err := rows.Scan(&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Active,
-			&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
+	return subs, nil
 }
 
 func (r *PostgresRepository) GetActiveSubscriptionsForEvent(ctx context.Context, eventType, tenantID, orgID string) ([]Subscription, error) {
@@ -178,31 +198,41 @@ func (r *PostgresRepository) GetActiveSubscriptionsForEvent(ctx context.Context,
 		WHERE active = true AND tenant_id = $1 AND org_id = $2 AND $3 = ANY(events)
 		ORDER BY created_at ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, tenantID, orgID, eventType)
+	var subs []Subscription
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID, orgID, eventType)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var sub Subscription
+			if err := rows.Scan(&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Secret, &sub.Active,
+				&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
+				return err
+			}
+			subs = append(subs, sub)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var subs []Subscription
-	for rows.Next() {
-		var sub Subscription
-		if err := rows.Scan(&sub.ID, &sub.URL, pq.Array(&sub.Events), &sub.Secret, &sub.Active,
-			&sub.TenantID, &sub.OrgID, &sub.Description, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
+	return subs, nil
 }
 
 func (r *PostgresRepository) RecordDelivery(ctx context.Context, delivery *Delivery) error {
+	if err := tenantscope.ValidateRowKeys(delivery.OrgID, delivery.TenantID); err != nil {
+		return err
+	}
 	query := `INSERT INTO webhook_deliveries (subscription_id, event_type, payload, status, attempts, last_attempt_at, response_status, response_body, error, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
-	_, err := r.db.ExecContext(ctx, query,
-		delivery.SubscriptionID, delivery.EventType, delivery.Payload, delivery.Status,
-		delivery.Attempts, delivery.LastAttemptAt, delivery.ResponseStatus, delivery.ResponseBody,
-		delivery.Error, delivery.CreatedAt)
-	return err
+	return rls.WithOrgScope(ctx, r.db, delivery.OrgID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, query,
+			delivery.SubscriptionID, delivery.EventType, delivery.Payload, delivery.Status,
+			delivery.Attempts, delivery.LastAttemptAt, delivery.ResponseStatus, delivery.ResponseBody,
+			delivery.Error, delivery.CreatedAt)
+		return err
+	})
 }

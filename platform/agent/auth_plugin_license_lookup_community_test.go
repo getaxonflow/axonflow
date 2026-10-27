@@ -18,6 +18,11 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func expectPluginLicenseScopeBegin(mock sqlmock.Sqlmock, tenantID string) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).WithArgs(tenantID).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 // Community-build coverage for auth_plugin_license_lookup.go. The
 // existing enterprise-build test suite covers the same surface under
 // `//go:build enterprise`; community-build CI's Unit Tests: Agent job
@@ -32,10 +37,12 @@ func TestLookupActivePluginLicenseTier_Community_HappyPath(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
 
+	expectPluginLicenseScopeBegin(mock, "tenant-A")
 	mock.ExpectQuery(`SELECT tier, tenant_id, revoked_at\s+FROM plugin_user_licenses\s+WHERE license_token_jti = \$1`).
 		WithArgs("jti-happy").
 		WillReturnRows(sqlmock.NewRows([]string{"tier", "tenant_id", "revoked_at"}).
 			AddRow("Pro", "tenant-A", nil))
+	mock.ExpectCommit()
 
 	tier, err := lookupActivePluginLicenseTier(context.Background(), db, "jti-happy", "tenant-A")
 	if err != nil {
@@ -59,8 +66,10 @@ func TestLookupActivePluginLicenseTier_Community_NilDBErrors(t *testing.T) {
 func TestLookupActivePluginLicenseTier_Community_NoRowsReturnsSentinel(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
+	expectPluginLicenseScopeBegin(mock, "t")
 	mock.ExpectQuery(`SELECT tier`).WithArgs("jti-missing").
 		WillReturnRows(sqlmock.NewRows([]string{"tier", "tenant_id", "revoked_at"}))
+	mock.ExpectRollback()
 
 	_, err := lookupActivePluginLicenseTier(context.Background(), db, "jti-missing", "t")
 	if !errors.Is(err, errPluginLicenseNotFound) {
@@ -72,9 +81,11 @@ func TestLookupActivePluginLicenseTier_Community_RevokedReturnsSentinel(t *testi
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
 	revokedAt := time.Now()
+	expectPluginLicenseScopeBegin(mock, "tenant-A")
 	mock.ExpectQuery(`SELECT tier`).WithArgs("jti-revoked").
 		WillReturnRows(sqlmock.NewRows([]string{"tier", "tenant_id", "revoked_at"}).
 			AddRow("Pro", "tenant-A", revokedAt))
+	mock.ExpectCommit()
 
 	_, err := lookupActivePluginLicenseTier(context.Background(), db, "jti-revoked", "tenant-A")
 	if !errors.Is(err, errPluginLicenseNotFound) {
@@ -85,9 +96,11 @@ func TestLookupActivePluginLicenseTier_Community_RevokedReturnsSentinel(t *testi
 func TestLookupActivePluginLicenseTier_Community_TenantMismatch(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
+	expectPluginLicenseScopeBegin(mock, "tenant-A")
 	mock.ExpectQuery(`SELECT tier`).WithArgs("jti-mismatch").
 		WillReturnRows(sqlmock.NewRows([]string{"tier", "tenant_id", "revoked_at"}).
 			AddRow("Pro", "tenant-OTHER", nil))
+	mock.ExpectCommit()
 
 	_, err := lookupActivePluginLicenseTier(context.Background(), db, "jti-mismatch", "tenant-A")
 	if !errors.Is(err, errPluginLicenseTenantMismatch) {
