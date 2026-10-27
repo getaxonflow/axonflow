@@ -4,6 +4,7 @@
 package pdp
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,7 @@ func labelDoc(policies ...Policy) *Document {
 	d.Attributes = append(d.Attributes,
 		AttributeSchema{Path: "args.context.step__name", Type: TypeString, Optional: true},
 		AttributeSchema{Path: "args.context.tool__name", Type: TypeString, Optional: true},
+		AttributeSchema{Path: "args.refund.operation", Type: TypeString, Optional: true},
 	)
 	return d
 }
@@ -288,7 +290,14 @@ func TestTheLabelListLeavesThePinnedArgumentShapesAlone(t *testing.T) {
 			t.Errorf("%q is listed as a caller-typed label but is not a caller-supplied path", path)
 		}
 	}
-	if len(CallerTypedLabelPaths) != 2 {
-		t.Errorf("the label list has %d paths %v; the ruling names exactly args.context.step__name and args.context.tool__name, and a change to it is a ruling", len(CallerTypedLabelPaths), CallerTypedLabelPaths)
+	if len(CallerTypedLabelPaths) != 3 || !slices.Contains(CallerTypedLabelPaths, "args.refund.operation") {
+		t.Errorf("the label list has %v; want the two step labels and the refund operation label", CallerTypedLabelPaths)
+	}
+}
+
+func TestRefundOperationLabelCannotGrantPermission(t *testing.T) {
+	path := "args.refund.operation"
+	if errs := labelDoc(permissionOver(Compare(path, OpEq, "issue_refund").HandlingAbsence(AbsentIsNoMatch))).Validate(); !refusedAsLabel(errs, path, "a permit the caller selects") {
+		t.Fatalf("a permission keyed on a caller refund operation was accepted: %v", errs)
 	}
 }

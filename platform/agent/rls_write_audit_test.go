@@ -670,6 +670,17 @@ func rlsGatedTables() map[string]bool {
 		"tenants",
 		// 105 FORCE
 		"community_saas_registrations",
+		// community-saas/191 FORCE. Stripe webhook writes use the admin pool;
+		// authenticated reads and usage reservations set app.current_org_id.
+		"hosted_subscriptions", "hosted_governance_events",
+		// community-saas/192 Hosted customer-data closure.
+		"audit_logs", "admin_audit_log", "llm_call_audits",
+		"plans", "plan_versions", "workflows", "workflow_steps", "workflow_checkpoints",
+		"evidence_exports", "plugin_user_licenses", "community_saas_daily_usage",
+		"tenant_deletion_log", "budgets", "usage_records", "usage_aggregates",
+		"webhook_subscriptions", "webhook_deliveries", "execution_summaries",
+		"execution_snapshots", "gateway_contexts", "policy_template_usage",
+		"media_governance_config", "budget_alerts",
 		// 106 FORCE
 		"sso_configurations", "sso_sessions", "sso_login_attempts",
 		// 107 FORCE
@@ -798,6 +809,10 @@ func rlsGatedTables() map[string]bool {
 func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 	allowFiles = map[string]string{}
 	allowFuncs = map[string]string{
+		"platform/agent/billing/webhook.go::*":                              "admin-pool: Stripe webhook must resolve signed events across tenants before tenant identity exists; run.go wires the asserted platform-admin pool.",
+		"ee/platform/agent/billing/webhook.go::*":                           "admin-pool: EE Stripe webhook mirror; signed pre-auth cross-tenant event processing.",
+		"platform/agent/plugin_license_metrics.go::*":                       "admin-pool: deployment-wide paid-license metrics poll; run.go wires the asserted platform-admin pool.",
+		"platform/orchestrator/planning/repository.go::CleanupExpiredPlans": "admin-pool: cross-organization expired-plan retention sweep; run.go injects the asserted rls3039 platform-admin pool with SetAdminDB.",
 		// platform/agent/run.go::main wires up meteringDB, sweepDB,
 		// recoveryDB, monitorDB via OpenPlatformAdminConnection. The
 		// goroutines they start (sweep, recovery, metering) run on

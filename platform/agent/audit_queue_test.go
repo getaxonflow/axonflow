@@ -18,14 +18,14 @@ import (
 // TestNewAuditQueue tests audit queue initialization
 func TestNewAuditQueue(t *testing.T) {
 	tests := []struct {
-		name         string
-		mode         AuditMode
-		queueSize    int
-		workers      int
-		fallbackPath string
+		name          string
+		mode          AuditMode
+		queueSize     int
+		workers       int
+		fallbackPath  string
 		setupFallback func(string) error
-		wantErr      bool
-		errContains  string
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name:         "valid compliance mode",
@@ -98,8 +98,8 @@ func TestNewAuditQueue(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := aq.Shutdown(ctx); err != nil {
-		t.Logf("Shutdown error (may be expected in test): %v", err)
-	}
+				t.Logf("Shutdown error (may be expected in test): %v", err)
+			}
 		})
 	}
 }
@@ -204,8 +204,8 @@ func TestLogViolation_ComplianceMode(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel()
 			if err := aq.Shutdown(ctx); err != nil {
-		t.Logf("Shutdown error (may be expected in test): %v", err)
-	}
+				t.Logf("Shutdown error (may be expected in test): %v", err)
+			}
 
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unfulfilled expectations: %v", err)
@@ -348,8 +348,8 @@ func TestLogMetric(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := aq.Shutdown(ctx); err != nil {
-		t.Logf("Shutdown error (may be expected in test): %v", err)
-	}
+				t.Logf("Shutdown error (may be expected in test): %v", err)
+			}
 
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unfulfilled expectations: %v", err)
@@ -600,8 +600,8 @@ func TestAuditModes(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := aq.Shutdown(ctx); err != nil {
-		t.Logf("Shutdown error (may be expected in test): %v", err)
-	}
+				t.Logf("Shutdown error (may be expected in test): %v", err)
+			}
 
 			// Note: We don't strictly check ExpectationsWereMet here
 			// because performance mode is async and timing can vary
@@ -824,6 +824,7 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 			name: "successful gateway context log",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"context_id":         "ctx-123",
 					"user_token_hash":    "hash123",
@@ -836,7 +837,7 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec("INSERT INTO gateway_contexts").
+				expectOrgScopedExec(mock, "org-test", "INSERT INTO gateway_contexts").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			wantErr: false,
@@ -845,6 +846,7 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 			name: "gateway context with block reason",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"context_id":         "ctx-456",
 					"user_token_hash":    "hash789",
@@ -857,7 +859,7 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec("INSERT INTO gateway_contexts").
+				expectOrgScopedExec(mock, "org-test", "INSERT INTO gateway_contexts").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			wantErr: false,
@@ -866,6 +868,7 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 			name: "database error with retries",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"context_id":         "ctx-789",
 					"user_token_hash":    "hash999",
@@ -879,11 +882,11 @@ func TestLogGatewayContext_ComplianceMode(t *testing.T) {
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Expect 3 retries
-				mock.ExpectExec("INSERT INTO gateway_contexts").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO gateway_contexts").
 					WillReturnError(sql.ErrConnDone)
-				mock.ExpectExec("INSERT INTO gateway_contexts").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO gateway_contexts").
 					WillReturnError(sql.ErrConnDone)
-				mock.ExpectExec("INSERT INTO gateway_contexts").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO gateway_contexts").
 					WillReturnError(sql.ErrConnDone)
 			},
 			wantErr: true,
@@ -952,11 +955,12 @@ func TestLogGatewayContext_PerformanceMode(t *testing.T) {
 	}
 
 	// Expect async write
-	mock.ExpectExec("INSERT INTO gateway_contexts").
+	expectOrgScopedExec(mock, "org-test", "INSERT INTO gateway_contexts").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	entry := AuditEntry{
 		ClientID: "test-client",
+		OrgID:    "org-test",
 		Details: map[string]interface{}{
 			"context_id":         "ctx-async-123",
 			"user_token_hash":    "asynchash",
@@ -1000,6 +1004,7 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 			name: "successful LLM call audit",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"audit_id":           "audit-123",
 					"context_id":         "ctx-123",
@@ -1014,7 +1019,7 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec("INSERT INTO llm_call_audits").
+				expectOrgScopedExec(mock, "org-test", "INSERT INTO llm_call_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			wantErr: false,
@@ -1023,6 +1028,7 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 			name: "LLM call audit with bedrock provider",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"audit_id":           "audit-456",
 					"context_id":         "ctx-456",
@@ -1037,7 +1043,7 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec("INSERT INTO llm_call_audits").
+				expectOrgScopedExec(mock, "org-test", "INSERT INTO llm_call_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			wantErr: false,
@@ -1046,6 +1052,7 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 			name: "database error with retries",
 			entry: AuditEntry{
 				ClientID: "test-client",
+				OrgID:    "org-test",
 				Details: map[string]interface{}{
 					"audit_id":           "audit-error",
 					"context_id":         "ctx-error",
@@ -1061,11 +1068,11 @@ func TestLogLLMCallAudit_ComplianceMode(t *testing.T) {
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Expect 3 retries
-				mock.ExpectExec("INSERT INTO llm_call_audits").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO llm_call_audits").
 					WillReturnError(sql.ErrConnDone)
-				mock.ExpectExec("INSERT INTO llm_call_audits").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO llm_call_audits").
 					WillReturnError(sql.ErrConnDone)
-				mock.ExpectExec("INSERT INTO llm_call_audits").
+				expectOrgScopedExecError(mock, "org-test", "INSERT INTO llm_call_audits").
 					WillReturnError(sql.ErrConnDone)
 			},
 			wantErr: true,
@@ -1134,11 +1141,12 @@ func TestLogLLMCallAudit_PerformanceMode(t *testing.T) {
 	}
 
 	// Expect async write
-	mock.ExpectExec("INSERT INTO llm_call_audits").
+	expectOrgScopedExec(mock, "org-test", "INSERT INTO llm_call_audits").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	entry := AuditEntry{
 		ClientID: "test-client",
+		OrgID:    "org-test",
 		Details: map[string]interface{}{
 			"audit_id":           "audit-async-123",
 			"context_id":         "ctx-async-123",
@@ -1257,6 +1265,7 @@ func TestRecoverFromFallback(t *testing.T) {
 				Type:      AuditTypeGatewayContext,
 				Timestamp: time.Now(),
 				ClientID:  "client-1",
+				OrgID:     "org-1",
 				Details: map[string]interface{}{
 					"context_id":         "ctx-recover-1",
 					"user_token_hash":    "hash1",
@@ -1272,6 +1281,7 @@ func TestRecoverFromFallback(t *testing.T) {
 				Type:      AuditTypeLLMCallAudit,
 				Timestamp: time.Now(),
 				ClientID:  "client-2",
+				OrgID:     "org-2",
 				Details: map[string]interface{}{
 					"audit_id":           "audit-recover-1",
 					"context_id":         "ctx-recover-1",
@@ -1299,9 +1309,9 @@ func TestRecoverFromFallback(t *testing.T) {
 		_ = f.Close()
 
 		// Expect DB writes for recovery
-		mock.ExpectExec("INSERT INTO gateway_contexts").
+		expectOrgScopedExec(mock, "org-1", "INSERT INTO gateway_contexts").
 			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectExec("INSERT INTO llm_call_audits").
+		expectOrgScopedExec(mock, "org-2", "INSERT INTO llm_call_audits").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 
 		aq, err := NewAuditQueue(AuditModeCompliance, 10, 1, db, fallbackPath)
@@ -1348,6 +1358,7 @@ func TestRecoverFromFallback(t *testing.T) {
 				Type:      AuditTypeGatewayContext,
 				Timestamp: time.Now(),
 				ClientID:  "client-1",
+				OrgID:     "org-1",
 				Details: map[string]interface{}{
 					"context_id":         "ctx-recover-2",
 					"user_token_hash":    "hash2",
@@ -1363,6 +1374,7 @@ func TestRecoverFromFallback(t *testing.T) {
 				Type:      AuditTypeLLMCallAudit,
 				Timestamp: time.Now(),
 				ClientID:  "client-2",
+				OrgID:     "org-2",
 				Details: map[string]interface{}{
 					"audit_id":           "audit-recover-2",
 					"context_id":         "ctx-recover-2",
@@ -1390,13 +1402,13 @@ func TestRecoverFromFallback(t *testing.T) {
 		_ = f.Close()
 
 		// First entry succeeds, second entry fails (all 3 retries)
-		mock.ExpectExec("INSERT INTO gateway_contexts").
+		expectOrgScopedExec(mock, "org-1", "INSERT INTO gateway_contexts").
 			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectExec("INSERT INTO llm_call_audits").
+		expectOrgScopedExecError(mock, "org-2", "INSERT INTO llm_call_audits").
 			WillReturnError(sql.ErrConnDone)
-		mock.ExpectExec("INSERT INTO llm_call_audits").
+		expectOrgScopedExecError(mock, "org-2", "INSERT INTO llm_call_audits").
 			WillReturnError(sql.ErrConnDone)
-		mock.ExpectExec("INSERT INTO llm_call_audits").
+		expectOrgScopedExecError(mock, "org-2", "INSERT INTO llm_call_audits").
 			WillReturnError(sql.ErrConnDone)
 
 		aq, err := NewAuditQueue(AuditModeCompliance, 10, 1, db, fallbackPath)

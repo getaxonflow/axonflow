@@ -4,7 +4,6 @@
 package workflow_control
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -27,8 +26,8 @@ func TestPostgresRepository_NullColumns_Regression(t *testing.T) {
 	defer db.Close()
 
 	repo := NewPostgresRepository(db)
-	ctx := context.Background()
 	tenantID := fmt.Sprintf("test-tenant-nullcol-%d", time.Now().UnixNano())
+	ctx := workflowRepoTestContext(t, "org-nullcol", tenantID)
 	defer cleanupTestWorkflows(t, db, tenantID)
 	wfID := fmt.Sprintf("wf_nullcol_%d", time.Now().UnixNano())
 

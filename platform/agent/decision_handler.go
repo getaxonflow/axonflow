@@ -98,6 +98,20 @@ const (
 	maxContextKeys     = 10
 )
 
+const reasonPolicyBundleMismatch = "policy_bundle_mismatch"
+
+func validPolicyBundleDigest(value string) bool {
+	if len(value) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	digest := strings.TrimPrefix(value, "sha256:")
+	if digest != strings.ToLower(digest) {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
+}
+
 // Canonical audit_logs.policy_decision vocabulary (#2643 / #2638 / ADR-058).
 //
 // These are now ALIASES onto the single shared vocabulary in
@@ -349,6 +363,10 @@ type DecideRequest struct {
 	Query          string                 `json:"query"`
 	UserToken      string                 `json:"user_token,omitempty"`
 	Context        map[string]interface{} `json:"context,omitempty"`
+	// ExpectedPolicyBundle pins this request to the exact composed bundle the
+	// caller reviewed. A mismatch is refused before an approval can be queued or
+	// spent, and the pin is part of the approval binding.
+	ExpectedPolicyBundle string `json:"expected_policy_bundle,omitempty"`
 	// ApprovalID names the approval a retry spends (#4370), for a caller that
 	// cannot set the X-Axonflow-Approval-Id header. Never part of what the
 	// approval binds.
@@ -933,6 +951,11 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		sendDecideError(w, "query field is required", http.StatusBadRequest, decisionID, traceID)
 		return
 	}
+	if req.ExpectedPolicyBundle != "" && !validPolicyBundleDigest(req.ExpectedPolicyBundle) {
+		auditEarlyDeny(AuditVerdictError, stage, nil, []string{"invalid expected_policy_bundle"})
+		sendDecideError(w, "expected_policy_bundle must be sha256 followed by 64 lowercase hexadecimal characters", http.StatusBadRequest, decisionID, traceID)
+		return
+	}
 
 	// Body parsed + stage valid: canonicalize the customer-supplied request
 	// context once. The kept map (canonical keys -> sanitized values) is threaded
@@ -1307,7 +1330,16 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
 		finCrime:            fincrimeParams,
 		finCrimeTarget:      fincrimeTarget,
+		refundFacts:         refundMoneyFacts(stage, req.Target, req.Context),
 	})
+	// A release workflow may require the exact policy set it was reviewed
+	// against. Refuse drift before the approval hold sees the request: otherwise
+	// a valid single-use approval could be spent and the client would only learn
+	// about the mismatch after the fact.
+	if req.ExpectedPolicyBundle != "" && req.ExpectedPolicyBundle != enforced.policyBundle {
+		enforced = heldAs(enforced, reasonPolicyBundleMismatch,
+			fmt.Sprintf("expected %s, active %s", req.ExpectedPolicyBundle, enforced.policyBundle))
+	}
 	// #4370: a challenge holds as a pending approval bound to exactly this
 	// decision's input (the stage, the target, the query and the context the
 	// engine decided on), and a retry naming an approved one spends it. An
@@ -1321,17 +1353,21 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// AuthZEN wire can carry the id (#4249 row filed with this fix).
 	decideApprovalID, decideApprovalConflict := approvalIDFor(r.Header.Get(approvalIDHeader), req.ApprovalID)
 	held := approvalHoldResult{enforced: enforced}
+	approvalInput := map[string]interface{}{
+		"stage": stage, "target": req.Target, "query": req.Query, "context": req.Context,
+	}
+	if req.ExpectedPolicyBundle != "" {
+		approvalInput["expected_policy_bundle"] = req.ExpectedPolicyBundle
+	}
 	if plane != PlaneAccessEvaluation {
 		held = applyApprovalHold(ctx, enforced, approvalHoldCall{
-			plane:     approvalHoldPlaneDecide,
-			route:     "decide",
-			orgID:     client.OrgID,
-			tenantID:  client.TenantID,
-			clientID:  client.ID,
-			userEmail: verifiedCallerEmail(authResult, user, userErr, req.UserToken),
-			input: map[string]interface{}{
-				"stage": stage, "target": req.Target, "query": req.Query, "context": req.Context,
-			},
+			plane:              approvalHoldPlaneDecide,
+			route:              "decide",
+			orgID:              client.OrgID,
+			tenantID:           client.TenantID,
+			clientID:           client.ID,
+			userEmail:          verifiedCallerEmail(authResult, user, userErr, req.UserToken),
+			input:              approvalInput,
 			approvalID:         decideApprovalID,
 			approvalIDConflict: decideApprovalConflict,
 			descriptor:         "decide: " + stage,
@@ -2578,6 +2614,7 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 // such rather than discarded. Only sharedaudit.LatencyUnmeasured stores NULL
 // (#3424).
 func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, decisionID, orgID, tenantID, stage, verdict string, latencyMs int64, audit decisionAuditInput) {
+	orgID = auditRLSOrgID(orgID)
 	// audit_logs NOT-NULL columns: fall back to placeholders rather than
 	// fail the insert (mirrors writeExplainableAuditLog).
 	userEmail := audit.userEmail
@@ -2675,7 +2712,8 @@ func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, 
 		sessionIDArg = sid
 	}
 
-	_, err := db.ExecContext(ctx, `
+	err := WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
@@ -2683,28 +2721,30 @@ func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, 
 			correlation_id, redacted_fields, session_id, response_time_ms
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 	`,
-		"decide_"+decisionID,                     // id (PK; one row per decision)
-		requestID,                                // request_id
-		time.Now().UTC(),                         // timestamp
-		audit.userID,                             // user_id
-		userEmail,                                // user_email
-		userRole,                                 // user_role
-		clientID,                                 // client_id
-		tenantID,                                 // tenant_id
-		orgID,                                    // org_id (nullable)
-		"decision_"+stage,                        // request_type — bounded: decision_llm|tool|agent
-		query,                                    // query
-		queryHash,                                // query_hash
-		policyDecision,                           // policy_decision — CANONICAL: allowed|blocked|redacted|needs_approval|error (#2643)
-		detailsJSON,                              // policy_details (JSONB) — decision_id still mirrored here
-		decisionID,                               // decision_id (first-class column; #2592)
-		plane,                                    // plane (surface discriminator; #2592)
-		obligationsJSON,                          // obligations (JSONB or NULL; #2592)
-		correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
-		redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2643)
-		sessionIDArg,                             // session_id (first-class column or NULL; #2896)
-		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (NULL only for LatencyUnmeasured; #3424)
-	)
+			"decide_"+decisionID,                     // id (PK; one row per decision)
+			requestID,                                // request_id
+			time.Now().UTC(),                         // timestamp
+			audit.userID,                             // user_id
+			userEmail,                                // user_email
+			userRole,                                 // user_role
+			clientID,                                 // client_id
+			tenantID,                                 // tenant_id
+			orgID,                                    // org_id (nullable)
+			"decision_"+stage,                        // request_type — bounded: decision_llm|tool|agent
+			query,                                    // query
+			queryHash,                                // query_hash
+			policyDecision,                           // policy_decision — CANONICAL: allowed|blocked|redacted|needs_approval|error (#2643)
+			detailsJSON,                              // policy_details (JSONB) — decision_id still mirrored here
+			decisionID,                               // decision_id (first-class column; #2592)
+			plane,                                    // plane (surface discriminator; #2592)
+			obligationsJSON,                          // obligations (JSONB or NULL; #2592)
+			correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
+			redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2643)
+			sessionIDArg,                             // session_id (first-class column or NULL; #2896)
+			sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (NULL only for LatencyUnmeasured; #3424)
+		)
+		return execErr
+	})
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues("insert").Inc()
 		log.Printf("⚠️ [Decide] audit log insert failed (non-fatal): %v", err)

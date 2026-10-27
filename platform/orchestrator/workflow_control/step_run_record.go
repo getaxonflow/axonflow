@@ -66,6 +66,11 @@ type StepRunRecord struct {
 // refused while another step holds a pending approval: it adds no approval, so
 // "one pending approval per workflow" still holds.
 func (s *Service) RecordStepRun(ctx context.Context, rec StepRunRecord) error {
+	var scopeErr error
+	ctx, scopeErr = bindWorkflowScope(ctx, rec.TenantID, rec.OrgID)
+	if scopeErr != nil {
+		return scopeErr
+	}
 	if rec.Reason != StepRunReasonStepModeFirstStep && rec.Reason != StepRunReasonBackfilledAtUpgrade {
 		return fmt.Errorf("step-run record: reason %q is not a declared step-run reason", rec.Reason)
 	}
@@ -164,7 +169,7 @@ const stepRunInsert = `
 func (r *PostgresRepository) InsertStepRunRecord(ctx context.Context, step *WorkflowStep) (bool, error) {
 	now := time.Now()
 	step.GateCheckedAt = now
-	err := r.db.QueryRowContext(ctx, stepRunInsert,
+	err := r.rowScoped(ctx, stepRunInsert,
 		step.WorkflowID, step.StepID, step.StepIndex, step.StepName, step.StepType,
 		step.Decision, step.DecisionReason, step.PoliciesEvaluated, step.PoliciesMatched,
 		step.StepInput, now, step.CompletionCount,
@@ -176,7 +181,7 @@ func (r *PostgresRepository) InsertStepRunRecord(ctx context.Context, step *Work
 		return false, err
 	}
 	// As AddStep does: the workflow's current step index follows a written row.
-	_, _ = r.db.ExecContext(ctx, `
+	_, _ = r.execScoped(ctx, `
 		UPDATE workflows
 		SET current_step_index = $1, updated_at = $2
 		WHERE workflow_id = $3 AND current_step_index < $1

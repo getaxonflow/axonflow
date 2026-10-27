@@ -370,7 +370,7 @@ func TestGatewayPreCheckWritesEngineSubjectTypeAndBundleOnTheAuditRow(t *testing
 		t.Run(org, func(t *testing.T) {
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(
 					sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 					sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),

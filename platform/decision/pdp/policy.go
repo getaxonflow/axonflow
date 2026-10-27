@@ -911,6 +911,7 @@ func validateCondition(policyID string, authority contract.Authority, c Conditio
 var CallerTypedLabelPaths = []string{
 	"args.context.step__name",
 	"args.context.tool__name",
+	"args.refund.operation",
 }
 
 func isCallerTypedLabel(path string) bool {

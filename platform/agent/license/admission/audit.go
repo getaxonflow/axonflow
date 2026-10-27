@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
 
 // AuditRequestType is the audit_logs.request_type every refusal row carries.
@@ -70,15 +72,18 @@ func (s *DBAuditSink) RecordRefusal(ctx context.Context, d Decision) {
 	// Bounded so a wedged database cannot hold the request that was refused.
 	wctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	_, err = s.db.ExecContext(wctx, `
+	err = rls.WithOrgScope(wctx, s.db, d.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(wctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-		"audit_tier_"+id, id, time.Now().UTC(), 0, userEmail, "principal",
-		clientID, d.OrgID, d.OrgID, AuditRequestType, query, hex.EncodeToString(sum[:]),
-		"blocked", details)
+			"audit_tier_"+id, id, time.Now().UTC(), 0, userEmail, "principal",
+			clientID, d.OrgID, d.OrgID, AuditRequestType, query, hex.EncodeToString(sum[:]),
+			"blocked", details)
+		return execErr
+	})
 	if err != nil {
 		log.Printf("[admission] audit row DROPPED (insert): %v", err)
 	}

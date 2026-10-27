@@ -102,7 +102,7 @@ fi
 if grep -q 'bbb1\|ccc1' <(grep '^rm' "$work/calls"); then
   fail "a container that is not run A's was passed to docker rm: $(grep '^rm' "$work/calls" | tr '\n' ';')"
 else
-  pass "docker rm was never called on another run's or an unlabelled container"
+  pass "container removal was never called on another run's or an unlabelled container"
 fi
 
 # 4. The trap fires twice: the second run finds nothing.

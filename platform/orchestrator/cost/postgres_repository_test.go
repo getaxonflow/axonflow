@@ -6,7 +6,6 @@ package cost
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -58,6 +57,9 @@ func TestPostgresRepository_CreateBudget(t *testing.T) {
 			UpdatedAt:       time.Now(),
 		}
 
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("INSERT INTO budgets").
 			WithArgs(
 				budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
@@ -66,6 +68,7 @@ func TestPostgresRepository_CreateBudget(t *testing.T) {
 				sqlmock.AnyArg(), sqlmock.AnyArg(),
 			).
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 
 		err := repo.CreateBudget(context.Background(), budget)
 		if err != nil {
@@ -87,12 +90,18 @@ func TestPostgresRepository_CreateBudget(t *testing.T) {
 			OnExceed:        OnExceedWarn,
 			AlertThresholds: []int{80},
 			Enabled:         true,
+			OrgID:           "org-123",
+			TenantID:        "tenant-456",
 			CreatedAt:       time.Now(),
 			UpdatedAt:       time.Now(),
 		}
 
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("INSERT INTO budgets").
 			WillReturnError(sql.ErrConnDone) // Simulate error
+		mock.ExpectRollback()
 
 		err := repo.CreateBudget(context.Background(), budget)
 		if err == nil {
@@ -102,7 +111,7 @@ func TestPostgresRepository_CreateBudget(t *testing.T) {
 }
 
 func TestPostgresRepository_GetBudget(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
@@ -111,42 +120,13 @@ func TestPostgresRepository_GetBudget(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	t.Run("budget found", func(t *testing.T) {
-		thresholds, _ := json.Marshal([]int{50, 80, 100})
-		rows := sqlmock.NewRows([]string{
-			"id", "name", "description", "scope", "scope_id", "limit_usd", "period",
-			"on_exceed", "alert_thresholds", "enabled", "org_id", "tenant_id",
-			"created_by", "updated_by", "created_at", "updated_at",
-		}).AddRow(
-			"budget-001", "Test Budget", "Description", ScopeOrganization, "org-123",
-			1000.0, PeriodMonthly, OnExceedWarn, thresholds, true,
-			"org-123", "tenant-456", "user-789", "user-789",
-			time.Now(), time.Now(),
-		)
-
-		mock.ExpectQuery("SELECT .+ FROM budgets").
-			WithArgs("budget-001").
-			WillReturnRows(rows)
-
 		budget, err := repo.GetBudget(context.Background(), "budget-001")
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if budget == nil {
-			t.Fatal("Expected budget to be returned")
-		}
-		if budget.ID != "budget-001" {
-			t.Errorf("Expected ID budget-001, got %s", budget.ID)
-		}
-		if budget.LimitUSD != 1000.0 {
-			t.Errorf("Expected LimitUSD 1000.0, got %f", budget.LimitUSD)
+		if err != ErrBudgetNotFound || budget != nil {
+			t.Fatalf("unscoped lookup must fail closed, budget=%v err=%v", budget, err)
 		}
 	})
 
 	t.Run("budget not found", func(t *testing.T) {
-		mock.ExpectQuery("SELECT .+ FROM budgets").
-			WithArgs("nonexistent").
-			WillReturnError(sql.ErrNoRows)
-
 		budget, err := repo.GetBudget(context.Background(), "nonexistent")
 		if err != ErrBudgetNotFound {
 			t.Errorf("Expected ErrBudgetNotFound, got %v", err)
@@ -205,6 +185,9 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 			TenantID: "tenant-123",
 		}
 
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("UPDATE budgets SET").
 			WithArgs(
 				budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
@@ -213,6 +196,7 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 				budget.OrgID, budget.TenantID,
 			).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
 		err := repo.UpdateBudget(context.Background(), budget)
 		if err != nil {
@@ -231,9 +215,6 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 			AlertThresholds: []int{80},
 		}
 
-		mock.ExpectExec("UPDATE budgets SET").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-
 		err := repo.UpdateBudget(context.Background(), budget)
 		if err != ErrBudgetNotFound {
 			t.Errorf("Expected ErrBudgetNotFound, got %v", err)
@@ -242,7 +223,7 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 }
 
 func TestPostgresRepository_DeleteBudget(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
@@ -251,25 +232,13 @@ func TestPostgresRepository_DeleteBudget(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	t.Run("successful delete", func(t *testing.T) {
-		mock.ExpectExec("DELETE FROM budgets WHERE").
-			WithArgs("budget-001").
-			WillReturnResult(sqlmock.NewResult(0, 1))
-
 		err := repo.DeleteBudget(context.Background(), "budget-001")
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Errorf("Unfulfilled expectations: %v", err)
+		if err != ErrBudgetNotFound {
+			t.Errorf("unscoped delete must fail closed, got %v", err)
 		}
 	})
 
 	t.Run("budget not found", func(t *testing.T) {
-		mock.ExpectExec("DELETE FROM budgets WHERE").
-			WithArgs("nonexistent").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-
 		err := repo.DeleteBudget(context.Background(), "nonexistent")
 		if err != ErrBudgetNotFound {
 			t.Errorf("Expected ErrBudgetNotFound, got %v", err)
@@ -306,6 +275,9 @@ func TestPostgresRepository_SaveUsage(t *testing.T) {
 		}
 
 		rows := sqlmock.NewRows([]string{"id"}).AddRow(int64(1))
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectQuery("INSERT INTO usage_records").
 			WithArgs(
 				record.RequestID, sqlmock.AnyArg(),
@@ -317,6 +289,7 @@ func TestPostgresRepository_SaveUsage(t *testing.T) {
 				sqlmock.AnyArg(), record.Cached,
 			).
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		err := repo.SaveUsage(context.Background(), record)
 		if err != nil {
@@ -334,12 +307,18 @@ func TestPostgresRepository_SaveUsage(t *testing.T) {
 	t.Run("save error", func(t *testing.T) {
 		record := &UsageRecord{
 			RequestID: "req-fail",
+			OrgID:     "org-123",
+			TenantID:  "tenant-456",
 			Provider:  "openai",
 			Model:     "gpt-4",
 		}
 
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectQuery("INSERT INTO usage_records").
 			WillReturnError(sql.ErrConnDone)
+		mock.ExpectRollback()
 
 		err := repo.SaveUsage(context.Background(), record)
 		if err == nil {
@@ -349,7 +328,7 @@ func TestPostgresRepository_SaveUsage(t *testing.T) {
 }
 
 func TestPostgresRepository_AcknowledgeAlert(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
@@ -358,17 +337,9 @@ func TestPostgresRepository_AcknowledgeAlert(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	t.Run("successful acknowledge", func(t *testing.T) {
-		mock.ExpectExec("UPDATE budget_alerts").
-			WithArgs(int64(1), "admin-user", sqlmock.AnyArg()).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-
 		err := repo.AcknowledgeAlert(context.Background(), 1, "admin-user")
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Errorf("Unfulfilled expectations: %v", err)
+		if err == nil {
+			t.Error("unscoped acknowledgement must fail closed")
 		}
 	})
 }
@@ -397,9 +368,13 @@ func TestPostgresRepository_GetUsageForPeriod(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"total"}).AddRow(125.50)
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+				WithArgs("org-123").WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectQuery("SELECT COALESCE\\(SUM\\(cost_usd\\), 0\\)").
 				WithArgs("scope-123", sqlmock.AnyArg(), "org-123", "tenant-456").
 				WillReturnRows(rows)
+			mock.ExpectCommit()
 
 			total, err := repo.GetUsageForPeriod(
 				context.Background(),
@@ -450,6 +425,7 @@ func TestPostgresRepository_SaveAlert(t *testing.T) {
 	t.Run("save alert", func(t *testing.T) {
 		alert := &BudgetAlert{
 			BudgetID:          "budget-1",
+			OrgID:             "org-1",
 			Threshold:         80,
 			PercentageReached: 85.0,
 			AmountUSD:         85.0,
@@ -458,9 +434,13 @@ func TestPostgresRepository_SaveAlert(t *testing.T) {
 		}
 
 		rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("org-1").WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectQuery("INSERT INTO budget_alerts").
 			WithArgs(alert.BudgetID, alert.Threshold, alert.PercentageReached, alert.AmountUSD, alert.AlertType, alert.Message, sqlmock.AnyArg()).
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		err := repo.SaveAlert(context.Background(), alert)
 		if err != nil {
@@ -473,7 +453,7 @@ func TestPostgresRepository_SaveAlert(t *testing.T) {
 }
 
 func TestPostgresRepository_GetRecentAlerts(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
@@ -482,27 +462,15 @@ func TestPostgresRepository_GetRecentAlerts(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	t.Run("get recent alerts", func(t *testing.T) {
-		rows := sqlmock.NewRows([]string{
-			"id", "budget_id", "threshold", "percentage_reached", "amount_usd",
-			"alert_type", "message", "acknowledged", "acknowledged_by", "acknowledged_at", "created_at",
-		}).AddRow(
-			1, "budget-1", 80, 85.0, 85.0, AlertTypeThresholdReached, "Test", false, nil, nil, time.Now(),
-		)
-
-		mock.ExpectQuery("SELECT (.+) FROM budget_alerts WHERE").WillReturnRows(rows)
-
 		alerts, err := repo.GetRecentAlerts(context.Background(), "budget-1", 10)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if len(alerts) != 1 {
-			t.Errorf("Expected 1 alert, got %d", len(alerts))
+		if err == nil || alerts != nil {
+			t.Fatalf("unscoped alert read must fail closed, alerts=%v err=%v", alerts, err)
 		}
 	})
 }
 
 func TestPostgresRepository_GetUnacknowledgedAlerts(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
@@ -511,21 +479,9 @@ func TestPostgresRepository_GetUnacknowledgedAlerts(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	t.Run("get unacknowledged alerts", func(t *testing.T) {
-		rows := sqlmock.NewRows([]string{
-			"id", "budget_id", "threshold", "percentage_reached", "amount_usd",
-			"alert_type", "message", "acknowledged", "acknowledged_by", "acknowledged_at", "created_at",
-		}).AddRow(
-			1, "budget-1", 80, 85.0, 85.0, AlertTypeThresholdReached, "Test", false, nil, nil, time.Now(),
-		)
-
-		mock.ExpectQuery("SELECT (.+) FROM budget_alerts WHERE").WillReturnRows(rows)
-
 		alerts, err := repo.GetUnacknowledgedAlerts(context.Background(), "budget-1")
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if len(alerts) != 1 {
-			t.Errorf("Expected 1 alert, got %d", len(alerts))
+		if err == nil || alerts != nil {
+			t.Fatalf("unscoped alert read must fail closed, alerts=%v err=%v", alerts, err)
 		}
 	})
 }

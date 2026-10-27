@@ -178,7 +178,7 @@ func TestMCPSeamAuditRowCarriesToolServerAndToolName(t *testing.T) {
 		wantServer: "payments",
 		wantTool:   "refund",
 	})
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	res, err := seam.CheckRequest(context.Background(), mcpToolsCall(t, []string{"payments"}, "refund"))
@@ -218,7 +218,7 @@ func TestMCPSeamFanoutCallAttributesNoServer(t *testing.T) {
 		wantServer: "", // must be absent — naming one of three is a WRONG row
 		wantTool:   "tools/list",
 	})
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	res, err := seam.CheckRequest(context.Background(),
@@ -473,7 +473,7 @@ func TestDecideToolAttributionAcceptsOneValueFoldedNotASecondSpelling(t *testing
 			}
 
 			args := decideAuditInsertArgs(AuditVerdictAllowed, want)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
 			req := decideEnterpriseReq(t, DecideRequest{

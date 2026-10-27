@@ -233,11 +233,11 @@ func TestHandleMCPToolsCall_TierRefusal_AuditsAsTierLimit(t *testing.T) {
 	usageDB = db
 	t.Cleanup(func() { usageDB = orig })
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), 0,
 			sqlmock.AnyArg(), "service", sqlmock.AnyArg(),
-			mcpUnauthenticatedTenant, "",
+			mcpUnauthenticatedTenant, unattributedAuditOrg,
 			"mcp_tools_call", "mcp tools/call: tier admission refused", sqlmock.AnyArg(),
 			mcpVerdictBlocked,
 			detailsNaming{"tier_limit_refused", "tier admission refused"},
@@ -282,7 +282,7 @@ func TestMCPSessionDelete_ATierRefusalIsAnsweredAsTheTierLimitAndKeepsTheSession
 	usageDB = db
 	t.Cleanup(func() { usageDB = origDB })
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),

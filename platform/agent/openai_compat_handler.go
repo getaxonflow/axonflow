@@ -18,6 +18,8 @@ package agent
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -642,15 +644,18 @@ func recordOpenAICompatAudit(enforced requestPassEnforcement, decisionID, client
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
-	_, err := authDB.Exec(`
+	err := WithOrgScope(context.Background(), authDB, orgID, func(tx *sql.Tx) error {
+		_, execErr := tx.Exec(`
 		INSERT INTO llm_call_audits (
 			audit_id, context_id, client_id, provider, model,
 			prompt_tokens, completion_tokens, total_tokens,
 			latency_ms, estimated_cost_usd, metadata, org_id
 		) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, decisionID, clientID, provider, model,
-		promptTokens, completionTokens, totalTokens,
-		latencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
+			promptTokens, completionTokens, totalTokens,
+			latencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
+		return execErr
+	})
 
 	if err != nil {
 		log.Printf("⚠️ [OpenAI-Compat] Audit recording failed (non-fatal): %v", err)

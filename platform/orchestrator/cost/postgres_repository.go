@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -46,13 +47,16 @@ func (r *PostgresRepository) CreateBudget(ctx context.Context, budget *Budget) e
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
-		budget.LimitUSD, budget.Period, budget.OnExceed, thresholds, budget.Enabled,
-		nullString(budget.OrgID), nullString(budget.TenantID),
-		nullString(budget.CreatedBy), nullString(budget.UpdatedBy),
-		budget.CreatedAt, budget.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, budget.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
+			budget.LimitUSD, budget.Period, budget.OnExceed, thresholds, budget.Enabled,
+			nullString(budget.OrgID), nullString(budget.TenantID),
+			nullString(budget.CreatedBy), nullString(budget.UpdatedBy),
+			budget.CreatedAt, budget.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return ErrBudgetExists
@@ -65,43 +69,7 @@ func (r *PostgresRepository) CreateBudget(ctx context.Context, budget *Budget) e
 
 // GetBudget retrieves a budget by ID
 func (r *PostgresRepository) GetBudget(ctx context.Context, id string) (*Budget, error) {
-	query := `
-		SELECT id, name, description, scope, scope_id, limit_usd, period,
-			   on_exceed, alert_thresholds, enabled, org_id, tenant_id,
-			   created_by, updated_by, created_at, updated_at
-		FROM budgets
-		WHERE id = $1
-	`
-
-	var budget Budget
-	var thresholds []byte
-	var description, scopeID, orgID, tenantID, createdBy, updatedBy sql.NullString
-
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
-		&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
-		&budget.Enabled, &orgID, &tenantID, &createdBy, &updatedBy,
-		&budget.CreatedAt, &budget.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, ErrBudgetNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get budget: %w", err)
-	}
-
-	budget.Description = description.String
-	budget.ScopeID = scopeID.String
-	budget.OrgID = orgID.String
-	budget.TenantID = tenantID.String
-	budget.CreatedBy = createdBy.String
-	budget.UpdatedBy = updatedBy.String
-
-	if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal alert thresholds: %w", err)
-	}
-
-	return &budget, nil
+	return nil, ErrBudgetNotFound
 }
 
 // budgetOrgScopeSQL admits a budget row ONLY when both tenancy keys match the
@@ -168,13 +136,17 @@ func (r *PostgresRepository) GetBudgetScoped(ctx context.Context, id, orgID, ten
 	var thresholds []byte
 	var description, scopeID, budgetOrgID, budgetTenantID, createdBy, updatedBy sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, id, orgID, tenantID).Scan(
-		&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
-		&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
-		&budget.Enabled, &budgetOrgID, &budgetTenantID, &createdBy, &updatedBy,
-		&budget.CreatedAt, &budget.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
+	var queryErr error
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		queryErr = tx.QueryRowContext(ctx, query, id, orgID, tenantID).Scan(
+			&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
+			&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
+			&budget.Enabled, &budgetOrgID, &budgetTenantID, &createdBy, &updatedBy,
+			&budget.CreatedAt, &budget.UpdatedAt,
+		)
+		return queryErr
+	})
+	if queryErr == sql.ErrNoRows {
 		return nil, ErrBudgetNotFound
 	}
 	if err != nil {
@@ -220,12 +192,17 @@ func (r *PostgresRepository) UpdateBudget(ctx context.Context, budget *Budget) e
 		  AND tenant_id = $14
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
-		budget.LimitUSD, budget.Period, budget.OnExceed, thresholds,
-		budget.Enabled, nullString(budget.UpdatedBy), time.Now().UTC(),
-		budget.OrgID, budget.TenantID,
-	)
+	var result sql.Result
+	err = rls.WithOrgScope(ctx, r.db, budget.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
+			budget.LimitUSD, budget.Period, budget.OnExceed, thresholds,
+			budget.Enabled, nullString(budget.UpdatedBy), time.Now().UTC(),
+			budget.OrgID, budget.TenantID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update budget: %w", err)
 	}
@@ -243,22 +220,7 @@ func (r *PostgresRepository) UpdateBudget(ctx context.Context, budget *Budget) e
 
 // DeleteBudget deletes a budget
 func (r *PostgresRepository) DeleteBudget(ctx context.Context, id string) error {
-	query := `DELETE FROM budgets WHERE id = $1`
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete budget: %w", err)
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check affected rows: %w", err)
-	}
-	if rows == 0 {
-		return ErrBudgetNotFound
-	}
-
-	return nil
+	return ErrBudgetNotFound
 }
 
 // DeleteBudgetScoped deletes a budget only when it is visible to the
@@ -271,7 +233,12 @@ func (r *PostgresRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, 
 
 	query := `DELETE FROM budgets WHERE id = $1` + budgetOrgScopeSQL
 
-	result, err := r.db.ExecContext(ctx, query, id, orgID, tenantID)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query, id, orgID, tenantID)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete budget: %w", err)
 	}
@@ -331,13 +298,6 @@ func (r *PostgresRepository) ListBudgets(ctx context.Context, opts ListBudgetsOp
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM budgets %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count budgets: %w", err)
-	}
-
 	// Get budgets
 	limit := opts.Limit
 	if limit <= 0 {
@@ -358,48 +318,60 @@ func (r *PostgresRepository) ListBudgets(ctx context.Context, opts ListBudgetsOp
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIndex, argIndex+1)
 
+	filterArgs := append([]interface{}{}, args...)
 	args = append(args, limit, offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list budgets: %w", err)
-	}
-	defer rows.Close()
-
 	var budgets []Budget
-	for rows.Next() {
-		var budget Budget
-		var thresholds []byte
-		var description, scopeID, orgID, tenantID, createdBy, updatedBy sql.NullString
-
-		if err := rows.Scan(
-			&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
-			&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
-			&budget.Enabled, &orgID, &tenantID, &createdBy, &updatedBy,
-			&budget.CreatedAt, &budget.UpdatedAt,
-		); err != nil {
-			return nil, 0, fmt.Errorf("failed to scan budget: %w", err)
+	var total int
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM budgets %s", whereClause)
+		if err := tx.QueryRowContext(ctx, countQuery, filterArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count budgets: %w", err)
 		}
-
-		budget.Description = description.String
-		budget.ScopeID = scopeID.String
-		budget.OrgID = orgID.String
-		budget.TenantID = tenantID.String
-		budget.CreatedBy = createdBy.String
-		budget.UpdatedBy = updatedBy.String
-
-		if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal thresholds: %w", err)
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list budgets: %w", err)
 		}
+		defer rows.Close()
+		for rows.Next() {
+			var budget Budget
+			var thresholds []byte
+			var description, scopeID, orgID, tenantID, createdBy, updatedBy sql.NullString
 
-		budgets = append(budgets, budget)
+			if err := rows.Scan(
+				&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
+				&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
+				&budget.Enabled, &orgID, &tenantID, &createdBy, &updatedBy,
+				&budget.CreatedAt, &budget.UpdatedAt,
+			); err != nil {
+				return fmt.Errorf("failed to scan budget: %w", err)
+			}
+
+			budget.Description = description.String
+			budget.ScopeID = scopeID.String
+			budget.OrgID = orgID.String
+			budget.TenantID = tenantID.String
+			budget.CreatedBy = createdBy.String
+			budget.UpdatedBy = updatedBy.String
+
+			if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
+				return fmt.Errorf("failed to unmarshal thresholds: %w", err)
+			}
+			budgets = append(budgets, budget)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, 0, err
 	}
-
 	return budgets, total, nil
 }
 
 // GetBudgetsForScope gets all budgets applicable to a scope
 func (r *PostgresRepository) GetBudgetsForScope(ctx context.Context, scope BudgetScope, scopeID string, orgID, tenantID string) ([]Budget, error) {
+	if err := requireBudgetScope(orgID, tenantID); err != nil {
+		return nil, err
+	}
 	query := `
 		SELECT id, name, description, scope, scope_id, limit_usd, period,
 			   on_exceed, alert_thresholds, enabled, org_id, tenant_id,
@@ -413,46 +385,51 @@ func (r *PostgresRepository) GetBudgetsForScope(ctx context.Context, scope Budge
 		ORDER BY created_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, scope, scopeID, orgID, tenantID)
+	var budgets []Budget
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, scope, scopeID, orgID, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var budget Budget
+			var thresholds []byte
+			var description, sID, oID, tID, createdBy, updatedBy sql.NullString
+			if err := rows.Scan(
+				&budget.ID, &budget.Name, &description, &budget.Scope, &sID,
+				&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
+				&budget.Enabled, &oID, &tID, &createdBy, &updatedBy,
+				&budget.CreatedAt, &budget.UpdatedAt,
+			); err != nil {
+				return err
+			}
+
+			budget.Description = description.String
+			budget.ScopeID = sID.String
+			budget.OrgID = oID.String
+			budget.TenantID = tID.String
+			budget.CreatedBy = createdBy.String
+			budget.UpdatedBy = updatedBy.String
+
+			if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
+				continue
+			}
+			budgets = append(budgets, budget)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get budgets for scope: %w", err)
 	}
-	defer rows.Close()
-
-	var budgets []Budget
-	for rows.Next() {
-		var budget Budget
-		var thresholds []byte
-		var description, sID, oID, tID, createdBy, updatedBy sql.NullString
-
-		if err := rows.Scan(
-			&budget.ID, &budget.Name, &description, &budget.Scope, &sID,
-			&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
-			&budget.Enabled, &oID, &tID, &createdBy, &updatedBy,
-			&budget.CreatedAt, &budget.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan budget: %w", err)
-		}
-
-		budget.Description = description.String
-		budget.ScopeID = sID.String
-		budget.OrgID = oID.String
-		budget.TenantID = tID.String
-		budget.CreatedBy = createdBy.String
-		budget.UpdatedBy = updatedBy.String
-
-		if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
-			continue // Skip malformed entries
-		}
-
-		budgets = append(budgets, budget)
-	}
-
 	return budgets, nil
 }
 
 // SaveUsage saves a usage record
 func (r *PostgresRepository) SaveUsage(ctx context.Context, record *UsageRecord) error {
+	if err := tenantscope.ValidateRowKeys(record.OrgID, record.TenantID); err != nil {
+		return err
+	}
 	query := `
 		INSERT INTO usage_records (
 			request_id, timestamp, org_id, tenant_id, team_id, agent_id,
@@ -462,15 +439,17 @@ func (r *PostgresRepository) SaveUsage(ctx context.Context, record *UsageRecord)
 		RETURNING id
 	`
 
-	err := r.db.QueryRowContext(ctx, query,
-		record.RequestID, record.Timestamp,
-		nullString(record.OrgID), nullString(record.TenantID),
-		nullString(record.TeamID), nullString(record.AgentID),
-		nullString(record.WorkflowID), nullString(record.UserID),
-		record.Provider, record.Model,
-		record.TokensIn, record.TokensOut, record.CostUSD,
-		nullString(record.RequestType), record.Cached,
-	).Scan(&record.ID)
+	err := rls.WithOrgScope(ctx, r.db, record.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			record.RequestID, record.Timestamp,
+			nullString(record.OrgID), nullString(record.TenantID),
+			nullString(record.TeamID), nullString(record.AgentID),
+			nullString(record.WorkflowID), nullString(record.UserID),
+			record.Provider, record.Model,
+			record.TokensIn, record.TokensOut, record.CostUSD,
+			nullString(record.RequestType), record.Cached,
+		).Scan(&record.ID)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to save usage: %w", err)
 	}
@@ -480,6 +459,9 @@ func (r *PostgresRepository) SaveUsage(ctx context.Context, record *UsageRecord)
 
 // GetUsageForPeriod gets total usage cost for a budget period
 func (r *PostgresRepository) GetUsageForPeriod(ctx context.Context, scope BudgetScope, scopeID string, periodStart time.Time, orgID, tenantID string) (float64, error) {
+	if err := requireBudgetScope(orgID, tenantID); err != nil {
+		return 0, err
+	}
 	var scopeColumn string
 	switch scope {
 	case ScopeOrganization:
@@ -506,7 +488,9 @@ func (r *PostgresRepository) GetUsageForPeriod(ctx context.Context, scope Budget
 	`, scopeColumn)
 
 	var total float64
-	err := r.db.QueryRowContext(ctx, query, scopeID, periodStart, orgID, tenantID).Scan(&total)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, scopeID, periodStart, orgID, tenantID).Scan(&total)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to get usage for period: %w", err)
 	}
@@ -516,6 +500,10 @@ func (r *PostgresRepository) GetUsageForPeriod(ctx context.Context, scope Budget
 
 // GetUsageSummary returns usage summary for a time period
 func (r *PostgresRepository) GetUsageSummary(ctx context.Context, opts UsageQueryOptions) (*UsageSummary, error) {
+	if err := requireBudgetScope(opts.OrgID, opts.TenantID); err != nil {
+		return nil, err
+	}
+
 	var conditions []string
 	var args []interface{}
 	argIndex := 1
@@ -580,14 +568,16 @@ func (r *PostgresRepository) GetUsageSummary(ctx context.Context, opts UsageQuer
 	summary := &UsageSummary{Period: opts.Period}
 	var periodStart, periodEnd sql.NullTime
 
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(
-		&summary.TotalCostUSD,
-		&summary.TotalTokensIn,
-		&summary.TotalTokensOut,
-		&summary.TotalRequests,
-		&periodStart,
-		&periodEnd,
-	)
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, args...).Scan(
+			&summary.TotalCostUSD,
+			&summary.TotalTokensIn,
+			&summary.TotalTokensOut,
+			&summary.TotalRequests,
+			&periodStart,
+			&periodEnd,
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage summary: %w", err)
 	}
@@ -607,6 +597,10 @@ func (r *PostgresRepository) GetUsageSummary(ctx context.Context, opts UsageQuer
 
 // GetUsageBreakdown returns usage breakdown by dimension
 func (r *PostgresRepository) GetUsageBreakdown(ctx context.Context, groupBy string, opts UsageQueryOptions) (*UsageBreakdown, error) {
+	if err := requireBudgetScope(opts.OrgID, opts.TenantID); err != nil {
+		return nil, err
+	}
+
 	// Validate groupBy
 	validGroupBy := map[string]string{
 		"provider": "provider",
@@ -651,13 +645,6 @@ func (r *PostgresRepository) GetUsageBreakdown(ctx context.Context, groupBy stri
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Get total for percentage calculation
-	totalQuery := fmt.Sprintf("SELECT COALESCE(SUM(cost_usd), 0) FROM usage_records %s", whereClause)
-	var totalCost float64
-	if err := r.db.QueryRowContext(ctx, totalQuery, args...).Scan(&totalCost); err != nil {
-		return nil, fmt.Errorf("failed to get total cost: %w", err)
-	}
-
 	query := fmt.Sprintf(`
 		SELECT
 			COALESCE(%s, 'unknown') as group_value,
@@ -671,46 +658,59 @@ func (r *PostgresRepository) GetUsageBreakdown(ctx context.Context, groupBy stri
 		ORDER BY cost_usd DESC
 	`, column, whereClause, column)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get usage breakdown: %w", err)
-	}
-	defer rows.Close()
-
+	var totalCost float64
 	breakdown := &UsageBreakdown{
-		GroupBy:      groupBy,
-		TotalCostUSD: totalCost,
-		StartTime:    opts.StartTime,
-		EndTime:      opts.EndTime,
-		Period:       opts.Period,
+		GroupBy:   groupBy,
+		StartTime: opts.StartTime,
+		EndTime:   opts.EndTime,
+		Period:    opts.Period,
 	}
 
-	for rows.Next() {
-		var item UsageBreakdownItem
-		item.GroupBy = groupBy
-
-		if err := rows.Scan(
-			&item.GroupValue,
-			&item.CostUSD,
-			&item.TokensIn,
-			&item.TokensOut,
-			&item.RequestCount,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan breakdown item: %w", err)
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		totalQuery := fmt.Sprintf("SELECT COALESCE(SUM(cost_usd), 0) FROM usage_records %s", whereClause)
+		if err := tx.QueryRowContext(ctx, totalQuery, args...).Scan(&totalCost); err != nil {
+			return fmt.Errorf("failed to get total cost: %w", err)
 		}
-
-		if totalCost > 0 {
-			item.Percentage = (item.CostUSD / totalCost) * 100
+		breakdown.TotalCostUSD = totalCost
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to get usage breakdown: %w", err)
 		}
+		defer rows.Close()
+		for rows.Next() {
+			var item UsageBreakdownItem
+			item.GroupBy = groupBy
 
-		breakdown.Items = append(breakdown.Items, item)
+			if err := rows.Scan(
+				&item.GroupValue,
+				&item.CostUSD,
+				&item.TokensIn,
+				&item.TokensOut,
+				&item.RequestCount,
+			); err != nil {
+				return fmt.Errorf("failed to scan breakdown item: %w", err)
+			}
+
+			if totalCost > 0 {
+				item.Percentage = (item.CostUSD / totalCost) * 100
+			}
+
+			breakdown.Items = append(breakdown.Items, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	return breakdown, nil
 }
 
 // ListUsageRecords lists usage records with filtering
 func (r *PostgresRepository) ListUsageRecords(ctx context.Context, opts UsageQueryOptions) ([]UsageRecord, int, error) {
+	if err := requireBudgetScope(opts.OrgID, opts.TenantID); err != nil {
+		return nil, 0, err
+	}
+
 	var conditions []string
 	var args []interface{}
 	argIndex := 1
@@ -761,13 +761,6 @@ func (r *PostgresRepository) ListUsageRecords(ctx context.Context, opts UsageQue
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Get count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM usage_records %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count usage records: %w", err)
-	}
-
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
@@ -787,45 +780,58 @@ func (r *PostgresRepository) ListUsageRecords(ctx context.Context, opts UsageQue
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIndex, argIndex+1)
 
+	filterArgs := append([]interface{}{}, args...)
 	args = append(args, limit, offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list usage records: %w", err)
-	}
-	defer rows.Close()
-
 	var records []UsageRecord
-	for rows.Next() {
-		var record UsageRecord
-		var orgID, tenantID, teamID, agentID, workflowID, userID, requestType sql.NullString
-
-		if err := rows.Scan(
-			&record.ID, &record.RequestID, &record.Timestamp,
-			&orgID, &tenantID, &teamID, &agentID,
-			&workflowID, &userID, &record.Provider, &record.Model,
-			&record.TokensIn, &record.TokensOut, &record.CostUSD,
-			&requestType, &record.Cached, &record.CreatedAt,
-		); err != nil {
-			return nil, 0, fmt.Errorf("failed to scan usage record: %w", err)
+	var total int
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM usage_records %s", whereClause)
+		if err := tx.QueryRowContext(ctx, countQuery, filterArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count usage records: %w", err)
 		}
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list usage records: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var record UsageRecord
+			var orgID, tenantID, teamID, agentID, workflowID, userID, requestType sql.NullString
 
-		record.OrgID = orgID.String
-		record.TenantID = tenantID.String
-		record.TeamID = teamID.String
-		record.AgentID = agentID.String
-		record.WorkflowID = workflowID.String
-		record.UserID = userID.String
-		record.RequestType = requestType.String
+			if err := rows.Scan(
+				&record.ID, &record.RequestID, &record.Timestamp,
+				&orgID, &tenantID, &teamID, &agentID,
+				&workflowID, &userID, &record.Provider, &record.Model,
+				&record.TokensIn, &record.TokensOut, &record.CostUSD,
+				&requestType, &record.Cached, &record.CreatedAt,
+			); err != nil {
+				return fmt.Errorf("failed to scan usage record: %w", err)
+			}
 
-		records = append(records, record)
+			record.OrgID = orgID.String
+			record.TenantID = tenantID.String
+			record.TeamID = teamID.String
+			record.AgentID = agentID.String
+			record.WorkflowID = workflowID.String
+			record.UserID = userID.String
+			record.RequestType = requestType.String
+
+			records = append(records, record)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, 0, err
 	}
-
 	return records, total, nil
 }
 
 // UpdateAggregate upserts a usage aggregate
 func (r *PostgresRepository) UpdateAggregate(ctx context.Context, agg *UsageAggregate) error {
+	if err := tenantscope.ValidateRowKeys(agg.OrgID, agg.TenantID); err != nil {
+		return err
+	}
 	query := `
 		INSERT INTO usage_aggregates (
 			scope, scope_id, period, period_start, total_cost_usd,
@@ -841,12 +847,14 @@ func (r *PostgresRepository) UpdateAggregate(ctx context.Context, agg *UsageAggr
 		RETURNING id
 	`
 
-	err := r.db.QueryRowContext(ctx, query,
-		agg.Scope, agg.ScopeID, agg.Period, agg.PeriodStart,
-		agg.TotalCostUSD, agg.TotalTokensIn, agg.TotalTokensOut,
-		agg.RequestCount, nullString(agg.OrgID), nullString(agg.TenantID),
-		time.Now().UTC(),
-	).Scan(&agg.ID)
+	err := rls.WithOrgScope(ctx, r.db, agg.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			agg.Scope, agg.ScopeID, agg.Period, agg.PeriodStart,
+			agg.TotalCostUSD, agg.TotalTokensIn, agg.TotalTokensOut,
+			agg.RequestCount, nullString(agg.OrgID), nullString(agg.TenantID),
+			time.Now().UTC(),
+		).Scan(&agg.ID)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update aggregate: %w", err)
 	}
@@ -868,12 +876,16 @@ func (r *PostgresRepository) GetAggregate(ctx context.Context, scope, scopeID st
 	var agg UsageAggregate
 	var oID, tID sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, scope, scopeID, period, periodStart, orgID, tenantID).Scan(
-		&agg.ID, &agg.Scope, &agg.ScopeID, &agg.Period, &agg.PeriodStart,
-		&agg.TotalCostUSD, &agg.TotalTokensIn, &agg.TotalTokensOut,
-		&agg.RequestCount, &oID, &tID, &agg.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
+	var queryErr error
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		queryErr = tx.QueryRowContext(ctx, query, scope, scopeID, period, periodStart, orgID, tenantID).Scan(
+			&agg.ID, &agg.Scope, &agg.ScopeID, &agg.Period, &agg.PeriodStart,
+			&agg.TotalCostUSD, &agg.TotalTokensIn, &agg.TotalTokensOut,
+			&agg.RequestCount, &oID, &tID, &agg.UpdatedAt,
+		)
+		return queryErr
+	})
+	if queryErr == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
@@ -899,35 +911,41 @@ func (r *PostgresRepository) ListAggregates(ctx context.Context, scope, scopeID 
 		ORDER BY period_start ASC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, scope, scopeID, period, startTime, endTime, orgID, tenantID)
+	var aggregates []UsageAggregate
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, scope, scopeID, period, startTime, endTime, orgID, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var agg UsageAggregate
+			var oID, tID sql.NullString
+			if err := rows.Scan(
+				&agg.ID, &agg.Scope, &agg.ScopeID, &agg.Period, &agg.PeriodStart,
+				&agg.TotalCostUSD, &agg.TotalTokensIn, &agg.TotalTokensOut,
+				&agg.RequestCount, &oID, &tID, &agg.UpdatedAt,
+			); err != nil {
+				return err
+			}
+
+			agg.OrgID = oID.String
+			agg.TenantID = tID.String
+			aggregates = append(aggregates, agg)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list aggregates: %w", err)
 	}
-	defer rows.Close()
-
-	var aggregates []UsageAggregate
-	for rows.Next() {
-		var agg UsageAggregate
-		var oID, tID sql.NullString
-
-		if err := rows.Scan(
-			&agg.ID, &agg.Scope, &agg.ScopeID, &agg.Period, &agg.PeriodStart,
-			&agg.TotalCostUSD, &agg.TotalTokensIn, &agg.TotalTokensOut,
-			&agg.RequestCount, &oID, &tID, &agg.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan aggregate: %w", err)
-		}
-
-		agg.OrgID = oID.String
-		agg.TenantID = tID.String
-		aggregates = append(aggregates, agg)
-	}
-
 	return aggregates, nil
 }
 
 // SaveAlert saves a budget alert
 func (r *PostgresRepository) SaveAlert(ctx context.Context, alert *BudgetAlert) error {
+	if alert.OrgID == "" {
+		return fmt.Errorf("budget alert requires org scope")
+	}
 	query := `
 		INSERT INTO budget_alerts (
 			budget_id, threshold, percentage_reached, amount_usd,
@@ -936,10 +954,12 @@ func (r *PostgresRepository) SaveAlert(ctx context.Context, alert *BudgetAlert) 
 		RETURNING id
 	`
 
-	err := r.db.QueryRowContext(ctx, query,
-		alert.BudgetID, alert.Threshold, alert.PercentageReached,
-		alert.AmountUSD, alert.AlertType, alert.Message, time.Now().UTC(),
-	).Scan(&alert.ID)
+	err := rls.WithOrgScope(ctx, r.db, alert.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			alert.BudgetID, alert.Threshold, alert.PercentageReached,
+			alert.AmountUSD, alert.AlertType, alert.Message, time.Now().UTC(),
+		).Scan(&alert.ID)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to save alert: %w", err)
 	}
@@ -949,41 +969,20 @@ func (r *PostgresRepository) SaveAlert(ctx context.Context, alert *BudgetAlert) 
 
 // GetUnacknowledgedAlerts gets unacknowledged alerts for a budget
 func (r *PostgresRepository) GetUnacknowledgedAlerts(ctx context.Context, budgetID string) ([]BudgetAlert, error) {
-	query := `
-		SELECT id, budget_id, threshold, percentage_reached, amount_usd,
-			   alert_type, message, acknowledged, acknowledged_by, acknowledged_at, created_at
-		FROM budget_alerts
-		WHERE budget_id = $1 AND acknowledged = false
-		ORDER BY created_at DESC
-	`
-
-	rows, err := r.db.QueryContext(ctx, query, budgetID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get unacknowledged alerts: %w", err)
-	}
-	defer rows.Close()
-
-	return scanAlerts(rows)
+	return nil, fmt.Errorf("unscoped alert lookup for budget %q is disabled", budgetID)
 }
 
 // AcknowledgeAlert acknowledges an alert
 func (r *PostgresRepository) AcknowledgeAlert(ctx context.Context, alertID int64, acknowledgedBy string) error {
-	query := `
-		UPDATE budget_alerts
-		SET acknowledged = true, acknowledged_by = $2, acknowledged_at = $3
-		WHERE id = $1
-	`
-
-	_, err := r.db.ExecContext(ctx, query, alertID, acknowledgedBy, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("failed to acknowledge alert: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("unscoped alert acknowledgement %d is disabled", alertID)
 }
 
 // GetRecentAlerts gets recent alerts for a budget
 func (r *PostgresRepository) GetRecentAlerts(ctx context.Context, budgetID string, limit int) ([]BudgetAlert, error) {
+	return nil, fmt.Errorf("unscoped alert lookup for budget %q is disabled", budgetID)
+}
+
+func (r *PostgresRepository) GetRecentAlertsScoped(ctx context.Context, budgetID, orgID string, limit int) ([]BudgetAlert, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -997,13 +996,20 @@ func (r *PostgresRepository) GetRecentAlerts(ctx context.Context, budgetID strin
 		LIMIT $2
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, budgetID, limit)
+	var alerts []BudgetAlert
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, budgetID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		alerts, err = scanAlerts(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recent alerts: %w", err)
 	}
-	defer rows.Close()
-
-	return scanAlerts(rows)
+	return alerts, nil
 }
 
 // Ping checks database connectivity

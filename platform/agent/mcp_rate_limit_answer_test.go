@@ -400,7 +400,7 @@ func TestHandleMCPToolsCall_ALimitRefusalIsAuditedAsTheLimitThatRefused(t *testi
 			origDB := usageDB
 			usageDB = db
 			defer func() { usageDB = origDB }()
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(
 					sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 					sqlmock.AnyArg(), sqlmock.AnyArg(), key, key, key,
@@ -449,11 +449,11 @@ func TestHandleMCPToolsCall_ARateLimitedCredentialIsAuditedAsPerMinute(t *testin
 	origDB := usageDB
 	usageDB = db
 	defer func() { usageDB = origDB }()
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), 0,
 			sqlmock.AnyArg(), "service", clientID,
-			mcpUnauthenticatedTenant, "",
+			mcpUnauthenticatedTenant, unattributedAuditOrg,
 			"mcp_tools_call", "mcp tools/call: rate limited before authentication", sqlmock.AnyArg(),
 			mcpVerdictBlocked,
 			detailsNaming{LimitTypePerMinute, "per-minute rate limit exceeded"},
@@ -523,7 +523,7 @@ func TestMCPSessionDelete_ARateLimitedCredentialIsAnswered429(t *testing.T) {
 	origDB := usageDB
 	usageDB = db
 	defer func() { usageDB = origDB }()
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), clientID, clientID, clientID,

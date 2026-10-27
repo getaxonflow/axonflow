@@ -1352,7 +1352,7 @@ func TestMCPListRecentDecisions_429PreservesEnvelope(t *testing.T) {
 			"tier":"Free",
 			"limit":5,
 			"remaining":0,
-			"upgrade":{"tier":"Pro","wording":"...","compare_url":"https://getaxonflow.com/pricing/","buy_url":"https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"}
+			"upgrade":{"tier":"Pro","wording":"...","compare_url":"https://getaxonflow.com/pricing/","buy_url":"https://getaxonflow.com/pricing/"}
 		}`))
 	}))
 	defer stub.Close()

@@ -13,7 +13,6 @@
 package workflow_control
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -23,12 +22,10 @@ func seedWorkflow(t *testing.T, repo *PostgresRepository, tenantID string) strin
 	t.Helper()
 	id := fmt.Sprintf("wf_%d", time.Now().UnixNano())
 	wf := &Workflow{
-		WorkflowID:   id,
-		WorkflowName: "integration-retry-context",
-		Source:       WorkflowSourceExternal,
-		TenantID:     tenantID,
+		WorkflowID: id, WorkflowName: "integration-retry-context",
+		Source: WorkflowSourceExternal, TenantID: tenantID, OrgID: "org-retry",
 	}
-	if err := repo.Create(context.Background(), wf); err != nil {
+	if err := repo.Create(workflowRepoTestContext(t, "org-retry", tenantID), wf); err != nil {
 		t.Fatalf("seed workflow: %v", err)
 	}
 	return id
@@ -54,7 +51,7 @@ func TestIntegration_AddStep_FirstCallSetsCountersAndFirstAttemptAt(t *testing.T
 		Decision:       GateDecisionAllow,
 		IdempotencyKey: &key,
 	}
-	if err := repo.AddStep(context.Background(), step); err != nil {
+	if err := repo.AddStep(workflowRepoTestContext(t, "org-retry", tenantID), step); err != nil {
 		t.Fatalf("AddStep: %v", err)
 	}
 
@@ -87,7 +84,7 @@ func TestIntegration_AddStep_ReGateBumpsCountAndSnapshotsLastDecision(t *testing
 	defer cleanupTestWorkflows(t, db, tenantID)
 	wf := seedWorkflow(t, repo, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-retry", tenantID)
 	originalKey := "K-original"
 	step := &WorkflowStep{
 		WorkflowID:     wf,
@@ -149,7 +146,7 @@ func TestIntegration_BumpGateCountCached_OnlyTouchesCounterAndLastDecision(t *te
 	defer cleanupTestWorkflows(t, db, tenantID)
 	wf := seedWorkflow(t, repo, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-retry", tenantID)
 	step := &WorkflowStep{
 		WorkflowID: wf,
 		StepID:     "s1",
@@ -194,7 +191,7 @@ func TestIntegration_MarkStepCompleted_IncrementsCompletionCount(t *testing.T) {
 	defer cleanupTestWorkflows(t, db, tenantID)
 	wf := seedWorkflow(t, repo, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-retry", tenantID)
 	step := &WorkflowStep{
 		WorkflowID: wf,
 		StepID:     "s1",
@@ -240,7 +237,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 		&fixedEvaluator{decision: GateDecisionAllow, reason: "ok"},
 		&ServiceConfig{BaseURL: "https://portal.test"},
 	)
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-retry", tenantID)
 	wf, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
 		WorkflowName: "lifecycle",
 	}, tenantID, "org-1", "user-1", "client-1")

@@ -10,7 +10,21 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"axonflow/platform/shared/tenantscope"
 )
+
+func bindReplayScope(ctx context.Context, orgID, tenantID string) (context.Context, error) {
+	return tenantscope.WithContext(ctx, orgID, tenantID)
+}
+
+func replayScopeFromContext(ctx context.Context) (AccessScope, error) {
+	scope, err := tenantscope.FromContext(ctx)
+	if err != nil || !scope.Bound() {
+		return AccessScope{}, ErrNotFound
+	}
+	return AccessScope{OrgID: scope.OrgID, TenantID: scope.TenantID}, nil
+}
 
 // Service provides execution replay and debugging capabilities
 type Service struct {
@@ -45,6 +59,11 @@ func NewServiceWithLogger(repo Repository, logger *log.Logger) *Service {
 
 // StartExecution initializes a new execution tracking session
 func (s *Service) StartExecution(ctx context.Context, requestID, workflowName string, totalSteps int, orgID, tenantID, userID string) error {
+	var err error
+	ctx, err = bindReplayScope(ctx, orgID, tenantID)
+	if err != nil {
+		return err
+	}
 	summary := &ExecutionSummary{
 		RequestID:    requestID,
 		WorkflowName: workflowName,
@@ -75,6 +94,27 @@ func (s *Service) StartExecution(ctx context.Context, requestID, workflowName st
 func (s *Service) RecordStep(ctx context.Context, snapshot *ExecutionSnapshot) error {
 	if snapshot == nil {
 		return ErrInvalidInput
+	}
+	s.mu.RLock()
+	summary := s.executions[snapshot.RequestID]
+	s.mu.RUnlock()
+	if summary == nil {
+		scope, err := replayScopeFromContext(ctx)
+		if err != nil {
+			return fmt.Errorf("execution scope unavailable for %s: %w", snapshot.RequestID, err)
+		}
+		summary, err = s.repo.GetSummaryScoped(ctx, snapshot.RequestID, scope)
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.executions[snapshot.RequestID] = summary
+		s.mu.Unlock()
+	}
+	var err error
+	ctx, err = bindReplayScope(ctx, summary.OrgID, summary.TenantID)
+	if err != nil {
+		return err
 	}
 
 	// Save snapshot to database
@@ -151,8 +191,11 @@ func (s *Service) CompleteExecution(ctx context.Context, requestID string, outpu
 	summary, exists := s.executions[requestID]
 	if !exists {
 		s.mu.Unlock()
-		var err error
-		summary, err = s.repo.GetSummary(ctx, requestID)
+		scope, err := replayScopeFromContext(ctx)
+		if err != nil {
+			return err
+		}
+		summary, err = s.repo.GetSummaryScoped(ctx, requestID, scope)
 		if err != nil {
 			return err
 		}
@@ -185,8 +228,11 @@ func (s *Service) FailExecution(ctx context.Context, requestID string, errorMess
 	summary, exists := s.executions[requestID]
 	if !exists {
 		s.mu.Unlock()
-		var err error
-		summary, err = s.repo.GetSummary(ctx, requestID)
+		scope, err := replayScopeFromContext(ctx)
+		if err != nil {
+			return err
+		}
+		summary, err = s.repo.GetSummaryScoped(ctx, requestID, scope)
 		if err != nil {
 			return err
 		}
@@ -221,6 +267,11 @@ func (s *Service) FailExecution(ctx context.Context, requestID string, errorMess
 
 // GetExecution retrieves a full execution with summary and all steps
 func (s *Service) GetExecution(ctx context.Context, requestID string, scope AccessScope) (*Execution, error) {
+	var err error
+	ctx, err = bindReplayScope(ctx, scope.OrgID, scope.TenantID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
 	summary, err := s.repo.GetSummaryScoped(ctx, requestID, scope)
 	if err != nil {
 		return nil, err
@@ -243,11 +294,21 @@ func (s *Service) ListExecutions(ctx context.Context, opts ListOptions) ([]Execu
 	if err := (AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}).Validate(); err != nil {
 		return nil, 0, err
 	}
+	var err error
+	ctx, err = bindReplayScope(ctx, opts.OrgID, opts.TenantID)
+	if err != nil {
+		return nil, 0, ErrNotFound
+	}
 	return s.repo.ListSummaries(ctx, opts)
 }
 
 // GetStep retrieves a specific step snapshot
 func (s *Service) GetStep(ctx context.Context, requestID string, stepIndex int, scope AccessScope) (*ExecutionSnapshot, error) {
+	var bindErr error
+	ctx, bindErr = bindReplayScope(ctx, scope.OrgID, scope.TenantID)
+	if bindErr != nil {
+		return nil, ErrNotFound
+	}
 	if _, err := s.repo.GetSummaryScoped(ctx, requestID, scope); err != nil {
 		return nil, err
 	}
@@ -256,6 +317,11 @@ func (s *Service) GetStep(ctx context.Context, requestID string, stepIndex int, 
 
 // GetSteps retrieves all steps for an execution
 func (s *Service) GetSteps(ctx context.Context, requestID string, scope AccessScope) ([]ExecutionSnapshot, error) {
+	var bindErr error
+	ctx, bindErr = bindReplayScope(ctx, scope.OrgID, scope.TenantID)
+	if bindErr != nil {
+		return nil, ErrNotFound
+	}
 	if _, err := s.repo.GetSummaryScoped(ctx, requestID, scope); err != nil {
 		return nil, err
 	}
@@ -338,6 +404,11 @@ func (s *Service) GetTimeline(ctx context.Context, requestID string, scope Acces
 // is removed (#2934 — a shared-credential caller must not be able to destroy
 // another org's execution trail).
 func (s *Service) DeleteExecution(ctx context.Context, requestID string, scope AccessScope) error {
+	var bindErr error
+	ctx, bindErr = bindReplayScope(ctx, scope.OrgID, scope.TenantID)
+	if bindErr != nil {
+		return ErrNotFound
+	}
 	if err := s.repo.DeleteExecutionScoped(ctx, requestID, scope); err != nil {
 		return err
 	}
@@ -358,6 +429,11 @@ func (s *Service) IsHealthy(ctx context.Context) bool {
 func (s *Service) GetExecutionCount(ctx context.Context, opts ListOptions) (int, error) {
 	if err := (AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}).Validate(); err != nil {
 		return 0, err
+	}
+	var bindErr error
+	ctx, bindErr = bindReplayScope(ctx, opts.OrgID, opts.TenantID)
+	if bindErr != nil {
+		return 0, ErrNotFound
 	}
 	_, total, err := s.repo.ListSummaries(ctx, ListOptions{
 		OrgID:      opts.OrgID,

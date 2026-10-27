@@ -164,7 +164,7 @@ func TestCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 	// writeDecisionAuditLog. Pin policy_details (14th arg, per
 	// expectDecideWriterRow's column layout) to the split identity; every other
 	// column is free.
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id
@@ -288,7 +288,8 @@ func TestMcpToolCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 	// writeMCPDecisionAudit, which carries the split identity. policy_details is
 	// the 14th arg of that INSERT (mcp_richer_context.go). Pin it to the split
 	// identity; every other column is free.
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectIndonesiaPIIDetectionEvent(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // id, request_id, timestamp, user_id
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // user_email, user_role, client_id, tenant_id, org_id

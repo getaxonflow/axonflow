@@ -38,7 +38,7 @@ import (
 // request_type=decision_llm, canonical blocked verdict, plane=openai_compat) and
 // AnyArg-ing the volatile ones (ids, timestamp, query/hash, details).
 func expectOpenAICompatAuditRow(mock sqlmock.Sqlmock, clientID, tenantID, orgID string) {
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),    // id (decide_<decisionID>)
 			sqlmock.AnyArg(),    // request_id
@@ -163,7 +163,7 @@ func TestOpenAICompatDecisionAudit_NilInput_NoRow(t *testing.T) {
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	recordDecideDecision(context.Background(), "dec-2", "org-x", "tenant-x",
 		DecisionStageLLM, VerdictDeny, []string{"pii.ssn"}, 3, []string{"SSN detected"},

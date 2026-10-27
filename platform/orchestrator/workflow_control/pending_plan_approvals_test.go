@@ -73,7 +73,7 @@ func newPlanApprovalsFixture(t *testing.T, tenantID string) (*Service, *MockRepo
 func TestService_GetPendingPlanApprovals_HappyPath(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 
-	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "", 10)
+	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "org-1", "", 10)
 	if err != nil {
 		t.Fatalf("GetPendingPlanApprovals: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestService_GetPendingPlanApprovals_HappyPath(t *testing.T) {
 func TestService_GetPendingPlanApprovals_PlanIDFilter(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 
-	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "plan-a", 10)
+	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "org-1", "plan-a", 10)
 	if err != nil {
 		t.Fatalf("GetPendingPlanApprovals: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestService_GetPendingPlanApprovals_PlanIDFilter(t *testing.T) {
 func TestService_GetPendingPlanApprovals_TenantIsolation(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 
-	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "", 10)
+	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "org-1", "", 10)
 	if err != nil {
 		t.Fatalf("GetPendingPlanApprovals: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestService_GetPendingPlanApprovals_TenantIsolation(t *testing.T) {
 func TestService_GetPendingPlanApprovals_EmptyResult(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 
-	got, err := svc.GetPendingPlanApprovals(context.Background(), "no-such-tenant", "", 10)
+	got, err := svc.GetPendingPlanApprovals(context.Background(), "no-such-tenant", "org-1", "", 10)
 	if err != nil {
 		t.Fatalf("GetPendingPlanApprovals: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestService_GetPendingPlanApprovals_EmptyResult(t *testing.T) {
 func TestService_GetPendingPlanApprovals_LimitRespected(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 
-	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "", 1)
+	got, err := svc.GetPendingPlanApprovals(context.Background(), "tenant-1", "org-1", "", 1)
 	if err != nil {
 		t.Fatalf("GetPendingPlanApprovals: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestService_CountPendingPlanApprovals(t *testing.T) {
 	svc, _ := newPlanApprovalsFixture(t, "tenant-1")
 	ctx := context.Background()
 
-	total, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "")
+	total, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "org-1", "")
 	if err != nil {
 		t.Fatalf("CountPendingPlanApprovals: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestService_CountPendingPlanApprovals(t *testing.T) {
 		t.Errorf("unfiltered count: want 2, got %d", total)
 	}
 
-	filtered, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "plan-a")
+	filtered, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "org-1", "plan-a")
 	if err != nil {
 		t.Fatalf("CountPendingPlanApprovals filter: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestService_CountPendingPlanApprovals(t *testing.T) {
 		t.Errorf("filter count: want 1, got %d", filtered)
 	}
 
-	none, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "plan-missing")
+	none, err := svc.CountPendingPlanApprovals(ctx, "tenant-1", "org-1", "plan-missing")
 	if err != nil {
 		t.Fatalf("CountPendingPlanApprovals absent: %v", err)
 	}

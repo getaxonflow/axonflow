@@ -356,9 +356,11 @@ func TestExplainDecision_CrossTenantReturns404(t *testing.T) {
 	// receive both decisionID and tenantID as positional args, and the mock
 	// responds with ErrNoRows. The handler must surface that as 404 (not 403)
 	// so attackers cannot enumerate decision_id existence across tenants.
+	expectAuditReadScope(mock, "tenant-b")
 	mock.ExpectQuery(`SELECT user_email, tenant_id, timestamp, policy_decision, policy_details`).
 		WithArgs("dec-1", "tenant-b").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 	req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})

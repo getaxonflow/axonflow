@@ -1,0 +1,1069 @@
+{
+  "title": "AxonFlow Load Test Results",
+  "uid": "load-test-results",
+  "description": "Performance testing metrics and SLO compliance for AxonFlow",
+  "tags": [
+    "performance",
+    "load-testing",
+    "slo",
+    "benchmarks"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {},
+        "datasource": "Prometheus",
+        "definition": "label_values(static_policy_p95_ms, deployment_mode)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Deployment Mode",
+        "multi": true,
+        "name": "deployment_mode",
+        "options": [],
+        "query": "label_values(static_policy_p95_ms, deployment_mode)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {},
+        "datasource": "Prometheus",
+        "definition": "label_values(static_policy_p95_ms, test_type)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Test Type",
+        "multi": true,
+        "name": "test_type",
+        "options": [],
+        "query": "label_values(static_policy_p95_ms, test_type)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "SLO Compliance Rate",
+      "description": "Percentage of load tests meeting P95 <10ms target",
+      "type": "gauge",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(axonflow_loadtest_slo_status{test_type=~\"$test_type\"}) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 99,
+                "color": "green"
+              },
+              {
+                "value": 100,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "text": {
+          "titleSize": 16,
+          "valueSize": 32
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "P95 Latency (Policy-Only)",
+      "description": "Target: <10ms",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{test_type=~\"hourly-policy|daily-capacity\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 5,
+                "color": "blue"
+              },
+              {
+                "value": 10,
+                "color": "yellow"
+              },
+              {
+                "value": 20,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 3,
+      "title": "P95 Latency (Full-Stack)",
+      "description": "Target: <500ms (includes LLM)",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{test_type=~\"hourly-full|daily-realistic\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 200,
+                "color": "blue"
+              },
+              {
+                "value": 500,
+                "color": "yellow"
+              },
+              {
+                "value": 1000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Heartbeat Status",
+      "description": "Last heartbeat timestamp and health",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "axonflow_heartbeat_status",
+          "refId": "A",
+          "legendFormat": "{{environment}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 0,
+                  "text": "Unhealthy"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "1": {
+                  "color": "green",
+                  "index": 1,
+                  "text": "Healthy"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 1,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 5,
+      "title": "SaaS vs In-VPC P95 Comparison",
+      "description": "Compare latency across deployment modes (target: <5% variance)",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{deployment_mode=\"saas\",test_type=~\"hourly-policy|daily-capacity\"})",
+          "refId": "A",
+          "legendFormat": "SaaS"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{deployment_mode=\"in-vpc\",test_type=~\"hourly-policy|daily-capacity\"})",
+          "refId": "B",
+          "legendFormat": "In-VPC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "max": 20,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 5,
+                "color": "blue"
+              },
+              {
+                "value": 10,
+                "color": "yellow"
+              },
+              {
+                "value": 15,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 6,
+      "title": "Max Sustained RPS",
+      "description": "Maximum throughput achieved in weekly stress tests",
+      "type": "gauge",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "max(static_policy_total_requests{test_type=~\"weekly.*\"}) / max(axonflow_loadtest_duration_seconds{test_type=~\"weekly.*\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "max": 1000,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 200,
+                "color": "yellow"
+              },
+              {
+                "value": 500,
+                "color": "green"
+              },
+              {
+                "value": 750,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "text": {
+          "titleSize": 14,
+          "valueSize": 28
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Success Rate by Test Type",
+      "description": "Success rate across different test types",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "static_policy_success_rate{test_type=~\"$test_type\"}",
+          "refId": "A",
+          "legendFormat": "{{test_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 95,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 95,
+                "color": "red"
+              },
+              {
+                "value": 99,
+                "color": "yellow"
+              },
+              {
+                "value": 99.5,
+                "color": "green"
+              },
+              {
+                "value": 99.9,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 8,
+      "title": "Weekly P95 Latency Trend",
+      "description": "P95 latency over the past 4 weeks",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{test_type=\"hourly-policy\",deployment_mode=~\"$deployment_mode\"})",
+          "refId": "A",
+          "legendFormat": "Policy-Only P95"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p99_ms{test_type=\"hourly-policy\",deployment_mode=~\"$deployment_mode\"})",
+          "refId": "B",
+          "legendFormat": "Policy-Only P99"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{test_type=\"hourly-full\",deployment_mode=~\"$deployment_mode\"})",
+          "refId": "C",
+          "legendFormat": "Full-Stack P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Test Volume (Requests)",
+      "description": "Total requests per test type",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "sum by(test_type) (static_policy_total_requests{test_type=~\"$test_type\"})",
+          "refId": "A",
+          "legendFormat": "{{test_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "SaaS vs In-VPC Performance Parity",
+      "description": "Variance between deployment modes (target: <5%)",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "abs(avg(static_policy_p95_ms{deployment_mode=\"saas\"}) - avg(static_policy_p95_ms{deployment_mode=\"in-vpc\"})) / avg(static_policy_p95_ms{deployment_mode=\"saas\"}) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 2,
+                "color": "blue"
+              },
+              {
+                "value": 5,
+                "color": "yellow"
+              },
+              {
+                "value": 10,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Uptime (Based on Heartbeats)",
+      "description": "Availability based on heartbeat success rate",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg_over_time(axonflow_heartbeat_status[7d]) * 100",
+          "refId": "A",
+          "legendFormat": "{{environment}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 99,
+                "color": "yellow"
+              },
+              {
+                "value": 99.9,
+                "color": "green"
+              },
+              {
+                "value": 99.99,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Last Test Run",
+      "description": "Time since last load test",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "time() - max(axonflow_loadtest_last_run_timestamp{test_type=~\"$test_type\"})",
+          "refId": "A",
+          "legendFormat": "{{test_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 3600,
+                "color": "blue"
+              },
+              {
+                "value": 7200,
+                "color": "yellow"
+              },
+              {
+                "value": 86400,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Test Results Summary",
+      "description": "Recent test results with pass/fail status",
+      "type": "table",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "static_policy_p95_ms{test_type=~\"$test_type\"}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "static_policy_p99_ms{test_type=~\"$test_type\"}",
+          "refId": "B",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "static_policy_success_rate{test_type=~\"$test_type\"}",
+          "refId": "C",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "axonflow_loadtest_slo_status{test_type=~\"$test_type\"}",
+          "refId": "D",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95 (ms)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P99 (ms)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Success Rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SLO Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "text": "FAIL"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "1": {
+                        "color": "green",
+                        "text": "PASS"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Test Type",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {
+              "test_type": 0,
+              "deployment_mode": 1,
+              "client": 2
+            },
+            "renameByName": {
+              "test_type": "Test Type",
+              "deployment_mode": "Deployment Mode",
+              "client": "Client",
+              "Value #A": "P95 (ms)",
+              "Value #B": "P99 (ms)",
+              "Value #C": "Success Rate",
+              "Value #D": "SLO Status"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Investor Metrics Summary",
+      "description": "Key metrics for VC presentations",
+      "type": "row",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "title": "Platform Reliability (99.9% Target)",
+      "type": "gauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg_over_time(axonflow_heartbeat_status[30d]) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 99,
+          "max": 100,
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 99,
+                "color": "red"
+              },
+              {
+                "value": 99.5,
+                "color": "yellow"
+              },
+              {
+                "value": 99.9,
+                "color": "green"
+              },
+              {
+                "value": 99.99,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 16,
+      "title": "Governance Latency (<10ms Target)",
+      "type": "gauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "avg(static_policy_p95_ms{test_type=~\"hourly-policy|daily-capacity\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "max": 20,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 5,
+                "color": "blue"
+              },
+              {
+                "value": 10,
+                "color": "yellow"
+              },
+              {
+                "value": 15,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 17,
+      "title": "Deployment Parity (<5% Variance)",
+      "type": "gauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "5 - abs(avg(static_policy_p95_ms{deployment_mode=\"saas\"}) - avg(static_policy_p95_ms{deployment_mode=\"in-vpc\"})) / avg(static_policy_p95_ms{deployment_mode=\"saas\"}) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 5,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 2,
+                "color": "yellow"
+              },
+              {
+                "value": 3,
+                "color": "green"
+              },
+              {
+                "value": 4,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    }
+  ]
+}

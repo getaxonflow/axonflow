@@ -340,6 +340,8 @@ func (s *Service) sendAlert(ctx context.Context, budget *Budget, threshold int, 
 		AmountUSD:         used,
 		AlertType:         alertType,
 		Message:           message,
+		OrgID:             budget.OrgID,
+		TenantID:          budget.TenantID,
 	}
 	if err := s.repo.SaveAlert(ctx, alert); err != nil {
 		s.logger.Printf("[Cost] Failed to save alert: %v", err)
@@ -572,7 +574,7 @@ func (s *Service) GetRecentAlertsScoped(ctx context.Context, budgetID, orgID, te
 	if _, err := s.repo.GetBudgetScoped(ctx, budgetID, orgID, tenantID); err != nil {
 		return nil, err
 	}
-	return s.repo.GetRecentAlerts(ctx, budgetID, limit)
+	return s.repo.GetRecentAlertsScoped(ctx, budgetID, orgID, limit)
 }
 
 // GetRecentAlerts gets recent alerts for a budget

@@ -76,6 +76,10 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 11.3.0 train keeps the 9.5.0 stable-SDK and 0.12.0 Rust
+//     recommendations. Existing SDKs fail closed on Hosted payment-required
+//     responses; OpenClaw 2.10.0 adds the coordinated Checkout experience.
+//
 //   - the 11.2.0 train moves python/typescript/go/java 9.4.0 -> 9.5.0 and rust
 //     0.11.0 -> 0.12.0: the typed Decision API payment action target and
 //     approval hold/retry fields used by the FinCrime v3 example. The SDK tags

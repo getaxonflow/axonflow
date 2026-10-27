@@ -1804,6 +1804,7 @@ func initializeComponents() {
 		// Initialize MAP Two-Step Execution (#925)
 		log.Println("Initializing Planning Service for MAP two-step execution...")
 		planRepo := planning.NewPostgresRepository(usageDB)
+		planRepo.SetAdminDB(rls3039AdminDB)
 		// Use tier-appropriate plan limits
 		planConfig := planning.ServiceConfig{
 			MaxPlansWithVersioning: tierChecker.MaxPlans(),
@@ -1870,6 +1871,7 @@ func initializeComponents() {
 		// Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
 		log.Println("Initializing Workflow Control Plane Service...")
 		workflowControlRepo := workflow_control.NewPostgresRepository(usageDB)
+		workflowControlRepo.SetAdminDB(rls3039AdminDB)
 		workflowControlConfig := &workflow_control.ServiceConfig{
 			BaseURL: os.Getenv("PORTAL_BASE_URL"), // For generating approval URLs
 		}
@@ -1896,7 +1898,9 @@ func initializeComponents() {
 			stepModeCutover = sqlStepModeCutover(usageDB)
 			if planService != nil {
 				go func() {
-					if _, err := runStepModeFirstStepBackfill(context.Background(), sqlStepModePlans(usageDB), planService, workflowControlService); err != nil {
+					if rls3039AdminDB == nil {
+						log.Printf("⚠️  Step-mode boot backfill skipped: platform-admin pool unavailable")
+					} else if _, err := runStepModeFirstStepBackfill(context.Background(), sqlStepModePlans(rls3039AdminDB), planService, workflowControlService); err != nil {
 						log.Printf("⚠️  [StepModeBackfill] %v", err)
 					}
 				}()
@@ -5087,7 +5091,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		auditLogger.LogBlockedRequest(r.Context(), policyReq, policyResult, planDecision.anchoredDecision())
 
 		// Mark plan as failed due to policy block
-		_ = planService.MarkPlanFailed(r.Context(), planID, "Blocked by policy: "+strings.Join(policyResult.AppliedPolicies, ", "))
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Blocked by policy: "+strings.Join(policyResult.AppliedPolicies, ", "))
 		// Sync unified tracking on policy block (#1075)
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Blocked by policy")
@@ -5123,7 +5127,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	var workflow Workflow
 	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
 		log.Printf("[ExecutePlan] Failed to unmarshal workflow: %v", err)
-		_ = planService.MarkPlanFailed(r.Context(), planID, "Invalid workflow definition")
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Invalid workflow definition")
 		// Sync unified tracking on workflow error (#1075)
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Invalid workflow definition")
@@ -5149,7 +5153,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if err := refuseUnpresentableSteps(workflow.Spec.Steps); err != nil && !presentsBranches {
 		log.Printf("[ExecutePlan] Plan %s cannot be governed: %v", logutil.Sanitize(planID), err)
 		recordUngovernablePlan(r.Context(), policyReq, err)
-		_ = planService.MarkPlanFailed(r.Context(), planID, "Plan cannot be governed: "+err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Plan cannot be governed: "+err.Error())
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Plan cannot be governed")
 		}
@@ -5159,7 +5163,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// #4382: outside confirm and step mode, an engine that does not decide every
 	// step (a boot that did not wire the step gate) runs nothing.
 	if !confirmOrStep && !workflowEngine.PresentsSteps() {
-		_ = planService.MarkPlanFailed(r.Context(), planID, "the multi-agent step gate is not wired")
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "the multi-agent step gate is not wired")
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "the multi-agent step gate is not wired")
 		}
@@ -5195,12 +5199,12 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	case "confirm", "step":
 		// Enterprise-only: WCP-gated execution (Phase 3a)
 		if isCommunityMode() {
-			_ = planService.MarkPlanFailed(r.Context(), planID, "confirm/step mode requires Enterprise license")
+			_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "confirm/step mode requires Enterprise license")
 			sendErrorResponse(w, "confirm/step execution mode requires Enterprise license", http.StatusForbidden)
 			return
 		}
 		if mapWCPExecutor == nil {
-			_ = planService.MarkPlanFailed(r.Context(), planID, "WCP executor not available")
+			_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "WCP executor not available")
 			sendErrorResponse(w, "WCP executor not initialized", http.StatusServiceUnavailable)
 			return
 		}
@@ -5215,7 +5219,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("[ExecutePlan] WCP execution setup failed for plan %s: %v", logutil.Sanitize(planID), err)
-			_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+			_ = planService.MarkPlanFailed(r.Context(), planID, orgID, err.Error())
 			sendErrorResponse(w, "WCP execution setup failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -5229,10 +5233,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// leave the plan marked with an empty binding and the workflow's hold
 		// in the approval queue.
 		bindCtx := context.WithoutCancel(r.Context())
-		if bindErr := planService.BindExecutionWorkflow(bindCtx, planID, wcpResult.WorkflowID); bindErr != nil {
+		if bindErr := planService.BindExecutionWorkflow(bindCtx, planID, wcpResult.WorkflowID, orgID); bindErr != nil {
 			log.Printf("[ExecutePlan] Plan %s: binding workflow %s failed: %v", logutil.Sanitize(planID), wcpResult.WorkflowID, bindErr)
 			_ = workflowControlService.AbortWorkflow(bindCtx, wcpResult.WorkflowID, "the plan's workflow could not be bound", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
-			_ = planService.MarkPlanFailed(bindCtx, planID, "the plan's workflow could not be bound")
+			_ = planService.MarkPlanFailed(bindCtx, planID, orgID, "the plan's workflow could not be bound")
 			sendErrorResponse(w, "WCP execution setup failed: the plan's workflow could not be bound", http.StatusInternalServerError)
 			return
 		}
@@ -5257,7 +5261,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", logutil.Sanitize(planID), err)
 		var refusal *mapStepRefusal
 		refused := errors.As(err, &refusal)
-		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, err.Error())
 		// Sync partial step results on failure (steps may have partial data)
 		if mapExecutionTracker != nil && unifiedExecID != "" && execution != nil {
 			if syncErr := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); syncErr != nil {
@@ -5296,7 +5300,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 5: Mark plan as completed
-	if err := planService.MarkPlanCompleted(r.Context(), planID, finalResult); err != nil {
+	if err := planService.MarkPlanCompleted(r.Context(), planID, orgID, finalResult); err != nil {
 		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", logutil.Sanitize(planID), err)
 	}
 
@@ -5838,7 +5842,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// plan is failed, as the reject arm fails it, and nothing runs.
 		if !approved && refusal.Ended {
 			log.Printf("[ResumePlan] Plan %s rejected after its workflow ended: %s", logutil.Sanitize(planID), refusal.Message)
-			_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
+			_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Step rejected by user")
 			if mapExecutionTracker != nil {
 				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Step rejected by user")
 			}
@@ -5872,7 +5876,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ResumePlan] Plan %s cannot be governed: %v", logutil.Sanitize(planID), err)
 		recordUngovernablePlan(r.Context(), ungovernableResumeRequest(planID, orgID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Client-ID")), err)
 		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Plan cannot be governed: "+err.Error(), r.Header.Get("X-Tenant-ID"), orgID)
-		_ = planService.MarkPlanFailed(r.Context(), planID, "Plan cannot be governed: "+err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Plan cannot be governed: "+err.Error())
 		if mapExecutionTracker != nil {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Plan cannot be governed")
 		}
@@ -5956,7 +5960,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		if !rejected {
 			_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		}
-		_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, "Step rejected by user")
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -6029,7 +6033,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if stepIndex >= len(workflow.Spec.Steps) {
 		// All steps completed — mark plan as completed
 		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
-		_ = planService.MarkPlanCompleted(r.Context(), planID, map[string]interface{}{"status": "all_steps_completed"})
+		_ = planService.MarkPlanCompleted(r.Context(), planID, orgID, map[string]interface{}{"status": "all_steps_completed"})
 		// Sync unified execution tracker so GetPlanStatus returns correct status
 		if mapExecutionTracker != nil {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "All steps completed via confirm mode")
@@ -6108,7 +6112,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[ResumePlan] Step execution failed: %v", err)
 		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error(), r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
-		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, err.Error())
 		// R3: the unified tracker hears of the failure, as it does on every
 		// sibling refusal.
 		if mapExecutionTracker != nil {
@@ -6139,7 +6143,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if nextStepIndex >= len(workflow.Spec.Steps) {
 		// All steps done
 		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
-		_ = planService.MarkPlanCompleted(r.Context(), planID, stepResult.Output)
+		_ = planService.MarkPlanCompleted(r.Context(), planID, orgID, stepResult.Output)
 		if mapExecutionTracker != nil {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "All steps completed via confirm mode")
 		}
@@ -6165,7 +6169,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	nextGateType, err := mapStepTypeToWCP(nextStep.Type)
 	if err != nil {
 		log.Printf("[ResumePlan] Plan %s: %v", logutil.Sanitize(planID), err)
-		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, orgID, err.Error())
 		sendErrorResponse(w, "Next step cannot be gated: "+err.Error(), http.StatusBadRequest)
 		return
 	}

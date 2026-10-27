@@ -1,0 +1,497 @@
+{
+  "id": null,
+  "uid": "axonflow-decision-mode",
+  "title": "AxonFlow Decision Mode — Verdict Distribution, Latency & Error Rates",
+  "tags": [
+    "axonflow",
+    "decision-mode",
+    "otel",
+    "spanmetrics"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "org_id",
+        "type": "query",
+        "datasource": {
+          "uid": "prometheus"
+        },
+        "query": "label_values(calls_total{span_name=\"axonflow.decision\"}, org_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "tenant_id",
+        "type": "query",
+        "datasource": {
+          "uid": "prometheus"
+        },
+        "query": "label_values(calls_total{span_name=\"axonflow.decision\"}, tenant_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Decision Rate (per second)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval]))",
+          "legendFormat": "decisions/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "spanNulls": false,
+            "axisBorderShow": false
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Verdict Distribution",
+      "type": "piechart",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (decision_verdict) (increase(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__range]))",
+          "legendFormat": "{{ decision_verdict }}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "allow"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "deny"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "needs_approval"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "title": "Error Rate (status_code = ERROR)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(calls_total{span_name=\"axonflow.decision\", status_code=\"STATUS_CODE_ERROR\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval])) / sum(rate(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval]))",
+          "legendFormat": "error rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Decision Latency — P50 / P95 / P99",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(duration_milliseconds_bucket{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval])))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(duration_milliseconds_bucket{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval])))",
+          "legendFormat": "P95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(duration_milliseconds_bucket{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval])))",
+          "legendFormat": "P99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Decisions by Stage (llm / tool / agent)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (decision_stage) (rate(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval]))",
+          "legendFormat": "{{ decision_stage }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "spanNulls": false
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Policy Trigger Rate — by Verdict",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (decision_verdict) (rate(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval]))",
+          "legendFormat": "{{ decision_verdict }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "drawStyle": "bars",
+            "barAlignment": 0,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Per-Tenant Decision Volume",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant_id) (rate(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval]))",
+          "legendFormat": "{{ tenant_id }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Deny Rate by Tenant",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (tenant_id) (increase(calls_total{span_name=\"axonflow.decision\", decision_verdict=\"deny\", org_id=~\"$org_id\"}[$__range]))",
+          "legendFormat": "{{ tenant_id }}",
+          "refId": "denies",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "sum by (tenant_id) (increase(calls_total{span_name=\"axonflow.decision\", org_id=~\"$org_id\"}[$__range]))",
+          "legendFormat": "{{ tenant_id }}",
+          "refId": "total",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge"
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #denies": "Denies",
+              "Value #total": "Total",
+              "tenant_id": "Tenant"
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Latency Heatmap",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(duration_milliseconds_bucket{span_name=\"axonflow.decision\", org_id=~\"$org_id\", tenant_id=~\"$tenant_id\"}[$__rate_interval])) by (le)",
+          "legendFormat": "{{ le }}",
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "yAxis": {
+          "unit": "ms"
+        },
+        "color": {
+          "scheme": "Oranges"
+        }
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Annotations & Alerts",
+        "datasource": {
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "type": "dashboard"
+      }
+    ]
+  }
+}

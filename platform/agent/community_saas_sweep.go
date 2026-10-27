@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"log"
 	"os"
@@ -19,10 +20,12 @@ import (
 	logutil "axonflow/platform/shared/logger"
 )
 
-// Community-SaaS inactivity sweep — daily background goroutine that terminates
-// tenants inactive for >3 months or past the 1-year hard cap and cascade-deletes
-// their tenant-scoped data. Tombstone rows stay in community_saas_registrations
-// indefinitely so the tenant_id PK slot is never reused (ADR-048).
+// Community-SaaS inactivity sweep: daily background goroutine that terminates
+// unpaid tenants inactive for >3 months or past the 1-year hard cap and
+// cascade-deletes their tenant-scoped data. Active Hosted subscriptions and
+// valid legacy prepaid licenses are never sweep candidates. Tombstone rows stay
+// in community_saas_registrations indefinitely so the tenant_id PK slot is
+// never reused (ADR-048).
 //
 // Multi-instance correctness: pg_try_advisory_lock at the top of each tick.
 // First instance to acquire wins; others skip cleanly. The lock is released on
@@ -81,6 +84,145 @@ const (
 // information_schema reflection. Defense-in-depth against any future bug
 // upstream that lets a non-identifier slip into pg_class.
 var validIdentifier = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+type communitySaasSweepQueryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// communitySaasPaidAccessExclusion is shared by dry-run and mutation queries
+// so the preview cannot disagree with the destructive sweep. The Community
+// distribution does not ship the Hosted subscription migration, so the fixed
+// clauses are selected only for entitlement tables present in this deployment.
+// A database lookup failure is returned and makes the sweep fail closed.
+func communitySaasPaidAccessExclusion(ctx context.Context, q communitySaasSweepQueryRower) (string, error) {
+	var hasHostedSubscriptions, hasLegacyLicenses bool
+	if err := q.QueryRowContext(ctx, `
+		SELECT to_regclass('public.hosted_subscriptions') IS NOT NULL,
+		       to_regclass('public.plugin_user_licenses') IS NOT NULL`).
+		Scan(&hasHostedSubscriptions, &hasLegacyLicenses); err != nil {
+		return "", fmt.Errorf("discover paid-access tables: %w", err)
+	}
+	var exclusion strings.Builder
+	if hasHostedSubscriptions {
+		exclusion.WriteString(`
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM public.hosted_subscriptions subscription
+		        WHERE subscription.tenant_id = registration.tenant_id
+		          AND subscription.status = 'active'
+		          AND subscription.paid_until > NOW()
+		   )`)
+	}
+	if hasLegacyLicenses {
+		exclusion.WriteString(`
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM public.plugin_user_licenses license
+		        WHERE license.tenant_id = registration.tenant_id
+		          AND license.revoked_at IS NULL
+		          AND (license.expires_at IS NULL OR license.expires_at > NOW())
+		   )`)
+	}
+	return exclusion.String(), nil
+}
+
+// lockCommunitySaasSweepCandidates serializes the destructive sweep with both
+// entitlement writers. Candidate registration rows are locked before their
+// entitlement rows so Hosted INSERT ... ON CONFLICT statements cannot create
+// or reactivate paid access between the exclusion check and cascade deletion.
+// The per-tenant advisory lock uses the same key as the legacy license issuer,
+// avoiding the inverse registration/license row-lock order used by that path.
+func lockCommunitySaasSweepCandidates(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT registration.tenant_id
+		  FROM public.community_saas_registrations AS registration
+		 WHERE registration.terminated_at IS NULL
+		   AND ((registration.last_seen_at IS NOT NULL
+		         AND registration.last_seen_at < NOW() - INTERVAL '`+communitySaasInactivityWindow+`')
+		        OR registration.created_at < NOW() - INTERVAL '`+communitySaasHardCap+`')
+		 ORDER BY registration.tenant_id`)
+	if err != nil {
+		return fmt.Errorf("list retention candidates for locking: %w", err)
+	}
+	var tenantIDs []string
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan retention candidate for locking: %w", err)
+		}
+		tenantIDs = append(tenantIDs, tenantID)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close retention candidate rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate retention candidates for locking: %w", err)
+	}
+	if len(tenantIDs) == 0 {
+		return nil
+	}
+
+	for _, tenantID := range tenantIDs {
+		if _, err := tx.ExecContext(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, tenantID); err != nil {
+			return fmt.Errorf("lock retention candidate %q: %w", tenantID, err)
+		}
+	}
+
+	if err := lockCommunitySaasRows(ctx, tx, `
+		SELECT registration.tenant_id
+		  FROM public.community_saas_registrations AS registration
+		 WHERE registration.tenant_id = ANY($1)
+		 ORDER BY registration.tenant_id
+		 FOR UPDATE`, tenantIDs); err != nil {
+		return fmt.Errorf("lock retention registrations: %w", err)
+	}
+
+	var hasHostedSubscriptions, hasLegacyLicenses bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT to_regclass('public.hosted_subscriptions') IS NOT NULL,
+		       to_regclass('public.plugin_user_licenses') IS NOT NULL`).
+		Scan(&hasHostedSubscriptions, &hasLegacyLicenses); err != nil {
+		return fmt.Errorf("discover paid-access tables for locking: %w", err)
+	}
+	if hasHostedSubscriptions {
+		if err := lockCommunitySaasRows(ctx, tx, `
+			SELECT subscription.tenant_id
+			  FROM public.hosted_subscriptions AS subscription
+			 WHERE subscription.tenant_id = ANY($1)
+			 ORDER BY subscription.tenant_id
+			 FOR UPDATE`, tenantIDs); err != nil {
+			return fmt.Errorf("lock Hosted subscriptions: %w", err)
+		}
+	}
+	if hasLegacyLicenses {
+		if err := lockCommunitySaasRows(ctx, tx, `
+			SELECT license.tenant_id
+			  FROM public.plugin_user_licenses AS license
+			 WHERE license.tenant_id = ANY($1)
+			 ORDER BY license.tenant_id
+			 FOR UPDATE`, tenantIDs); err != nil {
+			return fmt.Errorf("lock legacy licenses: %w", err)
+		}
+	}
+	return nil
+}
+
+func lockCommunitySaasRows(ctx context.Context, tx *sql.Tx, query string, tenantIDs []string) error {
+	rows, err := tx.QueryContext(ctx, query, pq.Array(tenantIDs))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
 
 // communitySaasSweepNonCascadeTables lists tables that have a tenant_id column
 // but MUST NOT be cascade-deleted on tenant termination:
@@ -249,8 +391,16 @@ func runCommunitySaasSweepTick(ctx context.Context, db *sql.DB, cascadeTables []
 		return
 	}
 	defer func() {
-		if err := releaseCommunitySaasSweepLock(tickCtx, conn); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := releaseCommunitySaasSweepLock(cleanupCtx, conn); err != nil {
 			log.Printf("[CSAAS-SWEEP] lock release failed: %v", err)
+			communitySaasSweepCounters.TickFailures.Add(1)
+			// A session-level advisory lock survives transaction rollback. Mark
+			// the underlying driver connection bad so database/sql discards the
+			// physical session instead of returning a lock-holding backend to the
+			// pool. The deferred conn.Close below performs that discard.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
 
@@ -271,6 +421,14 @@ func runCommunitySaasSweepTick(ctx context.Context, db *sql.DB, cascadeTables []
 			_ = tx.Rollback() // no-op after Commit; safety net on early returns
 		}
 	}()
+
+	if err := lockCommunitySaasSweepCandidates(tickCtx, tx); err != nil {
+		log.Printf("[CSAAS-SWEEP] candidate locking failed, rolling back tick: %v", err)
+		_ = tx.Rollback()
+		rolledBack = true
+		communitySaasSweepCounters.TickFailures.Add(1)
+		return
+	}
 
 	inactivityIDs, err := terminateInactiveCommunitySaasTenants(tickCtx, tx)
 	if err != nil {
@@ -327,23 +485,9 @@ func runCommunitySaasSweepTick(ctx context.Context, db *sql.DB, cascadeTables []
 // COMMUNITY_SAAS_SWEEP_DRYRUN to false. Runs on the same pinned connection
 // the caller acquired so it sees the same session state as a real tick.
 func runCommunitySaasSweepDryRun(ctx context.Context, conn *sql.Conn) {
-	var inactivityCount, hardCapCount int
-	err := conn.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM community_saas_registrations
-		 WHERE last_seen_at IS NOT NULL
-		   AND last_seen_at < NOW() - INTERVAL '`+communitySaasInactivityWindow+`'
-		   AND terminated_at IS NULL`).Scan(&inactivityCount)
+	inactivityCount, hardCapCount, err := communitySaasSweepDryRunCounts(ctx, conn)
 	if err != nil {
-		log.Printf("[CSAAS-SWEEP][DRYRUN] inactivity count query failed: %v", err)
-		communitySaasSweepCounters.TickFailures.Add(1)
-		return
-	}
-	err = conn.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM community_saas_registrations
-		 WHERE created_at < NOW() - INTERVAL '`+communitySaasHardCap+`'
-		   AND terminated_at IS NULL`).Scan(&hardCapCount)
-	if err != nil {
-		log.Printf("[CSAAS-SWEEP][DRYRUN] hard-cap count query failed: %v", err)
+		log.Printf("[CSAAS-SWEEP][DRYRUN] candidate count query failed: %v", err)
 		communitySaasSweepCounters.TickFailures.Add(1)
 		return
 	}
@@ -353,21 +497,55 @@ func runCommunitySaasSweepDryRun(ctx context.Context, conn *sql.Conn) {
 	}
 }
 
+// communitySaasSweepDryRunCounts returns the same candidate counts used by
+// the operational preview. Keeping these queries independently testable lets
+// regression tests prove that the destructive and preview paths share the
+// paid-access exclusion.
+func communitySaasSweepDryRunCounts(ctx context.Context, conn *sql.Conn) (int, int, error) {
+	var inactivityCount, hardCapCount int
+	paidAccessExclusion, err := communitySaasPaidAccessExclusion(ctx, conn)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM community_saas_registrations AS registration
+		 WHERE last_seen_at IS NOT NULL
+		   AND last_seen_at < NOW() - INTERVAL '`+communitySaasInactivityWindow+`'
+		   AND terminated_at IS NULL`+paidAccessExclusion).Scan(&inactivityCount)
+	if err != nil {
+		return 0, 0, fmt.Errorf("inactivity count: %w", err)
+	}
+	err = conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM community_saas_registrations AS registration
+		 WHERE created_at < NOW() - INTERVAL '`+communitySaasHardCap+`'
+		   AND NOT (last_seen_at IS NOT NULL
+		            AND last_seen_at < NOW() - INTERVAL '`+communitySaasInactivityWindow+`')
+		   AND terminated_at IS NULL`+paidAccessExclusion).Scan(&hardCapCount)
+	if err != nil {
+		return 0, 0, fmt.Errorf("hard-cap count: %w", err)
+	}
+	return inactivityCount, hardCapCount, nil
+}
+
 // terminateInactiveCommunitySaasTenants marks tenants whose last_seen_at is
 // older than 3 months as terminated. Returns the tenant_ids of every row the
 // UPDATE actually changed (via RETURNING). Emits a structured audit log line
 // per terminated tenant.
 //
-// The caller cascades on these exact tenant_ids — not on a wall-clock cutoff
-// — so any clock skew between the application process and the database is
+// The caller cascades on these exact tenant_ids, not on a wall-clock cutoff,
+// so any clock skew between the application process and the database is
 // irrelevant.
 func terminateInactiveCommunitySaasTenants(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	paidAccessExclusion, err := communitySaasPaidAccessExclusion(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx,
-		`UPDATE community_saas_registrations
+		`UPDATE community_saas_registrations AS registration
 		 SET terminated_at = NOW(), secret_hash = ''
 		 WHERE last_seen_at IS NOT NULL
 		   AND last_seen_at < NOW() - INTERVAL '`+communitySaasInactivityWindow+`'
-		   AND terminated_at IS NULL
+		   AND terminated_at IS NULL`+paidAccessExclusion+`
 		 RETURNING tenant_id`)
 	if err != nil {
 		return nil, fmt.Errorf("inactivity update: %w", err)
@@ -389,15 +567,19 @@ func terminateInactiveCommunitySaasTenants(ctx context.Context, tx *sql.Tx) ([]s
 	return ids, nil
 }
 
-// terminateHardCappedCommunitySaasTenants marks tenants past the 1-year hard
-// cap as terminated, regardless of recent activity. Returns the tenant_ids
+// terminateHardCappedCommunitySaasTenants marks unpaid tenants past the 1-year
+// hard cap as terminated, regardless of recent activity. Returns the tenant_ids
 // of every row the UPDATE actually changed.
 func terminateHardCappedCommunitySaasTenants(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	paidAccessExclusion, err := communitySaasPaidAccessExclusion(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx,
-		`UPDATE community_saas_registrations
+		`UPDATE community_saas_registrations AS registration
 		 SET terminated_at = NOW(), secret_hash = ''
 		 WHERE created_at < NOW() - INTERVAL '`+communitySaasHardCap+`'
-		   AND terminated_at IS NULL
+		   AND terminated_at IS NULL`+paidAccessExclusion+`
 		 RETURNING tenant_id`)
 	if err != nil {
 		return nil, fmt.Errorf("hard-cap update: %w", err)

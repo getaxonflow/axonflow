@@ -18,6 +18,20 @@ import (
 	"github.com/gorilla/mux"
 )
 
+func expectMediaScopedQuery(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedQuery {
+	expectAuditReadScope(mock, orgID)
+	q := mock.ExpectQuery("SELECT")
+	mock.ExpectCommit()
+	return q
+}
+
+func expectMediaScopedQueryRollback(mock sqlmock.Sqlmock, orgID string) *sqlmock.ExpectedQuery {
+	expectAuditReadScope(mock, orgID)
+	q := mock.ExpectQuery("SELECT")
+	mock.ExpectRollback()
+	return q
+}
+
 // newTestAuditHandlerWithMockDB creates a MediaGovernanceAuditHandler backed by sqlmock.
 func newTestAuditHandlerWithMockDB(t *testing.T, tier license.Tier) (*MediaGovernanceAuditHandler, sqlmock.Sqlmock, func()) {
 	t.Helper()
@@ -342,7 +356,7 @@ func TestAuditHandler_JSONExport_Success(t *testing.T) {
 		[]byte(`{"nsfw_score":0.95}`), []byte(`["block","alert"]`), true,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-export").
 		WithArgs("tenant-export", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -396,7 +410,7 @@ func TestAuditHandler_JSONExport_DefaultFormat(t *testing.T) {
 		"request_id", "tenant_id", "timestamp", "media_type", "analysis_results", "policy_actions", "blocked",
 	})
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-default").
 		WithArgs("tenant-default", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -440,7 +454,7 @@ func TestAuditHandler_JSONExport_WithExplicitFormat(t *testing.T) {
 		"request_id", "tenant_id", "timestamp", "media_type", "analysis_results", "policy_actions", "blocked",
 	})
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-json").
 		WithArgs("tenant-json", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -479,7 +493,7 @@ func TestAuditHandler_CSVExport_Success(t *testing.T) {
 		[]byte(`{"nsfw_score":0.05}`), []byte(`["allow"]`), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-csv").
 		WithArgs("tenant-csv", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -533,7 +547,7 @@ func TestAuditHandler_CSVExport_EmptyResult(t *testing.T) {
 		"request_id", "tenant_id", "timestamp", "media_type", "analysis_results", "policy_actions", "blocked",
 	})
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-csv-empty").
 		WithArgs("tenant-csv-empty", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -582,7 +596,7 @@ func TestAuditHandler_CSVExport_MultipleRecords(t *testing.T) {
 		[]byte(`{}`), []byte(`[]`), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-multi").
 		WithArgs("tenant-multi", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -620,7 +634,7 @@ func TestAuditHandler_DBQueryError_Returns500(t *testing.T) {
 	r := mux.NewRouter()
 	handler.RegisterRoutes(r)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQueryRollback(mock, "tenant-err").
 		WithArgs("tenant-err", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnError(fmt.Errorf("connection refused"))
 
@@ -731,7 +745,7 @@ func TestAuditHandler_ProfessionalTier_HasAccess(t *testing.T) {
 		"request_id", "tenant_id", "timestamp", "media_type", "analysis_results", "policy_actions", "blocked",
 	})
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-pro").
 		WithArgs("tenant-pro", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -766,7 +780,7 @@ func TestAuditHandler_QueryRecords_ScanError(t *testing.T) {
 		[]byte(`{}`), []byte(`[]`), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQueryRollback(mock, "tenant-scan-err").
 		WithArgs("tenant-scan-err", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -802,7 +816,7 @@ func TestAuditHandler_QueryRecords_InvalidJSON_StillReturnsRecords(t *testing.T)
 		[]byte(`not-valid-json`), []byte(`also-not-json`), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-bad").
 		WithArgs("tenant-bad", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -845,7 +859,7 @@ func TestAuditHandler_QueryRecords_EmptyJSONFields(t *testing.T) {
 		[]byte(``), []byte(``), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-empty").
 		WithArgs("tenant-empty", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
@@ -881,7 +895,7 @@ func TestAuditHandler_CSVExport_WithPolicyActions(t *testing.T) {
 		[]byte(`{}`), []byte(`[]`), false,
 	)
 
-	mock.ExpectQuery("SELECT").
+	expectMediaScopedQuery(mock, "tenant-actions").
 		WithArgs("tenant-actions", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 

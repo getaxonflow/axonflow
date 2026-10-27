@@ -105,7 +105,7 @@ func TestDecideAttributionInvariant_ValidatedIdentityWinsOverAssertedHeader(t *t
 		wantAttemptedUserEmail: assertedEmail, // recorded as a CLAIM...
 	})
 	args[4] = tokenEmail // ...while user_email names the principal enforced against
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := decideEnterpriseReq(t, DecideRequest{
@@ -142,7 +142,7 @@ func TestDecideAttributionInvariant_AgreeingHeaderRecordsNoClaim(t *testing.T) {
 		wantAttemptedUserEmail: "", // must be ABSENT
 	})
 	args[4] = tokenEmail
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := decideEnterpriseReq(t, DecideRequest{
@@ -188,7 +188,7 @@ func TestDecideAttributionInvariant_NoVerifiedIdentityKeepsHeaderAttribution(t *
 		wantAttemptedUserEmail: "", // nothing was displaced, so no claim is recorded
 	})
 	args[4] = assertedEmail // the header IS the attribution here
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := decideEnterpriseReq(t, DecideRequest{

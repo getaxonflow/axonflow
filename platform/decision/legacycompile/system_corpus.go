@@ -1132,6 +1132,23 @@ var DeploymentDeclaredArguments = []pdp.AttributeSchema{
 	{Path: "args.context.tool__name", Type: pdp.TypeString, Optional: true},
 }
 
+// DeploymentDeclaredMoneyArguments expose exact minor-unit amount and currency
+// fields for an organization's typed refund controls. They are caller facts,
+// not platform findings. A step field comes from the step or tool input the
+// workflow will run; a decide field comes from the refund_action context its
+// authenticated enforcement point sends. A money adapter must require those
+// fields and bind them to its executed arguments. Optional keeps unrelated
+// actions from carrying a fictitious amount.
+var DeploymentDeclaredMoneyArguments = []pdp.AttributeSchema{
+	{Path: "args.refund.amount_minor", Type: pdp.TypeNumber, Optional: true},
+	{Path: "args.refund.currency", Type: pdp.TypeString, Optional: true},
+	{Path: "args.refund.operation", Type: pdp.TypeString, Optional: true},
+	{Path: "args.step_input.amount_minor", Type: pdp.TypeNumber, Optional: true},
+	{Path: "args.step_input.currency", Type: pdp.TypeString, Optional: true},
+	{Path: "args.tool_input.amount_minor", Type: pdp.TypeNumber, Optional: true},
+	{Path: "args.tool_input.currency", Type: pdp.TypeString, Optional: true},
+}
+
 // withDeploymentDeclaredArguments merges DeploymentDeclaredArguments into a
 // derived schema, keeping it sorted by path. A shipped policy that reads one
 // of them at another type is refused rather than widened: the declaration is
@@ -1142,7 +1159,7 @@ func withDeploymentDeclaredArguments(derived []pdp.AttributeSchema) ([]pdp.Attri
 	for i, a := range out {
 		byPath[a.Path] = i
 	}
-	for _, d := range DeploymentDeclaredArguments {
+	for _, d := range append(append([]pdp.AttributeSchema{}, DeploymentDeclaredArguments...), DeploymentDeclaredMoneyArguments...) {
 		if i, seen := byPath[d.Path]; seen {
 			if out[i].Type != d.Type || out[i].Optional != d.Optional {
 				return nil, fmt.Errorf("legacycompile: a shipped policy reads the deployment-declared argument %q as %s (optional %t); it is declared %s (optional %t)",

@@ -99,7 +99,7 @@ func TestMCPRestHandlers_RequireUserToken_FlagOff_AbsentToken_CompatIntact(t *te
 			setupRUTMCPRestTest(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 			rutInstallRestCache(t, false)
 
 			w := tc.do(t)
@@ -129,7 +129,7 @@ func TestMCPRestHandlers_RequireUserToken_FlagOn_AbsentToken_401(t *testing.T) {
 			setupRUTMCPRestTest(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 			rutInstallRestCache(t, true)
 
 			w := tc.do(t)
@@ -168,7 +168,7 @@ func TestMCPRestHandlers_RequireUserToken_FlagOn_ValidToken_Unaffected(t *testin
 			setupRUTMCPRestTest(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 			rutInstallRestCache(t, true)
 
 			token := utrMintValidToken(t, "jti-"+tc.name+"-valid")
@@ -196,7 +196,7 @@ func TestMCPQueryHandler_RequireUserToken_FlagOn_InvalidToken_StillUserTokenReje
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(rutAuditArgsWithPolicyMatcher(utrPolicyIDsMatcher{want: "user_token_rejected"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCache(t, true)
@@ -212,7 +212,7 @@ func TestMCPCheckInputHandler_RequireUserToken_FlagOn_InvalidToken_StillUserToke
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(rutAuditArgsWithPolicyMatcher(utrPolicyIDsMatcher{want: "user_token_rejected"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCache(t, true)
@@ -233,7 +233,7 @@ func TestMCPQueryHandler_RequireUserToken_FlagOn_AbsentToken_AuditsUserTokenRequ
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(rutAuditArgsWithPolicyMatcher(utrPolicyIDsMatcher{want: "user_token_required"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCache(t, true)
@@ -251,7 +251,7 @@ func TestMCPCheckInputHandler_RequireUserToken_FlagOn_AbsentToken_AuditsUserToke
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(rutAuditArgsWithPolicyMatcher(utrPolicyIDsMatcher{want: "user_token_required"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCache(t, true)
@@ -271,7 +271,7 @@ func TestMCPCheckInputHandler_RequireUserToken_FlagOn_AbsentToken_AuditsUserToke
 func TestMCPCheckInputHandler_RequireUserToken_FlagOn_AbsentToken_NoUserTokenRejectedRow(t *testing.T) {
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(rutAuditArgsWithPolicyMatcher(utrPolicyIDsMatcher{want: "user_token_rejected"})...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCache(t, true)
@@ -293,7 +293,7 @@ func TestMCPQueryHandler_RequireUserToken_ReaderError_FailsClosed_AbsentTokenRej
 	setupRUTMCPRestTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	rutInstallRestCacheErr(t)
 
 	w := utrDoQuery(t, "")

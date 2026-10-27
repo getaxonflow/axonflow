@@ -37,9 +37,12 @@ func TestWebhookRepository_GetSubscription_IsTenancyBoundAndOmitsTheSecret(t *te
 	}).AddRow("sub-1", "https://example.test/hook", pq.Array([]string{EventWorkflowCompleted}),
 		true, "tenant-a", "org-a", "", now, now)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`FROM webhook_subscriptions WHERE id = \$1 AND tenant_id = \$2 AND org_id = \$3`).
 		WithArgs("sub-1", "tenant-a", "org-a").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	sub, err := repo.GetSubscription(context.Background(), "sub-1", "tenant-a", "org-a")
 	if err != nil {

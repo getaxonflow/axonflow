@@ -455,7 +455,7 @@ func TestMCPCheckInputHandler_RejectsPresentedInvalidToken(t *testing.T) {
 			setupMCPUserTokenRejectedTest(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 			token := tc.token(t)
 			w := utrDoCheckInput(t, token)
@@ -469,7 +469,7 @@ func TestMCPQueryHandler_RejectsPresentedInvalidToken(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoQuery(t, utrMalformedToken)
 
@@ -480,7 +480,7 @@ func TestMCPExecuteHandler_RejectsPresentedInvalidToken(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoExecute(t, utrMalformedToken)
 
@@ -491,7 +491,7 @@ func TestMCPCheckOutputHandler_RejectsPresentedInvalidToken(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoCheckOutput(t, utrMalformedToken)
 
@@ -526,7 +526,7 @@ func TestMCPQueryHandler_RevokedTokenControl(t *testing.T) {
 		withChecker(t, &fakeRevocations{revoked: true})
 		mock := withMockUsageDB(t)
 		mock.MatchExpectationsInOrder(false)
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 		token := utrMintValidToken(t, controlJTI)
 		w := utrDoQuery(t, token)
@@ -539,7 +539,7 @@ func TestMCPQueryHandler_RevokedTokenControl(t *testing.T) {
 		withChecker(t, &fakeRevocations{revoked: false})
 		mock := withMockUsageDB(t)
 		mock.MatchExpectationsInOrder(false)
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 		// Same jti as the revoked half above — only the checker's `revoked`
 		// flag differs between the two subtests.
@@ -593,7 +593,7 @@ func TestMCPQueryHandler_AbsentToken_CompatFallbackIntact(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoQuery(t, "")
 
@@ -607,7 +607,7 @@ func TestMCPExecuteHandler_AbsentToken_CompatFallbackIntact(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoExecute(t, "")
 
@@ -621,7 +621,7 @@ func TestMCPCheckInputHandler_AbsentToken_CompatFallbackIntact(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoCheckInput(t, "")
 
@@ -642,7 +642,7 @@ func TestMCPCheckOutputHandler_AbsentToken_CompatFallbackIntact(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := utrDoCheckOutput(t, "")
 
@@ -669,7 +669,7 @@ func TestMCPCheckInputHandler_UserTokenRejected_AuditsBlockedRow(t *testing.T) {
 	setupMCPUserTokenRejectedTest(t)
 	mock := withMockUsageDB(t)
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),         // id
 			sqlmock.AnyArg(),         // request_id
@@ -752,7 +752,7 @@ func utrCapturePolicyIDs(mock sqlmock.Sqlmock, into *[]string) {
 			args[i] = sqlmock.AnyArg()
 		}
 		args[13] = policyIDsCapture{into}
-		mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 }

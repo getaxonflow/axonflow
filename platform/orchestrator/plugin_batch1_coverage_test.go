@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -178,9 +179,11 @@ func TestExplainDecisionHandler_RequiresID(t *testing.T) {
 func TestExplainDecisionHandler_NotFound(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		// SELECT now binds (decisionID, callerTenant) — see #1623 retro fix.
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
 			WithArgs("dec-missing", "tenant-x").
 			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-missing/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-missing"})
@@ -201,14 +204,18 @@ func TestExplainDecisionHandler_HappyPath(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		ts := time.Now().UTC()
 		details := `{"policy_matches":[{"policy_id":"p-1","policy_name":"Test","risk_level":"medium","allow_override":true}],"tool_signature":"Bash"}`
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
 			WithArgs("dec-1", "tenant-x").
 			WillReturnRows(sqlmock.NewRows([]string{
 				"user_email", "tenant_id", "timestamp", "policy_decision", "policy_details",
 			}).AddRow("dev@x.com", "tenant-x", ts, "blocked", details))
+		mock.ExpectCommit()
 		// historical hit count
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+		mock.ExpectCommit()
 		// No override lookup follows (#4252): explain reads no session
 		// override. The match above is medium-risk with allow_override=true,
 		// the exact input on which the deleted lookup answered
@@ -260,9 +267,11 @@ func TestExplainDecisionHandler_HappyPath(t *testing.T) {
 // response code.
 func TestExplainDecisionHandler_CrossTenantReturnsNoOracle(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
+		expectAuditReadScope(mock, "tenant-x")
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
 			WithArgs("dec-1", "tenant-x").
 			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
@@ -280,21 +289,21 @@ func TestExplainDecisionHandler_CrossTenantReturnsNoOracle(t *testing.T) {
 // --- queryHistoricalHitCount: returns 0 paths ---
 
 func TestQueryHistoricalHitCount_EmptyUserReturnsZero(t *testing.T) {
-	got := queryHistoricalHitCount("", []ExplainPolicy{{PolicyID: "p-1"}}, time.Now())
+	got := queryHistoricalHitCount(context.Background(), "org-1", "", []ExplainPolicy{{PolicyID: "p-1"}}, time.Now())
 	if got != 0 {
 		t.Errorf("got %d, want 0 for empty user", got)
 	}
 }
 
 func TestQueryHistoricalHitCount_NoMatchesReturnsZero(t *testing.T) {
-	got := queryHistoricalHitCount("u@x.com", nil, time.Now())
+	got := queryHistoricalHitCount(context.Background(), "org-1", "u@x.com", nil, time.Now())
 	if got != 0 {
 		t.Errorf("got %d, want 0 for nil matches", got)
 	}
 }
 
 func TestQueryHistoricalHitCount_EmptyPolicyIDReturnsZero(t *testing.T) {
-	got := queryHistoricalHitCount("u@x.com", []ExplainPolicy{{PolicyID: ""}}, time.Now())
+	got := queryHistoricalHitCount(context.Background(), "org-1", "u@x.com", []ExplainPolicy{{PolicyID: ""}}, time.Now())
 	if got != 0 {
 		t.Errorf("got %d, want 0 for empty policy id", got)
 	}
@@ -302,9 +311,11 @@ func TestQueryHistoricalHitCount_EmptyPolicyIDReturnsZero(t *testing.T) {
 
 func TestQueryHistoricalHitCount_DBError(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
+		expectAuditReadScope(mock, "org-1")
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
 			WillReturnError(sql.ErrConnDone)
-		got := queryHistoricalHitCount("u@x.com",
+		mock.ExpectRollback()
+		got := queryHistoricalHitCount(context.Background(), "org-1", "u@x.com",
 			[]ExplainPolicy{{PolicyID: "p-1"}}, time.Now())
 		if got != 0 {
 			t.Errorf("got %d, want 0 on DB error", got)
@@ -314,9 +325,11 @@ func TestQueryHistoricalHitCount_DBError(t *testing.T) {
 
 func TestQueryHistoricalHitCount_HappyPath(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
+		expectAuditReadScope(mock, "org-1")
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
-		got := queryHistoricalHitCount("u@x.com",
+		mock.ExpectCommit()
+		got := queryHistoricalHitCount(context.Background(), "org-1", "u@x.com",
 			[]ExplainPolicy{{PolicyID: "p-1"}}, time.Now())
 		if got != 7 {
 			t.Errorf("got %d, want 7", got)
@@ -491,9 +504,11 @@ func TestExplainDecisionHandler_CrossTenantReturns404(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		// SELECT now takes (decisionID, callerTenant). Caller is tenant-b, so
 		// tenant-a's row is structurally unreachable — sqlmock returns ErrNoRows.
+		expectAuditReadScope(mock, "tenant-b")
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
 			WithArgs("dec-1", "tenant-b").
 			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})

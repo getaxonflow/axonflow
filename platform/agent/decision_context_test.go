@@ -330,7 +330,7 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 		"x_session_id": "sess-abc123",
 	}
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			"decide_dec-1",       // id
 			"dec-1",              // request_id
@@ -349,12 +349,12 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 				wantDecisionID: "dec-1",
 				wantContext:    reqContext,
 			},
-			"dec-1",         // decision_id (first-class column; #2592)
-			PlaneDecision,   // plane defaults to decision (input.plane unset)
-			nil,             // obligations (none)
-			"trace-corr-99", // correlation_id (#2598): the shared cross-stage key
-			nil,             // redacted_fields (#2643): unset on input → NULL
-			nil,             // session_id (#2896): context unstamped (untrusted) → NULL
+			"dec-1",          // decision_id (first-class column; #2592)
+			PlaneDecision,    // plane defaults to decision (input.plane unset)
+			nil,              // obligations (none)
+			"trace-corr-99",  // correlation_id (#2598): the shared cross-stage key
+			nil,              // redacted_fields (#2643): unset on input → NULL
+			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
 			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -403,7 +403,7 @@ func TestRecordDecideDecision_NilAuditSkipsWrite(t *testing.T) {
 	defer func() { usageDB = origDB }()
 
 	// If the nil-audit path wrongly wrote, this expectation would be met.
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// decisionTracerProvider is nil in unit tests → returns the fallback
 	// trace id; the nil context/audit means no span attrs + no DB write.
@@ -439,18 +439,18 @@ func TestRecordDecideDecision_WithTracerAndAudit(t *testing.T) {
 	decisionTracerProvider = telemetry.NewDecisionTracer(context.Background())
 	defer func() { decisionTracerProvider = origProvider }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			"decide_dec-t", "dec-t", sqlmock.AnyArg(), 0,
 			"u@x.local", "service", "client", "tenant", "org",
 			"decision_tool", "q", sqlmock.AnyArg(), "blocked", // policy_decision canonicalized from wire "deny" (#2643)
 			policyDetailsHasContext{wantDecisionID: "dec-t", wantContext: map[string]string{"x_ai_agent": "claude-code"}, wantTruncated: true},
-			"dec-t",       // decision_id (first-class column; #2592)
-			PlaneDecision, // plane defaults to decision
-			nil,           // obligations (none)
-			nil,           // correlation_id (#2598): unset on input → NULL
-			nil,           // redacted_fields (#2643): unset on input → NULL
-			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
+			"dec-t",          // decision_id (first-class column; #2592)
+			PlaneDecision,    // plane defaults to decision
+			nil,              // obligations (none)
+			nil,              // correlation_id (#2598): unset on input → NULL
+			nil,              // redacted_fields (#2643): unset on input → NULL
+			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
 			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -479,14 +479,14 @@ func TestWriteDecisionAuditLog_FallbackPlaceholders(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			"decide_dec-fb", "dec-fb", sqlmock.AnyArg(), 0,
 			"unknown@axonflow.local",  // user_email fallback
 			"service",                 // user_role fallback
 			"unknown",                 // client_id fallback
 			"unknown",                 // tenant_id fallback
-			"",                        // org_id (empty allowed; nullable)
+			unattributedAuditOrg,      // internal RLS partition; never a customer org
 			"decision_llm", "(empty)", // request_type + query fallback
 			sqlmock.AnyArg(), "allowed", // policy_decision canonicalized from wire "allow" (#2643)
 			sqlmock.AnyArg(), // policy_details — no reason/context keys
@@ -519,7 +519,7 @@ func TestWriteDecisionAuditLog_InsertErrorIsNonFatal(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnError(errors.New("boom"))
+	expectOrgScopedExecError(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnError(errors.New("boom"))
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-err", "org", "tenant", "llm", "deny",
@@ -564,19 +564,19 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			"decide_dec-gw", "dec-gw", sqlmock.AnyArg(), 7,
 			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
 			"org-acme", "decision_tool", "list merchants", sqlmock.AnyArg(),
 			"allowed", // policy_decision canonicalized from wire "allow" (#2643)
 			policyDetailsHasGatewayID{wantGatewayID: "claude_desktop.fleet-mac"},
-			"dec-gw",      // decision_id (first-class column; #2592)
-			PlaneDecision, // plane defaults to decision
-			nil,           // obligations (none)
-			nil,           // correlation_id (#2598): unset on input → NULL
-			nil,           // redacted_fields (#2643): unset on input → NULL
-			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
+			"dec-gw",         // decision_id (first-class column; #2592)
+			PlaneDecision,    // plane defaults to decision
+			nil,              // obligations (none)
+			nil,              // correlation_id (#2598): unset on input → NULL
+			nil,              // redacted_fields (#2643): unset on input → NULL
+			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
 			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -640,7 +640,7 @@ func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			"decide_dec-ob", "dec-ob", sqlmock.AnyArg(), 7,
 			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
@@ -650,9 +650,9 @@ func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
 			"dec-ob",         // decision_id (first-class column)
 			PlaneMCP,         // plane from the audit input (not the default)
 			obligationsJSONMatcher{wantType: ObligationRedactPII}, // obligations JSONB
-			nil, // correlation_id (#2598): unset on input → NULL
-			nil, // redacted_fields (#2643): unset on input → NULL
-			nil, // session_id (#2896): context unstamped (untrusted) → NULL
+			nil,              // correlation_id (#2598): unset on input → NULL
+			nil,              // redacted_fields (#2643): unset on input → NULL
+			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
 			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))

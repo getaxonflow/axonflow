@@ -276,7 +276,7 @@ func TestPolicyTestPreviewRecordsNothing(t *testing.T) {
 	expectAuditInsert := func() sqlmock.Sqlmock {
 		mock := withMockUsageDB(t)
 		mock.MatchExpectationsInOrder(false)
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 		return mock
 	}
 

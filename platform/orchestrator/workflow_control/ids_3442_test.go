@@ -127,9 +127,13 @@ func TestRepositoryCreateEmptyIDMintsPinnedFormat(t *testing.T) {
 	}
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-test").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO workflows").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
-	wf := &Workflow{WorkflowName: "3442 repository fallback"}
+	wf := &Workflow{WorkflowName: "3442 repository fallback", OrgID: "org-test", TenantID: "tenant-test"}
 	if err := NewPostgresRepository(db).Create(context.Background(), wf); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

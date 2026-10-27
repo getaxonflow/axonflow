@@ -303,7 +303,7 @@ func (s *Service) deliverWebhook(ctx context.Context, sub Subscription, eventTyp
 				lastErr = ctx.Err()
 				s.logger.Printf("[Webhooks] Delivery %s cancelled during backoff: %v", deliveryID, lastErr)
 				now := time.Now()
-				s.recordDelivery(sub.ID, eventType, payloadBytes, "failed", attempt, &now, &responseStatus, "", lastErr.Error())
+				s.recordDelivery(&sub, eventType, payloadBytes, "failed", attempt, &now, &responseStatus, "", lastErr.Error())
 				return
 			case <-time.After(backoff):
 			}
@@ -356,7 +356,7 @@ func (s *Service) deliverWebhook(ctx context.Context, sub Subscription, eventTyp
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			// Success
 			now := time.Now()
-			s.recordDelivery(sub.ID, eventType, payloadBytes, "delivered", attempt+1, &now, &responseStatus, "", "")
+			s.recordDelivery(&sub, eventType, payloadBytes, "delivered", attempt+1, &now, &responseStatus, "", "")
 			return
 		}
 
@@ -370,17 +370,19 @@ func (s *Service) deliverWebhook(ctx context.Context, sub Subscription, eventTyp
 	if lastErr != nil {
 		errMsg = lastErr.Error()
 	}
-	s.recordDelivery(sub.ID, eventType, payloadBytes, "failed", maxRetries+1, &now, &responseStatus, "", errMsg)
+	s.recordDelivery(&sub, eventType, payloadBytes, "failed", maxRetries+1, &now, &responseStatus, "", errMsg)
 	s.logger.Printf("[Webhooks] Delivery %s failed after %d attempts: %v", deliveryID, maxRetries+1, lastErr)
 }
 
 // recordDelivery records a delivery attempt in the database.
-func (s *Service) recordDelivery(subID, eventType string, payload []byte, status string, attempts int, lastAttempt *time.Time, responseStatus *int, responseBody string, errMsg string) {
+func (s *Service) recordDelivery(sub *Subscription, eventType string, payload []byte, status string, attempts int, lastAttempt *time.Time, responseStatus *int, responseBody string, errMsg string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	delivery := &Delivery{
-		SubscriptionID: subID,
+		SubscriptionID: sub.ID,
+		OrgID:          sub.OrgID,
+		TenantID:       sub.TenantID,
 		EventType:      eventType,
 		Payload:        payload,
 		Status:         status,
@@ -393,7 +395,7 @@ func (s *Service) recordDelivery(subID, eventType string, payload []byte, status
 	}
 
 	if err := s.repo.RecordDelivery(ctx, delivery); err != nil {
-		s.logger.Printf("[Webhooks] Failed to record delivery for subscription %s: %v", subID, err)
+		s.logger.Printf("[Webhooks] Failed to record delivery for subscription %s: %v", sub.ID, err)
 	}
 }
 

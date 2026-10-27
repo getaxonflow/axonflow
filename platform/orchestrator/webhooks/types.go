@@ -54,6 +54,8 @@ type Delivery struct {
 	ResponseBody   string     `json:"response_body,omitempty" db:"response_body"`
 	Error          string     `json:"error,omitempty" db:"error"`
 	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	OrgID          string     `json:"-" db:"-"`
+	TenantID       string     `json:"-" db:"-"`
 }
 
 // WebhookPayload is the payload sent to webhook endpoints.

@@ -49,9 +49,13 @@ func connectSweepDB(t *testing.T) (*sql.DB, func()) {
 	}
 	resetSweepCounters()
 	cleanup := func() {
-		// Always release the advisory lock if a test left it held — failing
+		// Always release the advisory lock if a test left it held; failing
 		// to release would block subsequent tests' lock acquisition.
 		_, _ = db.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, communitySaasSweepLockID)
+		_, _ = db.ExecContext(context.Background(),
+			`DELETE FROM hosted_subscriptions WHERE tenant_id LIKE $1`, sweepTestPrefix+"%")
+		_, _ = db.ExecContext(context.Background(),
+			`DELETE FROM plugin_user_licenses WHERE tenant_id LIKE $1`, sweepTestPrefix+"%")
 		_, _ = db.ExecContext(context.Background(),
 			`DELETE FROM community_saas_registrations WHERE tenant_id LIKE $1`, sweepTestPrefix+"%")
 		_ = db.Close()
@@ -90,6 +94,58 @@ func seedSweepTenant(t *testing.T, db *sql.DB, suffix string, createdAt time.Tim
 		t.Fatalf("seed tenant %s: %v", suffix, err)
 	}
 	return tenantID
+}
+
+func seedSweepHostedSubscription(t *testing.T, db *sql.DB, tenantID, status string, paidUntil time.Time) {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(),
+		`INSERT INTO hosted_subscriptions
+		 (tenant_id, stripe_subscription_id, stripe_customer_id, status, paid_until)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		tenantID, "sub_"+uuid.NewString(), "cus_"+uuid.NewString(), status, paidUntil)
+	if err != nil {
+		t.Fatalf("seed Hosted subscription for %s: %v", tenantID, err)
+	}
+}
+
+func seedSweepLegacyLicense(t *testing.T, db *sql.DB, tenantID string, expiresAt time.Time, revoked bool) {
+	t.Helper()
+	var revokedAt sql.NullTime
+	if revoked {
+		revokedAt = sql.NullTime{Valid: true, Time: time.Now().UTC()}
+	}
+	_, err := db.ExecContext(context.Background(),
+		`INSERT INTO plugin_user_licenses
+		 (tenant_id, claimed_by_email, tier, expires_at, revoked_at, license_token_jti)
+		 VALUES ($1, $2, 'Pro', $3, $4, $5)`,
+		tenantID, tenantID+"@example.test", expiresAt, revokedAt, uuid.NewString())
+	if err != nil {
+		t.Fatalf("seed legacy license for %s: %v", tenantID, err)
+	}
+}
+
+func seedSweepPermanentLegacyLicense(t *testing.T, db *sql.DB, tenantID string) {
+	t.Helper()
+	_, err := db.ExecContext(context.Background(),
+		`INSERT INTO plugin_user_licenses
+		 (tenant_id, claimed_by_email, tier, expires_at, revoked_at, license_token_jti)
+		 VALUES ($1, $2, 'Pro', NULL, NULL, $3)`,
+		tenantID, tenantID+"@example.test", uuid.NewString())
+	if err != nil {
+		t.Fatalf("seed permanent legacy license for %s: %v", tenantID, err)
+	}
+}
+
+func requireSweepHostedSubscriptionsTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT to_regclass('public.hosted_subscriptions') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatalf("discover hosted_subscriptions: %v", err)
+	}
+	if !exists {
+		t.Skip("hosted_subscriptions is not part of this deployment's migration set")
+	}
 }
 
 // TestDiscoverCommunitySaasCascadeTables_DB asserts the reflection finds the
@@ -194,6 +250,222 @@ func TestSweepTerminateHardCap_DB(t *testing.T) {
 	}
 }
 
+// TestSweepPreservesPaidAccess_DB proves that neither retention trigger can
+// terminate a tenant while paid access is current. It covers both the Hosted
+// subscription source of truth and the legacy prepaid compatibility path.
+func TestSweepPreservesPaidAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+	requireSweepHostedSubscriptionsTable(t, db)
+
+	now := time.Now().UTC()
+	hostedInactive := seedSweepTenant(t, db, "paid_inactive",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepHostedSubscription(t, db, hostedInactive, "active", now.AddDate(0, 1, 0))
+
+	hostedPastHardCap := seedSweepTenant(t, db, "paid_hard_cap",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.Add(-1 * time.Hour)},
+		false)
+	seedSweepHostedSubscription(t, db, hostedPastHardCap, "active", now.AddDate(0, 1, 0))
+
+	legacyPrepaid := seedSweepTenant(t, db, "legacy_prepaid",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepLegacyLicense(t, db, legacyPrepaid, now.AddDate(0, 1, 0), false)
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	runCommunitySaasSweepTick(context.Background(), db, tables, false)
+
+	for _, tenantID := range []string{hostedInactive, hostedPastHardCap, legacyPrepaid} {
+		if got := assertTenantTerminated(t, db, tenantID); got {
+			t.Errorf("tenant with current paid access should not be terminated: %s", tenantID)
+		}
+	}
+	inactivity, hardCap, failures, _, _ := GetCommunitySaasSweepMetrics()
+	if inactivity != 0 || hardCap != 0 || failures != 0 {
+		t.Errorf("paid access sweep metrics = inactivity:%d hard-cap:%d failures:%d; want all zero",
+			inactivity, hardCap, failures)
+	}
+}
+
+func TestSweepPreservesLegacyPrepaidAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	tenantID := seedSweepTenant(t, db, "legacy_prepaid_only",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepLegacyLicense(t, db, tenantID, now.AddDate(0, 1, 0), false)
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	runCommunitySaasSweepTick(context.Background(), db, tables, false)
+	if got := assertTenantTerminated(t, db, tenantID); got {
+		t.Errorf("tenant with current legacy prepaid access should not be terminated: %s", tenantID)
+	}
+}
+
+// Pro v1 one-time purchases deliberately persist expires_at=NULL. Treating
+// NULL as expired would delete the canonical permanent legacy entitlement.
+func TestSweepPreservesPermanentLegacyPrepaidAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	tenantID := seedSweepTenant(t, db, "legacy_permanent",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepPermanentLegacyLicense(t, db, tenantID)
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	runCommunitySaasSweepTick(context.Background(), db, tables, false)
+	if got := assertTenantTerminated(t, db, tenantID); got {
+		t.Errorf("tenant with permanent legacy prepaid access should not be terminated: %s", tenantID)
+	}
+}
+
+// A paid activation may commit while a tick is selecting an old unpaid tenant.
+// The sweep must wait for the registration FK lock and then re-evaluate the
+// entitlement, rather than tombstoning the registration and deleting the newly
+// committed subscription.
+func TestSweepSerializesWithConcurrentHostedActivation_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+	requireSweepHostedSubscriptionsTable(t, db)
+
+	now := time.Now().UTC()
+	tenantID := seedSweepTenant(t, db, "concurrent_activation",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+
+	paymentTx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin payment tx: %v", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = paymentTx.Rollback()
+		}
+	}()
+	if _, err := paymentTx.ExecContext(context.Background(), `
+		INSERT INTO hosted_subscriptions
+		 (tenant_id, stripe_subscription_id, stripe_customer_id, status, paid_until)
+		VALUES ($1, $2, $3, 'active', $4)`, tenantID,
+		"sub_"+uuid.NewString(), "cus_"+uuid.NewString(), now.AddDate(0, 1, 0)); err != nil {
+		t.Fatalf("insert concurrent Hosted activation: %v", err)
+	}
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		runCommunitySaasSweepTick(context.Background(), db, tables, false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("sweep completed before the concurrent payment transaction committed")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := paymentTx.Commit(); err != nil {
+		t.Fatalf("commit concurrent Hosted activation: %v", err)
+	}
+	committed = true
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep did not resume after the concurrent payment transaction committed")
+	}
+
+	if got := assertTenantTerminated(t, db, tenantID); got {
+		t.Errorf("tenant activated during the sweep should not be terminated: %s", tenantID)
+	}
+	var subscriptionCount int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM hosted_subscriptions WHERE tenant_id = $1 AND status = 'active'`, tenantID).
+		Scan(&subscriptionCount); err != nil {
+		t.Fatalf("count concurrent Hosted subscription: %v", err)
+	}
+	if subscriptionCount != 1 {
+		t.Fatalf("active Hosted subscription count = %d, want 1", subscriptionCount)
+	}
+}
+
+// TestSweepTerminatesLapsedAccess_DB proves a stale entitlement cannot protect
+// an otherwise eligible tenant. Both past-due Hosted state and an expired
+// legacy license must follow the normal retention lifecycle.
+func TestSweepTerminatesLapsedAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+	requireSweepHostedSubscriptionsTable(t, db)
+
+	now := time.Now().UTC()
+	pastDue := seedSweepTenant(t, db, "past_due",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepHostedSubscription(t, db, pastDue, "past_due", now.AddDate(0, 1, 0))
+
+	expiredLegacy := seedSweepTenant(t, db, "expired_legacy",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.Add(-1 * time.Hour)},
+		false)
+	seedSweepLegacyLicense(t, db, expiredLegacy, now.Add(-1*time.Hour), false)
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	runCommunitySaasSweepTick(context.Background(), db, tables, false)
+
+	for _, tenantID := range []string{pastDue, expiredLegacy} {
+		if got := assertTenantTerminated(t, db, tenantID); !got {
+			t.Errorf("tenant with lapsed access should be terminated: %s", tenantID)
+		}
+	}
+}
+
+func TestSweepTerminatesExpiredLegacyAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	tenantID := seedSweepTenant(t, db, "expired_legacy_only",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.Add(-1 * time.Hour)},
+		false)
+	seedSweepLegacyLicense(t, db, tenantID, now.Add(-1*time.Hour), false)
+
+	tables, err := discoverCommunitySaasCascadeTables(context.Background(), db)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	runCommunitySaasSweepTick(context.Background(), db, tables, false)
+	if got := assertTenantTerminated(t, db, tenantID); !got {
+		t.Errorf("tenant with expired legacy access should be terminated: %s", tenantID)
+	}
+}
+
 // TestSweepDryRun_DB seeds an inactive tenant, runs the sweep with the
 // dry-run path, asserts NO termination happens but the count would have been
 // detected (verified by examining log output is impractical here; we just
@@ -212,6 +484,172 @@ func TestSweepDryRun_DB(t *testing.T) {
 
 	if got := assertTenantTerminated(t, db, inactive); got {
 		t.Errorf("dry-run should NOT terminate any tenant, but %s has terminated_at set", inactive)
+	}
+}
+
+// TestSweepDryRunExcludesPaidAccess_DB proves the preview uses the same paid
+// access boundary as the destructive path. An active subscription must add no
+// candidates, while an otherwise identical past-due subscription must add one.
+func TestSweepDryRunExcludesPaidAccess_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+	requireSweepHostedSubscriptionsTable(t, db)
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("pin connection: %v", err)
+	}
+	defer conn.Close()
+
+	baseInactive, baseHardCap, err := communitySaasSweepDryRunCounts(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("baseline dry-run counts: %v", err)
+	}
+	now := time.Now().UTC()
+	active := seedSweepTenant(t, db, "dryrun_paid",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepHostedSubscription(t, db, active, "active", now.AddDate(0, 1, 0))
+
+	afterActiveInactive, afterActiveHardCap, err := communitySaasSweepDryRunCounts(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("paid dry-run counts: %v", err)
+	}
+	if afterActiveInactive != baseInactive || afterActiveHardCap != baseHardCap {
+		t.Fatalf("active subscription changed dry-run counts from %d/%d to %d/%d",
+			baseInactive, baseHardCap, afterActiveInactive, afterActiveHardCap)
+	}
+
+	pastDue := seedSweepTenant(t, db, "dryrun_past_due",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	seedSweepHostedSubscription(t, db, pastDue, "past_due", now.AddDate(0, 1, 0))
+
+	afterLapseInactive, afterLapseHardCap, err := communitySaasSweepDryRunCounts(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("lapsed dry-run counts: %v", err)
+	}
+	if afterLapseInactive != baseInactive+1 || afterLapseHardCap != baseHardCap {
+		t.Errorf("past-due subscription changed dry-run counts to %d/%d; want %d/%d",
+			afterLapseInactive, afterLapseHardCap, baseInactive+1, baseHardCap)
+	}
+}
+
+// A tenant can satisfy both retention predicates. The preview must report
+// the same disjoint reason counts as the destructive path, which processes
+// inactivity first and excludes that tombstone from the hard-cap update.
+func TestSweepDryRunReasonsAreDisjoint_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("pin connection: %v", err)
+	}
+	defer conn.Close()
+	baseInactive, baseHardCap, err := communitySaasSweepDryRunCounts(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("baseline dry-run counts: %v", err)
+	}
+	now := time.Now().UTC()
+	seedSweepTenant(t, db, "dryrun_overlap",
+		now.AddDate(-1, -1, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+
+	gotInactive, gotHardCap, err := communitySaasSweepDryRunCounts(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("overlap dry-run counts: %v", err)
+	}
+	if gotInactive != baseInactive+1 || gotHardCap != baseHardCap {
+		t.Fatalf("overlap preview = %d/%d, want %d/%d",
+			gotInactive, gotHardCap, baseInactive+1, baseHardCap)
+	}
+}
+
+// Canceling a tick while it waits on a tenant lock must still release the
+// session-level global sweep lock. Otherwise the pooled backend would make
+// every later instance skip retention indefinitely.
+func TestSweepCanceledCandidateWaitReleasesGlobalLock_DB(t *testing.T) {
+	db, cleanup := connectSweepDB(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	tenantID := seedSweepTenant(t, db, "cancel_lock_wait",
+		now.AddDate(0, -6, 0),
+		sql.NullTime{Valid: true, Time: now.AddDate(0, -4, 0)},
+		false)
+	blocker, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err := blocker.Exec(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runCommunitySaasSweepTick(ctx, db, nil, false)
+		close(done)
+	}()
+
+	observer, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	globalHeld := false
+	for time.Now().Before(deadline) {
+		// Observe pg_locks instead of probing with pg_try_advisory_lock. A
+		// probe can win the race itself and make the sweep skip this tick.
+		if err := observer.QueryRowContext(context.Background(),
+			`SELECT EXISTS (
+				SELECT 1 FROM pg_locks
+				 WHERE locktype = 'advisory'
+				   AND granted
+				   AND ((classid::bigint << 32) + objid::bigint) = $1
+			)`, communitySaasSweepLockID).Scan(&globalHeld); err != nil {
+			t.Fatal(err)
+		}
+		if globalHeld {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !globalHeld {
+		t.Fatal("sweep never acquired global lock before timeout")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled sweep did not return")
+	}
+	if err := blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	var acquired bool
+	if err := observer.QueryRowContext(context.Background(),
+		`SELECT pg_try_advisory_lock($1)`, communitySaasSweepLockID).Scan(&acquired); err != nil {
+		t.Fatal(err)
+	}
+	if !acquired {
+		t.Fatal("global sweep lock leaked after canceled candidate wait")
+	}
+	var released bool
+	if err := observer.QueryRowContext(context.Background(),
+		`SELECT pg_advisory_unlock($1)`, communitySaasSweepLockID).Scan(&released); err != nil || !released {
+		t.Fatalf("release verification lock: released=%v err=%v", released, err)
+	}
+	_, _, failures, _, _ := GetCommunitySaasSweepMetrics()
+	if failures == 0 {
+		t.Fatal("canceled candidate wait did not increment tick failure metric")
 	}
 }
 

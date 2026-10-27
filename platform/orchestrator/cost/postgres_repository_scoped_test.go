@@ -21,6 +21,9 @@ func TestPostgresRepository_GetBudgetScoped(t *testing.T) {
 	}
 	defer db.Close()
 	repo := NewPostgresRepository(db)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	rows := sqlmock.NewRows([]string{
 		"id", "name", "description", "scope", "scope_id", "limit_usd", "period",
@@ -32,6 +35,7 @@ func TestPostgresRepository_GetBudgetScoped(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, name, description, scope, scope_id, limit_usd, period,\s+on_exceed, alert_thresholds, enabled, org_id, tenant_id,\s+created_by, updated_by, created_at, updated_at\s+FROM budgets\s+WHERE id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("b1", "org-a", "tenant-a").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	budget, err := repo.GetBudgetScoped(context.Background(), "b1", "org-a", "tenant-a")
 	if err != nil {
@@ -52,10 +56,14 @@ func TestPostgresRepository_GetBudgetScoped_CrossOrgNoRows(t *testing.T) {
 	}
 	defer db.Close()
 	repo := NewPostgresRepository(db)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-b").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectQuery(`FROM budgets\s+WHERE id = \$1`).
 		WithArgs("b1", "org-b", "tenant-b").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectRollback()
 
 	if _, err := repo.GetBudgetScoped(context.Background(), "b1", "org-b", "tenant-b"); err != ErrBudgetNotFound {
 		t.Fatalf("cross-org scoped get must be ErrBudgetNotFound, got %v", err)
@@ -88,10 +96,14 @@ func TestPostgresRepository_DeleteBudgetScoped(t *testing.T) {
 	}
 	defer db.Close()
 	repo := NewPostgresRepository(db)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-a").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	mock.ExpectExec(`DELETE FROM budgets WHERE id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("b1", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	if err := repo.DeleteBudgetScoped(context.Background(), "b1", "org-a", "tenant-a"); err != nil {
 		t.Fatalf("DeleteBudgetScoped failed: %v", err)

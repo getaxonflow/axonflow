@@ -102,7 +102,7 @@ health: ## Check health of all services
 	@echo "Agent:           $$(curl -s http://localhost:8080/health | jq -r '.status // "unhealthy"' 2>/dev/null || echo 'not running')"
 	@echo "Orchestrator:    $$(curl -s http://localhost:8081/health | jq -r '.status // "unhealthy"' 2>/dev/null || echo 'not running')"
 	@echo "Customer Portal: $$(curl -s http://localhost:8082/health 2>/dev/null || echo 'not running')"
-	@echo "Prometheus:      $$(curl -s http://localhost:9090/-/healthy 2>/dev/null && echo 'healthy' || echo 'not running')"
+	@echo "Prometheus:      $$(curl -s http://localhost:9090/prometheus/-/healthy 2>/dev/null && echo 'healthy' || echo 'not running')"
 	@echo "Grafana:         $$(curl -s http://localhost:3000/api/health 2>/dev/null | jq -r '.database // "unhealthy"' || echo 'not running')"
 
 restart: ## Restart a service (use: make restart service=agent)

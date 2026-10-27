@@ -161,6 +161,24 @@ func TestStampMissingPolicyVersions_AllBuiltinOrCovered_NoQuery(t *testing.T) {
 	}
 }
 
+func TestStampMissingPolicyVersions_SourcedIdentityIsIntentionallyUnversioned(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	details := map[string]interface{}{
+		"policy_ids":      []string{"shipped-control", "organization-constraint"},
+		"policy_sources":  map[string]string{"shipped-control": "shipped", "organization-constraint": "organization"},
+		"policy_versions": map[string]interface{}{"organization-constraint": 3},
+	}
+	stampMissingPolicyVersions(context.Background(), db, details)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sourced identities must not probe static_policies: %v", err)
+	}
+}
+
 func TestStampMissingPolicyVersions_DBErrorDegradesToNoKey(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -247,7 +265,7 @@ func TestWriteDecisionAuditLog_StampsNamesAndVersions(t *testing.T) {
 		args[i] = sqlmock.AnyArg()
 	}
 	args[13] = captureJSONArg{dst: &detailsJSON} // policy_details (14th INSERT arg)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(args...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -291,7 +309,7 @@ func TestWriteDecisionAuditLog_AllowVerdictSkipsVersionLookup(t *testing.T) {
 	// ONLY the INSERT is expected: an allow write must not pay the version
 	// batch read (acted-verdict gate). An unexpected SELECT would surface via
 	// ExpectationsWereMet ordering.
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	writeDecisionAuditLog(context.Background(), db,
 		"dec-allow-3365", "org-1", "tenant-1", "llm", "allow",

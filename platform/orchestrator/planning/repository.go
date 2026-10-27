@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -77,7 +78,8 @@ type Repository interface {
 
 // PostgresRepository implements Repository using PostgreSQL
 type PostgresRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	adminDB *sql.DB
 }
 
 // Ensure PostgresRepository implements Repository
@@ -86,6 +88,16 @@ var _ Repository = (*PostgresRepository)(nil)
 // NewPostgresRepository creates a new PostgreSQL repository
 func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 	return &PostgresRepository{db: db}
+}
+
+func (r *PostgresRepository) SetAdminDB(db *sql.DB) { r.adminDB = db }
+
+func planOrgScope(ctx context.Context) (string, error) {
+	s, err := tenantscope.FromContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return s.OrgID, nil
 }
 
 // SavePlan stores a new plan in the database
@@ -125,14 +137,16 @@ func (r *PostgresRepository) SavePlan(ctx context.Context, plan *Plan) error {
 		version = 1
 	}
 
-	_, err := r.db.ExecContext(ctx, query,
-		plan.PlanID, plan.Query, plan.Domain, plan.ExecutionMode, version,
-		plan.WorkflowDefinition,
-		plan.Complexity, plan.Parallel, plan.EstimatedDuration, plan.StepCount,
-		string(plan.Status),
-		nullString(plan.OrgID), nullString(plan.TenantID), nullString(plan.UserID), nullString(plan.ClientID),
-		plan.ExpiresAt,
-	)
+	err := rls.WithOrgScope(ctx, r.db, plan.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			plan.PlanID, plan.Query, plan.Domain, plan.ExecutionMode, version,
+			plan.WorkflowDefinition,
+			plan.Complexity, plan.Parallel, plan.EstimatedDuration, plan.StepCount,
+			string(plan.Status),
+			nullString(plan.OrgID), nullString(plan.TenantID), nullString(plan.UserID), nullString(plan.ClientID),
+			plan.ExpiresAt)
+		return execErr
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to save plan: %w", err)
@@ -164,14 +178,20 @@ func (r *PostgresRepository) GetPlan(ctx context.Context, planID string) (*Plan,
 	var errorMessage sql.NullString
 	var orgID, tenantID, userID, clientID sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, planID).Scan(
-		&plan.PlanID, &plan.Query, &plan.Domain, &plan.ExecutionMode, &plan.Version,
-		&plan.WorkflowDefinition,
-		&plan.Complexity, &plan.Parallel, &estimatedDuration, &plan.StepCount,
-		&status, &executedAt, &executionResult, &errorMessage,
-		&orgID, &tenantID, &userID, &clientID,
-		&plan.ExpiresAt, &plan.CreatedAt, &plan.UpdatedAt,
-	)
+	orgIDScope, err := planOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgIDScope, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, planID).Scan(
+			&plan.PlanID, &plan.Query, &plan.Domain, &plan.ExecutionMode, &plan.Version,
+			&plan.WorkflowDefinition,
+			&plan.Complexity, &plan.Parallel, &estimatedDuration, &plan.StepCount,
+			&status, &executedAt, &executionResult, &errorMessage,
+			&orgID, &tenantID, &userID, &clientID,
+			&plan.ExpiresAt, &plan.CreatedAt, &plan.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, ErrPlanNotFound
@@ -210,6 +230,60 @@ func (r *PostgresRepository) GetPlan(ctx context.Context, planID string) (*Plan,
 	return plan, nil
 }
 
+// GetPlanUnscoped performs the one explicitly named cross-organization plan
+// lookup used by unified execution reconciliation. It requires BYPASSRLS.
+func (r *PostgresRepository) GetPlanUnscoped(ctx context.Context, planID string) (*Plan, error) {
+	if planID == "" {
+		return nil, ErrInvalidPlanID
+	}
+	if r.adminDB == nil {
+		return nil, fmt.Errorf("unscoped plan reconciliation requires platform admin database")
+	}
+	query := `
+		SELECT plan_id, query, domain, execution_mode, COALESCE(version, 1),
+			workflow_definition,
+			complexity, parallel, estimated_duration, step_count,
+			status, executed_at, execution_result, error_message,
+			org_id, tenant_id, user_id, client_id,
+			expires_at, created_at, updated_at
+		FROM plans WHERE plan_id = $1`
+	plan := &Plan{}
+	var status string
+	var executedAt sql.NullTime
+	var executionResult, estimatedDuration, errorMessage sql.NullString
+	var orgID, tenantID, userID, clientID sql.NullString
+	err := r.adminDB.QueryRowContext(ctx, query, planID).Scan(
+		&plan.PlanID, &plan.Query, &plan.Domain, &plan.ExecutionMode, &plan.Version,
+		&plan.WorkflowDefinition,
+		&plan.Complexity, &plan.Parallel, &estimatedDuration, &plan.StepCount,
+		&status, &executedAt, &executionResult, &errorMessage,
+		&orgID, &tenantID, &userID, &clientID,
+		&plan.ExpiresAt, &plan.CreatedAt, &plan.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrPlanNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get plan: %w", err)
+	}
+	plan.Status = PlanStatus(status)
+	if executedAt.Valid {
+		plan.ExecutedAt = &executedAt.Time
+	}
+	if executionResult.Valid {
+		plan.ExecutionResult = json.RawMessage(executionResult.String)
+	}
+	if estimatedDuration.Valid {
+		plan.EstimatedDuration = estimatedDuration.String
+	}
+	if errorMessage.Valid {
+		plan.ErrorMessage = errorMessage.String
+	}
+	plan.OrgID, plan.TenantID = orgID.String, tenantID.String
+	plan.UserID, plan.ClientID = userID.String, clientID.String
+	return plan, nil
+}
+
 // UpdatePlanStatus updates the status and optionally the execution result
 func (r *PostgresRepository) UpdatePlanStatus(ctx context.Context, planID string, status PlanStatus, result json.RawMessage, errorMsg string) error {
 	if planID == "" {
@@ -232,7 +306,12 @@ func (r *PostgresRepository) UpdatePlanStatus(ctx context.Context, planID string
 		args = []interface{}{string(status), planID}
 	}
 
-	res, err := r.db.ExecContext(ctx, query, args...)
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	var res sql.Result
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error { var e error; res, e = tx.ExecContext(ctx, query, args...); return e })
 	if err != nil {
 		return fmt.Errorf("failed to update plan status: %w", err)
 	}
@@ -253,7 +332,16 @@ func (r *PostgresRepository) UpdatePlanStatusAtomic(ctx context.Context, planID 
 	}
 
 	query := `UPDATE plans SET status = $1, updated_at = NOW() WHERE plan_id = $2 AND status = $3`
-	res, err := r.db.ExecContext(ctx, query, string(newStatus), planID, string(expectedStatus))
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	var res sql.Result
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var e error
+		res, e = tx.ExecContext(ctx, query, string(newStatus), planID, string(expectedStatus))
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update plan status atomically: %w", err)
 	}
@@ -278,12 +366,21 @@ func (r *PostgresRepository) MarkExecutingWithPendingBinding(ctx context.Context
 	if err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE plans SET status = $1,
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	var res sql.Result
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var e error
+		res, e = tx.ExecContext(ctx,
+			`UPDATE plans SET status = $1,
 		   execution_result = CASE WHEN execution_mode IN ('confirm', 'step') THEN $2::jsonb ELSE execution_result END,
 		   updated_at = NOW()
 		 WHERE plan_id = $3 AND status = $4`,
-		string(PlanStatusExecuting), string(result), planID, string(PlanStatusPending))
+			string(PlanStatusExecuting), string(result), planID, string(PlanStatusPending))
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to mark plan executing: %w", err)
 	}
@@ -303,10 +400,19 @@ func (r *PostgresRepository) BindExecutionWorkflow(ctx context.Context, planID, 
 	if err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE plans SET execution_result = $1, updated_at = NOW()
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	var res sql.Result
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var e error
+		res, e = tx.ExecContext(ctx,
+			`UPDATE plans SET execution_result = $1, updated_at = NOW()
 		 WHERE plan_id = $2 AND status = $3 AND execution_result->>'wcp_workflow_id' = ''`,
-		string(result), planID, string(PlanStatusExecuting))
+			string(result), planID, string(PlanStatusExecuting))
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to bind the plan's workflow: %w", err)
 	}
@@ -322,7 +428,14 @@ func (r *PostgresRepository) DeletePlan(ctx context.Context, planID string) erro
 		return ErrInvalidPlanID
 	}
 
-	_, err := r.db.ExecContext(ctx, "DELETE FROM plans WHERE plan_id = $1", planID)
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, "DELETE FROM plans WHERE plan_id = $1", planID)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete plan: %w", err)
 	}
@@ -331,7 +444,10 @@ func (r *PostgresRepository) DeletePlan(ctx context.Context, planID string) erro
 
 // CleanupExpiredPlans removes expired plans and returns the count of deleted plans
 func (r *PostgresRepository) CleanupExpiredPlans(ctx context.Context) (int, error) {
-	res, err := r.db.ExecContext(ctx, `
+	if r.adminDB == nil {
+		return 0, fmt.Errorf("plan cleanup requires platform admin database")
+	}
+	res, err := r.adminDB.ExecContext(ctx, `
 		DELETE FROM plans
 		WHERE expires_at < CURRENT_TIMESTAMP
 		AND status IN ('pending', 'expired')
@@ -372,9 +488,17 @@ func (r *PostgresRepository) UpdatePlanWithVersion(ctx context.Context, planID s
 	)
 	args = append(args, planID, expectedVersion)
 
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return nil, ErrPlanNotFound
+	}
 	var newVersion int
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&newVersion)
-	if err == sql.ErrNoRows {
+	var queryErr error
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		queryErr = tx.QueryRowContext(ctx, query, args...).Scan(&newVersion)
+		return queryErr
+	})
+	if queryErr == sql.ErrNoRows {
 		return nil, ErrVersionConflict
 	}
 	if err != nil {
@@ -391,10 +515,13 @@ func (r *PostgresRepository) SavePlanVersion(ctx context.Context, version *PlanV
 		INSERT INTO plan_versions (plan_id, version, org_id, snapshot, changed_by, change_type, change_summary)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
-	_, err := r.db.ExecContext(ctx, query,
-		version.PlanID, version.Version, nullString(version.OrgID), version.Snapshot,
-		nullString(version.ChangedBy), version.ChangeType, nullString(version.ChangeSummary),
-	)
+	err := rls.WithOrgScope(ctx, r.db, version.OrgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, query,
+			version.PlanID, version.Version, nullString(version.OrgID), version.Snapshot,
+			nullString(version.ChangedBy), version.ChangeType, nullString(version.ChangeSummary),
+		)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to save plan version: %w", err)
 	}
@@ -413,28 +540,34 @@ func (r *PostgresRepository) GetPlanVersions(ctx context.Context, planID string)
 		WHERE plan_id = $1
 		ORDER BY version DESC`
 
-	rows, err := r.db.QueryContext(ctx, query, planID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get plan versions: %w", err)
-	}
-	defer rows.Close()
-
 	var versions []PlanVersion
-	for rows.Next() {
-		var v PlanVersion
-		if err := rows.Scan(&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary); err != nil {
-			return nil, fmt.Errorf("failed to scan plan version: %w", err)
-		}
-		versions = append(versions, v)
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return versions, rows.Err()
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, planID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v PlanVersion
+			if err := rows.Scan(&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary); err != nil {
+				return err
+			}
+			versions = append(versions, v)
+		}
+		return rows.Err()
+	})
+	return versions, err
 }
 
 // CountPlansWithVersioning returns the number of plans with version > 1 for an org
 func (r *PostgresRepository) CountPlansWithVersioning(ctx context.Context, orgID string) (int, error) {
 	query := `SELECT COUNT(*) FROM plans WHERE org_id = $1 AND version > 1`
 	var count int
-	if err := r.db.QueryRowContext(ctx, query, orgID).Scan(&count); err != nil {
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error { return tx.QueryRowContext(ctx, query, orgID).Scan(&count) }); err != nil {
 		return 0, fmt.Errorf("failed to count versioned plans: %w", err)
 	}
 	return count, nil
@@ -444,7 +577,11 @@ func (r *PostgresRepository) CountPlansWithVersioning(ctx context.Context, orgID
 func (r *PostgresRepository) CountVersions(ctx context.Context, planID string) (int, error) {
 	query := `SELECT COUNT(*) FROM plan_versions WHERE plan_id = $1`
 	var count int
-	if err := r.db.QueryRowContext(ctx, query, planID).Scan(&count); err != nil {
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error { return tx.QueryRowContext(ctx, query, planID).Scan(&count) }); err != nil {
 		return 0, fmt.Errorf("failed to count plan versions: %w", err)
 	}
 	return count, nil
@@ -462,9 +599,15 @@ func (r *PostgresRepository) GetPlanVersion(ctx context.Context, planID string, 
 		WHERE plan_id = $1 AND version = $2`
 
 	var v PlanVersion
-	err := r.db.QueryRowContext(ctx, query, planID, version).Scan(
-		&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary,
-	)
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, planID, version).Scan(
+			&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary,
+		)
+	})
 	if err == sql.ErrNoRows {
 		return nil, ErrVersionNotFound
 	}
@@ -498,10 +641,16 @@ func (r *PostgresRepository) RollbackPlan(ctx context.Context, planID string, ex
 		RETURNING version`
 
 	var newVersion int
-	err := r.db.QueryRowContext(ctx, query,
-		snap.ExecutionMode, snap.Domain, snap.WorkflowDefinition,
-		planID, expectedVersion,
-	).Scan(&newVersion)
+	orgID, err := planOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			snap.ExecutionMode, snap.Domain, snap.WorkflowDefinition,
+			planID, expectedVersion,
+		).Scan(&newVersion)
+	})
 	if err == sql.ErrNoRows {
 		return nil, ErrVersionConflict
 	}

@@ -99,7 +99,7 @@ func TestValidateServiceLicense_PermissionDenied_AuditIsSecretFree(t *testing.T)
 	licenseKey := craftServiceLicense(t, []string{"mcp:redis:query"})
 
 	var queryArg, detailsJSON []byte
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),              // id
 			sqlmock.AnyArg(),              // request_id

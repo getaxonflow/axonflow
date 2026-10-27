@@ -1042,7 +1042,8 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	steps, err := h.service.GetPendingApprovals(r.Context(), tenantID, limit)
+	orgID := r.Header.Get("X-Org-ID")
+	steps, err := h.service.GetPendingApprovals(r.Context(), tenantID, orgID, limit)
 	if err != nil {
 		if errors.Is(err, tenantscope.ErrNoCallerScope) {
 			h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
@@ -1053,7 +1054,7 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalCount, countErr := h.service.CountPendingApprovals(r.Context(), tenantID)
+	totalCount, countErr := h.service.CountPendingApprovals(r.Context(), tenantID, orgID)
 	if countErr != nil {
 		h.logger.Printf("[WorkflowControl] CountPendingApprovals error: %v", countErr)
 		// Fall back to len(steps) if count query fails

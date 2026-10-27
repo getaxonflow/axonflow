@@ -88,8 +88,8 @@ func TestAShippedPolicyReadingADeclaredArgumentAtAnotherTypeIsRefused(t *testing
 	if err != nil {
 		t.Fatalf("a derived declaration equal to the list's was refused: %v", err)
 	}
-	if n := len(merged); n != len(DeploymentDeclaredArguments) {
-		t.Fatalf("merging an equal declaration produced %d attributes; want %d, one per path", n, len(DeploymentDeclaredArguments))
+	if n := len(merged); n != len(DeploymentDeclaredArguments)+len(DeploymentDeclaredMoneyArguments) {
+		t.Fatalf("merging an equal declaration produced %d attributes; want all declared paths once", n)
 	}
 }
 

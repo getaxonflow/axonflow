@@ -65,7 +65,7 @@ func expectIdentityRow(t *testing.T, plane string, columns int) (read func(t *te
 		args[i] = sqlmock.AnyArg()
 	}
 	args[13], args[15] = captureArg{dst: &details}, plane
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
 	return func(t *testing.T) identityRow {
 		t.Helper()
 		if err := mock.ExpectationsWereMet(); err != nil {

@@ -97,7 +97,7 @@ func TestMCPCheckInputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id

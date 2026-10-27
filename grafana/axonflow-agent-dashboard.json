@@ -1,0 +1,824 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "axonflow-performance",
+    "title": "AxonFlow Performance - Agent + Orchestrator + End-to-End",
+    "tags": ["axonflow", "agent", "orchestrator", "performance", "slo"],
+    "timezone": "utc",
+    "schemaVersion": 16,
+    "version": 0,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Agent Latency Distribution (P50/P95/P99)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_p50_ms",
+            "legendFormat": "P50 (median)",
+            "refId": "A"
+          },
+          {
+            "expr": "axonflow_agent_p95_ms",
+            "legendFormat": "P95",
+            "refId": "B"
+          },
+          {
+            "expr": "axonflow_agent_p99_ms",
+            "legendFormat": "P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0,
+            "max": 50
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "thresholds": [
+          {
+            "value": 10,
+            "colorMode": "critical",
+            "op": "gt",
+            "fill": true,
+            "line": true
+          }
+        ],
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "aliasColors": {
+          "P50 (median)": "#7eb26d",
+          "P95": "#eab839",
+          "P99": "#ef843c"
+        }
+      },
+      {
+        "id": 2,
+        "title": "Requests Per Second",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_requests_per_second",
+            "legendFormat": "RPS",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Requests/sec",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null"
+      },
+      {
+        "id": 3,
+        "title": "Success Rate (Target: >99.9%)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_success_rate_percent",
+            "legendFormat": "Success Rate (%)",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Percent",
+            "show": true,
+            "min": 95,
+            "max": 100
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "thresholds": [
+          {
+            "value": 99.9,
+            "colorMode": "critical",
+            "op": "lt",
+            "fill": true,
+            "line": true
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Request Breakdown",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_total_requests",
+            "legendFormat": "Total",
+            "refId": "A"
+          },
+          {
+            "expr": "axonflow_agent_success_requests_total",
+            "legendFormat": "Success",
+            "refId": "B"
+          },
+          {
+            "expr": "axonflow_agent_failed_requests_total",
+            "legendFormat": "Failed",
+            "refId": "C"
+          },
+          {
+            "expr": "axonflow_agent_blocked_requests_total",
+            "legendFormat": "Blocked",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Requests",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 2,
+        "linewidth": 1,
+        "nullPointMode": "null",
+        "stack": true,
+        "aliasColors": {
+          "Total": "#1f78c1",
+          "Success": "#7eb26d",
+          "Failed": "#bf1b00",
+          "Blocked": "#e5ac0e"
+        }
+      },
+      {
+        "id": 11,
+        "title": "Error Rate (errors/sec)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_error_rate_per_sec",
+            "legendFormat": "Error Rate",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Errors/sec",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "thresholds": [
+          {
+            "value": 1.0,
+            "colorMode": "critical",
+            "op": "gt",
+            "fill": true,
+            "line": true
+          }
+        ],
+        "aliasColors": {
+          "Error Rate": "#bf1b00"
+        },
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [1.0],
+                "type": "gt"
+              },
+              "operator": {"type": "and"},
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"type": "avg"},
+              "type": "query"
+            }
+          ],
+          "frequency": "1m",
+          "handler": 1,
+          "name": "Error Rate Alert",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "id": 12,
+        "title": "System Health Status",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 16, "w": 6, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_up",
+            "legendFormat": "Agent",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "1": {
+                    "text": "HEALTHY",
+                    "color": "green"
+                  },
+                  "0": {
+                    "text": "DOWN",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 1, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "background",
+          "graphMode": "none"
+        }
+      },
+      {
+        "id": 6,
+        "title": "Agent Uptime",
+        "type": "singlestat",
+        "gridPos": {"x": 18, "y": 16, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "axonflow_agent_uptime_seconds / 3600",
+            "legendFormat": "Uptime (hours)",
+            "refId": "A"
+          }
+        ],
+        "format": "h",
+        "valueName": "current",
+        "valueFontSize": "80%",
+        "prefix": "",
+        "postfix": " hours",
+        "nullText": null,
+        "nullPointMode": "connected",
+        "sparkline": {
+          "show": true,
+          "full": false,
+          "lineColor": "rgb(31, 120, 193)",
+          "fillColor": "rgba(31, 118, 189, 0.18)"
+        },
+        "gauge": {
+          "show": false
+        }
+      },
+      {
+        "id": 7,
+        "title": "Orchestrator Uptime",
+        "type": "singlestat",
+        "gridPos": {"x": 18, "y": 20, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_uptime_seconds / 3600",
+            "legendFormat": "Uptime (hours)",
+            "refId": "A"
+          }
+        ],
+        "format": "h",
+        "valueName": "current",
+        "valueFontSize": "80%",
+        "prefix": "",
+        "postfix": " hours",
+        "nullText": null,
+        "nullPointMode": "connected",
+        "sparkline": {
+          "show": true,
+          "full": false,
+          "lineColor": "rgb(31, 120, 193)",
+          "fillColor": "rgba(31, 118, 189, 0.18)"
+        },
+        "gauge": {
+          "show": false
+        }
+      },
+      {
+        "id": 8,
+        "title": "Orchestrator Dynamic Policy P99 (Target: <100ms)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_dynamic_policy_p99_ms",
+            "legendFormat": "Dynamic Policy P99 (ms)",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0,
+            "max": 200
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "thresholds": [
+          {
+            "value": 100,
+            "colorMode": "critical",
+            "op": "gt",
+            "fill": true,
+            "line": true
+          }
+        ],
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        }
+      },
+      {
+        "id": 9,
+        "title": "Orchestrator Requests Per Second",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_requests_per_second",
+            "legendFormat": "Orchestrator RPS",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Requests/sec",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null"
+      },
+      {
+        "id": 10,
+        "title": "End-to-End Latency Comparison (P50/P95/P99)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 32, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_p50_ms",
+            "legendFormat": "Agent P50 (ms)",
+            "refId": "A"
+          },
+          {
+            "expr": "axonflow_agent_p95_ms",
+            "legendFormat": "Agent P95 (ms)",
+            "refId": "B"
+          },
+          {
+            "expr": "axonflow_agent_p99_ms",
+            "legendFormat": "Agent P99 (ms)",
+            "refId": "C"
+          },
+          {
+            "expr": "axonflow_orchestrator_dynamic_policy_p99_ms",
+            "legendFormat": "Orchestrator Dynamic Policy P99 (ms)",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 0,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "legend": {
+          "show": true,
+          "values": true,
+          "min": true,
+          "max": true,
+          "current": true,
+          "total": false,
+          "avg": true
+        },
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        }
+      },
+      {
+        "id": 13,
+        "title": "Per-Stage Latency Breakdown",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 40, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_agent_auth_p99_ms",
+            "legendFormat": "Auth P99",
+            "refId": "A"
+          },
+          {
+            "expr": "axonflow_agent_static_policy_eval_p99_ms",
+            "legendFormat": "Static Policy P99",
+            "refId": "B"
+          },
+          {
+            "expr": "axonflow_agent_network_p99_ms",
+            "legendFormat": "Network P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "stack": true,
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true,
+          "avg": true
+        },
+        "aliasColors": {
+          "Auth P99": "#6ed0e0",
+          "Static Policy P99": "#ef843c",
+          "Network P99": "#7eb26d"
+        }
+      },
+      {
+        "id": 14,
+        "title": "Orchestrator Health Status",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 48, "w": 6, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_up",
+            "legendFormat": "Orchestrator",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "1": {
+                    "text": "HEALTHY",
+                    "color": "green"
+                  },
+                  "0": {
+                    "text": "DOWN",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 1, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"],
+            "fields": ""
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "background",
+          "graphMode": "none"
+        }
+      },
+      {
+        "id": 15,
+        "title": "Orchestrator LLM Routing Latency (P50/P95/P99)",
+        "type": "graph",
+        "gridPos": {"x": 6, "y": 48, "w": 18, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_llm_routing_p50_ms",
+            "legendFormat": "LLM P50 (median)",
+            "refId": "A"
+          },
+          {
+            "expr": "axonflow_orchestrator_llm_routing_p95_ms",
+            "legendFormat": "LLM P95",
+            "refId": "B"
+          },
+          {
+            "expr": "axonflow_orchestrator_llm_routing_p99_ms",
+            "legendFormat": "LLM P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "aliasColors": {
+          "LLM P50 (median)": "#7eb26d",
+          "LLM P95": "#eab839",
+          "LLM P99": "#ef843c"
+        }
+      },
+      {
+        "id": 16,
+        "title": "Orchestrator Error Rate (errors/sec)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 56, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_error_rate_per_sec",
+            "legendFormat": "Error Rate",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Errors/sec",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 1,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "thresholds": [
+          {
+            "value": 1.0,
+            "colorMode": "critical",
+            "op": "gt",
+            "fill": true,
+            "line": true
+          }
+        ],
+        "aliasColors": {
+          "Error Rate": "#bf1b00"
+        }
+      },
+      {
+        "id": 17,
+        "title": "LLM Provider Performance Comparison",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 56, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_provider_p99_ms",
+            "legendFormat": "{{provider}} P99",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Milliseconds",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 0,
+        "linewidth": 2,
+        "nullPointMode": "null",
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true,
+          "avg": true
+        }
+      },
+      {
+        "id": 18,
+        "title": "LLM Provider Token Usage",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 64, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_provider_total_tokens",
+            "legendFormat": "{{provider}} Tokens",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Tokens",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 2,
+        "linewidth": 1,
+        "nullPointMode": "null",
+        "stack": true,
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true
+        }
+      },
+      {
+        "id": 19,
+        "title": "LLM Provider Cost Tracking",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 64, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "axonflow_orchestrator_provider_total_cost",
+            "legendFormat": "{{provider}} Cost ($)",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Cost ($)",
+            "show": true,
+            "min": 0
+          },
+          {
+            "show": true
+          }
+        ],
+        "xaxis": {
+          "show": true,
+          "mode": "time"
+        },
+        "lines": true,
+        "fill": 2,
+        "linewidth": 1,
+        "nullPointMode": "null",
+        "stack": true,
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true,
+          "total": true
+        }
+      }
+    ],
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    }
+  },
+  "overwrite": true
+}

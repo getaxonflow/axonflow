@@ -65,13 +65,19 @@ var builtinPolicyDisplayNames = map[string]string{
 	"client_disabled":       "Client enablement guard",
 
 	// Platform protection guards
-	"circuit_breaker":           "Circuit breaker guard",
-	"rbi_kill_switch":           "RBI kill switch",
-	"budget_exceeded":           "Budget limit guard",
-	"daily_cap":                 "Daily usage cap guard",
-	"tier_gate":                 "Tier access gate",
-	"exfiltration_limit":        "Exfiltration volume guard",
-	"segment_resolution_failed": "Governance segment resolution guard",
+	"circuit_breaker":             "Circuit breaker guard",
+	"rbi_kill_switch":             "RBI kill switch",
+	"budget_exceeded":             "Budget limit guard",
+	"daily_cap":                   "Daily usage cap guard",
+	"tier_gate":                   "Tier access gate",
+	"tier_limit_refused":          "Tier admission limit guard",
+	"per_minute":                  "Per-minute rate limit guard",
+	"user_token_required":         "Required user token guard",
+	"approval_required":           "Approval requirement guard",
+	"approval_required_by_a_pack": "Policy-pack approval requirement",
+	"obligation_conflict":         "Enforcement obligation conflict guard",
+	"exfiltration_limit":          "Exfiltration volume guard",
+	"segment_resolution_failed":   "Governance segment resolution guard",
 	// #3430: distinct from the guard above - resolution did not FAIL, there
 	// was no per-user principal to resolve against while segment-scoped
 	// policies exist. Different operator remedy, so a different name.
@@ -318,12 +324,20 @@ func stampMissingPolicyVersions(ctx context.Context, db *sql.DB, details map[str
 		return
 	}
 	existing := normalizeStampVersionMap(details["policy_versions"])
+	sources := normalizeStampStringMap(details["policy_sources"])
 	missing := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if id == "" {
 			continue
 		}
 		if _, has := existing[id]; has {
+			continue
+		}
+		// Anchored identities (organization document, policy pack, or shipped
+		// corpus) are not static_policies rows. Their source/version were stamped
+		// by the deciding engine; a source with no version is intentionally
+		// unversioned and must not trigger a database probe.
+		if sources[id] != "" {
 			continue
 		}
 		if _, builtin := builtinPolicyDisplayNames[id]; builtin {
@@ -387,6 +401,23 @@ func normalizeStampVersionMap(v interface{}) map[string]interface{} {
 		out := make(map[string]interface{}, len(t))
 		for k, e := range t {
 			out[k] = e
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func normalizeStampStringMap(v interface{}) map[string]string {
+	switch t := v.(type) {
+	case map[string]string:
+		return t
+	case map[string]interface{}:
+		out := make(map[string]string, len(t))
+		for k, e := range t {
+			if s, ok := e.(string); ok {
+				out[k] = s
+			}
 		}
 		return out
 	default:

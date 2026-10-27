@@ -56,7 +56,7 @@ func installUsageDBMock(t *testing.T) sqlmock.Sqlmock {
 // shared by /decide and the check-input/check-output allow+block emits) on
 // the two attribution columns this feature owns: user_email and session_id.
 func expectDecideWriterRow(mock sqlmock.Sqlmock, wantEmail string, wantSessionID interface{}) {
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id
 			sqlmock.AnyArg(), // request_id
@@ -596,7 +596,7 @@ func TestCheckInput_VerdictInvariance_BlockedPath(t *testing.T) {
 		mock.ExpectQuery(`SELECT risk_level, allow_override, version`).
 			WithArgs("sys_test_block_marker").
 			WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).AddRow("low", true, 3))
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 
 		w := checkInputBlockedStatement(t, forgedEmail)
 		var resp MCPCheckInputResponse

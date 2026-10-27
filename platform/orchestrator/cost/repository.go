@@ -45,6 +45,7 @@ type Repository interface {
 	GetUnacknowledgedAlerts(ctx context.Context, budgetID string) ([]BudgetAlert, error)
 	AcknowledgeAlert(ctx context.Context, alertID int64, acknowledgedBy string) error
 	GetRecentAlerts(ctx context.Context, budgetID string, limit int) ([]BudgetAlert, error)
+	GetRecentAlertsScoped(ctx context.Context, budgetID, orgID string, limit int) ([]BudgetAlert, error)
 
 	// Utility
 	Ping(ctx context.Context) error

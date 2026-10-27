@@ -104,14 +104,10 @@ const (
 	communitySaasMaxRegistrationRetries = 3
 
 	// communitySaasDisclaimerNote is returned with every registration response.
-	// Operational facts only — what the tenant gets on the Free tier, the
-	// inactivity sweep that customers should be aware of, and the upgrade path
-	// to Plugin Pro. Quality-of-service framing belongs in the Terms of Service
-	// and Privacy Policy, not in the API surface.
-	communitySaasDisclaimerNote = "Free tier: 3-day audit retention, 200 events/day. Tenants are deprovisioned " +
-		"after 3 months of inactivity, or 1 year from creation regardless of activity (data disassociated, " +
-		"tenant terminated). Plugin Pro upgrades to 30-day retention and 1,000 events/day for 90 days ($9.99) " +
-		"— see https://www.getaxonflow.com/pricing/."
+	// Registration establishes the tenant identity. Hosted governance starts
+	// after the tenant completes the dedicated monthly checkout.
+	communitySaasDisclaimerNote = "Registration complete. Hosted governance requires an active paid plan. " +
+		"Create a tenant-bound checkout with POST /api/v1/billing/checkout. Self-hosted Community remains free."
 
 	// activityUpdateBufferSize is the capacity of the activity update channel.
 	// When full, updates are dropped (non-critical — activity tracking is best-effort).
@@ -609,7 +605,7 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 			Secret:       secret,
 			SecretPrefix: secretPrefix,
 			ExpiresAt:    expiresAt.Format(time.RFC3339),
-			Endpoint:     communitySaasTryEndpoint,
+			Endpoint:     communitySaasPublicEndpoint(),
 			Note:         communitySaasDisclaimerNote,
 		}
 

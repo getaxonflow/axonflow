@@ -10,6 +10,47 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.0] - 2026-10-27: paid Hosted Starter and governed outcome workflows
+
+> **Safe-off upgrade.** This release ships the Hosted billing, person identity,
+> Customer Portal, tenant-isolation, and outcome-workflow foundations with paid
+> enforcement disabled by default. Applying the release does not activate a
+> public paid cohort or real money movement. Operators must complete the
+> staging, security, workflow, economics, Stripe, rollback, and canary gates in
+> `technical-docs/runbooks/hosted-starter-launch.md` before enabling access.
+
+### Security
+
+- **Force tenant isolation across Hosted customer data.** Community SaaS migrations 190-196 and core migration 191 add tenant-bound person identities, sessions, billing and workflow storage; enable and force RLS across customer audit, policy, plan, workflow, evidence, usage, webhook, context, execution, and deletion data; repair the Grafana boundary; and separate the app-role and platform-admin database pools. Agent startup refuses Hosted traffic when the required role, grants, policies, or forced-RLS census drift.
+- **Bind browser and internal-service authority.** Hosted mutations enforce canonical Origin/Referer checks independently of CORS. Portal proxies rebuild identity from the authenticated session, allowlist exact routes, and HMAC-bind method, path, organization, tenant, person, capability, body digest, and timestamp to the internal outcome service. Member changes and their organization-scoped audit rows commit atomically.
+- **Harden reverse-proxy header rewriting.** Agent proxy routes now discard caller-supplied forwarding metadata before rebuilding it from the observed connection, and add the internal-service token after hop-by-hop headers are removed. A caller can no longer use a `Connection` header to strip the token or preserve spoofed `X-Forwarded-*` values.
+- **Harden credential lifecycle and deployment secrecy.** Human email-link sessions remain distinct from reusable service credentials; rotation stores only a bcrypt hash, returns plaintext once with `no-store`, preserves stable identity, and revocation is tenant scoped. The local CloudFormation recovery path passes sensitive parameters through a mode-0600 temporary file instead of exposing NoEcho values in the process command line.
+- **Patch the Customer Portal UI dependency chain.** Upgrade Next.js, Handlebars, Sharp, Zod, and transitive build dependencies to their current patched releases; the locked Portal tree reports zero known npm advisories at release time.
+- **Minimize and make the Customer Portal runtime reachable.** The production UI image removes npm and npx after the standalone Next.js server is built, and explicitly binds the server to all container interfaces instead of treating Docker's container-id `HOSTNAME` as a bind address. Both release architectures pass the container health endpoint without retaining npm's unused dependency tree.
+- **Patch the release-image dependency chain.** Pin Go 1.26.10, Apache Thrift 0.24.0, Excelize 2.11.1, gRPC 1.83.2, and current `x/net`/`x/text` dependencies across the release builders; rebuild the gRPC health probe from an isolated patched module graph and move the Customer Portal runtime to Alpine 3.24.
+- **Update the monitoring runtime and weld its health contract.** Prometheus moves from 2.48.0 to 3.15.1. Image, Compose, validation, and health-check definitions now share the same version and the `/prometheus/-/healthy` route required by the configured external URL.
+- **Remove vulnerable case-workflow base packages.** The outcome-workflow sidecar moves from the Debian slim Python runtime to an immutable multi-architecture Python 3.12 / Alpine 3.23 base after the final release scan found unfixed HIGH findings in inherited Debian utilities.
+- **Minimize and pin the Grafana release image.** The preconfigured dashboard image moves from Grafana 10.2.2 to the immutable Grafana 13.3.0 slim multi-architecture image and includes only checksum-pinned Prometheus and PostgreSQL data-source plugins. The PostgreSQL backend is rebuilt from Grafana's signed dependency-only commit with patched Go inputs; because that invalidates the older release manifest, Grafana's unsigned allowlist is scoped to that one root-owned, non-writable plugin ID. Runtime installation, administration, and auto-updates are disabled so the reviewed image cannot drift after deployment; both release architectures pass the HIGH/CRITICAL vulnerability and secret gates.
+- **Make Stripe entitlement changes monotonic and tenant bound.** Webhooks require Stripe signature freshness, event ordering, customer/subscription/payment lineage, and paid-period comparisons. Replay, superseded subscriptions, older refunds or disputes, and unresolved Hosted invoice lineage cannot silently grant or revoke a newer paid period.
+
+### Enterprise
+
+- **Add durable payment-exception and support-refund workflows.** The customer-neutral workflow service persists tenant-scoped cases, action results, idempotency, retention, monthly case budgets, and burst limits. Model-assisted investigation remains evidence linked and advisory; approval is separate, changed evidence or action identity invalidates a pending approval, and shared Hosted Starter adapters do not execute real money movement.
+- **Govern workflow modules independently.** FinCrime, payment exception, and support refund are independently entitled and policy governed. The canonical template exposes bounded provider-neutral interfaces, synthetic examples, outcome reporting, baseline ingestion, and production-mode verification without presenting synthetic results as measured customer outcomes.
+- **Add the Hosted Customer Portal journey.** Entitled people sign in with short-lived, single-use email links, receive secure server-side sessions, and can access only their authorized organization, tenant, cases, audit records, approvals, members, and service-credential lifecycle. Reviewer authority is distinct from owner authority.
+
+### Community SaaS
+
+- **Add paid-first billing routes and stable payment-required responses.** Registration stays available before payment, while governed Agent, HTTP, SDK, plugin, and MCP traffic can be gated by live subscription state. Checkout metadata is server controlled and tenant bound; MCP sessions recheck entitlement before every `tools/call`.
+- **Keep launch controls safe off.** The checked-in production and staging profiles set the gate to `off`, cohort to zero, acceptance markers and module capabilities to empty, and governed-event and burst allowances to zero. CloudFormation and runtime validation independently refuse inconsistent activation.
+- **Add a production-shaped staging topology.** The Portal API and UI share one task; the outcome workflow sidecar is added only for the exact accepted module set and is reachable only over loopback. AWS Secrets Manager supplies Stripe, email, database-role, signing, and administrative credentials.
+
+### Operations and migration
+
+- Apply Community SaaS migrations 189 through 196 and core migration 191 before enabling the new routes. Deploy with the paid gate off, acceptance values empty, and module capabilities empty; verify the app-role startup census, RLS negative tests, Stripe test-mode matrix, person/session lifecycle, service-credential rotation, workflow ownership, backups, and rollback before any cohort.
+- Multi-architecture performance-testing images now compile `sustained_load` for the requested Buildx target instead of embedding an amd64 binary in the arm64 manifest.
+- Release the platform before public docs and clients. OpenClaw 2.10.0 is the first automatic Hosted checkout client and must be published manually from its reviewed merge commit only after the platform release and paid/unpaid staging proofs are public. SDK recommendation remains 9.5.0 for Go, Python, TypeScript, and Java and 0.12.0 for Rust; no SDK floor changes.
+
 ## [11.2.0] - 2026-10-21: license key rotation and FinCrime v3 payment controls
 
 > **Upgrade.** The v11.1.0 to v11.2.0 upgrade rotates both Enterprise license verifier keys without a dual-key window. Existing licenses must be reissued and deployed in lockstep with the new images. The FinCrime add-on changes from pack v2 to v3 and requires a reviewed v3 action registry and `AXONFLOW_FINCRIME_EXPECTED_VERSION=3`.
@@ -17,6 +58,7 @@ community mirror, **Enterprise** changes are EE-only.
 ### Security
 
 - **Rotate evaluation and Enterprise license verification keys** *(Enterprise and shared verifier code)*. The old signing seeds were exposed in public test history. Tests now use ephemeral keys and a guard refuses a trusted signing seed in source. There is no dual-key grace period. Licensed deployments must obtain replacement licenses before changing images.
+- **Hosted member changes and their audit records now commit atomically under forced RLS** *(Enterprise Hosted)*. Owner invite, re-invite, and revoke operations write `HOSTED_MEMBER_INVITED` or `HOSTED_MEMBER_REVOKED` through the same organization-scoped transaction as the membership, login-token, session, and role changes. This prevents the app-role pool from committing a membership change while a later unscoped `admin_audit_log` insert is rejected by the Hosted row policy.
 
 ### Enterprise
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/shared/tenantscope"
 	"axonflow/platform/testutil"
 
 	_ "github.com/lib/pq"
@@ -150,6 +151,15 @@ func intPtr(i int) *int {
 	return &i
 }
 
+func workflowRepoTestContext(t *testing.T, orgID, tenantID string) context.Context {
+	t.Helper()
+	ctx, err := tenantscope.WithContext(context.Background(), orgID, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
 // === Create Tests ===
 
 func TestPostgresRepository_Integration_Create(t *testing.T) {
@@ -160,7 +170,7 @@ func TestPostgresRepository_Integration_Create(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-create-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	t.Run("create workflow successfully", func(t *testing.T) {
 		metadata, _ := json.Marshal(map[string]interface{}{"test": "value"})
@@ -234,7 +244,7 @@ func TestPostgresRepository_Integration_GetByID(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-getbyid-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	// Create test workflow
 	workflow := &Workflow{
@@ -274,7 +284,7 @@ func TestPostgresRepository_Integration_List(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-list-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	// Create test workflows with different statuses and sources
 	for i := 0; i < 5; i++ {
@@ -386,7 +396,7 @@ func TestPostgresRepository_Integration_StatusUpdates(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-status-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	t.Run("complete workflow", func(t *testing.T) {
 		workflow := &Workflow{
@@ -544,7 +554,7 @@ func TestPostgresRepository_Integration_Steps(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-steps-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	// Create workflow for step tests
 	workflow := &Workflow{
@@ -693,7 +703,7 @@ func TestPostgresRepository_Integration_Approvals(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-approvals-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	// Create workflow with approval step
 	workflow := &Workflow{
@@ -798,7 +808,7 @@ func TestPostgresRepository_Integration_GetByIDWithSteps(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-withsteps-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-123", tenantID)
 
 	// Create workflow
 	workflow := &Workflow{
@@ -845,7 +855,7 @@ func TestPostgresRepository_Integration_Concurrency(t *testing.T) {
 	tenantID := fmt.Sprintf("test-tenant-concurrent-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-concurrency", tenantID)
 
 	// Create workflows concurrently
 	done := make(chan bool, 10)
@@ -902,7 +912,7 @@ func TestPostgresRepository_Integration_PlanApprovals(t *testing.T) {
 	defer cleanupTestWorkflows(t, db, tenantID)
 	defer cleanupTestWorkflows(t, db, otherTenantID)
 
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-plan-approvals", tenantID)
 
 	mkPending := func(workflowID, workflowName, planID, stepID string, tenant string) {
 		t.Helper()
@@ -1061,7 +1071,7 @@ func TestPostgresRepository_Integration_AddStepNeverMovesAHold(t *testing.T) {
 	repo := NewPostgresRepository(db)
 	tenantID := fmt.Sprintf("test-tenant-hold-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-hold", tenantID)
 
 	pending, approved, rejected, expired := ApprovalStatusPending, ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusExpired
 	cases := []struct {
@@ -1218,7 +1228,7 @@ func TestPostgresRepository_Integration_ListStepsMatchTheMock(t *testing.T) {
 	defer db.Close()
 	tenantID := fmt.Sprintf("test-tenant-listparity-%d", time.Now().UnixNano())
 	defer cleanupTestWorkflows(t, db, tenantID)
-	ctx := context.Background()
+	ctx := workflowRepoTestContext(t, "org-listparity", tenantID)
 	requireApproval, allow := GateDecisionRequireApproval, GateDecisionAllow
 
 	type listedStep struct {

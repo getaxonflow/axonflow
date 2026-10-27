@@ -288,10 +288,13 @@ func extractClientID(r *http.Request) string {
 // Callers inspect StatusCode + Message to format an appropriate response for
 // their protocol (REST JSON, JSON-RPC, etc.).
 type CommunitySaasAuthError struct {
-	StatusCode int
-	Message    string
-	RetryAfter string // non-empty → set Retry-After header
-	Limit      int    // the per-minute limit a 429 reached; 0 otherwise
+	StatusCode  int
+	Code        string
+	Message     string
+	CheckoutURL string
+	TenantID    string
+	RetryAfter  string // non-empty → set Retry-After header
+	Limit       int    // the per-minute limit a 429 reached; 0 otherwise
 }
 
 func (e *CommunitySaasAuthError) Error() string { return e.Message }
@@ -461,6 +464,56 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 		effectiveTier = string(rowTier)
 	}
 
+	hostedPaidFirst := false
+	if isHostedGovernanceRequest(r) {
+		paidGateApplies, gateErr := hostedPaidGateAppliesToTenant(r.Context(), authDB, cID)
+		if gateErr != nil {
+			log.Printf("[CSAAS-BILLING] paid rollout lookup failed for tenant %s: %v", logutil.Sanitize(cID), gateErr)
+			return nil, &CommunitySaasAuthError{StatusCode: http.StatusServiceUnavailable, Code: "hosted_gate_unavailable", Message: "Hosted entitlement verification is temporarily unavailable."}
+		}
+		if paidGateApplies && !hostedPaidLaunchReady() {
+			return nil, hostedLaunchUnavailableError()
+		}
+		paid := false
+		var err error
+		if paidGateApplies {
+			paid, err = hasHostedPaidEntitlement(r.Context(), authDB, cID)
+		}
+		if err != nil {
+			log.Printf("[CSAAS-BILLING] entitlement lookup failed for tenant %s: %v", logutil.Sanitize(cID), err)
+			return nil, &CommunitySaasAuthError{
+				StatusCode: http.StatusServiceUnavailable,
+				Code:       "hosted_entitlement_unavailable",
+				Message:    "Hosted entitlement verification is temporarily unavailable.",
+			}
+		}
+		if paidGateApplies && !paid {
+			return nil, hostedPaymentRequiredError(cID)
+		}
+		hostedPaidFirst = paidGateApplies
+		// Subscription customers need no emailed license token. The database
+		// entitlement is bound to the Basic credential's tenant identity.
+		if paidGateApplies && effectiveTier == string(license.TierFree) {
+			effectiveTier = string(license.TierPro)
+		}
+		if paidGateApplies && isMeteredHostedGovernancePath(r.URL.Path) {
+			fingerprint, fingerprintErr := hostedRequestFingerprint(r, nil)
+			if fingerprintErr != nil {
+				return nil, &CommunitySaasAuthError{StatusCode: http.StatusRequestEntityTooLarge, Code: "hosted_meter_unavailable", Message: "Hosted request could not be safely metered."}
+			}
+			allowed, reserveErr := reserveHostedGovernanceEvent(r.Context(), authDB, cID, hostedEventID(r), fingerprint, hostedMonthlyAllowance())
+			if reserveErr != nil {
+				if errors.Is(reserveErr, errHostedEventIDConflict) {
+					return nil, &CommunitySaasAuthError{StatusCode: http.StatusConflict, Code: "hosted_event_id_conflict", Message: "This hosted event ID was already used for a different governance request."}
+				}
+				return nil, &CommunitySaasAuthError{StatusCode: http.StatusServiceUnavailable, Code: "hosted_meter_unavailable", Message: "Hosted usage metering is temporarily unavailable."}
+			}
+			if !allowed {
+				return nil, &CommunitySaasAuthError{StatusCode: http.StatusTooManyRequests, Code: "hosted_monthly_limit_reached", Message: "Monthly hosted governance allowance reached. Usage resets next month. Contact AxonFlow for a paid Enterprise PoC if this workload needs a higher limit."}
+			}
+		}
+	}
+
 	return &Client{
 		ID:       cID,
 		ClientID: cID, // v9 ADR-052: ClientID = credential identity (== Basic Auth username)
@@ -481,6 +534,7 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 		ClientHeader:  clientHeader,
 		Scope:         scope,
 		EffectiveTier: effectiveTier,
+		HostedPaid:    hostedPaidFirst,
 	}, nil
 }
 
@@ -627,6 +681,14 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// Use unified Authenticate() for all deployment modes
 		auth, authErr := Authenticate(r, hints)
 		if authErr != nil {
+			if authErr.Code == "hosted_payment_required" {
+				writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+				return
+			}
+			if authErr.Code == "hosted_monthly_limit_reached" {
+				writeHostedMonthlyLimitReached(w)
+				return
+			}
 			if authErr.RetryAfter != "" {
 				w.Header().Set("Retry-After", authErr.RetryAfter)
 			}
@@ -666,7 +728,7 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// tenants. enforceCommunitySaasDailyCap handles both checks:
 		// tier-specific per-minute (Free=25, Pro=200) and daily quota
 		// (Free=200, Pro=2000). Same function used by proxyAuthMiddleware.
-		if enforceCommunitySaasDailyCap(w, auth) {
+		if !isHostedBillingManagementPath(r) && enforceCommunitySaasDailyCap(w, auth) {
 			return
 		}
 

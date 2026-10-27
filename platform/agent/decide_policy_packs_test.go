@@ -120,7 +120,7 @@ func TestDecideDecidesAnInstalledPackAndNamesItByDigest(t *testing.T) {
 	t.Run("an allowed request names the pack it was decided under, on the wire and the audit row", func(t *testing.T) {
 		mock := withMockUsageDB(t)
 		mock.MatchExpectationsInOrder(false)
-		mock.ExpectExec("INSERT INTO audit_logs").
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 			WithArgs(decideAuditInsertArgs(AuditVerdictAllowed, policyPacksMatcher{refs: []string{ref}})...).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		r := enfDecide(t, enfOrgImplicit, true, DecisionStageLLM, "What is the weather today?")

@@ -528,7 +528,7 @@ func handleRecoveryVerify(db *sql.DB) http.HandlerFunc {
 			Secret:       secret,
 			SecretPrefix: secretPrefix,
 			ExpiresAt:    expiresAtNew.Format(time.RFC3339),
-			Endpoint:     communitySaasTryEndpoint,
+			Endpoint:     communitySaasPublicEndpoint(),
 			Email:        email,
 			Note:         "Recovery successful. Save these credentials — the secret is shown only once.",
 		}

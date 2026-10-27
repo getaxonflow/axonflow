@@ -95,7 +95,7 @@ func TestService_StartExecution_Error(t *testing.T) {
 	repo.SaveSummaryErr = errors.New("database error")
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	err := service.StartExecution(ctx, "req-123", "test-workflow", 5, "", "", "")
+	err := service.StartExecution(ctx, "req-123", "test-workflow", 5, "org-1", "tenant-1", "user-1")
 	if err == nil {
 		t.Error("expected error when save fails")
 	}
@@ -107,7 +107,7 @@ func TestService_RecordStep(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Start execution first
-	_ = service.StartExecution(ctx, "req-123", "test-workflow", 3, "", "", "")
+	_ = service.StartExecution(ctx, "req-123", "test-workflow", 3, "org-1", "tenant-1", "user-1")
 
 	// Record a step
 	snapshot := &ExecutionSnapshot{
@@ -168,7 +168,7 @@ func TestService_RecordStep_UpdatesProgress(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Start execution
-	_ = service.StartExecution(ctx, "req-123", "test-workflow", 2, "", "", "")
+	_ = service.StartExecution(ctx, "req-123", "test-workflow", 2, "org-1", "tenant-1", "user-1")
 
 	// Record first completed step
 	snapshot1 := &ExecutionSnapshot{
@@ -208,7 +208,7 @@ func TestService_CompleteExecution(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Start execution
-	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "user-1")
 
 	// Complete execution
 	output := json.RawMessage(`{"result": "success"}`)
@@ -243,6 +243,7 @@ func TestService_CompleteExecution(t *testing.T) {
 
 func TestService_CompleteExecution_NotInCache(t *testing.T) {
 	ctx := context.Background()
+	ctx, _ = bindReplayScope(ctx, "org-1", "tenant-1")
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
@@ -287,7 +288,7 @@ func TestService_FailExecution(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Start execution
-	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "user-1")
 
 	// Fail execution
 	err := service.FailExecution(ctx, "req-123", "something went wrong")
@@ -315,6 +316,7 @@ func TestService_FailExecution(t *testing.T) {
 
 func TestService_FailExecution_NotInCache(t *testing.T) {
 	ctx := context.Background()
+	ctx, _ = bindReplayScope(ctx, "org-1", "tenant-1")
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
@@ -871,6 +873,7 @@ func TestService_GetExecutionCount(t *testing.T) {
 
 func TestService_UpdateExecutionProgress_NotCached(t *testing.T) {
 	ctx := context.Background()
+	ctx, _ = bindReplayScope(ctx, "org-1", "tenant-1")
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 

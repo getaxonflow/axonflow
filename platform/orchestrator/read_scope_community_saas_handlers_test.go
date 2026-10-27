@@ -255,9 +255,11 @@ func TestAuditGetByID_StampsReadScopeHeaderOnEveryOutcome(t *testing.T) {
 
 	// Row exists and belongs to another user; the caller has no identity at
 	// all, so it is hidden — with the header explaining why.
+	expectAuditReadScope(mock, "tenant-1")
 	mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE id = (.+)").
 		WithArgs("rec-1", "tenant-1").
 		WillReturnRows(auditGetByIDRow("someone-else@acme.com"))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/audit/rec-1", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -291,9 +293,11 @@ func TestAuditGetByID_CommunitySaas_ReturnsTenantRow(t *testing.T) {
 	defer db.Close()
 	auditLogger = &AuditLogger{db: db}
 
+	expectAuditReadScope(mock, csaasTenantA)
 	mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE id = (.+)").
 		WithArgs("rec-1", csaasTenantA).
 		WillReturnRows(auditGetByIDRow(sharedidentity.CommunitySaaSEvaluatorIdentity))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/audit/rec-1", nil)
 	req.Header.Set("X-Tenant-ID", csaasTenantA)

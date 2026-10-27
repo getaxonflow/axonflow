@@ -814,6 +814,9 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		if writeMCPAuthRateLimited(w, req.ID, err) {
 			return
 		}
+		if writeMCPPaymentRequired(w, req.ID, err) {
+			return
+		}
 		// #4249 row 5682255301: a valid credential past its organization's
 		// ceiling is refused as the tier limit it is, not as a 401.
 		if writeMCPAdmissionRefused(w, req.ID, err) {
@@ -1002,6 +1005,40 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		return
 	}
 
+	// Cached MCP sessions must not outlive a paid entitlement. Recheck before
+	// every governance tool call, including sessions created before rollout.
+	hostedGateApplies := false
+	if isCommunitySaasMode() {
+		var hostedGateErr error
+		hostedGateApplies, hostedGateErr = hostedPaidGateAppliesToTenant(r.Context(), authDB, session.tenantID)
+		if hostedGateErr != nil {
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, "Hosted entitlement verification is temporarily unavailable")
+			return
+		}
+	}
+	if hostedGateApplies {
+		if !hostedPaidLaunchReady() {
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, hostedLaunchUnavailableError().Message)
+			return
+		}
+		paid, paidErr := hasHostedPaidEntitlement(r.Context(), authDB, session.tenantID)
+		if paidErr != nil {
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, "Hosted entitlement verification is temporarily unavailable")
+			return
+		}
+		if !paid {
+			paymentErr := hostedPaymentRequiredError(session.tenantID)
+			_ = writeMCPPaymentRequired(w, req.ID, &AuthError{
+				Code: "hosted_payment_required", Message: paymentErr.Message,
+				HTTPStatus: http.StatusPaymentRequired, CheckoutURL: paymentErr.CheckoutURL, TenantID: session.tenantID,
+			})
+			return
+		}
+	}
+	if session.client != nil {
+		session.client.HostedPaid = hostedGateApplies
+	}
+
 	// #3766: the ADR-065 capability handshake on the MCP server plane.
 	//
 	// Resolved once per tools/call, immediately after the session is
@@ -1054,6 +1091,33 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	if params.Name == "" {
 		writeJSONRPCError(w, req.ID, jsonRPCInvalidParams, "Missing tool name in tools/call")
 		return
+	}
+
+	if hostedGateApplies &&
+		(params.Name == "check_policy" || params.Name == "check_output") {
+		meteringPayload, marshalErr := json.Marshal(params)
+		if marshalErr != nil {
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, "Hosted request could not be safely metered")
+			return
+		}
+		fingerprint, fingerprintErr := hostedRequestFingerprint(r, meteringPayload)
+		if fingerprintErr != nil {
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, "Hosted request could not be safely metered")
+			return
+		}
+		allowed, meterErr := reserveHostedGovernanceEvent(r.Context(), authDB, session.tenantID, hostedEventID(r), fingerprint, hostedMonthlyAllowance())
+		if meterErr != nil {
+			if errors.Is(meterErr, errHostedEventIDConflict) {
+				writeMCPEventIDConflict(w, req.ID)
+				return
+			}
+			writeJSONRPCError(w, req.ID, jsonRPCInternalError, "Hosted usage metering is temporarily unavailable")
+			return
+		}
+		if !allowed {
+			writeMCPMonthlyLimitReached(w, req.ID)
+			return
+		}
 	}
 
 	var result interface{}
@@ -1340,6 +1404,9 @@ func requireMCPAuthOrRateLimit(w http.ResponseWriter, r *http.Request, req *json
 	if session == nil {
 		if writeMCPAuthRateLimited(w, req.ID, err) {
 			return nil, r, mcpRefusedRateLimited
+		}
+		if writeMCPPaymentRequired(w, req.ID, err) {
+			return nil, r, mcpRefusedUnauthenticated
 		}
 		if writeMCPAdmissionRefused(w, req.ID, err) {
 			return nil, r, mcpRefusedTierLimit
@@ -1743,9 +1810,6 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		statement = sanitized
 	}
 
-	// Auto-detect integration from connector type (first call activates policies)
-	AutoDetectIntegration(usageDB, connectorType)
-
 	// Read-only enforcement posture (#2720, epic #2716). When MCP_READ_ONLY is
 	// on, every write-path tool call is blocked at the gate before any other
 	// policy evaluation or session-override flow runs: a deployment-wide
@@ -1779,6 +1843,11 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			"read_only_posture": true,
 		}, nil
 	}
+
+	// Auto-detect only after the deployment posture admits the call. A refused
+	// write must not mutate integration activation state merely because it named
+	// a connector.
+	AutoDetectIntegration(usageDB, connectorType)
 
 	var params map[string]interface{}
 	if p, ok := args["parameters"].(map[string]interface{}); ok {
@@ -2880,6 +2949,44 @@ func writeJSONRPCAuthError(w http.ResponseWriter, id interface{}, message string
 	}); err != nil {
 		log.Printf("[MCP-Server] Failed to write JSON-RPC auth error: %v", err)
 	}
+}
+
+func writeMCPPaymentRequired(w http.ResponseWriter, id interface{}, err error) bool {
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.Code != "hosted_payment_required" {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Axonflow-Checkout-URL", authErr.CheckoutURL)
+	w.WriteHeader(http.StatusPaymentRequired)
+	_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &jsonRPCError{Code: -32042, Message: authErr.Message, Data: map[string]any{
+			"error": "hosted_payment_required", "checkout_url": authErr.CheckoutURL,
+			"checkout_method": http.MethodPost, "tenant_id": authErr.TenantID,
+		}},
+	})
+	return true
+}
+
+func writeMCPMonthlyLimitReached(w http.ResponseWriter, id interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Axonflow-Tier-Limit", "monthly_governed_events")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+		JSONRPC: "2.0", ID: id,
+		Error: &jsonRPCError{Code: -32043, Message: "Monthly hosted governance allowance reached. Contact AxonFlow for a paid Enterprise PoC if this workload needs a higher limit."},
+	})
+}
+
+func writeMCPEventIDConflict(w http.ResponseWriter, id interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+		JSONRPC: "2.0", ID: id,
+		Error: &jsonRPCError{Code: -32044, Message: "This hosted event ID was already used for a different governance request."},
+	})
 }
 
 // writeMCPAuthRateLimited answers a credential the pre-credential per-minute

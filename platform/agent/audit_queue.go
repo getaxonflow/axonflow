@@ -21,32 +21,7 @@ import (
 	"github.com/lib/pq"
 )
 
-// execWithRetry executes a database query with exponential backoff retry.
-func execWithRetry(db *sql.DB, query string, args ...interface{}) error {
-	maxRetries := 3
-	baseDelay := 100 * time.Millisecond
-
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		_, err := db.Exec(query, args...)
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-		if attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt))
-			log.Printf("Database write failed (attempt %d/%d), retrying in %v: %v",
-				attempt+1, maxRetries, delay, err)
-			time.Sleep(delay)
-		}
-	}
-
-	log.Printf("Database write failed after %d attempts: %v", maxRetries, lastErr)
-	return lastErr
-}
-
-// execWithRetryOrgScope is the v9 Phase 8 RLS-aware variant of execWithRetry.
+// execWithRetryOrgScope is the v9 Phase 8 RLS-aware retry helper.
 // It wraps the Exec in a WithOrgScope transaction so that app.current_org_id is
 // set before the SQL runs — required for tables under FORCE ROW LEVEL SECURITY
 // (migration 100 onward: mcp_query_audits, decision_chain, etc.). orgID must
@@ -721,7 +696,12 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		return nil
 
 	case AuditTypeGatewayContext:
-		// Gateway Mode pre-check context storage
+		// Gateway Mode pre-check context storage. Migration 192 forces RLS on
+		// gateway_contexts, so the queued path must carry the same authenticated
+		// org scope as the direct fallback.
+		if entry.OrgID == "" {
+			return fmt.Errorf("audit_queue: AuditTypeGatewayContext entry %w", errAuditEntryMissingOrgID)
+		}
 		insertQuery := `
 			INSERT INTO gateway_contexts (
 				context_id, client_id, user_token_hash, query_hash,
@@ -732,7 +712,7 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		// (Details stores plain slices for JSON fallback serialization)
 		dataSources := toStringSlice(entry.Details["data_sources"])
 		policiesEvaluated := toStringSlice(entry.Details["policies_evaluated"])
-		return execWithRetry(aq.db, insertQuery,
+		return execWithRetryOrgScope(aq.db, entry.OrgID, insertQuery,
 			entry.Details["context_id"],
 			entry.ClientID,
 			entry.Details["user_token_hash"],
@@ -760,9 +740,9 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		// stamped org_id but bound it raw; it now shares nullIfBlankOrg so all
 		// three agree on what an absent organisation looks like on disk.
 		//
-		// No withOrgScope wrap: migration 101 explicitly left llm_call_audits
-		// out of the FORCE ROW LEVEL SECURITY set, so there is no WITH CHECK to
-		// satisfy and adding the column to the INSERT is purely additive.
+		// Migration 192 closes that historical exception and forces RLS on this
+		// table. The queue therefore fails closed when its authenticated org was
+		// lost instead of planting an unreachable NULL-org row.
 		insertQuery := `
 			INSERT INTO llm_call_audits (
 				audit_id, context_id, client_id, provider, model,
@@ -775,7 +755,10 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		if llmOrgID == "" {
 			llmOrgID, _ = entry.Details["org_id"].(string)
 		}
-		return execWithRetry(aq.db, insertQuery,
+		if llmOrgID == "" {
+			return fmt.Errorf("audit_queue: AuditTypeLLMCallAudit entry %w", errAuditEntryMissingOrgID)
+		}
+		return execWithRetryOrgScope(aq.db, llmOrgID, insertQuery,
 			entry.Details["audit_id"],
 			entry.Details["context_id"],
 			entry.ClientID,

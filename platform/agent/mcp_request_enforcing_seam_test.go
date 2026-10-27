@@ -256,7 +256,7 @@ func TestMCPRequestSeamFailsClosedNamingEachCause(t *testing.T) {
 
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(mrqErrorRowArgs()...).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(mrqErrorRowArgs()...).WillReturnResult(sqlmock.NewResult(0, 1))
 			code, raw, _ := mrqCheckInput(t, token, mrsBenign, "")
 			if code != http.StatusServiceUnavailable || !strings.Contains(raw, enforceCauseMessages[c.cause]) {
 				t.Fatalf("check-input: HTTP %d; want 503 naming %q. body=%s", code, enforceCauseMessages[c.cause], raw)
@@ -303,7 +303,7 @@ func TestMCPRequestSeamWritesEngineSubjectTypeAndBundleOnTheAuditRow(t *testing.
 			w.mrsWire(t, tc.docs)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(mrsPostureArgs(AuditVerdictAllowed, tc.subjectType)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(mrsPostureArgs(AuditVerdictAllowed, tc.subjectType)...).WillReturnResult(sqlmock.NewResult(0, 1))
 			if code, raw, _ := mrqCheckInput(t, tc.token, mrsBenign, ""); code != http.StatusOK {
 				t.Fatalf("HTTP %d: %s", code, raw)
 			}
@@ -729,7 +729,7 @@ func TestARedactionOfTheParametersIsHandedBackOnCheckInput(t *testing.T) {
 			requireParameterHandBack(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_input", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_input", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
 			if code, _, raw := post(t, c.statement, map[string]interface{}{"command": "mail -s statement " + probe}, substitutes); code != http.StatusOK {
 				t.Fatalf("HTTP %d; want 200. body=%s", code, raw)
 			}
@@ -741,7 +741,7 @@ func TestARedactionOfTheParametersIsHandedBackOnCheckInput(t *testing.T) {
 			requireParameterHandBack(t)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_policy", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(redactedRowArgs("mcp_check_policy", c.fields...)...).WillReturnResult(sqlmock.NewResult(0, 1))
 			ctx := context.WithValue(context.Background(), ContextKeyOrgID, w.org)
 			resp, err := mcpToolCheckPolicy(ctx, mrqSession(t, w.org, ""), map[string]interface{}{
 				"connector_type": "adk-tool", "statement": c.statement, "parameters": map[string]interface{}{"command": "mail -s statement " + probe},
@@ -991,7 +991,7 @@ func TestTheRequestPassNamesThePolicyPacksThatBound(t *testing.T) {
 		mock.MatchExpectationsInOrder(false)
 		args := decideAuditInsertArgs(AuditVerdictAllowed, policyPacksMatcher{refs: []string{ref}})
 		args[15] = PlaneMCP
-		mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
+		expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
 		code, raw, r := mrqCheckInput(t, mrsToken(t), mrsBenign, "")
 		if code != http.StatusOK || !slices.Equal(r.PolicyPacks, []string{ref}) {
 			t.Fatalf("HTTP %d policy_packs %v; want 200 naming [%s]. body=%s", code, r.PolicyPacks, ref, raw)

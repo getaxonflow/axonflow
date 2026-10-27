@@ -185,7 +185,7 @@ func TestBuildRicherCheckInputBlock_NilDBOrEmpty(t *testing.T) {
 // row existing.
 func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),  // id
 			"req-1",           // request_id
@@ -245,7 +245,7 @@ func TestWriteExplainableAuditLog_NilDBOrEmptyDecisionID(t *testing.T) {
 // fallback branches for explainable audit writes.
 func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),         // id
 			"req-1",                  // request_id
@@ -255,7 +255,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 			"unknown",                // user_role fallback — honest label for an unresolved role (RBAC-1 #2920)
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
-			"",                       // org_id (no fallback)
+			unattributedAuditOrg,     // internal RLS partition; never a customer org
 			"mcp_check_input",
 			"q",
 			"h",
@@ -518,7 +518,7 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 			db, mock := newMockDB(t)
 
 			var capturedJSON []byte
-			mock.ExpectExec("INSERT INTO audit_logs").
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 				WithArgs(
 					sqlmock.AnyArg(), "req-1", sqlmock.AnyArg(), 0,
 					"u@e.com", "user", "c1", "t1", "o1",
@@ -660,7 +660,7 @@ func TestLookupPolicyVersionsByID_RowScanError(t *testing.T) {
 // statement) passes empty strings.
 func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), "req-1", sqlmock.AnyArg(), 0,
 			"u@e.com", "user", "c1", "t1", "o1",

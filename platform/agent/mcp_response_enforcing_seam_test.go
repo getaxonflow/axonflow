@@ -443,7 +443,7 @@ func TestMCPResponseSeamWritesEngineSubjectTypeAndBundleOnTheAuditRow(t *testing
 			w.mrsWire(t, tc.docs)
 			mock := withMockUsageDB(t)
 			mock.MatchExpectationsInOrder(false)
-			mock.ExpectExec("INSERT INTO audit_logs").WithArgs(mrsPostureArgs(AuditVerdictAllowed, tc.subjectType)...).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(mrsPostureArgs(AuditVerdictAllowed, tc.subjectType)...).WillReturnResult(sqlmock.NewResult(0, 1))
 			if r := mrsCheckOutput(t, tc.token, mrsBenign); r.code != http.StatusOK {
 				t.Fatalf("HTTP %d: %s", r.code, r.raw)
 			}
@@ -492,7 +492,7 @@ func TestAResponseWithheldBeforeTheSeamCarriesNoEngine(t *testing.T) {
 	args[15] = PlaneMCP
 	mock := withMockUsageDB(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(0, 1))
 	r := mrsCheckOutput(t, mrsToken(t), mrsBenign)
 	if r.code != http.StatusForbidden || !strings.Contains(r.body.BlockReason, "could not evaluate") || r.body.Engine != "" {
 		t.Fatalf("got HTTP %d block_reason=%q engine=%q; want the #2820 withhold with no engine named. body=%s", r.code, r.body.BlockReason, r.body.Engine, r.raw)

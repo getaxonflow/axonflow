@@ -16,3 +16,7 @@ import (
 // receive Stripe webhooks. The symbol exists so platform/agent/run.go can
 // call it unconditionally regardless of build tag.
 func RegisterBillingWebhook(_ *mux.Router, _ *sql.DB) {}
+
+// RegisterHostedBillingRoutes is a community self-hosted no-op. Hosted
+// checkout and entitlement state exist only on try.getaxonflow.com.
+func RegisterHostedBillingRoutes(_ *mux.Router, _ *sql.DB) {}

@@ -57,7 +57,7 @@ import (
 // block/error/clean-allow verdict (redacted_fields = SQL NULL). correlation_id is
 // NULL because these tests send no traceparent header.
 func expectCanonicalDecisionRow(mock sqlmock.Sqlmock, requestType, verdict string) {
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(), // id (audit_mcp_<decision_id>)
 			sqlmock.AnyArg(), // request_id
@@ -87,7 +87,8 @@ func expectCanonicalDecisionRow(mock sqlmock.Sqlmock, requestType, verdict strin
 // verdict, capturing the redacted_fields JSONB so the test can assert it is
 // populated (the column writeDecisionAuditLog structurally omits).
 func expectRedactedDecisionRow(mock sqlmock.Sqlmock, requestType string, dst *[]byte) {
-	mock.ExpectExec("INSERT INTO audit_logs").
+	expectIndonesiaPIIDetectionEvent(mock)
+	expectOrgScopedExec(mock, sqlmock.AnyArg(), "INSERT INTO audit_logs").
 		WithArgs(
 			sqlmock.AnyArg(),     // id
 			sqlmock.AnyArg(),     // request_id

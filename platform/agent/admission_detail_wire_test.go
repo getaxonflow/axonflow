@@ -190,7 +190,9 @@ func TestACallersArgumentNameCannotForgeAReason(t *testing.T) {
 		args[i] = sqlmock.AnyArg()
 	}
 	args[13] = captureArg{dst: &details}
+	expectScopedTx(mock, "org")
 	mock.ExpectExec("INSERT INTO audit_logs").WithArgs(args...).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	writeExplainableAuditLog(context.Background(), db, "dec-4249-forged", "req-4249", "tenant", "org", "client", "a@b.c", "1", "user",
 		"mcp_check_policy", "descriptor", "hash", projected.blockReason, "", nil, "", 0)
 	if err := mock.ExpectationsWereMet(); err != nil {

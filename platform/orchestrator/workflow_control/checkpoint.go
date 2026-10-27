@@ -138,7 +138,7 @@ func (r *PostgresRepository) CreateCheckpoint(ctx context.Context, cp *Checkpoin
 		toolContext = nil // sql/driver treats Go nil as SQL NULL for JSONB
 	}
 
-	return r.db.QueryRowContext(ctx, query,
+	return r.rowScoped(ctx, query,
 		cp.WorkflowID, cp.StepID, cp.StepIndex, cp.StepType, cp.StepName, cp.CheckpointType,
 		cp.GateDecision, cp.GateReason, policiesEvaluated, policiesMatched,
 		stepInput, toolContext, cp.Model, cp.Provider,
@@ -159,40 +159,40 @@ func (r *PostgresRepository) ListCheckpoints(ctx context.Context, workflowID str
 		ORDER BY step_index ASC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, workflowID)
+	var checkpoints []Checkpoint
+	err := r.queryScoped(ctx, query, []interface{}{workflowID}, func(rows *sql.Rows) error {
+		for rows.Next() {
+			var cp Checkpoint
+			var lastResumedAt sql.NullTime
+			var toolContextBytes []byte
+			err := rows.Scan(
+				&cp.ID, &cp.WorkflowID, &cp.StepID, &cp.StepIndex, &cp.StepType, &cp.StepName, &cp.CheckpointType,
+				&cp.GateDecision, &cp.GateReason, &cp.PoliciesEvaluated, &cp.PoliciesMatched,
+				&cp.StepInput, &toolContextBytes, &cp.Model, &cp.Provider,
+				&cp.IsResumable, &cp.ResumeCount, &lastResumedAt,
+				&cp.OrgID, &cp.TenantID, &cp.UserID, &cp.ClientID, &cp.CreatedAt,
+			)
+			if err != nil {
+				return err
+			}
+			if lastResumedAt.Valid {
+				cp.LastResumedAt = &lastResumedAt.Time
+			}
+			if toolContextBytes != nil {
+				cp.ToolContext = json.RawMessage(toolContextBytes)
+			}
+			checkpoints = append(checkpoints, cp)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-
-	var checkpoints []Checkpoint
-	for rows.Next() {
-		var cp Checkpoint
-		var lastResumedAt sql.NullTime
-		var toolContextBytes []byte
-		err := rows.Scan(
-			&cp.ID, &cp.WorkflowID, &cp.StepID, &cp.StepIndex, &cp.StepType, &cp.StepName, &cp.CheckpointType,
-			&cp.GateDecision, &cp.GateReason, &cp.PoliciesEvaluated, &cp.PoliciesMatched,
-			&cp.StepInput, &toolContextBytes, &cp.Model, &cp.Provider,
-			&cp.IsResumable, &cp.ResumeCount, &lastResumedAt,
-			&cp.OrgID, &cp.TenantID, &cp.UserID, &cp.ClientID, &cp.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if lastResumedAt.Valid {
-			cp.LastResumedAt = &lastResumedAt.Time
-		}
-		if toolContextBytes != nil {
-			cp.ToolContext = json.RawMessage(toolContextBytes)
-		}
-		checkpoints = append(checkpoints, cp)
 	}
 
 	if checkpoints == nil {
 		checkpoints = []Checkpoint{}
 	}
-	return checkpoints, rows.Err()
+	return checkpoints, nil
 }
 
 // GetLastResumableCheckpoint returns the most recent resumable checkpoint for a workflow.
@@ -213,7 +213,7 @@ func (r *PostgresRepository) GetLastResumableCheckpoint(ctx context.Context, wor
 	var cp Checkpoint
 	var lastResumedAt sql.NullTime
 	var toolContextBytes2 []byte
-	err := r.db.QueryRowContext(ctx, query, workflowID).Scan(
+	err := r.rowScoped(ctx, query, workflowID).Scan(
 		&cp.ID, &cp.WorkflowID, &cp.StepID, &cp.StepIndex, &cp.StepType, &cp.StepName, &cp.CheckpointType,
 		&cp.GateDecision, &cp.GateReason, &cp.PoliciesEvaluated, &cp.PoliciesMatched,
 		&cp.StepInput, &toolContextBytes2, &cp.Model, &cp.Provider,
@@ -251,7 +251,7 @@ func (r *PostgresRepository) GetCheckpointByID(ctx context.Context, id int64) (*
 	var cp Checkpoint
 	var lastResumedAt sql.NullTime
 	var toolContextBytes3 []byte
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.rowScoped(ctx, query, id).Scan(
 		&cp.ID, &cp.WorkflowID, &cp.StepID, &cp.StepIndex, &cp.StepType, &cp.StepName, &cp.CheckpointType,
 		&cp.GateDecision, &cp.GateReason, &cp.PoliciesEvaluated, &cp.PoliciesMatched,
 		&cp.StepInput, &toolContextBytes3, &cp.Model, &cp.Provider,
@@ -281,7 +281,7 @@ func (r *PostgresRepository) IncrementResumeCount(ctx context.Context, id int64)
 		SET resume_count = resume_count + 1, last_resumed_at = $1
 		WHERE id = $2
 	`
-	result, err := r.db.ExecContext(ctx, query, time.Now(), id)
+	result, err := r.execScoped(ctx, query, time.Now(), id)
 	if err != nil {
 		return err
 	}

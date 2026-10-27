@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"axonflow/platform/agent/rls"
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -27,6 +28,14 @@ var _ Repository = (*PostgresRepository)(nil)
 // NewPostgresRepository creates a new PostgreSQL repository
 func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 	return &PostgresRepository{db: db}
+}
+
+func replayOrgScope(ctx context.Context) (string, error) {
+	s, err := tenantscope.FromContext(ctx)
+	if err != nil {
+		return "", ErrNotFound
+	}
+	return s.OrgID, nil
 }
 
 // SaveSnapshot saves an execution snapshot to the database
@@ -77,14 +86,20 @@ func (r *PostgresRepository) SaveSnapshot(ctx context.Context, snapshot *Executi
 			retry_count = EXCLUDED.retry_count
 		RETURNING id`
 
-	err = r.db.QueryRowContext(ctx, query,
-		snapshot.RequestID, snapshot.StepIndex, snapshot.StepName, string(snapshot.Status),
-		snapshot.StartedAt, snapshot.CompletedAt, snapshot.DurationMs,
-		toValidJSON(snapshot.Input), toValidJSON(snapshot.Output),
-		snapshot.Provider, snapshot.Model, snapshot.TokensIn, snapshot.TokensOut, snapshot.CostUSD,
-		policiesChecked, policiesTriggered,
-		snapshot.ErrorMessage, snapshot.RetryCount,
-	).Scan(&snapshot.ID)
+	orgID, scopeErr := replayOrgScope(ctx)
+	if scopeErr != nil {
+		return scopeErr
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			snapshot.RequestID, snapshot.StepIndex, snapshot.StepName, string(snapshot.Status),
+			snapshot.StartedAt, snapshot.CompletedAt, snapshot.DurationMs,
+			toValidJSON(snapshot.Input), toValidJSON(snapshot.Output),
+			snapshot.Provider, snapshot.Model, snapshot.TokensIn, snapshot.TokensOut, snapshot.CostUSD,
+			policiesChecked, policiesTriggered,
+			snapshot.ErrorMessage, snapshot.RetryCount,
+		).Scan(&snapshot.ID)
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to save snapshot: %w", err)
@@ -117,14 +132,20 @@ func (r *PostgresRepository) GetSnapshot(ctx context.Context, requestID string, 
 	var durationMs sql.NullInt32
 	var provider, model, errorMessage sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, requestID, stepIndex).Scan(
-		&snapshot.ID, &snapshot.RequestID, &snapshot.StepIndex, &snapshot.StepName, &status,
-		&snapshot.StartedAt, &completedAt, &durationMs,
-		&snapshot.Input, &snapshot.Output,
-		&provider, &model, &snapshot.TokensIn, &snapshot.TokensOut, &snapshot.CostUSD,
-		&policiesChecked, &policiesTriggered,
-		&errorMessage, &snapshot.RetryCount, &snapshot.CreatedAt,
-	)
+	orgID, err := replayOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, requestID, stepIndex).Scan(
+			&snapshot.ID, &snapshot.RequestID, &snapshot.StepIndex, &snapshot.StepName, &status,
+			&snapshot.StartedAt, &completedAt, &durationMs,
+			&snapshot.Input, &snapshot.Output,
+			&provider, &model, &snapshot.TokensIn, &snapshot.TokensOut, &snapshot.CostUSD,
+			&policiesChecked, &policiesTriggered,
+			&errorMessage, &snapshot.RetryCount, &snapshot.CreatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -174,71 +195,82 @@ func (r *PostgresRepository) GetSnapshots(ctx context.Context, requestID string)
 		WHERE request_id = $1
 		ORDER BY step_index ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, requestID)
+	var snapshots []ExecutionSnapshot
+	orgID, err := replayOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, requestID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var snapshot ExecutionSnapshot
+			var status string
+			var policiesChecked, policiesTriggered []byte
+			var completedAt sql.NullTime
+			var durationMs sql.NullInt32
+			var provider, model, errorMessage sql.NullString
+
+			err := rows.Scan(
+				&snapshot.ID, &snapshot.RequestID, &snapshot.StepIndex, &snapshot.StepName, &status,
+				&snapshot.StartedAt, &completedAt, &durationMs,
+				&snapshot.Input, &snapshot.Output,
+				&provider, &model, &snapshot.TokensIn, &snapshot.TokensOut, &snapshot.CostUSD,
+				&policiesChecked, &policiesTriggered,
+				&errorMessage, &snapshot.RetryCount, &snapshot.CreatedAt,
+			)
+			if err != nil {
+				return err
+			}
+
+			snapshot.Status = StepStatus(status)
+			if completedAt.Valid {
+				snapshot.CompletedAt = &completedAt.Time
+			}
+			if durationMs.Valid {
+				d := int(durationMs.Int32)
+				snapshot.DurationMs = &d
+			}
+			if provider.Valid {
+				snapshot.Provider = provider.String
+			}
+			if model.Valid {
+				snapshot.Model = model.String
+			}
+			if errorMessage.Valid {
+				snapshot.ErrorMessage = errorMessage.String
+			}
+
+			if err := json.Unmarshal(policiesChecked, &snapshot.PoliciesChecked); err != nil {
+				snapshot.PoliciesChecked = []string{}
+			}
+			if err := json.Unmarshal(policiesTriggered, &snapshot.PoliciesTriggered); err != nil {
+				snapshot.PoliciesTriggered = []PolicyEvent{}
+			}
+
+			snapshots = append(snapshots, snapshot)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get snapshots: %w", err)
 	}
-	defer rows.Close()
-
-	var snapshots []ExecutionSnapshot
-	for rows.Next() {
-		var snapshot ExecutionSnapshot
-		var status string
-		var policiesChecked, policiesTriggered []byte
-		var completedAt sql.NullTime
-		var durationMs sql.NullInt32
-		var provider, model, errorMessage sql.NullString
-
-		err := rows.Scan(
-			&snapshot.ID, &snapshot.RequestID, &snapshot.StepIndex, &snapshot.StepName, &status,
-			&snapshot.StartedAt, &completedAt, &durationMs,
-			&snapshot.Input, &snapshot.Output,
-			&provider, &model, &snapshot.TokensIn, &snapshot.TokensOut, &snapshot.CostUSD,
-			&policiesChecked, &policiesTriggered,
-			&errorMessage, &snapshot.RetryCount, &snapshot.CreatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
-		}
-
-		snapshot.Status = StepStatus(status)
-		if completedAt.Valid {
-			snapshot.CompletedAt = &completedAt.Time
-		}
-		if durationMs.Valid {
-			d := int(durationMs.Int32)
-			snapshot.DurationMs = &d
-		}
-		if provider.Valid {
-			snapshot.Provider = provider.String
-		}
-		if model.Valid {
-			snapshot.Model = model.String
-		}
-		if errorMessage.Valid {
-			snapshot.ErrorMessage = errorMessage.String
-		}
-
-		if err := json.Unmarshal(policiesChecked, &snapshot.PoliciesChecked); err != nil {
-			snapshot.PoliciesChecked = []string{}
-		}
-		if err := json.Unmarshal(policiesTriggered, &snapshot.PoliciesTriggered); err != nil {
-			snapshot.PoliciesTriggered = []PolicyEvent{}
-		}
-
-		snapshots = append(snapshots, snapshot)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating snapshots: %w", err)
-	}
-
 	return snapshots, nil
 }
 
 // DeleteSnapshots removes all snapshots for an execution
 func (r *PostgresRepository) DeleteSnapshots(ctx context.Context, requestID string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM execution_snapshots WHERE request_id = $1", requestID)
+	orgID, err := replayOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, "DELETE FROM execution_snapshots WHERE request_id = $1", requestID)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete snapshots: %w", err)
 	}
@@ -297,13 +329,16 @@ func (r *PostgresRepository) SaveSummary(ctx context.Context, summary *Execution
 			output_summary = EXCLUDED.output_summary,
 			error_message = EXCLUDED.error_message`
 
-	_, err := r.db.ExecContext(ctx, query,
-		summary.RequestID, summary.WorkflowName, string(summary.Status), summary.TotalSteps, summary.CompletedSteps,
-		summary.StartedAt, summary.CompletedAt, summary.DurationMs,
-		summary.TotalTokens, summary.TotalCostUSD,
-		summary.OrgID, summary.TenantID, summary.UserID, summary.AgentID,
-		toValidJSON(summary.InputSummary), toValidJSON(summary.OutputSummary), summary.ErrorMessage,
-	)
+	err := rls.WithOrgScope(ctx, r.db, summary.OrgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, query,
+			summary.RequestID, summary.WorkflowName, string(summary.Status), summary.TotalSteps, summary.CompletedSteps,
+			summary.StartedAt, summary.CompletedAt, summary.DurationMs,
+			summary.TotalTokens, summary.TotalCostUSD,
+			summary.OrgID, summary.TenantID, summary.UserID, summary.AgentID,
+			toValidJSON(summary.InputSummary), toValidJSON(summary.OutputSummary), summary.ErrorMessage,
+		)
+		return e
+	})
 
 	if err != nil {
 		return fmt.Errorf("failed to save summary: %w", err)
@@ -335,14 +370,20 @@ func (r *PostgresRepository) GetSummary(ctx context.Context, requestID string) (
 	var durationMs sql.NullInt32
 	var workflowName, orgID, tenantID, userID, agentID, errorMessage sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, requestID).Scan(
-		&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
-		&summary.StartedAt, &completedAt, &durationMs,
-		&summary.TotalTokens, &summary.TotalCostUSD,
-		&orgID, &tenantID, &userID, &agentID,
-		&summary.InputSummary, &summary.OutputSummary, &errorMessage,
-		&summary.CreatedAt, &summary.UpdatedAt,
-	)
+	orgIDScope, err := replayOrgScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgIDScope, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, requestID).Scan(
+			&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
+			&summary.StartedAt, &completedAt, &durationMs,
+			&summary.TotalTokens, &summary.TotalCostUSD,
+			&orgID, &tenantID, &userID, &agentID,
+			&summary.InputSummary, &summary.OutputSummary, &errorMessage,
+			&summary.CreatedAt, &summary.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -421,14 +462,16 @@ func (r *PostgresRepository) GetSummaryScoped(ctx context.Context, requestID str
 	var durationMs sql.NullInt32
 	var workflowName, orgID, tenantID, userID, agentID, errorMessage sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, requestID, scope.OrgID, scope.TenantID).Scan(
-		&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
-		&summary.StartedAt, &completedAt, &durationMs,
-		&summary.TotalTokens, &summary.TotalCostUSD,
-		&orgID, &tenantID, &userID, &agentID,
-		&summary.InputSummary, &summary.OutputSummary, &errorMessage,
-		&summary.CreatedAt, &summary.UpdatedAt,
-	)
+	err := rls.WithOrgScope(ctx, r.db, scope.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, requestID, scope.OrgID, scope.TenantID).Scan(
+			&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
+			&summary.StartedAt, &completedAt, &durationMs,
+			&summary.TotalTokens, &summary.TotalCostUSD,
+			&orgID, &tenantID, &userID, &agentID,
+			&summary.InputSummary, &summary.OutputSummary, &errorMessage,
+			&summary.CreatedAt, &summary.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -517,13 +560,6 @@ func (r *PostgresRepository) ListSummaries(ctx context.Context, opts ListOptions
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM execution_summaries %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count summaries: %w", err)
-	}
-
 	// Set defaults
 	if opts.Limit <= 0 {
 		opts.Limit = 50
@@ -548,64 +584,70 @@ func (r *PostgresRepository) ListSummaries(ctx context.Context, opts ListOptions
 
 	args = append(args, opts.Limit, opts.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list summaries: %w", err)
-	}
-	defer rows.Close()
-
 	var summaries []ExecutionSummary
-	for rows.Next() {
-		var summary ExecutionSummary
-		var status string
-		var completedAt sql.NullTime
-		var durationMs sql.NullInt32
-		var workflowName, orgID, tenantID, userID, agentID, errorMessage sql.NullString
-
-		err := rows.Scan(
-			&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
-			&summary.StartedAt, &completedAt, &durationMs,
-			&summary.TotalTokens, &summary.TotalCostUSD,
-			&orgID, &tenantID, &userID, &agentID,
-			&summary.InputSummary, &summary.OutputSummary, &errorMessage,
-			&summary.CreatedAt, &summary.UpdatedAt,
-		)
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM execution_summaries %s", whereClause)
+	err := rls.WithOrgScope(ctx, r.db, opts.OrgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count summaries: %w", err)
+		}
+		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan summary: %w", err)
+			return fmt.Errorf("failed to list summaries: %w", err)
 		}
+		defer rows.Close()
+		for rows.Next() {
+			var summary ExecutionSummary
+			var status string
+			var completedAt sql.NullTime
+			var durationMs sql.NullInt32
+			var workflowName, orgID, tenantID, userID, agentID, errorMessage sql.NullString
 
-		summary.Status = ExecutionStatus(status)
-		if completedAt.Valid {
-			summary.CompletedAt = &completedAt.Time
-		}
-		if durationMs.Valid {
-			d := int(durationMs.Int32)
-			summary.DurationMs = &d
-		}
-		if workflowName.Valid {
-			summary.WorkflowName = workflowName.String
-		}
-		if orgID.Valid {
-			summary.OrgID = orgID.String
-		}
-		if tenantID.Valid {
-			summary.TenantID = tenantID.String
-		}
-		if userID.Valid {
-			summary.UserID = userID.String
-		}
-		if agentID.Valid {
-			summary.AgentID = agentID.String
-		}
-		if errorMessage.Valid {
-			summary.ErrorMessage = errorMessage.String
-		}
+			err := rows.Scan(
+				&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
+				&summary.StartedAt, &completedAt, &durationMs,
+				&summary.TotalTokens, &summary.TotalCostUSD,
+				&orgID, &tenantID, &userID, &agentID,
+				&summary.InputSummary, &summary.OutputSummary, &errorMessage,
+				&summary.CreatedAt, &summary.UpdatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to scan summary: %w", err)
+			}
 
-		summaries = append(summaries, summary)
-	}
+			summary.Status = ExecutionStatus(status)
+			if completedAt.Valid {
+				summary.CompletedAt = &completedAt.Time
+			}
+			if durationMs.Valid {
+				d := int(durationMs.Int32)
+				summary.DurationMs = &d
+			}
+			if workflowName.Valid {
+				summary.WorkflowName = workflowName.String
+			}
+			if orgID.Valid {
+				summary.OrgID = orgID.String
+			}
+			if tenantID.Valid {
+				summary.TenantID = tenantID.String
+			}
+			if userID.Valid {
+				summary.UserID = userID.String
+			}
+			if agentID.Valid {
+				summary.AgentID = agentID.String
+			}
+			if errorMessage.Valid {
+				summary.ErrorMessage = errorMessage.String
+			}
 
-	if err = rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("error iterating summaries: %w", err)
+			summaries = append(summaries, summary)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, 0, err
 	}
 
 	return summaries, total, nil
@@ -613,7 +655,14 @@ func (r *PostgresRepository) ListSummaries(ctx context.Context, opts ListOptions
 
 // DeleteSummary removes an execution summary
 func (r *PostgresRepository) DeleteSummary(ctx context.Context, requestID string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM execution_summaries WHERE request_id = $1", requestID)
+	orgID, err := replayOrgScope(ctx)
+	if err != nil {
+		return err
+	}
+	err = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, "DELETE FROM execution_summaries WHERE request_id = $1", requestID)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete summary: %w", err)
 	}
@@ -678,6 +727,9 @@ func (r *PostgresRepository) DeleteExecutionScoped(ctx context.Context, requestI
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT set_config('app.current_org_id', $1, true)", scope.OrgID); err != nil {
+		return fmt.Errorf("failed to set tenant scope: %w", err)
+	}
 
 	result, err := tx.ExecContext(ctx,
 		`DELETE FROM execution_summaries WHERE request_id = $1`+summaryOrgScopeSQL,

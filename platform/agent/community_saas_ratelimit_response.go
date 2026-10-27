@@ -22,20 +22,15 @@ import (
 	"time"
 )
 
-// V1 Plugin Pro upgrade-prompt URLs (locked per umbrella #1958). These appear
+// Legacy Plugin Pro upgrade-prompt URLs. Direct payment links are retired;
+// both fields route to pricing while gated hosted tenants receive the
+// authenticated POST checkout action in the 402 response.
 // verbatim in:
 //   - 429 / 403 response body upgrade.compare_url + upgrade.buy_url
 //   - X-Axonflow-Upgrade-URL response header
-//   - License-issuance email body (mirrored at platform/agent/billing/email.go)
-//   - Stripe Live Plugin Pro product description (mirrored on Stripe Dashboard)
-//   - Landing pricing.html Buy Plugin Pro button (mirrored at axonflow-landing)
-//
-// Changes here are part of the 6-surface drift checklist per
-// `feedback_cross_surface_drift_check_categorized.md` — every edit needs a
-// matching update on the other 5 surfaces in the same release train.
 const (
 	v1ProUpgradeCompareURL = "https://getaxonflow.com/pricing/"
-	v1ProUpgradeBuyURL     = "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"
+	v1ProUpgradeBuyURL     = v1ProUpgradeCompareURL
 )
 
 // Locked V1 limit-type identifiers per umbrella #1958. Used as both the
