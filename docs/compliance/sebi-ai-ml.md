@@ -2,7 +2,7 @@
 > Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v12.0.0.
 
 
-*Last updated: July 2026* | **Platform Version:** 11.3.4 | **SDK Version:** 9.5.0
+*Last updated: July 2026* | **Platform Version:** 11.3.5 | **SDK Version:** 9.5.0
 
 AxonFlow provides compliance support for the Securities and Exchange Board of India's **Framework for AI/ML in Securities Markets** (June 2025 Consultation Paper) and the Digital Personal Data Protection Act (DPDP) 2023, for regulated entities in India's capital markets.
 
