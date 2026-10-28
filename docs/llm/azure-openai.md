@@ -2,7 +2,7 @@
 
 **Last Updated:** July 2026
 
-**Platform Version:** 11.3.2 | **SDK Version:** 9.5.0
+**Platform Version:** 11.3.3 | **SDK Version:** 9.5.0
 
 AxonFlow supports Azure OpenAI Service as a Community LLM provider, available without an enterprise license.
 

@@ -39,6 +39,9 @@
 #   7. A configured-but-unreadable credential FAILS the run. Degrading to the
 #      skip would report a plane as unconfigured while its configuration sits
 #      in the stack parameters.
+#   8. The stored-plan probe always uses the explicit benign control. Even an
+#      allow-labelled rotating payload may be denied by a tenant or dynamic
+#      policy before a plan is minted; every other probe keeps the rotation.
 #
 # Every row is re-run against a template broken in exactly that row's
 # dimension; a mutant that reds an unrelated row is treated as VOID rather than
@@ -166,11 +169,28 @@ calls = []
 def _recorder(status_seq):
     seq = list(status_seq)
 
-    def _req(method, path, body=None, basic_auth=None, headers=None):
+    def _req(method, path, body=None, basic_auth=None, headers=None, timeout=None):
         calls.append({'method': method, 'path': path, 'body': body,
-                      'headers': headers or {}})
+                      'headers': headers or {}, 'timeout': timeout})
         return seq.pop(0) if seq else (200, {'success': True}, {})
     return _req
+
+
+# The plan probe is a multi-request reachability probe. Every corpus payload,
+# including one whose baseline label says allow, can be denied by a tenant row
+# before plan creation and therefore can never reach the downstream route. The
+# explicit benign control is the only payload this probe may use; other probes
+# must retain the rotating corpus payload.
+plan_payload_ids = {
+    ns['_payload_for_probe']('plan_execute', p)['id'] for p in ns['PAYLOADS']
+}
+row('plan_execute_always_uses_the_benign_control',
+    plan_payload_ids == {'benign_summary'},
+    'plan_execute selected %r across the complete rotating corpus' % sorted(plan_payload_ids))
+other_probes_preserved = all(
+    ns['_payload_for_probe']('proxy', p) is p for p in ns['PAYLOADS'])
+row('other_probes_keep_the_rotating_payload', other_probes_preserved,
+    'the plan reachability exception must not make the rest of the canary benign-only')
 
 
 del calls[:]
@@ -537,9 +557,15 @@ mutate "the execute request stops carrying plan_id" \
 
 mutate "the probe stops minting a plan and posts execute-plan alone" \
   "plan_execute_mints_a_plan_first plan_execute_supplies_plan_id_in_context plan_execute_generates_with_the_flattening_request_type plan_execute_targets_the_execute_route a_completed_plan_execution_is_evidence a_blocked_generate_is_not_evidence_for_wcp_or_map and_the_report_says_what_it_saw" \
-  "              g_status, g_body, g_headers = _request('POST', '/api/request', body=gen,
-                                                     basic_auth=auth)" \
+  "              g_status, g_body, g_headers = _request(
+                  'POST', '/api/request', body=gen, basic_auth=auth,
+                  timeout=max(TIMEOUT, 90))" \
   "              g_status, g_body, g_headers = (200, {'plan_id': 'x'}, {})"
+
+mutate "the plan probe uses rotating allow-labelled payloads" \
+  "plan_execute_always_uses_the_benign_control" \
+  "              if probe == 'plan_execute':" \
+  "              if probe == 'plan_execute' and payload['expect'] == 'deny':"
 
 mutate "the precondition response is returned verbatim" \
   "a_blocked_generate_is_not_evidence_for_wcp_or_map and_the_report_says_what_it_saw" \
@@ -602,4 +628,4 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 echo ""
-echo "PASS: $PASS check(s) - both probes can reach their own endpoint, the denominator matches the run loop, and no skip hides a configured credential"
+echo "PASS: $PASS check(s) - both probes can reach their own endpoint, the plan probe uses its benign control, the denominator matches the run loop, and no skip hides a configured credential"

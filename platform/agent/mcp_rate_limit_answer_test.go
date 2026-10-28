@@ -9,6 +9,7 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -375,11 +376,12 @@ func cacheMCPSession(t *testing.T, s *mcpSession) {
 func TestHandleMCPToolsCall_ALimitRefusalIsAuditedAsTheLimitThatRefused(t *testing.T) {
 	cases := []struct {
 		name, policyID, reason string
-		seedCount              int
+		seedCount, status      int
 		daily                  error
 	}{
-		{"per_minute", "per_minute", "per-minute rate limit exceeded", 100, nil},
-		{"daily_quota", "daily_cap", "daily usage cap exceeded", 0, ErrDailyLimitExceeded},
+		{"per_minute", "per_minute", "per-minute rate limit exceeded", 100, http.StatusTooManyRequests, nil},
+		{"daily_quota", "daily_cap", "daily usage cap exceeded", 0, http.StatusTooManyRequests, ErrDailyLimitExceeded},
+		{"backend_unavailable", dailyLimitBackendUnavailable, "daily quota service unavailable", 0, http.StatusServiceUnavailable, errors.New("RLS refused counter write")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -420,8 +422,8 @@ func TestHandleMCPToolsCall_ALimitRefusalIsAuditedAsTheLimitThatRefused(t *testi
 			w := mcpServerPost(t, setupMCPServerRouter(), "tools/call", "audit-"+tc.name,
 				map[string]interface{}{"name": "check_policy", "arguments": map[string]interface{}{"connector_type": "claude_code", "statement": "ls"}},
 				mcpSessionHeaderKey, sessionID)
-			if w.Code != http.StatusTooManyRequests {
-				t.Fatalf("status = %d, want 429\n%s", w.Code, w.Body.String())
+			if w.Code != tc.status {
+				t.Fatalf("status = %d, want %d\n%s", w.Code, tc.status, w.Body.String())
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatalf("the refusal was not audited as %s: %v", tc.policyID, err)

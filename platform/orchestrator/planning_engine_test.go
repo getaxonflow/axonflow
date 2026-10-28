@@ -45,6 +45,49 @@ func TestNewPlanningEngine(t *testing.T) {
 	}
 }
 
+func TestGeneratePlanSkipLLMUsesDeterministicFallback(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	workflow, err := engine.GeneratePlan(context.Background(), PlanGenerationRequest{
+		Query:         "please reconcile the record before the audit",
+		Domain:        "generic",
+		ExecutionMode: "auto",
+		ClientID:      "synthetic-canary",
+		RequestID:     "skip-llm-test",
+		SkipLLM:       true,
+	})
+	if err != nil {
+		t.Fatalf("GeneratePlan: %v", err)
+	}
+	if workflow == nil || len(workflow.Spec.Steps) == 0 {
+		t.Fatal("GeneratePlan returned no deterministic workflow steps")
+	}
+	if got := workflow.Spec.Steps[0].Type; got != "function-call" {
+		t.Fatalf("synthetic step type = %q, want provider-free function-call", got)
+	}
+	if router.RouteRequestCalls != 0 {
+		t.Fatalf("RouteRequestCalls = %d, want 0 when skip_llm=true", router.RouteRequestCalls)
+	}
+
+	checker := &allowEveryStep{}
+	runner := newGovernedWorkflowEngine(checker)
+	execution, err := runner.ExecuteWorkflowWithParallelSupport(
+		context.Background(), *workflow, map[string]interface{}{}, UserContext{}, false)
+	if err != nil {
+		t.Fatalf("execute synthetic workflow: %v", err)
+	}
+	if execution.Status != "completed" {
+		t.Fatalf("synthetic execution status = %q, want completed", execution.Status)
+	}
+	if len(checker.presented) != 1 || checker.presented[0] != "synthetic-governance-probe" {
+		t.Fatalf("step gate presented %v, want [synthetic-governance-probe]", checker.presented)
+	}
+	if router.RouteRequestCalls != 0 {
+		t.Fatalf("RouteRequestCalls after execution = %d, want 0", router.RouteRequestCalls)
+	}
+}
+
 // TestDomainTemplates tests domain template initialization
 func TestDomainTemplates(t *testing.T) {
 	router := NewMockLLMRouter()
