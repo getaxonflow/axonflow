@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY_SCRIPT="$ROOT_DIR/scripts/deployment/deploy-cloudformation.sh"
 STAGING_CONFIG="$ROOT_DIR/config/environments/community-saas-staging.yaml"
+PRODUCTION_CONFIG="$ROOT_DIR/config/environments/community-saas.yaml"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -39,6 +40,35 @@ done
   fail "Hosted staging must select the existing staging OpenAI credential"
 [ "$(yq eval '.hosted_starter.monthly_price_id // ""' "$STAGING_CONFIG")" = "price_1UU2LzCokRiQkpTD0SJbtJNS" ] || \
   fail "Hosted staging must select the verified recurring Stripe test price"
+
+for key in deploy_customer_portal deploy_customer_portal_ui app_role_provisioned; do
+  value=$(yq eval ".deployment.${key}" "$PRODUCTION_CONFIG")
+  [ "$value" = "true" ] || fail "$key must be explicitly enabled for the production Hosted plane"
+done
+
+[ "$(yq eval '.hosted_starter.gate_mode' "$PRODUCTION_CONFIG")" = "off" ] || \
+  fail "production Hosted paid enforcement must remain safe-off until deployed acceptance"
+[ "$(yq eval '.hosted_starter.gate_percent' "$PRODUCTION_CONFIG")" = "0" ] || \
+  fail "production Hosted cohort must remain zero until deployed acceptance"
+[ -z "$(yq eval '.hosted_starter.workflow_acceptance // ""' "$PRODUCTION_CONFIG")" ] || \
+  fail "workflow acceptance must remain empty until issue #4486 receives production evidence"
+[ "$(yq eval '.hosted_starter.security_acceptance' "$PRODUCTION_CONFIG")" = "4488" ] || \
+  fail "production Hosted security acceptance must name the accepted issue"
+[ "$(yq eval '.hosted_starter.module_capabilities' "$PRODUCTION_CONFIG")" = "fincrime,payment_exception,support_refund" ] || \
+  fail "production Hosted plane must deploy the complete canonical module set"
+[ "$(yq eval '.hosted_starter.monthly_price_id' "$PRODUCTION_CONFIG")" = "price_1UVVGACokRiQkpTD4lgB9bzv" ] || \
+  fail "production Hosted plane must select the reviewed live recurring monthly price"
+[ "$(yq eval '.hosted_starter.included_events' "$PRODUCTION_CONFIG")" = "1000" ] || \
+  fail "production Hosted event allowance must match the accepted product contract"
+[ "$(yq eval '.hosted_starter.burst_per_minute' "$PRODUCTION_CONFIG")" = "25" ] || \
+  fail "production Hosted burst limit must match the accepted product contract"
+[ "$(yq eval '.hosted_starter.portal_domain' "$PRODUCTION_CONFIG")" = "portal.try.getaxonflow.com" ] || \
+  fail "production Hosted Portal must use its dedicated public hostname"
+
+for secret_path in admin_api_key db_app_role_url db_platform_admin_url; do
+  [ -n "$(yq eval ".secrets.${secret_path} // \"\"" "$PRODUCTION_CONFIG")" ] || \
+    fail "production Hosted Portal must declare the ${secret_path} secret name"
+done
 
 if rg -n '\.deployment\.deploy_[a-z_]+ // ("?true"?|"?false"?)' "$DEPLOY_SCRIPT"; then
   fail "deployment booleans must not use yq // because it replaces explicit false"

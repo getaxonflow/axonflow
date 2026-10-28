@@ -1,7 +1,7 @@
 # Hosted Starter product, data, limits, and economics acceptance
 
 Status: engineering and security acceptance for #4488, 26 October 2026. This
-is the controlling contract for the initial EUR 9.99/month shared Hosted
+is the controlling contract for the initial USD 9.99/month shared Hosted
 Starter offer. It does not authorize a dedicated tenant stack at that price.
 
 ## Accepted product boundary
@@ -96,21 +96,24 @@ AWS documents the Fargate rates in its [US East pricing example](https://aws.ama
 The RDS and ALB values were read from the AWS Price List API for
 `us-east-1` on the acceptance date.
 
-At EUR 9.99, a standard EEA card costs approximately EUR 0.40 using Stripe's
-published 1.5% + EUR 0.25 rate ([Stripe Netherlands pricing](https://stripe.com/nl/pricing)).
-The accepted deterministic workflow has zero model-provider cost. Reserve EUR
-3.00 for three minutes of support at EUR 60/hour and EUR 0.50 for variable
-logs/storage/abuse. This leaves EUR 6.09 before shared infrastructure and tax.
+At the public USD 9.99 price, a standard EEA card has Stripe's published 1.5%
++ EUR 0.25 base fee and can add 2% when currency conversion is required
+([Stripe Netherlands pricing](https://stripe.com/nl/pricing)). Using EUR/USD
+parity as a conservative launch approximation, reserve USD 0.60 for payment
+processing and conversion. The accepted deterministic workflow has zero
+model-provider cost. Reserve USD 3.00 for three minutes of support at USD
+60/hour and USD 0.50 for variable logs/storage/abuse. This leaves USD 5.89
+before shared infrastructure and tax.
 
 - Standalone economics are rejected: a dedicated stack cannot be sold for
-  EUR 9.99.
+  USD 9.99.
 - Shared-platform marginal economics are accepted because the sidecar adds no
-  task and no model bill. Full-cost break-even is roughly 31 paid organizations
-  before variable storage; a 20% contribution target needs about 45. The
+  task and no model bill. Full-cost break-even is roughly 32 paid organizations
+  before variable storage; a 20% contribution target needs about 48. The
   operational launch floor is therefore 50 active paid organizations or an
   explicitly budgeted acquisition subsidy.
 - At 50 paid organizations, the measured baseline allocation is about EUR/USD
-  3.66 per organization and the modeled contribution is about 2.43 (24%)
+  3.66 per organization and the modeled contribution is about USD 2.23 (22%)
   before tax and currency movement. Finance must replace the simple EUR/USD
   parity assumption with the booked monthly exchange rate.
 - Buyer willingness-to-pay is not proven by a test-mode checkout. Public

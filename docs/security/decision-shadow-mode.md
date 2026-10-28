@@ -1,6 +1,6 @@
 # Decision Mode and the Decision Shadow (retired in v11)
 
-**Platform Version:** v11.3.1. v11.0.0 retires the decision mode: it and its shadow observer shipped in v10.3.0, and v10.4.0 added `enforce`.
+**Platform Version:** v11.3.2. v11.0.0 retires the decision mode: it and its shadow observer shipped in v10.3.0, and v10.4.0 added `enforce`.
 
 **Status:** Retired. This page states what replaced them and what a deployment that configured them has to change.
 

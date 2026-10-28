@@ -10,6 +10,50 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.2] - 2026-10-28: Hosted global-audit RLS correction
+
+> **Safe-off patch.** This patch corrects a production audit-loss defect found
+> during the v11.3.1 hostile rollout review. It does not enable the paid gate,
+> a public cohort, or real-money movement. See the
+> [v11.3.0 release notes](https://github.com/getaxonflow/axonflow/releases/tag/v11.3.0)
+> for the feature release and the
+> [v11.3.1 release notes](https://github.com/getaxonflow/axonflow/releases/tag/v11.3.1)
+> for the first rollout-safety patch.
+
+### Community
+
+- **No self-hosted Community runtime change.** Released in lockstep at v11.3.2
+  so Community and Enterprise retain contiguous public tag histories. The
+  runtime correction below is specific to AxonFlow Hosted's split application
+  and platform-admin database roles.
+
+### Enterprise and AxonFlow Hosted
+
+#### Security
+
+- **Preserve global control-plane audit rows under Hosted FORCE RLS.** Global
+  `AUTH_SUCCESS`, `AUTH_FAILURE`, and tenantless SCIM denial events deliberately
+  carry `org_id=NULL`; the Hosted tenant policy therefore rejects them on the
+  `axonflow_app_role` pool. Customer Portal now sends only those fixed-shape,
+  non-tenant audit writes through the existing `axonflow_platform_admin` pool.
+  Tenant-scoped request traffic remains on the NOBYPASSRLS application pool,
+  and no RLS policy is weakened.
+- **Audit tenantless SCIM rejection at the authentication boundary.** An empty
+  tenant token is still refused before reaching a handler, but the same
+  boundary now records `SCIM_MISSING_TENANT` rather than relying on an
+  unreachable handler callback.
+
+#### Operations and testing
+
+- Bound failed admin-authentication decisions independently from successful
+  operator traffic. Over-budget refusals remain audited, while a correct key
+  cannot be locked out by failed traffic sharing its NAT or proxy bucket.
+- Add real-PostgreSQL regression proof for the exact Hosted posture: FORCE RLS
+  rejects the global row on `axonflow_app_role`, the unchanged policy admits no
+  cross-tenant exception, and the BYPASSRLS platform-admin pool stores the row.
+- Keep the paid gate off until the v11.3.2 production deployment passes fresh
+  log-loss, billing-route, workflow, RLS, rollback, and payment-canary gates.
+
 ## [11.3.1] - 2026-10-28: Hosted rollout safety corrections
 
 > **Safe-off patch.** This patch corrects defects found by the first v11.3.0
