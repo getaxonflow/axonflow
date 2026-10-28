@@ -1147,9 +1147,10 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		// #2641 (MCPSRV-DAILYCAP-DENY): the daily-cap 429 was portal-invisible.
 		// #4261: the row names the limit that refused the call.
 		reason, limitID := "daily usage cap exceeded", "daily_cap"
-		if refusedBy == LimitTypePerMinute {
+		switch refusedBy {
+		case LimitTypePerMinute:
 			reason, limitID = "per-minute rate limit exceeded", LimitTypePerMinute
-		} else if refusedBy == dailyLimitBackendUnavailable {
+		case dailyLimitBackendUnavailable:
 			reason, limitID = "daily quota service unavailable", dailyLimitBackendUnavailable
 		}
 		auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,

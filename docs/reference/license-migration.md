@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.3.5
+**Platform Version:** 11.3.6
 
 This guide explains how to migrate from the removed V1 license format to the current V2 format.
 
