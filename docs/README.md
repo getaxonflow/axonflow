@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: September 2026** | **Platform Version:** v11.3.4 | **SDK Version:** v9.5.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.12.0 (preview)
+**Last Updated: September 2026** | **Platform Version:** v11.3.5 | **SDK Version:** v9.5.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.12.0 (preview)
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 

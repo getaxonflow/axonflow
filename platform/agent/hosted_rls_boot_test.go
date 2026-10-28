@@ -65,6 +65,69 @@ func TestVerifyHostedCustomerDataRLSRejectsUnsafeTable(t *testing.T) {
 	}
 }
 
+func TestVerifyHostedCustomerDataRLSAcceptsMissingOptionalLegacyTables(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, table := range hostedCustomerDataTables {
+		rows := safeHostedGuardRow()
+		if _, optional := hostedOptionalLegacyCustomerDataTables[table]; optional {
+			rows = sqlmock.NewRows(hostedGuardColumns())
+		}
+		mock.ExpectQuery(`SELECT c.relrowsecurity`).WithArgs(table).
+			WillReturnRows(rows)
+	}
+	mock.ExpectQuery(`SELECT c.relname, c.relrowsecurity`).
+		WillReturnRows(hostedCensusRows())
+	if err := verifyHostedCustomerDataRLS(context.Background(), db); err != nil {
+		t.Fatalf("clean Hosted schema rejected optional Enterprise/industry tables: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyHostedCustomerDataRLSRejectsMissingRequiredTable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(`SELECT c.relrowsecurity`).WithArgs(hostedCustomerDataTables[0]).
+		WillReturnRows(sqlmock.NewRows(hostedGuardColumns()))
+	err = verifyHostedCustomerDataRLS(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), `table "hosted_subscriptions" is missing`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestVerifyHostedCustomerDataRLSRejectsUnsafeOptionalLegacyTableWhenPresent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, table := range hostedCustomerDataTables {
+		rows := safeHostedGuardRow()
+		if table == "customer_agent_versions" {
+			expr := hostedIndirectGuardExpressions[table]
+			rows = sqlmock.NewRows(hostedGuardColumns()).AddRow(
+				true, false, true, true, "", expr, expr)
+		}
+		mock.ExpectQuery(`SELECT c.relrowsecurity`).WithArgs(table).
+			WillReturnRows(rows)
+		if table == "customer_agent_versions" {
+			break
+		}
+	}
+	err = verifyHostedCustomerDataRLS(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), `table "customer_agent_versions" is unsafe`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func hostedGuardColumns() []string {
 	return []string{"enabled", "forced", "permissive", "restrictive", "key_column", "guard_using", "guard_check"}
 }

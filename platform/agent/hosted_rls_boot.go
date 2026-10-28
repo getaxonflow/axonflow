@@ -43,6 +43,20 @@ var hostedCustomerDataTables = []string{
 	"customer_agent_versions", "mas_kill_switch_history", "scim_group_members",
 }
 
+// These child tables belong to migration sets that community-saas does not
+// install on a clean database: customer_agent_versions and scim_group_members
+// are Enterprise, while mas_kill_switch_history is banking. Older Hosted
+// databases can still contain them from the pre-selector migration era. Their
+// absence is therefore valid on a clean Hosted schema, but when present they
+// stay in hostedCustomerDataTables so the explicit check still catches a
+// dropped policy that would otherwise make an indirect child disappear from
+// the schema census below.
+var hostedOptionalLegacyCustomerDataTables = map[string]struct{}{
+	"customer_agent_versions": {},
+	"mas_kill_switch_history": {},
+	"scim_group_members":      {},
+}
+
 func verifyHostedCustomerDataRLS(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("hosted RLS verification requires a database")
@@ -81,6 +95,9 @@ func verifyHostedCustomerDataRLS(ctx context.Context, db *sql.DB) error {
             WHERE n.nspname = 'public' AND c.relname = $1 AND c.relkind = 'r'`, table).
 			Scan(&enabled, &forced, &hasPermissive, &hasRestrictive, &keyColumn, &guardUsing, &guardCheck)
 		if err == sql.ErrNoRows {
+			if _, optional := hostedOptionalLegacyCustomerDataTables[table]; optional {
+				continue
+			}
 			return fmt.Errorf("hosted tenant-data table %q is missing", table)
 		}
 		if err != nil {

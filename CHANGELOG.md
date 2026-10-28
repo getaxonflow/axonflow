@@ -10,6 +10,39 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.5] - 2026-10-28: Clean Hosted schema rollout correction
+
+> **Hosted platform-only patch.** This release fixes two clean-stack rollout
+> defects found by the production-shaped v11.3.4 staging gate. Client
+> contracts, capability negotiation, SDK floors, and recommended SDK/plugin
+> versions are unchanged.
+
+### Community
+
+- No self-hosted Community runtime change. The public release remains in
+  lockstep because the shared platform version is the compatibility anchor.
+
+### Enterprise and AxonFlow Hosted
+
+#### Fixed
+
+- Accept the legitimate absence of three legacy child tables whose creation
+  migrations are outside the Community SaaS selector. If an older Hosted
+  database contains any of those tables, startup still requires ENABLE/FORCE
+  RLS and both permissive and restrictive tenant-bound policies. Every required
+  Hosted table and the dynamic tenant-table census remain fail-closed.
+- Force a new timestamped Community SaaS stack through the master-credential
+  bootstrap when environment-scoped application-role DSN secrets are already
+  enabled. Operators then rotate/provision both database roles against the new
+  RDS instance and update the same stack to the app-role posture. This prevents
+  stale DSNs from a deleted stack from entering new ECS tasks.
+
+#### Migration and compatibility
+
+- No database migration or client change is required from v11.3.4. The patch
+  changes only Agent startup verification, deployment preflight, and the Hosted
+  launch runbook. Existing clients remain compatible.
+
 ## [11.3.4] - 2026-10-28: Dependency security remediation
 
 > **Security patch.** This platform-only release upgrades the shared Go JOSE
