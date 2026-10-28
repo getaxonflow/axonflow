@@ -554,8 +554,10 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (result 
 		}
 
 		resp, lastErr = c.httpClient.Do(req)
-		if lastErr == nil {
-			break // Success, exit retry loop
+		if lastErr == nil && (method != "PUT" && method != "DELETE" ||
+			!c.isRetryableStatusCode(resp.StatusCode) || attempt == maxRetries) {
+			// Keep the final response available for normal result reporting.
+			break
 		}
 
 		if resp != nil {
