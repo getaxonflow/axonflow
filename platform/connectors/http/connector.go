@@ -364,7 +364,7 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (result *b
 
 	// Add query parameters with proper encoding
 	if len(query.Parameters) > 0 {
-		params := url.Values{}
+		params := reqURL.Query()
 		for key, val := range query.Parameters {
 			// Skip internal parameters
 			if strings.HasPrefix(key, "_") {
