@@ -10,6 +10,50 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.6] - 2026-10-28: Stripe webhook delivery compatibility
+
+> **Hosted platform-only patch.** This release restores paid entitlement
+> activation for legitimate Stripe webhook deliveries after Stripe expanded
+> its published source-address set. Client contracts, capability negotiation,
+> SDK floors, and recommended SDK/plugin versions are unchanged.
+
+### Community
+
+- No self-hosted Community runtime behavior changes. The public release remains
+  in lockstep because the shared platform version is the compatibility anchor.
+- Express the existing MCP session-limit audit classification as an equivalent
+  tagged switch so the current static-analysis release gate remains green; this
+  is a behavior-preserving refactor.
+
+### Enterprise and AxonFlow Hosted
+
+#### Fixed
+
+- Admit all 15 webhook delivery addresses currently published by Stripe while
+  preserving the finite source allowlist, rightmost ALB-forwarded client-IP
+  selection, per-source rate limit, request-body cap, and mandatory
+  `Stripe-Signature` verification. The previous list omitted three legitimate
+  addresses, so a successful Checkout could redirect the buyer while the Agent
+  rejected the signed activation event before signature verification.
+- Require an exact regression assertion for every currently published Stripe
+  webhook address and add a release/cohort gate that compares the built-in list
+  with Stripe's authoritative list. Acceptance now requires ordered webhook
+  delivery and an active entitlement with a future paid-through timestamp; a
+  Checkout success redirect alone is not sufficient.
+- Correct the capability registry's platform-version stamp, which remained at
+  11.3.4 while the v11.3.5 release surfaces had advanced.
+
+#### Operations
+
+- Keep the staged Community Compose build-context guard portable across GNU
+  and BSD/macOS `mktemp`, so the release workstation can execute the same
+  fail-closed mirror simulation used by the Linux release runners.
+
+#### Migration and compatibility
+
+- No database migration, SDK, plugin, or client configuration change is
+  required from v11.3.5. Existing clients remain compatible.
+
 ## [11.3.5] - 2026-10-28: Clean Hosted schema rollout correction
 
 > **Hosted platform-only patch.** This release fixes two clean-stack rollout
