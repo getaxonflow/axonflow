@@ -53,6 +53,7 @@ type PlanGenerationRequest struct {
 	Query         string
 	Domain        string // Optional hint: travel, healthcare, finance, generic
 	ExecutionMode string // auto, parallel, sequential
+	SkipLLM       bool   // Use deterministic heuristics/templates without contacting a provider.
 	ClientID      string // Client identifier for multi-tenant logging
 	RequestID     string // Request ID for tracing
 	Context       map[string]interface{}
@@ -328,6 +329,9 @@ func (e *PlanningEngine) routePlannerCall(ctx context.Context, planReq PlanGener
 // Analyze query to determine decomposition strategy
 func (e *PlanningEngine) analyzeQuery(ctx context.Context, planReq PlanGenerationRequest) (*QueryAnalysis, error) {
 	query, domainHint := planReq.Query, planReq.Domain
+	if planReq.SkipLLM {
+		return e.heuristicAnalysis(query, domainHint), nil
+	}
 	// Get domain template - prefer registry configs over hardcoded templates
 	template := e.getDomainTemplate(domainHint)
 
@@ -462,6 +466,10 @@ func (e *PlanningEngine) heuristicAnalysis(query string, domainHint string) *Que
 
 // Generate workflow definition from analysis
 func (e *PlanningEngine) generateWorkflowDefinition(ctx context.Context, req PlanGenerationRequest, analysis *QueryAnalysis) (*Workflow, error) {
+	if req.SkipLLM {
+		return e.generateSyntheticWorkflow(req.Query, analysis), nil
+	}
+
 	// Build workflow generation prompt
 	prompt := e.buildWorkflowPrompt(req.Query, analysis)
 
@@ -507,6 +515,33 @@ func (e *PlanningEngine) generateWorkflowDefinition(ctx context.Context, req Pla
 	e.enhanceSynthesisSteps(workflow, req.Query, analysis.Domain)
 
 	return workflow, nil
+}
+
+// generateSyntheticWorkflow produces a provider-free plan for the authenticated
+// synthetic path. Its function-call step still passes through the MAP step gate,
+// but execution is local and deterministic instead of waiting on an upstream LLM.
+func (e *PlanningEngine) generateSyntheticWorkflow(query string, analysis *QueryAnalysis) *Workflow {
+	return &Workflow{
+		APIVersion: "v1",
+		Kind:       "Workflow",
+		Metadata: WorkflowMetadata{
+			Name:        "synthetic-governance-probe",
+			Description: fmt.Sprintf("Synthetic governance probe for: %s", query),
+			Version:     "1.0",
+			Tags:        []string{analysis.Domain, "synthetic"},
+		},
+		Spec: WorkflowSpec{
+			Timeout: "30s",
+			Retries: 0,
+			Steps: []WorkflowStep{{
+				Name:     "synthetic-governance-probe",
+				Type:     "function-call",
+				Function: "synthetic-governance-probe",
+				Prompt:   query,
+			}},
+			Output: map[string]string{},
+		},
+	}
 }
 
 // Build workflow generation prompt

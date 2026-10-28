@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -73,11 +74,13 @@ func InitProxyTokenGenerator() {
 // response shape.
 var proxyDailyLimitChecker = checkCommunityDailyLimit
 
+const dailyLimitBackendUnavailable = "daily_quota_backend_unavailable"
+
 // enforceCommunitySaasDailyCap applies the per-tenant daily request cap
-// for AuthKindCommunitySaaS callers and returns true if the request was
-// halted with HTTP 429. Returns false for any non-community-saas auth
-// result OR when the cap check passes — caller continues request
-// processing in either case.
+// for AuthKindCommunitySaaS callers. It returns true after writing either a
+// quota 429 or a fail-closed 503 when the quota store cannot be read. It
+// returns false for any non-community-saas auth result or when the cap check
+// passes, and the caller continues request processing.
 //
 // Per ADR-049 §3 + ADR-050 §9 the cap is per-tenant:
 // validateCommunitySaasAuth has already resolved Client.EffectiveTier
@@ -126,12 +129,17 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
 	dailyLimit := dailyLimitForTenant(auth.Client)
-	if err := proxyDailyLimitChecker(dailyCtx, auth.TenantID, dailyLimit, authDB); err != nil {
+	if err := proxyDailyLimitChecker(dailyCtx, auth.TenantID, dailyLimit, authDB); errors.Is(err, ErrDailyLimitExceeded) {
 		tier := "Free"
 		if auth.Client != nil && auth.Client.EffectiveTier != "" {
 			tier = auth.Client.EffectiveTier
 		}
 		writeRateLimitError(w, auth.TenantID, tier, dailyLimit)
+		return true
+	} else if err != nil {
+		log.Printf("[CSAAS-RL] daily_quota_backend_unavailable tenant=%s error=%v",
+			logutil.Sanitize(auth.TenantID), err)
+		writeJSONError(w, "Daily quota service temporarily unavailable", http.StatusServiceUnavailable)
 		return true
 	}
 	return false
@@ -145,10 +153,10 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 // needs its own cap-enforcement call site to avoid the quota leak that
 // #1976 surfaced.
 //
-// Returns true if the call should be blocked: the helper wrote a
-// JSON-RPC error result with the V1 envelope as content[0].text;
-// caller returns without dispatching the tool. Returns false if the
-// call should proceed (under-cap or non-SaaS-Plugin caller).
+// Returns true if the call should be blocked: the helper wrote either the V1
+// limit envelope or a JSON-RPC unavailable error, and the caller returns
+// without dispatching the tool. Returns false if the call should proceed
+// (under-cap or non-SaaS-Plugin caller).
 //
 // session.tier="" (self-hosted enterprise / internal-service) bypasses
 // the cap entirely — the SaaS Plugin daily-cap framework only applies
@@ -157,9 +165,10 @@ func enforceMCPSessionDailyCap(w http.ResponseWriter, req *jsonRPCRequest, sessi
 	return enforceMCPSessionLimits(w, req, session) != ""
 }
 
-// enforceMCPSessionLimits is enforceMCPSessionDailyCap naming the limit that
-// refused the call: LimitTypePerMinute, LimitTypeDailyQuota, or "" when the
-// call may proceed. The tools/call deny audit records which (#4261).
+// enforceMCPSessionLimits is enforceMCPSessionDailyCap naming the refusal:
+// LimitTypePerMinute, LimitTypeDailyQuota, dailyLimitBackendUnavailable, or
+// "" when the call may proceed. The tools/call deny audit records which
+// (#4261).
 func enforceMCPSessionLimits(w http.ResponseWriter, req *jsonRPCRequest, session *mcpSession) string {
 	if session == nil || session.tier == "" {
 		return ""
@@ -197,9 +206,25 @@ func enforceMCPSessionLimits(w http.ResponseWriter, req *jsonRPCRequest, session
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
 	dailyLimit := dailyLimitForTier(session.tier)
-	if err := proxyDailyLimitChecker(dailyCtx, session.tenantID, dailyLimit, authDB); err != nil {
+	if err := proxyDailyLimitChecker(dailyCtx, session.tenantID, dailyLimit, authDB); errors.Is(err, ErrDailyLimitExceeded) {
 		writeRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, dailyLimit)
 		return LimitTypeDailyQuota
+	} else if err != nil {
+		log.Printf("[CSAAS-RL] daily_quota_backend_unavailable tenant=%s error=%v",
+			logutil.Sanitize(session.tenantID), err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if encodeErr := json.NewEncoder(w).Encode(jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &jsonRPCError{
+				Code:    jsonRPCInternalError,
+				Message: "Daily quota service temporarily unavailable",
+			},
+		}); encodeErr != nil {
+			log.Printf("[MCP-Server] Failed to write daily-quota backend error: %v", encodeErr)
+		}
+		return dailyLimitBackendUnavailable
 	}
 	return ""
 }

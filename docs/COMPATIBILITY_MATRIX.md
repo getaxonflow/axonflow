@@ -2,7 +2,7 @@
 
 This document maps platform versions to minimum SDK versions and the features each release introduced.
 
-**Current (platform 11.3.2):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.0** (Go/Python/TypeScript/Java; Rust **0.12.0**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor and recommended versions are unchanged. Hosted payment-required responses remain fail-closed for existing SDKs; OpenClaw 2.10.0 adds the coordinated one-action Checkout flow after the platform release.
+**Current (platform 11.3.3):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.0** (Go/Python/TypeScript/Java; Rust **0.12.0**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor and recommended versions are unchanged. Hosted payment-required responses remain fail-closed for existing SDKs; OpenClaw 2.10.1 provides the coordinated one-action Checkout flow.
 
 **The 10.0.0 platform major does NOT move the SDK floor.** The Go, Python, TypeScript and Java floor stays at 8.0.0, as it has continuously since v7.9.0 and across the v8.0.0 and v9.0.0 platform majors before it. The Rust floor stays at 0.7.0, which is the only value it has ever held: Rust was absent from `MinSDKVersion` at v7.9.0, v8.0.0, v9.0.0 and v9.6.1, and joined the compatibility maps at v9.7.0 (see the v9.7.0 row below). A platform major and an SDK floor are independent axes on this platform: the floor moves only when the platform stops speaking a wire contract an older SDK depends on, which 10.0.0 does not do.
 
@@ -12,6 +12,7 @@ This document maps platform versions to minimum SDK versions and the features ea
 
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
+| v11.3.3 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Platform-only patch: preserve HTTP connector URL filters, retry configured transient statuses for idempotent PUT/DELETE requests, and record the accepted Hosted workflow sub-gate. No wire-contract, SDK-floor, capability, or recommended-SDK change. |
 | v11.3.2 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Safe-off Hosted patch: preserve global control-plane audit rows through the reviewed platform-admin pool under FORCE RLS and audit tenantless SCIM denials at the authentication boundary. No wire-contract, SDK-floor, or recommended-SDK change. |
 | v11.3.1 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Safe-off rollout patch: executable CloudFormation Rules, completed Hosted legacy-table RLS composition and startup verification. No wire-contract, SDK-floor, or recommended-SDK change. See the [v11.3.0 release notes](https://github.com/getaxonflow/axonflow/releases/tag/v11.3.0) for the underlying feature release. |
 | v11.3.0 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Safe-off paid Hosted Starter billing and entitlement, secure person Portal sessions and forced-RLS customer-data isolation, and durable governed payment-exception/support-refund workflows. |

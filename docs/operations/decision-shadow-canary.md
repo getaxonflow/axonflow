@@ -202,8 +202,16 @@ The first version of the probe sent `context: {steps: [...]}` and no `plan_id`. 
 
 The probe now makes **two** requests:
 
-1. `request_type: multi-agent-plan` with the adversarial payload as the query. This routes to `/api/v1/plan` (`agent/run.go:3256`) and mints a plan for *this* tenant on *this* stack. The adversarial text goes here because this is the query `wcp` will evaluate. `multi-agent-plan` rather than `generate-plan`: both route to the same endpoint, but only `multi-agent-plan` and `execute-plan` reach the block at `agent/run.go:2972` that lifts the orchestrator's `plan_id` to the top level of the response.
+1. `request_type: multi-agent-plan` with the explicit `benign_summary` control as the query. This routes to `/api/v1/plan` (`agent/run.go:3256`) and mints a plan for *this* tenant on *this* stack. The control text goes here because it is the query the downstream plan and step gates evaluate; a query denied by the upstream proxy would never reach them. `multi-agent-plan` rather than `generate-plan`: both route to the same endpoint, but only `multi-agent-plan` and `execute-plan` reach the block at `agent/run.go:2972` that lifts the orchestrator's `plan_id` to the top level of the response.
 2. `request_type: execute-plan` carrying that `plan_id`, both top level and in `context` — the agent copies the top-level field into the context it forwards (`agent/run.go:3231`) and the orchestrator reads only the context.
+
+The plan probe always uses the corpus's explicit `benign_summary` control. Plan
+creation is upstream of the route this probe measures, and any rotating payload
+can be denied there by a system row, tenant override, or dynamic policy even
+when its baseline corpus label says `allow`. A denied generate call cannot mint
+a stored plan; treating its upstream 403 as downstream coverage would be
+fabricated evidence. Every other probe keeps the rotating payload, and the run
+report records the control as the plan probe's actual payload.
 
 **A generate call that returns no plan is never scored as evidence.** That first request is evaluated by the *proxy* planes; a 403 from it carries `policy_info` and would, returned verbatim, hand `wcp` and `map` an evaluation neither performed — the inference defect this canary exists to refuse, manufactured by the canary itself. The probe wraps what it saw under `probe_precondition_failed`, a key the platform never emits, and the evidence predicate scores it as nothing. A **429** on that first call is the one exception and passes through verbatim, so the run's rate-limited exit fires rather than the run continuing to spend calls against a tenant already refusing them.
 

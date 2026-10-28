@@ -150,7 +150,7 @@ evaluated = ns['_evaluated']
 sent = {}
 
 
-def _recording_request(method, path, body=None, headers=None, basic_auth=None):
+def _recording_request(method, path, body=None, headers=None, basic_auth=None, timeout=None):
     sent.update({'method': method, 'path': path, 'headers': headers or {}})
     # THREE VALUES since #3865: the probe returns the response HEADERS too,
     # because which limiter refused a 429 is carried there and nowhere in the
@@ -614,7 +614,7 @@ else:
 ns['_credentials'] = lambda run_id, results: ((('t', 's'), 't', None), None)
 
 
-def _rate_limited_transport(method, path, body=None, basic_auth=None, headers=None):
+def _rate_limited_transport(method, path, body=None, basic_auth=None, headers=None, timeout=None):
     # The tier per-minute burst, verbatim from proxy.go:110-116: Retry-After,
     # a bare error body, and no limit_type anywhere.
     return (429, {"error": "Rate limit exceeded (25 req/min). Try again shortly."},
@@ -1040,7 +1040,7 @@ _GOVERNED_BODY = {"allowed": True, "policy_info": {},
                   "plan_id": "plan_0000000000_fixture0"}
 
 
-def _all_governed(method, path, body=None, basic_auth=None, headers=None):
+def _all_governed(method, path, body=None, basic_auth=None, headers=None, timeout=None):
     return 200, dict(_GOVERNED_BODY), {}
 
 
@@ -1256,7 +1256,7 @@ _assert_no_plane_vanishes(full, "success")
 def _requests_in_one_round():
     n = {'i': 0}
 
-    def _count(method, path, body=None, basic_auth=None, headers=None):
+    def _count(method, path, body=None, basic_auth=None, headers=None, timeout=None):
         n['i'] += 1
         return 200, dict(_GOVERNED_BODY), {}
 
@@ -1277,7 +1277,7 @@ _GOVERNED_CALLS = _cs_entries + 1
 _calls = {'n': 0}
 
 
-def _governed_then_429(method, path, body=None, basic_auth=None, headers=None):
+def _governed_then_429(method, path, body=None, basic_auth=None, headers=None, timeout=None):
     _calls['n'] += 1
     if _calls['n'] <= _GOVERNED_CALLS:
         return 200, dict(_GOVERNED_BODY), {}
@@ -1355,7 +1355,7 @@ _assert_no_plane_vanishes(partial_rl, "rate-limited")
 def _probe_signature(probe_name):
     seen = {}
 
-    def _capture(method, path, body=None, basic_auth=None, headers=None):
+    def _capture(method, path, body=None, basic_auth=None, headers=None, timeout=None):
         seen.update(method=method, path=path,
                     request_type=(body or {}).get('request_type')
                     if isinstance(body, dict) else None)
@@ -1411,7 +1411,7 @@ def _refuses(*sigs):
     """
     want = set(sigs)
 
-    def _transport(method, path, body=None, basic_auth=None, headers=None):
+    def _transport(method, path, body=None, basic_auth=None, headers=None, timeout=None):
         _rt = body.get('request_type') if isinstance(body, dict) else None
         if (method, path, _rt) in want:
             return 401, {"error": {"message": "no", "code": "invalid_api_key"}}, {}

@@ -50,8 +50,8 @@ done
   fail "production Hosted paid enforcement must remain safe-off until deployed acceptance"
 [ "$(yq eval '.hosted_starter.gate_percent' "$PRODUCTION_CONFIG")" = "0" ] || \
   fail "production Hosted cohort must remain zero until deployed acceptance"
-[ -z "$(yq eval '.hosted_starter.workflow_acceptance // ""' "$PRODUCTION_CONFIG")" ] || \
-  fail "workflow acceptance must remain empty until issue #4486 receives production evidence"
+[ "$(yq eval '.hosted_starter.workflow_acceptance // ""' "$PRODUCTION_CONFIG")" = "4486" ] || \
+  fail "production Hosted workflow acceptance must name the accepted issue"
 [ "$(yq eval '.hosted_starter.security_acceptance' "$PRODUCTION_CONFIG")" = "4488" ] || \
   fail "production Hosted security acceptance must name the accepted issue"
 [ "$(yq eval '.hosted_starter.module_capabilities' "$PRODUCTION_CONFIG")" = "fincrime,payment_exception,support_refund" ] || \

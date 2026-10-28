@@ -30,6 +30,8 @@ Contributors are listed here as their PRs are merged.
 | [Gregory Zak](https://github.com/gzak) | Usage recording Community fix | [#97](https://github.com/getaxonflow/axonflow/pull/97) |
 | [Gregory Zak](https://github.com/gzak) | Support demo backend build fix | [#125](https://github.com/getaxonflow/axonflow/pull/125) |
 | [Gregory Zak](https://github.com/gzak) | Support demo port conflicts fix | [#127](https://github.com/getaxonflow/axonflow/pull/127) |
+| [Ajeya Krishna](https://github.com/ajeya-krishna) | Preserve HTTP connector URL query parameters | [#533](https://github.com/getaxonflow/axonflow/pull/533) |
+| [Ajeya Krishna](https://github.com/ajeya-krishna) | Retry transient HTTP statuses for idempotent writes | [#535](https://github.com/getaxonflow/axonflow/pull/535) |
 
 ## Documentation Contributors
 
@@ -59,8 +61,8 @@ We value all types of contributions:
 
 | Metric | Count |
 |--------|-------|
-| Total Contributors | 2 |
-| PRs Merged (Community) | 4 |
+| Total Contributors | 3 |
+| PRs Merged (Community) | 6 |
 | Releases Published | 12+ |
 
 ---
@@ -69,4 +71,4 @@ We value all types of contributions:
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: October 2026*

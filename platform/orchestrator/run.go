@@ -4527,8 +4527,9 @@ func listWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 // PlanRequest represents a multi-agent planning request
 type PlanRequest struct {
 	Query         string                 `json:"query"`
-	Domain        string                 `json:"domain"`         // Optional: travel, healthcare, finance, generic
-	ExecutionMode string                 `json:"execution_mode"` // auto, parallel, sequential
+	Domain        string                 `json:"domain"`             // Optional: travel, healthcare, finance, generic
+	ExecutionMode string                 `json:"execution_mode"`     // auto, parallel, sequential
+	SkipLLM       bool                   `json:"skip_llm,omitempty"` // Synthetic probes use the deterministic fallback path.
 	User          UserContext            `json:"user"`
 	Client        map[string]interface{} `json:"client,omitempty"` // Client info from Agent (for audit)
 	Context       map[string]interface{} `json:"context"`
@@ -4794,6 +4795,7 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		Query:         req.Query,
 		Domain:        req.Domain,
 		ExecutionMode: req.ExecutionMode,
+		SkipLLM:       req.SkipLLM,
 		ClientID:      clientID,
 		RequestID:     planID,
 		Context:       req.Context,

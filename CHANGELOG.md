@@ -10,6 +10,48 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.3] - 2026-10-28: HTTP connector reliability and Hosted workflow acceptance
+
+> **Platform-only patch.** This release preserves existing client contracts,
+> capability negotiation, SDK floors, and recommended SDK/plugin versions. No
+> SDK, plugin, or integration package release is required.
+
+### Community
+
+#### Fixed
+
+- **Preserve URL filters when adding HTTP connector query parameters.** Query
+  execution now starts from the request URL's existing query string, retains
+  unrelated and repeated values, skips internal parameters, and lets explicit
+  connector parameters replace only matching keys.
+- **Retry transient HTTP failures for idempotent writes.** PUT and DELETE now
+  retry configured transient status codes as well as transport failures,
+  preserving the complete request body on every attempt and returning the
+  final response when the retry budget is exhausted. Non-idempotent POST and
+  PATCH requests are not retried on HTTP status failures.
+
+### Enterprise and AxonFlow Hosted
+
+#### Operations
+
+- **Record the accepted production workflow sub-gate.** The checked-in Hosted
+  profile now records the reviewed safe-off production workflow acceptance,
+  making authenticated live Checkout-session creation available while paid
+  enforcement remains off and the cohort remains zero during deployment and
+  acceptance. This marker does not weaken RLS, grant an entitlement, or move
+  money by itself.
+
+#### Fixed
+
+- Include the Community HTTP connector query-preservation and idempotent-write
+  retry corrections above in the Enterprise platform image.
+
+#### Migration and compatibility
+
+- No database migration or configuration rename is required from v11.3.2.
+  Existing clients remain compatible; minimum and recommended SDK versions are
+  unchanged.
+
 ## [11.3.2] - 2026-10-28: Hosted global-audit RLS correction
 
 > **Safe-off patch.** This patch corrects a production audit-loss defect found
@@ -89,6 +131,15 @@ community mirror, **Enterprise** changes are EE-only.
 
 #### Operations and migration
 
+- **Restore Hosted daily-quota accounting under forced RLS.** Community SaaS
+  migration 198 scopes the atomic tenant counter update to the authenticated
+  tenant argument and restores the caller's prior database scope. Quota-store
+  failures now return 503 instead of being mislabeled as paid-tier 429s.
+- **Make the enforcement canary provider-free and evidenceable.** Synthetic MAP
+  requests now honor `skip_llm`, execute a deterministic local step through the
+  governance gate, use a benign control when an upstream proxy denial would
+  prevent plan creation, and tolerate the older provider-fallback window during
+  a rolling deployment.
 - **Make the production CloudFormation template executable.** Quote numeric
   operands in `Rules`-section `Fn::Equals` expressions. CloudFormation rejects
   non-string rule operands before changing resources even though its template
