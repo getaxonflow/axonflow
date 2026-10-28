@@ -15,9 +15,11 @@
 // Community deployment (core only) has no such table, and no Community code
 // path reaches Insert.
 //
-// NO ORG SCOPE. The table is not row-level secured, so Insert writes on
-// whatever connection or transaction it is given. A caller whose row must
-// commit with the change it records passes that change's transaction.
+// CALLER-OWNED SCOPE. Hosted enables FORCE RLS on this table. Insert therefore
+// writes only through the exact connection or transaction the caller supplies:
+// tenant-scoped mutations pass their org-scoped transaction, while deliberately
+// global rows pass the reviewed platform-admin pool. Insert never chooses or
+// widens a scope itself.
 package adminaudit
 
 import (

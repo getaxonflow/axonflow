@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.3.1
+**Platform Version:** 11.3.2
 
 The AxonFlow Community Dashboard provides real-time visibility into your AI governance platform's security, performance, and policy enforcement metrics.
 
