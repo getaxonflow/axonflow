@@ -519,6 +519,14 @@ suites:
   - docker-compose.yml
   - docker-compose.enterprise.yml
   - .github/workflows/health-capability-projection-e2e.yml
+  http-connector-runtime-e2e.yml:
+  - runtime-e2e/http-query-parameters/**
+  - runtime-e2e/http-execute-retries/**
+  - platform/connectors/http/**
+  - platform/agent/mcp_handler.go
+  - platform/cmd/agent/**
+  - migrations/**
+  - .github/workflows/http-connector-runtime-e2e.yml
   identity-caep-receiver-e2e.yml:
   - runtime-e2e/3550_caep_receiver/**
   - runtime-e2e/lib/wait_for_stack.sh

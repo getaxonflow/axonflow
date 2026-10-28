@@ -78,9 +78,9 @@ relevance_exemption = _gen.relevance_exemption
 
 # The measured counts, asserted exactly and moved in the same PR as any change
 # to the population (2026-09-23, #4169): 20 workflows on main or a schedule plus
-# 77 that run on a release tag; the mirror carries 5 of them, build-community.yml
+# 78 that run on a release tag; the mirror carries 5 of them, build-community.yml
 # (exempt) among them.
-SELECTED_ENTERPRISE = 98
+SELECTED_ENTERPRISE = 99
 SELECTED_MIRROR = 5
 SYNC_WORKFLOW = os.path.join(ROOT, ".github/workflows/sync-community-repo.yml")
 ON_ENTERPRISE = os.path.isfile(SYNC_WORKFLOW)
@@ -281,7 +281,8 @@ def mirror_selected(sync_workflow):
         open(os.path.join(probe, "docker-compose.yml"), "w").write(
             "services:\n  fixture:\n    build:\n      context: ./minio\n")
         open(os.path.join(probe, "minio/Dockerfile"), "w").write("FROM scratch\n")
-        env = dict(os.environ, SYNC_SOURCE_ROOT=probe, SYNC_WORKFLOW=sync_workflow)
+        env = dict(os.environ, SYNC_SOURCE_ROOT=probe, SYNC_WORKFLOW=sync_workflow,
+                   SIMULATOR_ALLOW_ABSENT_HTTP_HARNESSES="1")
         r = subprocess.run(["bash", os.path.join(ROOT, "scripts/ci/simulate-community-mirror.sh"),
                             os.path.join(tmp, "staged")], env=env, capture_output=True, text=True)
         if r.returncode != 0:

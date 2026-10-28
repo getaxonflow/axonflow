@@ -10,6 +10,59 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.4] - 2026-10-28: Dependency security remediation
+
+> **Security patch.** This platform-only release upgrades the shared Go JOSE
+> parser used by OIDC verification and the Jackson dependencies used by
+> Enterprise Java examples. Client contracts, capability negotiation, SDK
+> floors, and recommended SDK/plugin versions are unchanged.
+
+### Community
+
+#### Security
+
+- Upgrade `github.com/go-jose/go-jose/v4` from 4.1.4 to 4.1.6 across the
+  application modules, the gateway-adapters health-probe build, and the
+  source-built MinIO image to remediate
+  CVE-2026-116587, a denial-of-service condition while parsing JWK sets that
+  contain crafted RSA keys. The parser remains at the same shared OIDC
+  verification boundary. RSA issuer keys up to and including 4096 bits retain
+  their existing behavior; larger moduli are now deliberately refused at parse
+  time under the upstream safe default.
+
+#### Fixed
+
+- Keep Community mirror validation compatible with the two explicitly mirrored
+  HTTP connector runtime E2Es while still rejecting a partial authoring-fixture
+  set, scope the RLS-grant parity check to its own excluded suite, and keep the
+  Enterprise-only Hosted refund handler test out of the public source tree.
+  Preserve the mirror simulator as a reusable classification oracle through an
+  explicit synthetic-fixture opt-in while failing closed when the real source
+  tree omits or partially carries the HTTP connector harness, and execute both
+  connector harnesses against a real Community Agent with disposable
+  PostgreSQL, Redis, and loopback HTTP fixtures.
+
+### Enterprise and AxonFlow Hosted
+
+#### Security
+
+- Apply the same Go JOSE upgrade to Enterprise and Customer Portal module
+  graphs so agent, orchestrator, Portal, gateway-adapters, and source-built
+  MinIO images do not retain the vulnerable transitive version.
+- Upgrade the Jackson BOM and direct Jackson overrides used by Enterprise Java
+  examples from 2.22.1 to 2.22.3, resolving the fixable HIGH advisories reported
+  by the release-candidate filesystem scan.
+
+#### Migration and compatibility
+
+- Correct Enterprise Java examples to consume the current SDK's circuit-breaker
+  update response type, pull-request identifier accessor, and MAS FEAT
+  materiality-classification accessor.
+- No database migration or configuration change is required from v11.3.2 or
+  v11.3.3.
+  Existing clients remain compatible; minimum and recommended SDK/plugin
+  versions are unchanged.
+
 ## [11.3.3] - 2026-10-28: HTTP connector reliability and Hosted workflow acceptance
 
 > **Platform-only patch.** This release preserves existing client contracts,

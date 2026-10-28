@@ -35,9 +35,9 @@ docker exec axonflow-query-e2e-postgres pg_isready -U axonflow -d axonflow
 
 AXONFLOW_E2E_DATABASE_URL='postgres://axonflow:local-query-test@127.0.0.1:15432/axonflow?sslmode=disable' \
 AXONFLOW_E2E_REDIS_URL='redis://127.0.0.1:16379' \
-python3 runtime-e2e/http-query-parameters/verify.py \
-  --agent /tmp/axonflow-query-e2e-agent \
-  --output /tmp/axonflow-query-e2e-results
+./runtime-e2e/http-query-parameters/test.sh \
+  /tmp/axonflow-query-e2e-agent \
+  /tmp/axonflow-query-e2e-results
 
 # Inspect audit persistence after the test's graceful Agent shutdown.
 docker exec axonflow-query-e2e-postgres psql -U axonflow -d axonflow \
@@ -62,7 +62,8 @@ Redis 7. The original Agent was built with a Go overlay restoring only
 `80b9508e01147d40a6be6a54611c042efef49705`. Everything else was identical.
 Separate databases were used for original and patched Agents.
 
-With the original binary, add `--expect-regression`: it requires exactly the
+With the original binary, invoke `verify.py` directly with the same
+`--agent` and `--output` values plus `--expect-regression`: it requires exactly the
 internal-only and additional-parameter cases to fail their filter assertions,
 with both controls passing. The patched binary requires all four to pass.
 The original run reproduced both failures; the patched run passed all four.
