@@ -2,7 +2,7 @@
 
 **Last Updated:** April 2026
 
-**Platform Version:** 11.3.3 | **SDK Version:** 9.5.0
+**Platform Version:** 11.3.4 | **SDK Version:** 9.5.0
 
 AxonFlow provides multiple interfaces for inspecting workflow executions: the `axonctl` CLI, an embedded web UI, the REST API (via curl or SDK), and SDK clients in Go, Python, TypeScript, and Java.
 

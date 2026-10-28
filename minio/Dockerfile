@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   go get \
     github.com/apache/thrift@v0.24.0 \
     github.com/buger/jsonparser@v1.1.2 \
-    github.com/go-jose/go-jose/v4@v4.1.4 \
+    github.com/go-jose/go-jose/v4@v4.1.6 \
     github.com/klauspost/compress@v1.19.0 \
     github.com/prometheus/prometheus@v0.311.3 \
     github.com/rabbitmq/amqp091-go@v1.13.0 \

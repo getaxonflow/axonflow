@@ -31,7 +31,7 @@ ARG TARGETARCH
 # emitter contract is to swallow a non-2xx. The adapter's startup ping would
 # therefore have been dropped with HTTP 400, silently, forever — the exact
 # invisibility this train is closing.
-ARG AXONFLOW_VERSION=11.3.3
+ARG AXONFLOW_VERSION=11.3.4
 
 RUN apk add --no-cache git ca-certificates
 
@@ -86,6 +86,7 @@ WORKDIR /go/src/axonflow
 WORKDIR /tmp/grpc-health-probe
 RUN go mod init axonflow.local/grpc-health-probe-build && \
     go get github.com/grpc-ecosystem/grpc-health-probe@v0.4.53 && \
+    go get github.com/go-jose/go-jose/v4@v4.1.6 && \
     go get google.golang.org/grpc@v1.83.2 && \
     go get golang.org/x/net@v0.60.0 && \
     go get golang.org/x/text@v0.42.0 && \
@@ -98,7 +99,7 @@ WORKDIR /go/src/axonflow
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=11.3.3
+ARG AXONFLOW_VERSION=11.3.4
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}

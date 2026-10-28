@@ -40,28 +40,27 @@ func TestGrantedTablesScriptAgreesWithTheGoCensus(t *testing.T) {
 		t.Fatalf("locate repo root: %v", err)
 	}
 	// INAPPLICABLE AND MISSING ARE DIFFERENT ANSWERS, and this file is mirrored
-	// while its subject is not. sync-community-repo.yml excludes `runtime-e2e/`
-	// wholesale, so on the community mirror the script this test anchors does
-	// not exist and cannot - a guard that syncs to the mirror has to prove
-	// itself on the mirror's own inputs, and one that Fatal'd there would red
-	// the mirror board for a property that tree cannot hold.
+	// while its subject is not. The Community mirror may contain explicitly
+	// selected runtime E2Es, but it excludes the 3636 suite this test anchors.
+	// A guard that syncs to the mirror has to prove itself on the mirror's own
+	// inputs, and one that Fatal'd there would red the mirror board for a
+	// property that tree cannot hold.
 	//
-	// The two states are told apart by the DIRECTORY, not by the file: no
-	// `runtime-e2e/` at all is the mirror, where there is nothing to anchor. A
-	// `runtime-e2e/` that exists WITHOUT the script is this repository with the
-	// suite's reader moved or deleted, which is exactly the drift this test is
-	// for and stays a hard failure.
-	suiteRoot := filepath.Join(root, "runtime-e2e")
+	// The two states are told apart by the SUITE directory, not by the shared
+	// parent. No 3636 suite is the mirror, where there is nothing to anchor. A
+	// 3636 suite that exists WITHOUT the script is this repository with the
+	// reader moved or deleted, which stays a hard failure.
+	suiteRoot := filepath.Join(root, "runtime-e2e", "3636_forcerls_grants")
 	if _, err := os.Stat(suiteRoot); os.IsNotExist(err) {
-		t.Log("runtime-e2e/ is absent, so this is the community mirror and the script half of " +
+		t.Log("runtime-e2e/3636_forcerls_grants is absent, so this is the community mirror and the script half of " +
 			"this property does not exist here; nothing to anchor")
 		return
 	}
-	script := filepath.Join(suiteRoot, "3636_forcerls_grants", "granted_tables.py")
+	script := filepath.Join(suiteRoot, "granted_tables.py")
 	if _, err := os.Stat(script); err != nil {
 		// Not a skip. The script IS the E2E suite's reader; if it has moved,
 		// the suite is reading something this test never checked.
-		t.Fatalf("granted_tables.py not found at %s, while runtime-e2e/ is present: %v", script, err)
+		t.Fatalf("granted_tables.py not found at %s, while its runtime-E2E suite is present: %v", script, err)
 	}
 	python, err := exec.LookPath("python3")
 	if err != nil {

@@ -49,15 +49,34 @@ import (
 // green on a substring search.
 func TestTheRuntimeE2EBodiesParseAndValidate(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "runtime-e2e")
-	// THE COMMUNITY MIRROR EXCLUDES runtime-e2e/ WHOLESALE, so on a mirror
-	// checkout there is nothing here to pin and its absence is correct.
+	suites := []struct {
+		dir   string
+		marks []string
+	}{
+		{dir: "1431_policy_path_alias", marks: []string{"TADOC", "TAGROUP"}},
+		{dir: "3564_per_plane_enforcement", marks: []string{"E3564DOC"}},
+		{dir: "3593_tier_scale_limits", marks: []string{"TS3593DOC"}},
+	}
+
+	// The Community mirror excludes these three authoring fixtures. It may carry
+	// unrelated, explicitly mirrored runtime E2Es, so the presence of the parent
+	// directory no longer identifies an Enterprise tree. Require this fixture set
+	// to be either complete (Enterprise) or absent (Community); a partial set is
+	// still a sync or move defect.
 	//
-	// The skip is deliberately keyed on the DIRECTORY, not on the file. A tree
-	// that HAS runtime-e2e/ and not this suite is a suite that moved or was
-	// deleted, and this test must say so rather than skip - which is the same
-	// shape, and the same reasoning, as the census test's technical-docs skip.
-	if _, err := os.Stat(root); err != nil {
-		t.Skip("community mirror: runtime-e2e/ is excluded from the sync")
+	present := 0
+	for _, s := range suites {
+		if _, err := os.Stat(filepath.Join(root, s.dir)); err == nil {
+			present++
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat runtime E2E fixture %s: %v", s.dir, err)
+		}
+	}
+	if present == 0 {
+		t.Skip("community mirror: authoring runtime E2E fixtures are excluded from the sync")
+	}
+	if present != len(suites) {
+		t.Fatalf("authoring runtime E2E fixture set is partial: found %d of %d directories", present, len(suites))
 	}
 	// runtime-e2e/3564_per_plane_enforcement's Phase E publishes and activates
 	// E3564DOC on an Evaluation licence so the anchored engine has a document to
@@ -67,14 +86,6 @@ func TestTheRuntimeE2EBodiesParseAndValidate(t *testing.T) {
 	// seam (#3973/#4009). The suite derives its N-rule bodies from this one with
 	// jq, so this is the only hand-written document it has and the only one that
 	// can drift from the wire format.
-	suites := []struct {
-		dir   string
-		marks []string
-	}{
-		{dir: "1431_policy_path_alias", marks: []string{"TADOC", "TAGROUP"}},
-		{dir: "3564_per_plane_enforcement", marks: []string{"E3564DOC"}},
-		{dir: "3593_tier_scale_limits", marks: []string{"TS3593DOC"}},
-	}
 	sources := map[string]string{}
 	bodies := map[string]string{}
 	for _, s := range suites {
