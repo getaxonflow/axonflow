@@ -93,6 +93,14 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the v11.3.7 compatibility reconciliation moves openclaw 2.10.0 ->
+//     2.10.1, claude-desktop 0.4.0 -> 0.4.1, and google-adk 1.3.1 -> 1.4.0.
+//     Those public releases completed after the v11.3.6 platform tag. Their
+//     production compatibility was verified during the Hosted Starter release
+//     train, so the platform recommendation now records the registry truth.
+//     No minimum moves: these are compatible hardening and packaging patches,
+//     not wire-contract breaks.
+//
 //   - the 11.3.0 train moves openclaw 2.9.1 -> 2.10.0. It adds the Hosted
 //     payment-required Checkout experience while preserving the governed
 //     unpaid path. The plugin is published manually after the Community
@@ -108,12 +116,14 @@ var minVersion = map[string]string{
 //     compares against the others and none against the registry: the same
 //     blind spot as the claude-desktop catch-up below, this time naming a
 //     version that does not exist rather than an old one.
+//
 //   - the 11.0.0 train (#4313) moves four and adds two: openclaw 2.9.0 ->
 //     2.9.1, claude-code 1.12.0 -> 1.13.0, cursor 1.8.0 -> 1.9.0 and codex
 //     1.8.0 -> 1.9.0; n8n joins at floor 1.2.0, recommended 1.2.1, and
 //     google-adk at floor 1.2.0, recommended 1.3.0 (corrected above). This
 //     entry was written on the v11.1.0 train: the 11.0.0 prep moved the map
 //     without recording it here.
+//
 //   - the 10.4.0 train moves all five: openclaw 2.8.6 -> 2.9.0
 //     (openclaw-plugin#191 + #193), claude-code 1.11.0 -> 1.12.0
 //     (claude-plugin#124), cursor 1.7.0 -> 1.8.0 (cursor-plugin#94), codex
@@ -127,6 +137,7 @@ var minVersion = map[string]string{
 //     PREP, in the release commit, so the release's own images advertise the
 //     train's targets; the tags themselves are cut in the release phase, after
 //     the community platform release.
+//
 //   - claude-desktop 0.3.1 -> 0.3.2 (claude-desktop-plugin#26, published
 //     2026-07-11, corrected here on the v10.0.0 train). This is a CATCH-UP, not
 //     a bump riding a new plugin release: 0.3.2 went live during the 9.10.0
@@ -139,6 +150,7 @@ var minVersion = map[string]string{
 //     publishes, move this map in the same round; when a train opens, re-derive
 //     every value from `gh release list` per plugin repo rather than trusting
 //     either copy.
+//
 //   - openclaw 2.8.5 -> 2.8.6 (openclaw-plugin#170/#171/#172, riding the
 //     v9.19.0 train): every surface that renders a remote-influenced endpoint
 //     or identity string on a terminal sanitises it, so a hostile registrar
@@ -146,24 +158,27 @@ var minVersion = map[string]string{
 //     "governance active" line; and a 403 under onError:"allow" now emits the
 //     ungoverned-fail-open notice instead of running governed tools with no
 //     signal at all. Below the recommended version both remain unannounced.
+//
 //   - openclaw 2.8.4 -> 2.8.5 (openclaw-plugin#167/#169, published 2026-07-30):
 //     the status surfaces report the endpoint and identity the governance
 //     runtime actually uses, a governed call that proceeds because the endpoint
 //     is unreachable says so instead of running ungoverned in silence, and an
 //     error response's own reason is rendered instead of a bare status line.
+//
 //   - the 9.11.0 train took claude-code to 1.11.0 and cursor/codex to 1.7.0.
+//
 //   - the 9.10.0 train (#2919 fleet RBAC per-user identity) moved all four so
 //     each sends the per-user token header on every governed surface; below the
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.10.0",
+	"openclaw":       "2.10.1",
 	"claude-code":    "1.13.0",
 	"cursor":         "1.9.0",
 	"codex":          "1.9.0",
-	"claude-desktop": "0.4.0",
+	"claude-desktop": "0.4.1",
 	"n8n":            "1.2.1",
-	"google-adk":     "1.3.1",
+	"google-adk":     "1.4.0",
 }
 
 // MinVersions returns the floor map.

@@ -10,6 +10,34 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.3.7] - 2026-10-29: Published client compatibility reconciliation
+
+> **Platform metadata patch.** This release reconciles the plugin versions
+> advertised by both `/health` planes with the public artifacts verified during
+> the Hosted Starter release train. It does not change minimum-version floors,
+> request handling, authorization, billing, or tenant isolation.
+
+### Community
+
+#### Fixed
+
+- Recommend OpenClaw 2.10.1, Claude Desktop 0.4.1, and Google ADK 1.4.0 from
+  the shared compatibility registry after those artifacts completed their
+  public release and production-compatibility checks. Agent and Orchestrator
+  continue to project the same copied map by construction.
+- Keep the customer-facing Agent and Orchestrator OpenAPI examples in lockstep
+  with the canonical registry and pin the reconciliation in the regression
+  test. All other SDK and plugin recommendations remain at their verified
+  public versions.
+
+### Enterprise and AxonFlow Hosted
+
+#### Migration and compatibility
+
+- No database migration, environment, SDK, plugin, or client configuration
+  change is required from v11.3.6. Existing clients remain compatible, and
+  every minimum-version floor is unchanged.
+
 ## [11.3.6] - 2026-10-28: Stripe webhook delivery compatibility
 
 > **Hosted platform-only patch.** This release restores paid entitlement
