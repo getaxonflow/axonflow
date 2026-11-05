@@ -358,6 +358,16 @@ type CallerIdentity struct {
 	TenantID  string `json:"tenant_id,omitempty"`
 }
 
+// ConfiguredIdentity identifies the tenant for which this client was built.
+// Callers that supply a server-verified identity must compare it before a
+// decision, so a reused client cannot silently substitute its own scope.
+func (c *Client) ConfiguredIdentity() CallerIdentity {
+	if c == nil {
+		return CallerIdentity{}
+	}
+	return CallerIdentity{OrgID: c.org, TenantID: c.tenantID}
+}
+
 // Target.Type vocabulary (#3717).
 //
 // DECLARED HERE, in the package every PEP imports, because the alternative is

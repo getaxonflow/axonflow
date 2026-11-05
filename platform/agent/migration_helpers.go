@@ -475,7 +475,7 @@ func ensureCompositeUniqueConstraint(db *sql.DB) error {
 
 // ensureSchemaMigrationsTable creates or upgrades the schema_migrations table
 // This handles migration from old schema (version, dirty) to new schema (all columns)
-func ensureSchemaMigrationsTable(db *sql.DB) {
+func ensureSchemaMigrationsTable(db *sql.DB) error {
 	// Check if table exists and what schema it has
 	var hasNameColumn bool
 	err := db.QueryRow(`
@@ -487,8 +487,7 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 	`).Scan(&hasNameColumn)
 
 	if err != nil {
-		log.Printf("⚠️  Failed to check schema_migrations schema: %v", err)
-		// Continue anyway, will try to create table
+		return fmt.Errorf("check schema_migrations schema: %w", err)
 	}
 
 	// If table exists with old schema, upgrade it
@@ -500,8 +499,7 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 				WHERE table_name = 'schema_migrations'
 			)
 		`).Scan(&tableExists); err != nil {
-			log.Printf("⚠️  Failed to check for old schema_migrations table: %v", err)
-			tableExists = false
+			return fmt.Errorf("check old schema_migrations table: %w", err)
 		}
 
 		if tableExists {
@@ -550,13 +548,11 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 
 			_, err = db.Exec(upgradeSQL)
 			if err != nil {
-				log.Printf("⚠️  Failed to upgrade schema_migrations table: %v", err)
-				// Don't fail here - fall back to running all migrations
-				return
+				return fmt.Errorf("upgrade schema_migrations table: %w", err)
 			}
 
 			log.Println("✅ Schema migrations table upgraded successfully (composite dedup key)")
-			return
+			return nil
 		}
 	}
 
@@ -583,9 +579,7 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
-		log.Printf("⚠️  Failed to create schema_migrations table: %v", err)
-		// Don't fail here - fall back to running all migrations
-		return
+		return fmt.Errorf("create schema_migrations table: %w", err)
 	}
 
 	// For existing installs that already created the table under the v1
@@ -594,10 +588,11 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 	// (version, name). Migration 096 also does this — having it here
 	// prevents the chicken-and-egg failure for migrations 001-095.
 	if err := ensureCompositeUniqueConstraint(db); err != nil {
-		log.Printf("⚠️  Failed to ensure composite UNIQUE(version, name): %v (continuing anyway)", err)
+		return fmt.Errorf("ensure schema_migrations composite key: %w", err)
 	}
 
 	log.Println("✅ Schema migrations tracking table ready")
+	return nil
 }
 
 // migrationKey returns the composite dedup key for a migration. Files that
@@ -613,7 +608,7 @@ func migrationKey(version, name string) string {
 // (version, name) tuple per version because the UNIQUE constraint allowed
 // only one entry per version — those tuples still satisfy the composite
 // key on read, so the upgrade is transparent for existing installs.
-func getAppliedMigrations(db *sql.DB) map[string]bool {
+func getAppliedMigrations(db *sql.DB) (map[string]bool, error) {
 	applied := make(map[string]bool)
 
 	rows, err := db.Query(`
@@ -623,30 +618,29 @@ func getAppliedMigrations(db *sql.DB) map[string]bool {
 		ORDER BY version, name
 	`)
 	if err != nil {
-		log.Printf("⚠️  Failed to query schema_migrations: %v", err)
-		// Return empty map - will run all migrations
-		return applied
+		return nil, fmt.Errorf("query schema_migrations: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("Error closing rows: %v", err)
-		}
-	}()
+	defer rows.Close()
 
 	for rows.Next() {
 		var version, name string
 		if err := rows.Scan(&version, &name); err != nil {
-			log.Printf("⚠️  Failed to scan migration row: %v", err)
-			continue
+			return nil, fmt.Errorf("scan schema_migrations row: %w", err)
 		}
 		applied[migrationKey(version, name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schema_migrations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close schema_migrations rows: %w", err)
 	}
 
 	if len(applied) > 0 {
 		log.Printf("📋 Found %d previously applied migrations", len(applied))
 	}
 
-	return applied
+	return applied, nil
 }
 
 // extractMigrationVersion extracts the version number from a migration filename
@@ -702,7 +696,7 @@ func calculateFileChecksum(filepath string) string {
 // table. ON CONFLICT keys off (version, name) — see migration 096 for the
 // composite-key rationale. Same-version, different-name migrations get
 // independent rows; reruns of the SAME migration overwrite the prior row.
-func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeMs int) {
+func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeMs int) error {
 	name := extractMigrationName(filename)
 	hostname, _ := os.Hostname()
 	gitCommit := os.Getenv("GIT_COMMIT") // Can be set during build
@@ -722,8 +716,8 @@ func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeM
 
 	if err != nil {
 		log.Printf("⚠️  Failed to record migration success for %s: %v", filename, err)
-		// Don't fail the migration itself
 	}
+	return err
 }
 
 // recordMigrationFailure records a failed migration in schema_migrations
@@ -797,6 +791,11 @@ const (
 	stageExec                                    // the migration's own SQL failed
 	stageEnforcerCheck                           // looking up the #3905 enforcer failed
 	stageEnforce                                 // running the #3905 enforcer failed
+	stageAppliedRead                             // schema_migrations could not be read reliably
+	stageFileRead                                // a selected migration file was unreadable
+	stageRecordSuccess                           // executed SQL could not be recorded
+	stageLedgerInit                              // schema_migrations could not be made reliable
+	stageSessionVars                             // migration session inputs could not be set
 )
 
 // MigrationError is a RunMigrations failure. File and Category name the
@@ -816,6 +815,16 @@ func (e *MigrationError) Error() string {
 		return fmt.Sprintf("migration %s [%s]: %v", e.File, e.Category, e.Err)
 	case stageEnforcerCheck:
 		return fmt.Sprintf("checking for the legacy-policy read-only enforcer: %v", e.Err)
+	case stageAppliedRead:
+		return fmt.Sprintf("reading applied migrations: %v", e.Err)
+	case stageFileRead:
+		return fmt.Sprintf("reading migration %s [%s]: %v", e.File, e.Category, e.Err)
+	case stageRecordSuccess:
+		return fmt.Sprintf("recording migration %s [%s] success: %v", e.File, e.Category, e.Err)
+	case stageLedgerInit:
+		return fmt.Sprintf("initializing schema_migrations: %v", e.Err)
+	case stageSessionVars:
+		return fmt.Sprintf("setting migration session variables: %v", e.Err)
 	default:
 		return fmt.Sprintf("enforcing the legacy-policy read-only invariant (#3905): %v", e.Err)
 	}
@@ -841,6 +850,8 @@ func migrationFailureLines(err error) (logLine, fatalLine string) {
 			"Database migrations failed. Exiting to prevent incomplete setup."
 	case stageEnforcerCheck:
 		return "", fmt.Sprintf("Failed to check for the legacy-policy read-only enforcer: %v", me.Err)
+	case stageAppliedRead, stageFileRead, stageRecordSuccess, stageLedgerInit, stageSessionVars:
+		return "", fmt.Sprintf("Database migrations failed: %v", me)
 	default:
 		return "", fmt.Sprintf("Failed to enforce the legacy-policy read-only invariant (#3905): %v", me.Err)
 	}
@@ -864,13 +875,14 @@ func fatalMigrationError(err error) {
 // returns how many migrations it applied and skipped. run.go exits on its
 // error with the message the inline runner logged (fatalMigrationError).
 //
-// Kept from the inline runner, deliberately: a file that cannot be READ is
-// logged and passed over rather than fatal, and any other failure stops the run
-// at that migration, recorded in schema_migrations, with nothing after it
-// applied.
+// An unreadable selected file, unreadable migration ledger, or failed success
+// record is fatal. The Agent cannot report ready without verifying that every
+// selected migration is either recorded as applied or was applied and recorded.
 func RunMigrations(db *sql.DB, migrations []MigrationFile, vars MigrationSessionVars) (applied, skipped int, err error) {
 	// Ensure schema_migrations table exists (run migration 020 first if needed)
-	ensureSchemaMigrationsTable(db)
+	if err := ensureSchemaMigrationsTable(db); err != nil {
+		return 0, 0, &MigrationError{stage: stageLedgerInit, Err: err}
+	}
 
 	// Set Postgres session variables that downstream migration SQL
 	// reads via current_setting(): app.db_password (migration 017
@@ -880,14 +892,19 @@ func RunMigrations(db *sql.DB, migrations []MigrationFile, vars MigrationSession
 	// setMigrationSessionVars so the wiring is unit-testable; the
 	// inline form was untested for years and the v9 Pass-2 backfill
 	// regressed on it (Epic #2230 Follow-up A).
-	setMigrationSessionVars(db, vars.DBPassword, vars.DeploymentOrgID, vars.DeploymentKind)
+	if err := setMigrationSessionVars(db, vars.DBPassword, vars.DeploymentOrgID, vars.DeploymentKind); err != nil {
+		return 0, 0, &MigrationError{stage: stageSessionVars, Err: err}
+	}
 
 	// Get list of applied migrations (keyed by composite version/name).
 	// See migrations/core/096_schema_migrations_dedup_composite.sql
 	// for why we cannot dedup on version alone — files like
 	// 025_decision_chain.sql + 025_hitl_oversight_queue.sql share
 	// the version prefix and must be tracked independently.
-	appliedMigrations := getAppliedMigrations(db)
+	appliedMigrations, err := getAppliedMigrations(db)
+	if err != nil {
+		return 0, 0, &MigrationError{stage: stageAppliedRead, Err: err}
+	}
 
 	for _, migration := range migrations {
 		filename := filepath.Base(migration.Path)
@@ -902,8 +919,7 @@ func RunMigrations(db *sql.DB, migrations []MigrationFile, vars MigrationSession
 		// Read migration file
 		sqlBytes, err := os.ReadFile(migration.Path)
 		if err != nil {
-			log.Printf("⚠️  Failed to read migration %s: %v", filename, err)
-			continue
+			return applied, skipped, &MigrationError{stage: stageFileRead, File: filename, Category: migration.Category, Err: err}
 		}
 
 		// Substitute GRAFANA_PASSWORD for migration 107 (grafana_database)
@@ -932,7 +948,9 @@ func RunMigrations(db *sql.DB, migrations []MigrationFile, vars MigrationSession
 		}
 
 		// Record success
-		recordMigrationSuccess(db, migration.Version, filename, executionTimeMs)
+		if err := recordMigrationSuccess(db, migration.Version, filename, executionTimeMs); err != nil {
+			return applied, skipped, &MigrationError{stage: stageRecordSuccess, File: filename, Category: migration.Category, Err: err}
+		}
 		log.Printf("✅ Migration %s [%s] applied successfully (%dms)", filename, migration.Category, executionTimeMs)
 		applied++
 	}

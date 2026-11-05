@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"axonflow/platform/shared/checkoutbinding"
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/secretenv"
 )
@@ -177,9 +179,9 @@ type tenantDeleteConfirmBody struct {
 }
 
 type tenantDeleteConfirmResponse struct {
-	Message    string `json:"message"`
-	TenantID   string `json:"tenant_id"`
-	DeletedAt  string `json:"deleted_at"`
+	Message     string `json:"message"`
+	TenantID    string `json:"tenant_id"`
+	DeletedAt   string `json:"deleted_at"`
 	DeletedRows struct {
 		Registrations int `json:"registrations"`
 		Licenses      int `json:"licenses"`
@@ -522,9 +524,11 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			}
 		}
 
-		// =====================================================================
-		// Atomic transaction: cascade DELETE + audit log + token consume.
-		// =====================================================================
+		// Serialize with Hosted webhooks and legacy license issuance before
+		// reading customer references. Both writers take this same advisory
+		// lock, then lock the registration row. A customer created just before
+		// deletion must appear in the durable receipt; one arriving later must
+		// see the missing registration and fail.
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			log.Printf("[TENANT-DELETE-CONFIRM] Failed to begin tx: %v", err)
@@ -532,7 +536,177 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			return
 		}
 		defer func() { _ = tx.Rollback() }() // no-op after commit
+		if _, err := tx.ExecContext(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, tenantID); err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to lock tenant: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		var lockedTenantID string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT tenant_id FROM community_saas_registrations WHERE tenant_id=$1 FOR UPDATE`,
+			tenantID).Scan(&lockedTenantID); err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to lock registration: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		// Hosted subscriptions have their own Stripe customer reference. Keep
+		// every distinct reference, including expired or revoked legacy licenses:
+		// one tenant can have paid through more than one Stripe customer.
+		var hostedStripeCustID sql.NullString
+		err = tx.QueryRowContext(ctx,
+			`SELECT stripe_customer_id FROM hosted_subscriptions WHERE tenant_id = $1`,
+			tenantID).Scan(&hostedStripeCustID)
+		if err != nil && err != sql.ErrNoRows {
+			log.Printf("[TENANT-DELETE-CONFIRM] Hosted subscription lookup failed: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		stripeCustomerIDs := make([]string, 0, 2)
+		seenStripeCustomers := make(map[string]bool)
+		addStripeCustomer := func(id string) {
+			id = strings.TrimSpace(id)
+			if id != "" && !seenStripeCustomers[id] {
+				seenStripeCustomers[id] = true
+				stripeCustomerIDs = append(stripeCustomerIDs, id)
+			}
+		}
+		if hostedStripeCustID.Valid {
+			addStripeCustomer(hostedStripeCustID.String)
+		}
+		if err == nil && len(stripeCustomerIDs) == 0 {
+			// Even a pending Hosted row has a Stripe subscription ID. Without
+			// its customer reference, erasure would discard the only local
+			// reconciliation path for an unknown external payment outcome.
+			writeJSONError(w, "Stripe customer reference is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// A Checkout Session can still accept payment before a subscription or
+		// customer row exists. Attempt reservation takes the same advisory lock
+		// as deletion; the registration FOR UPDATE lock also conflicts with the
+		// INSERT's FK lock. This read includes every attempt reserved before
+		// deletion. Keep unknown
+		// creations and unprocessed completions for reconciliation. Expire a
+		// known open Session at Stripe before its FK can cascade away.
+		attemptRows, err := tx.QueryContext(ctx, `
+			SELECT attempt_id, status, COALESCE(stripe_session_id, '')
+			  FROM hosted_checkout_attempts
+			 WHERE tenant_id=$1 AND status IN ('creating','create_unknown','open','completed','expired')
+			 FOR UPDATE`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Checkout attempt lookup failed: %v", err)
+			writeJSONError(w, "Failed to verify Checkout state", http.StatusServiceUnavailable)
+			return
+		}
+		type checkoutToExpire struct{ attemptID, sessionID string }
+		var openCheckouts []checkoutToExpire
+		expiredCheckoutBindingHashes := make([]string, 0)
+		for attemptRows.Next() {
+			var attemptID, status, sessionID string
+			if err := attemptRows.Scan(&attemptID, &status, &sessionID); err != nil {
+				_ = attemptRows.Close()
+				writeJSONError(w, "Failed to verify Checkout state", http.StatusServiceUnavailable)
+				return
+			}
+			switch status {
+			case "open":
+				if sessionID == "" {
+					_ = attemptRows.Close()
+					writeJSONError(w, "Checkout creation needs reconciliation", http.StatusServiceUnavailable)
+					return
+				}
+				openCheckouts = append(openCheckouts, checkoutToExpire{attemptID, sessionID})
+			case "expired":
+				if sessionID == "" {
+					_ = attemptRows.Close()
+					writeJSONError(w, "Checkout expiry needs reconciliation", http.StatusServiceUnavailable)
+					return
+				}
+				expiredCheckoutBindingHashes = append(expiredCheckoutBindingHashes,
+					checkoutbinding.Digest(tenantID, attemptID, sessionID))
+			case "completed":
+				if !hostedStripeCustID.Valid || strings.TrimSpace(hostedStripeCustID.String) == "" {
+					_ = attemptRows.Close()
+					writeJSONError(w, "Checkout completion needs reconciliation", http.StatusServiceUnavailable)
+					return
+				}
+			default: // creating or create_unknown: Stripe may have created a Session.
+				_ = attemptRows.Close()
+				writeJSONError(w, "Checkout creation needs reconciliation", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		if err := attemptRows.Err(); err != nil {
+			_ = attemptRows.Close()
+			writeJSONError(w, "Failed to verify Checkout state", http.StatusServiceUnavailable)
+			return
+		}
+		_ = attemptRows.Close()
+		if len(openCheckouts) > 0 {
+			expirer, ok := stripe.(StripeCheckoutSessionExpirer)
+			if !ok || !stripeCustomerArchiverConfigured(stripe) {
+				writeJSONError(w, "Stripe Checkout expiry is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			for _, checkout := range openCheckouts {
+				if err := expirer.ExpireCheckoutSession(ctx, checkout.sessionID); err != nil {
+					log.Printf("[TENANT-DELETE-CONFIRM] Checkout expiry unverified for tenant %s: %v", logutil.Sanitize(tenantID), err)
+					writeJSONError(w, "Stripe Checkout expiry is unverified", http.StatusServiceUnavailable)
+					return
+				}
+				result, err := tx.ExecContext(ctx, `UPDATE hosted_checkout_attempts
+					SET status='expired', expired_at=COALESCE(expired_at,NOW())
+					WHERE tenant_id=$1 AND attempt_id=$2 AND stripe_session_id=$3 AND status='open'`,
+					tenantID, checkout.attemptID, checkout.sessionID)
+				if err != nil {
+					writeJSONError(w, "Failed to record Checkout expiry", http.StatusServiceUnavailable)
+					return
+				}
+				if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+					writeJSONError(w, "Failed to record Checkout expiry", http.StatusServiceUnavailable)
+					return
+				}
+				expiredCheckoutBindingHashes = append(expiredCheckoutBindingHashes,
+					checkoutbinding.Digest(tenantID, checkout.attemptID, checkout.sessionID))
+			}
+		}
+		legacyCustomers, err := tx.QueryContext(ctx,
+			`SELECT DISTINCT stripe_customer_id FROM plugin_user_licenses
+			 WHERE tenant_id = $1 AND stripe_customer_id IS NOT NULL
+			 ORDER BY stripe_customer_id`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Legacy Stripe customer lookup failed: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		for legacyCustomers.Next() {
+			var id string
+			if err := legacyCustomers.Scan(&id); err != nil {
+				_ = legacyCustomers.Close()
+				writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+				return
+			}
+			addStripeCustomer(id)
+		}
+		if err := legacyCustomers.Err(); err != nil {
+			_ = legacyCustomers.Close()
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		_ = legacyCustomers.Close()
+		if len(stripeCustomerIDs) > 0 {
+			stripeCustID = sql.NullString{String: stripeCustomerIDs[0], Valid: true}
+			if !stripeCustomerArchiverConfigured(stripe) {
+				// A no-op archiver would destroy the last database-side references
+				// while falsely reporting Stripe cleanup. Leave the token untouched.
+				writeJSONError(w, "Stripe archive is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
 
+		// =====================================================================
+		// Atomic transaction: cascade DELETE + audit log + token consume.
+		// =====================================================================
 		// Mark token consumed FIRST. RowsAffected MUST be 1 — if 0, another
 		// confirm raced us between our SELECT and now.
 		updateRes, err := tx.ExecContext(ctx,
@@ -556,13 +730,58 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			return
 		}
 
-		// Cascade DELETEs. Order matters because plugin_user_licenses has a
-		// foreign-key reference to community_saas_registrations.tenant_id —
+		// Cascade DELETEs. Order matters because plugin_user_licenses and
+		// hosted_subscriptions have non-cascading foreign-key references to
+		// community_saas_registrations.tenant_id —
 		// children must be deleted before the parent or Postgres rejects the
 		// parent DELETE with a constraint-violation error.
-		// Order: licenses → audit_logs → daily_usage → usage_events → registration.
+		// Order: Hosted subscription and independent identity rows → licenses
+		// → audit_logs → daily_usage → usage_events → registration.
 		// We use a per-table RowsAffected count for the audit log entry. Any
 		// single DELETE failure rolls the entire transaction back.
+		deletedSubscriptions, err := execDeleteCount(ctx, tx,
+			`DELETE FROM hosted_subscriptions WHERE tenant_id = $1`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to delete hosted subscription: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		// These Hosted acquisition and identity rows are not all foreign-key
+		// children of the registration. Remove them before the parent so a
+		// deleted tenant cannot retain an active Portal session or link record.
+		deletedSignupTokens, err := execDeleteCount(ctx, tx,
+			`DELETE FROM hosted_signup_tokens WHERE tenant_id = $1`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to delete Hosted signup tokens: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		deletedDeviceLinks, err := execDeleteCount(ctx, tx,
+			`DELETE FROM hosted_device_links WHERE tenant_id = $1`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to delete Hosted device links: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		deletedSessions, err := execDeleteCount(ctx, tx,
+			`DELETE FROM user_sessions WHERE tenant_id = $1`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to revoke Portal sessions: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+		// Hosted signup binds org_id to tenant_id. The NOT EXISTS guard keeps
+		// shared legacy organizations' assignments out of this deletion.
+		deletedRoles, err := execDeleteCount(ctx, tx,
+			`DELETE FROM role_assignments WHERE org_id = $1
+			  AND NOT EXISTS (SELECT 1 FROM community_saas_registrations
+			                   WHERE org_id = $1 AND tenant_id <> $1)`, tenantID)
+		if err != nil {
+			log.Printf("[TENANT-DELETE-CONFIRM] Failed to revoke Hosted roles: %v", err)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
+
 		deletedLicenses, err := execDeleteCount(ctx, tx,
 			`DELETE FROM plugin_user_licenses WHERE tenant_id = $1`, tenantID)
 		if err != nil {
@@ -608,6 +827,13 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
 			return
 		}
+		if deletedRegistrations != 1 {
+			// A misrouted app-role pool can silently filter the DELETE under
+			// RLS. Never commit a deletion receipt when the parent survived.
+			log.Printf("[TENANT-DELETE-CONFIRM] Expected one registration, deleted %d", deletedRegistrations)
+			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
+			return
+		}
 
 		// Pre-write the audit row (Stripe-archive-state filled in post-commit).
 		_, err = tx.ExecContext(ctx,
@@ -615,12 +841,16 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			 (tenant_id, email, deletion_token_jti, requested_at, confirmed_at,
 			  deleted_registrations, deleted_licenses, deleted_audit_logs,
 			  deleted_daily_usage, deleted_usage_events,
-			  stripe_customer_id, refund_needed, refund_note)
-			 VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12)`,
+		  stripe_customer_id, stripe_customer_ids, stripe_archive_pending_ids,
+		  stripe_archive_ok, refund_needed, refund_note,
+		  expired_checkout_binding_hashes)
+		  VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 			tenantID, bondEmail, tokenHash, requestedAt,
 			deletedRegistrations, deletedLicenses, deletedAuditLogs,
 			deletedDailyUsage, deletedUsageEvents,
-			nullableString(stripeCustID), refundNeeded, refundNote)
+			nullableString(stripeCustID), pq.Array(stripeCustomerIDs),
+			pq.Array(stripeCustomerIDs), sql.NullBool{Bool: false, Valid: len(stripeCustomerIDs) > 0},
+			refundNeeded, refundNote, pq.Array(expiredCheckoutBindingHashes))
 		if err != nil {
 			log.Printf("[TENANT-DELETE-CONFIRM] Failed to write deletion log: %v", err)
 			writeJSONError(w, "Failed to complete deletion", http.StatusInternalServerError)
@@ -633,51 +863,99 @@ func handleTenantDeleteConfirm(db *sql.DB, stripe StripeCustomerArchiver) http.H
 			return
 		}
 
-		// Post-commit: best-effort Stripe customer archive. Failure here is
-		// LOGGED but does NOT roll back our DB-side erasure — the user's data
-		// is gone from our systems regardless. Operator follow-up (manual
-		// archive in Stripe Dashboard) is captured by the deletion log.
+		// Post-commit: archive every distinct customer. The deletion log already
+		// holds the full pending set, including if this process exits here.
+		// Failures do not roll back DB erasure, but they remain durable work for
+		// operator follow-up and cannot produce stripe_archived=true.
 		var stripeArchivedPtr *bool
-		if stripeCustID.Valid && stripe != nil {
-			archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			archiveErr := stripe.ArchiveCustomer(archiveCtx, stripeCustID.String)
-			archiveCancel()
-
-			ok := archiveErr == nil
-			stripeArchivedPtr = &ok
-
-			// Update the log row with the actual outcome. If this fails we
-			// just log — the deletion itself succeeded.
-			updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, upErr := db.ExecContext(updateCtx,
-				`UPDATE tenant_deletion_log
-				 SET stripe_archive_ok = $1, stripe_archive_error = $2
-				 WHERE tenant_id = $3 AND deletion_token_jti = $4`,
-				ok, nullableErrorString(archiveErr), tenantID, tokenHash)
-			updateCancel()
-			if upErr != nil {
-				log.Printf("[TENANT-DELETE-CONFIRM] Failed to backfill stripe state on log: %v", upErr)
+		if len(stripeCustomerIDs) > 0 {
+			pendingIDs := make([]string, 0, len(stripeCustomerIDs))
+			for _, customerID := range stripeCustomerIDs {
+				archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				// A Stripe customer can be referenced by another tenant. Hold a
+				// short-lived table lock across the check and Stripe call so another
+				// billing writer cannot add that reference between them. NOWAIT
+				// leaves the customer pending instead of delaying unrelated billing
+				// when either table is already being written.
+				archiveTx, archiveErr := db.BeginTx(archiveCtx, nil)
+				if archiveErr == nil {
+					_, archiveErr = archiveTx.ExecContext(archiveCtx,
+						`LOCK TABLE hosted_subscriptions, plugin_user_licenses IN SHARE MODE NOWAIT`)
+				}
+				var shared bool
+				if archiveErr == nil {
+					archiveErr = archiveTx.QueryRowContext(archiveCtx, `SELECT EXISTS (
+						SELECT 1 FROM hosted_subscriptions
+						 WHERE tenant_id <> $1 AND stripe_customer_id = $2
+						UNION ALL
+						SELECT 1 FROM plugin_user_licenses
+						 WHERE tenant_id <> $1 AND stripe_customer_id = $2
+					)`, tenantID, customerID).Scan(&shared)
+				}
+				if archiveErr == nil && !shared {
+					archiveErr = stripe.ArchiveCustomer(archiveCtx, customerID)
+				}
+				if archiveTx != nil {
+					if archiveErr == nil && !shared {
+						archiveErr = archiveTx.Commit()
+					} else {
+						_ = archiveTx.Rollback()
+					}
+				}
+				archiveCancel()
+				if archiveErr != nil || shared {
+					pendingIDs = append(pendingIDs, customerID)
+					if archiveErr != nil {
+						tenantDeleteStripeArchiveFailuresTotal.Inc()
+					}
+				} else {
+					tenantDeleteStripeArchiveSuccessTotal.Inc()
+				}
 			}
-
-			if archiveErr != nil {
-				log.Printf("[TENANT-DELETE-CONFIRM] Stripe archive failed for cust=%s tenant=%s: %v (DB deletion still succeeded)",
-					logutil.Sanitize(stripeCustID.String), logutil.Sanitize(tenantID), archiveErr)
-				tenantDeleteStripeArchiveFailuresTotal.Inc()
-			} else {
-				tenantDeleteStripeArchiveSuccessTotal.Inc()
+			allArchived := len(pendingIDs) == 0
+			archiveError := sql.NullString{}
+			if !allArchived {
+				archiveError = sql.NullString{String: fmt.Sprintf("%d Stripe customer archives need operator follow-up", len(pendingIDs)), Valid: true}
+			}
+			updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			updateResult, upErr := db.ExecContext(updateCtx,
+				`UPDATE tenant_deletion_log
+				 SET stripe_archive_ok = $1, stripe_archive_error = $2,
+				     stripe_archive_pending_ids = $3
+				 WHERE tenant_id = $4 AND deletion_token_jti = $5`,
+				allArchived, archiveError, pq.Array(pendingIDs), tenantID, tokenHash)
+			updateCancel()
+			if upErr == nil {
+				var updated int64
+				updated, upErr = updateResult.RowsAffected()
+				if upErr == nil && updated != 1 {
+					upErr = fmt.Errorf("updated %d deletion receipts, expected one", updated)
+				}
+			}
+			if upErr != nil {
+				// The pre-commit pending set remains intact for operator recovery.
+				log.Printf("[TENANT-DELETE-CONFIRM] Failed to update Stripe archive state for tenant %s: %v",
+					logutil.Sanitize(tenantID), upErr)
+				allArchived = false
+			}
+			stripeArchivedPtr = &allArchived
+			if len(pendingIDs) > 0 {
+				log.Printf("[TENANT-DELETE-CONFIRM] Stripe archive pending for tenant %s: %d customer(s)",
+					logutil.Sanitize(tenantID), len(pendingIDs))
 			}
 		}
 
-		log.Printf("[TENANT-DELETE-CONFIRM] Tenant %s erased: reg=%d lic=%d audit=%d daily=%d usage=%d refund_needed=%v",
+		log.Printf("[TENANT-DELETE-CONFIRM] Tenant %s erased: reg=%d subscriptions=%d signup_tokens=%d device_links=%d sessions=%d roles=%d lic=%d audit=%d daily=%d usage=%d refund_needed=%v",
 			logutil.Sanitize(tenantID),
-			deletedRegistrations, deletedLicenses, deletedAuditLogs,
+			deletedRegistrations, deletedSubscriptions, deletedSignupTokens, deletedDeviceLinks,
+			deletedSessions, deletedRoles, deletedLicenses, deletedAuditLogs,
 			deletedDailyUsage, deletedUsageEvents, refundNeeded)
 		tenantDeleteCompletedTotal.Inc()
 
 		resp := tenantDeleteConfirmResponse{
-			Message:   "Tenant deleted. All associated data has been removed from our systems per GDPR Article 17.",
-			TenantID:  tenantID,
-			DeletedAt: time.Now().UTC().Format(time.RFC3339),
+			Message:        "Tenant deleted. All associated data has been removed from our systems per GDPR Article 17.",
+			TenantID:       tenantID,
+			DeletedAt:      time.Now().UTC().Format(time.RFC3339),
 			StripeArchived: stripeArchivedPtr,
 			RefundNeeded:   refundNeeded,
 			RefundNote:     refundNote,
@@ -747,13 +1025,6 @@ func nullableString(v sql.NullString) interface{} {
 		return v.String
 	}
 	return nil
-}
-
-func nullableErrorString(err error) interface{} {
-	if err == nil {
-		return nil
-	}
-	return err.Error()
 }
 
 // =============================================================================

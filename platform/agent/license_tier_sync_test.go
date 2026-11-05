@@ -490,6 +490,9 @@ func TestHealthReportsTheDivergenceAndOmitsUnmeasuredValues(t *testing.T) {
 // apart. `json.Decode` into a map can.
 func TestHealthResponseOmitsTheLicenseSyncKeyEntirely(t *testing.T) {
 	resetLicenseSyncState(t)
+	previousReady := appReady.Load()
+	appReady.Store(true)
+	t.Cleanup(func() { appReady.Store(previousReady) })
 
 	decodeHealth := func() map[string]interface{} {
 		t.Helper()

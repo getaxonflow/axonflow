@@ -48,7 +48,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.3.7
+  version: 11.4.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -80,6 +80,8 @@ tags:
       pre-check; difference is the caller.
   - name: MCP Connectors
     description: Model Context Protocol data connector operations
+  - name: Agent Capabilities
+    description: Versioned, bounded Enterprise capability discovery and invocation
   - name: Metrics
     description: Performance monitoring and observability
   - name: HITL
@@ -172,6 +174,141 @@ tags:
       license, never from OTLP resource attributes.
 
 paths:
+  /api/v1/capabilities:
+    get:
+      tags:
+        - Agent Capabilities
+      summary: Discover capabilities admitted for the verified customer agent
+      description: |
+        The Enterprise route derives organization, tenant and principal from
+        Agent authentication. It lists only registered and entitled capabilities.
+        The initial registry is empty until customer-specific policy and source
+        adapters pass review. Discovery never grants execution authority.
+        A declaration may mark its model step optional: a tenant without model
+        entitlement can still discover the read-only evidence path, but model
+        calls remain denied at the step boundary.
+        Community builds return 501.
+      operationId: discoverAgentCapabilities
+      security:
+        - BasicAuth: []
+      responses:
+        '200':
+          description: Versioned capability declarations; the list may be empty.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version, capabilities]
+                properties:
+                  schema_version:
+                    type: string
+                    enum: ['1.0']
+                  capabilities:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          description: Authentication failed.
+        '501':
+          description: Enterprise capability plane unavailable in Community.
+  /api/v1/capabilities/{capability_id}/invoke:
+    post:
+      tags:
+        - Agent Capabilities
+      summary: Invoke a registered bounded capability
+      description: |
+        Authentication, entitlement, input schema, policy and budgets are
+        checked again. No production capability is registered by default.
+        An invocation can return evidence and proposals but no provider token.
+        The read-only case specialist refuses replay of cached evidence under
+        the same invocation ID; use a new ID for fresh source and policy checks.
+      operationId: invokeAgentCapability
+      security:
+        - BasicAuth: []
+      parameters:
+        - in: path
+          name: capability_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version, invocation_id, input]
+              properties:
+                schema_version:
+                  type: string
+                  enum: ['1.0']
+                invocation_id:
+                  type: string
+                  minLength: 1
+                input:
+                  type: object
+      responses:
+        '200':
+          description: Versioned source-linked capability result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, invocation_id, status]
+                properties:
+                  version:
+                    type: string
+                    enum: ['1.0']
+                  invocation_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [complete, partial, denied, needs_human, failed]
+                  evidence:
+                    type: array
+                    items:
+                      type: object
+                  proposals:
+                    type: array
+                    items:
+                      type: object
+                  tool_calls:
+                    type: integer
+                    minimum: 0
+                  model_calls:
+                    type: integer
+                    minimum: 0
+                  tokens:
+                    type: integer
+                    minimum: 0
+                    description: Model token budget reserved by the capability step.
+                  model_usage:
+                    type: object
+                    description: Provider-observed tokens when available; local Ollama infrastructure cost is not reported as zero.
+                    required: [provider, model, input_tokens, output_tokens, cost_status]
+                    properties:
+                      provider:
+                        type: string
+                      model:
+                        type: string
+                      input_tokens:
+                        type: integer
+                        minimum: 0
+                      output_tokens:
+                        type: integer
+                        minimum: 0
+                      cost_status:
+                        type: string
+                        enum: [unknown, unpriced_infrastructure]
+        '400':
+          description: Invalid invocation envelope or schema version.
+        '401':
+          description: Authentication failed.
+        '403':
+          description: Capability is not registered, entitled or approved.
+        '501':
+          description: Enterprise capability plane unavailable in Community.
   # --- OAuth discovery (RFC 8414 / RFC 9728) ------------------------------
   #
   # The MCP server authenticates with HTTP Basic, NOT OAuth. These two

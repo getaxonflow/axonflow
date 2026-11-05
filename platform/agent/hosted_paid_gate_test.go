@@ -45,12 +45,70 @@ func TestHostedEventFingerprintBindsIdempotencyKeyToRequest(t *testing.T) {
 	}
 }
 
+func TestAPIRequestDecodePreservesBodyForHostedEventFingerprint(t *testing.T) {
+	fingerprint := func(body string) string {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/request", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		var parsed ClientRequest
+		if err := decodeClientRequestPreservingBody(r, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		if parsed.Query == "" {
+			t.Fatal("request was not decoded")
+		}
+		got, err := hostedRequestFingerprint(r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := io.ReadAll(r.Body)
+		if err != nil || string(restored) != body {
+			t.Fatalf("fingerprinted body = %q, want %q: %v", restored, body, err)
+		}
+		return got
+	}
+	first := fingerprint(`{"query":"synthetic hosted request","skip_llm":true}`)
+	if first != fingerprint(`{"query":"synthetic hosted request","skip_llm":true}`) {
+		t.Fatal("identical request produced a different fingerprint")
+	}
+	if first == fingerprint(`{"query":"changed hosted request","skip_llm":true}`) {
+		t.Fatal("changed query reused the first request fingerprint")
+	}
+}
+
+func TestOversizedAPIRequestDecodeKeepsNonHostedCompatibilityAndDeniesHostedFingerprint(t *testing.T) {
+	query := strings.Repeat("x", hostedMeteringBodyLimit+1024)
+	body := `{"query":"` + query + `","skip_llm":true}`
+	r := httptest.NewRequest(http.MethodPost, "/api/request", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	var parsed ClientRequest
+	if err := decodeClientRequestPreservingBody(r, &parsed); err != nil {
+		t.Fatalf("non-Hosted request decode changed: %v", err)
+	}
+	if parsed.Query != query || !parsed.SkipLLM {
+		t.Fatal("non-Hosted decode truncated a large valid JSON request")
+	}
+	decoded, ok := r.Body.(*decodedRequestBody)
+	if !ok || !decoded.captureExceeded {
+		t.Fatal("large decoded body was not marked incomplete for Hosted metering")
+	}
+	if _, err := hostedRequestFingerprint(r, nil); err == nil {
+		t.Fatal("Hosted metering accepted an incomplete captured body")
+	}
+	var capture boundedRequestCapture
+	written, err := capture.Write([]byte(body))
+	if err != nil || written != len(body) || capture.Len() != hostedMeteringBodyLimit+1 || !capture.exceeded {
+		t.Fatalf("capture was not bounded: written=%d size=%d exceeded=%v err=%v", written, capture.Len(), capture.exceeded, err)
+	}
+}
+
 func setHostedStarterTestConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv(hostedSecurityAcceptanceEnv, "4488")
 	t.Setenv(hostedWorkflowAcceptanceEnv, "4486")
 	t.Setenv(hostedModuleCapabilitiesEnv, "fincrime,payment_exception,support_refund")
 	t.Setenv(hostedPublicBaseURLEnv, "https://try-staging.getaxonflow.com")
+	t.Setenv(hostedPortalPublicBaseURLEnv, "https://portal.try-staging.getaxonflow.com")
 	t.Setenv("AXONFLOW_HOSTED_INCLUDED_EVENTS", "750")
 	t.Setenv("AXONFLOW_HOSTED_INCLUDED_CASES", "100")
 	t.Setenv("AXONFLOW_HOSTED_INCLUDED_SEATS", "2")
@@ -79,6 +137,7 @@ func TestHostedMonthlyLimitResponseIsStructuredForFailClosedClients(t *testing.T
 
 func TestHostedPaidLaunchReadyRequiresBothAcceptedDependencies(t *testing.T) {
 	t.Setenv(hostedPublicBaseURLEnv, "https://try-staging.getaxonflow.com")
+	t.Setenv(hostedPortalPublicBaseURLEnv, "https://portal.try-staging.getaxonflow.com")
 	t.Setenv(hostedSecurityAcceptanceEnv, "4488")
 	if hostedPaidLaunchReady() {
 		t.Fatal("security acceptance alone must not make the paid workflow launchable")

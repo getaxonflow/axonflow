@@ -5,6 +5,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 
 	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/shared/detectionposture"
@@ -276,6 +278,60 @@ func TestValidateCommunityRegistration_NilDB(t *testing.T) {
 	}
 }
 
+func TestValidateCommunityRegistrationKeepsSeparateLinkedClientsUsable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	legacyHash, _ := bcrypt.GenerateFromPassword([]byte("legacy-secret"), bcrypt.MinCost)
+	secretA, secretB := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	hashA, _ := bcrypt.GenerateFromPassword([]byte(secretA), bcrypt.MinCost)
+	hashB, _ := bcrypt.GenerateFromPassword([]byte(secretB), bcrypt.MinCost)
+	for _, candidate := range []struct{ secret, hash string }{{secretA, string(hashA)}, {secretB, string(hashB)}} {
+		mock.ExpectQuery(`FROM csaas_auth_lookup`).WithArgs("cs_two_clients").WillReturnRows(
+			sqlmock.NewRows([]string{"secret_hash", "expires_at", "disabled_at", "terminated_at", "org_id"}).
+				AddRow(string(legacyHash), time.Now().Add(time.Hour), nil, nil, "cs_two_clients"))
+		mock.ExpectQuery(`FROM csaas_device_auth_lookup`).WithArgs("cs_two_clients", candidate.secret[:8]).WillReturnRows(
+			sqlmock.NewRows([]string{"secret_hash"}).AddRow(candidate.hash))
+		if err := validateCommunityRegistration(context.Background(), db, "cs_two_clients", candidate.secret); err != nil {
+			t.Fatalf("linked client failed authentication: %v", err)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateCommunityRegistrationPaidTenantOutlivesLegacyYear(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	legacyHash, _ := bcrypt.GenerateFromPassword([]byte("legacy-secret"), bcrypt.MinCost)
+	secret := strings.Repeat("c", 64)
+	deviceHash, _ := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.MinCost)
+	for _, paid := range []bool{true, false} {
+		mock.ExpectQuery(`FROM csaas_auth_lookup`).WithArgs("cs_paid_year_two").WillReturnRows(
+			sqlmock.NewRows([]string{"secret_hash", "expires_at", "disabled_at", "terminated_at", "org_id"}).
+				AddRow(string(legacyHash), time.Now().Add(-time.Hour), nil, nil, "cs_paid_year_two"))
+		mock.ExpectQuery(`SELECT csaas_paid_auth_lookup`).WithArgs("cs_paid_year_two").WillReturnRows(
+			sqlmock.NewRows([]string{"paid"}).AddRow(paid))
+		if paid {
+			mock.ExpectQuery(`FROM csaas_device_auth_lookup`).WithArgs("cs_paid_year_two", secret[:8]).WillReturnRows(
+				sqlmock.NewRows([]string{"secret_hash"}).AddRow(string(deviceHash)))
+		}
+		err := validateCommunityRegistration(context.Background(), db, "cs_paid_year_two", secret)
+		if paid && err != nil || !paid && err != ErrRegistrationExpired {
+			t.Fatalf("paid=%v result=%v", paid, err)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnqueueActivityUpdate_NilChannel(t *testing.T) {
 	// Save and restore
 	oldChan := activityUpdateChan
@@ -325,6 +381,28 @@ func TestRegisterEndpoint_POST_NilDB(t *testing.T) {
 	router.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("POST /api/v1/register with nil DB: expected 503, got %d", rr.Code)
+	}
+}
+
+func TestHostedLaunchDisablesAnonymousRegistrationUnlessMigratingLegacyClients(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community-saas")
+	t.Setenv("AXONFLOW_HOSTED_PAID_GATE", "enforce")
+	t.Setenv("AXONFLOW_HOSTED_LEGACY_REGISTRATION", "disabled")
+	router := setupCSAASTestRouter(t)
+	RegisterCommunityRegistrationHandler(router, nil)
+	request := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/register", strings.NewReader(`{"label":"legacy"}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+	if w := request(); w.Code != http.StatusGone {
+		t.Fatalf("anonymous registration after Hosted launch = %d", w.Code)
+	}
+	t.Setenv("AXONFLOW_HOSTED_LEGACY_REGISTRATION", "enabled")
+	if w := request(); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("legacy migration switch did not reach registrar: %d", w.Code)
 	}
 }
 

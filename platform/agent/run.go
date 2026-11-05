@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -168,7 +169,7 @@ func openMigrationDB(dbURL string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(pq.ConnectorWithNoticeHandler(base, func(n *pq.Error) {
+	db := sql.OpenDB(pq.ConnectorWithNoticeHandler(base, func(n *pq.Error) {
 		if n == nil {
 			return
 		}
@@ -186,7 +187,11 @@ func openMigrationDB(dbURL string) (*sql.DB, error) {
 			return
 		}
 		log.Printf("[migration %s] %s", n.Severity, n.Message)
-	})), nil
+	}))
+	// set_config(..., false) is scoped to a PostgreSQL session. The three
+	// migration settings and every migration Exec must use the same connection.
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 // setMigrationSessionVars seeds the Postgres session GUCs that downstream
@@ -207,10 +212,8 @@ func openMigrationDB(dbURL string) (*sql.DB, error) {
 // rationale and the follow-up issue tracking proper dev/prod detection
 // via an app.deployment_kind GUC.
 //
-// Errors are logged but not fatal: the historical inline form treated
-// app.db_password as non-fatal and we preserve that behavior. The
-// migration runner's own per-migration error handling will catch a
-// downstream SQL failure if a session var matters.
+// Errors are logged and returned. RunMigrations refuses to report ready when
+// any required setting failed, even if no pending SQL happened to read it.
 // buildAPICallClientID returns the credential identity that downstream
 // usage_events.client_id rows should carry, per ADR-052 §5 (this is
 // client.ClientID — the api_key_id for API-keyed callers post Fix 4 of
@@ -256,19 +259,27 @@ func stampAuthContext(ctx context.Context, client *Client, kind AuthKind) contex
 	return ctx
 }
 
-func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deploymentKind string) {
+func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deploymentKind string) error {
+	var firstErr error
 	if _, err := db.Exec("SELECT set_config('app.db_password', $1, false)", dbPassword); err != nil {
 		log.Printf("⚠️  Failed to set session variable app.db_password: %v", err)
+		firstErr = fmt.Errorf("set app.db_password: %w", err)
 	} else {
 		log.Println("✅ Set app.db_password session variable for dblink migrations")
 	}
 	if _, err := db.Exec("SELECT set_config('app.deployment_org_id', $1, false)", deploymentOrgID); err != nil {
 		log.Printf("⚠️  Failed to set session variable app.deployment_org_id: %v", err)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("set app.deployment_org_id: %w", err)
+		}
 	} else {
 		log.Printf("✅ Set app.deployment_org_id=%s session variable for migration 094 backfill", deploymentOrgID)
 	}
 	if _, err := db.Exec("SELECT set_config('app.deployment_kind', $1, false)", deploymentKind); err != nil {
 		log.Printf("⚠️  Failed to set session variable app.deployment_kind: %v", err)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("set app.deployment_kind: %w", err)
+		}
 	} else {
 		log.Printf("✅ Set app.deployment_kind=%s session variable for migration 094 prod-safety precondition (#2320)", deploymentKind)
 	}
@@ -279,6 +290,7 @@ func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deployment
 	if os.Getenv("DEPLOYMENT_KIND") == "" {
 		log.Println("⚠️  DEPLOYMENT_KIND env unset — defaulted to 'dev'. On real deployments this should be 'production' (CFN templates set it; if you see this on a non-dev stack, the task definition is drifted).")
 	}
+	return firstErr
 }
 
 // promoteDeploymentOrgTier upserts the deployment org's organizations row to
@@ -707,7 +719,8 @@ func substituteGrafanaPassword(sqlContent string) (string, error) {
 }
 
 // Application readiness state for health checks
-// This allows the health endpoint to respond immediately while initialization happens
+// The health endpoint responds during initialization, but returns HTTP 503 until
+// routes and migrations are ready. ECS and ALB use its HTTP status for readiness.
 var appReady atomic.Bool
 
 // licenseTier is captured at license-validation time and surfaced in
@@ -718,15 +731,16 @@ var appReady atomic.Bool
 // build" (no license required).
 var licenseTier atomic.Value // string
 
-// Global router and server - allows health checks to pass immediately while initialization happens
+// Global router and server - accepts health probes while initialization happens
 var (
 	globalRouter *mux.Router
 	globalCORS   *cors.Cors
 )
 
 // initServerImmediately starts the HTTP server immediately with just /health endpoint.
-// This allows ECS/ALB health checks to pass during the potentially slow initialization
-// phase (database connections, migrations, Redis, etc.). Other routes are added
+// This allows ECS/ALB health checks to observe the potentially slow initialization
+// phase (database connections, migrations, Redis, etc.) without routing traffic
+// to an unready process. Other routes are added
 // after initialization completes. The server NEVER shuts down - eliminating any
 // transition gaps that could cause health check failures.
 // buildAgentHandler assembles the handler the agent actually serves, from the
@@ -776,7 +790,7 @@ func initServerImmediately(port string) {
 	// Register health check immediately - responds even during initialization
 	globalRouter.HandleFunc("/health", readinessAwareHealthHandler).Methods("GET")
 
-	// Start server immediately in goroutine - health checks will pass right away
+	// Start server immediately in a goroutine; probes return 503 until ready.
 	go func() {
 		handler := buildAgentHandler(globalCORS.Handler(globalRouter))
 		log.Printf("🚀 AxonFlow Agent starting on port %s (status: starting)", port)
@@ -787,7 +801,7 @@ func initServerImmediately(port string) {
 
 	// Small delay to ensure server is ready to accept connections
 	time.Sleep(50 * time.Millisecond)
-	log.Println("✅ Health endpoint ready - initialization can proceed safely")
+	log.Println("✅ Health endpoint listening - initialization can proceed safely")
 }
 
 // jsonNotFoundHandler / jsonMethodNotAllowedHandler replace gorilla/mux's
@@ -819,6 +833,11 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	status := "starting"
 	if appReady.Load() {
 		status = "healthy"
+	} else {
+		// /health is the existing ECS container and ALB readiness probe. A
+		// 200 here would let ECS retire the old serving task before migrations
+		// and route registration finish.
+		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	body := map[string]interface{}{
 		"status":               status,
@@ -936,8 +955,8 @@ func currentLicenseTier() string {
 // Refactoring planned for Phase 5 (Open Source Preparation).
 // Current architecture is functional but not ideal for testing.
 func Run() {
-	// Start server IMMEDIATELY with /health endpoint so ECS/ALB health checks pass
-	// during initialization. Other routes are added after initialization completes.
+	// Start the server immediately with /health returning 503 during
+	// initialization. Other routes are added after initialization completes.
 	// The server NEVER shuts down - eliminating transition gaps.
 	port := getEnv("PORT", "8080")
 
@@ -1107,7 +1126,7 @@ func Run() {
 		if err != nil {
 			log.Fatalf("❌ Cannot determine which database migrations to apply: %v", err)
 		} else if len(migrations) == 0 {
-			log.Println("ℹ️  No migration files found")
+			log.Fatalf("❌ No migration files found at %s; refusing to start with an unverified schema", migrationsPath)
 		} else {
 			// Validate migration dependencies before running
 			if err := validateMigrationDependencies(migrations); err != nil {
@@ -1830,6 +1849,7 @@ func Run() {
 	// event lands as a canonical audit_logs row (redacted at the collector, signed
 	// into decision_chain); it is NOT a parallel store.
 	registerCoworkOTELIngest(globalRouter)
+	registerAgentCapabilities(globalRouter)
 
 	// Start HITL expiration background job (1-hour ticker).
 	// Enterprise: expires stale pending approval requests + dispatches the
@@ -2152,6 +2172,49 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// boundedRequestCapture retains only enough bytes to reconstruct a request
+// eligible for Hosted metering. TeeReader must still report the full write so
+// non-Hosted JSON decoding keeps its prior behavior for larger requests.
+type boundedRequestCapture struct {
+	bytes.Buffer
+	exceeded bool
+}
+
+func (capture *boundedRequestCapture) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := hostedMeteringBodyLimit + 1 - capture.Len()
+	if len(p) > remaining {
+		capture.exceeded = true
+		p = p[:remaining]
+	}
+	_, err := capture.Buffer.Write(p)
+	return written, err
+}
+
+type decodedRequestBody struct {
+	io.Reader
+	io.Closer
+	captureExceeded bool
+}
+
+// decodeClientRequestPreservingBody keeps the exact bounded wire body available
+// to Authenticate, which fingerprints paid Hosted requests after this decode.
+func decodeClientRequestPreservingBody(r *http.Request, req *ClientRequest) error {
+	original := r.Body
+	var capture boundedRequestCapture
+	if err := json.NewDecoder(io.TeeReader(original, &capture)).Decode(req); err != nil {
+		return err
+	}
+	if capture.exceeded {
+		// The captured prefix is incomplete. Hosted metering must reject it;
+		// other callers retain the preexisting post-decode body position.
+		r.Body = &decodedRequestBody{Reader: original, Closer: original, captureExceeded: true}
+		return nil
+	}
+	r.Body = &decodedRequestBody{Reader: io.MultiReader(bytes.NewReader(capture.Bytes()), original), Closer: original}
+	return nil
+}
+
 func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	atomic.AddInt64(&agentMetrics.totalRequests, 1)
@@ -2164,7 +2227,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		r.Header.Get("Content-Type"))
 
 	var req ClientRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeClientRequestPreservingBody(r, &req); err != nil {
 		atomic.AddInt64(&agentMetrics.failedRequests, 1)
 		log.Printf("❌ Request body parse failed: %v", err)
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
@@ -2180,6 +2243,17 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	auth, authErr := Authenticate(r, &AuthHints{ClientID: req.ClientID})
 	if authErr != nil {
+		// /api/request authenticates in this handler rather than through
+		// apiAuthMiddleware. Keep its Hosted refusal contract identical to the
+		// other governed routes so clients receive the checkout or limit action.
+		if authErr.Code == "hosted_payment_required" {
+			writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+			return
+		}
+		if authErr.Code == "hosted_monthly_limit_reached" {
+			writeHostedMonthlyLimitReached(w)
+			return
+		}
 		// #4276: the licence ceiling refusing the credential's service
 		// principal, in the one shape both tier-limit branches answer.
 		if isTierLimitAuthError(authErr) {

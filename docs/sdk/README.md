@@ -2,7 +2,7 @@
 
 **Last Updated:** October 2026
 
-**SDK Versions:** v9.5.0 (Go / Python / TypeScript / Java) — v0.12.0 preview (Rust) | **Platform Version:** v11.3.7
+**SDK Versions:** v9.5.0 (Go / Python / TypeScript / Java) — v0.12.0 preview (Rust) | **Platform Version:** v11.4.0
 
 AxonFlow provides official SDKs in five languages for integrating LLM governance into your applications. The four established SDKs (Go / Python / TypeScript / Java) offer identical feature coverage; the Rust SDK is in preview with a Phase-0 baseline (auth + proxy + audit + basic MAP + basic MCP) — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix.
 
@@ -23,6 +23,8 @@ All SDKs follow the same API design principles: type-safe clients, automatic ret
 ---
 
 ## Quick Start
+
+For Hosted Starter, verify your email and complete Checkout at the [Hosted Portal](https://portal.try.getaxonflow.com/hosted/start). Then use the [Hosted API client quickstart](hosted-api-quickstart.md) to link a separate revocable credential without copying a tenant ID or secret from the browser. Existing self-hosted SDK setup below is unchanged.
 
 ### Go
 

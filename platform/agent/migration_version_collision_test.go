@@ -53,7 +53,10 @@ func TestGetAppliedMigrations_ReadsCompositeKey(t *testing.T) {
 			AddRow("025", "hitl_oversight_queue").
 			AddRow("042", "unified_execution_history"))
 
-	got := getAppliedMigrations(db)
+	got, err := getAppliedMigrations(db)
+	if err != nil {
+		t.Fatalf("getAppliedMigrations: %v", err)
+	}
 
 	wantKeys := []string{
 		migrationKey("025", "decision_chain"),
@@ -80,11 +83,9 @@ func TestGetAppliedMigrations_ReadsCompositeKey(t *testing.T) {
 	}
 }
 
-// TestGetAppliedMigrations_TolerantOfQueryFailure — if the table is
-// missing or unreachable, we return an empty map so the runner re-runs
-// every migration (the IF NOT EXISTS guards in each SQL file make that
-// safe). Asserts we don't panic and the map is empty + usable.
-func TestGetAppliedMigrations_TolerantOfQueryFailure(t *testing.T) {
+// TestGetAppliedMigrations_RefusesQueryFailure prevents a failed ledger read
+// from being mistaken for a fresh database with zero applied migrations.
+func TestGetAppliedMigrations_RefusesQueryFailure(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
@@ -94,12 +95,9 @@ func TestGetAppliedMigrations_TolerantOfQueryFailure(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT version, name`)).
 		WillReturnError(errors.New("relation \"schema_migrations\" does not exist"))
 
-	got := getAppliedMigrations(db)
-	if got == nil {
-		t.Fatalf("expected non-nil map on query error, got nil")
-	}
-	if len(got) != 0 {
-		t.Errorf("expected empty map on query error, got %d entries", len(got))
+	got, err := getAppliedMigrations(db)
+	if err == nil || got != nil {
+		t.Fatalf("expected an error and no applied map, got map=%v err=%v", got, err)
 	}
 }
 

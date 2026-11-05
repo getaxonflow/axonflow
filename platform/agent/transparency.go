@@ -114,8 +114,9 @@ const (
 	defaultVersion = "1.0.0"
 )
 
-// versionRegex validates version string format (semver)
-var versionRegex = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$`)
+// versionRegex accepts the release train's semver build metadata (for example
+// 11.3.7+3b232c6b5a), which is baked into shipped Agent binaries.
+var versionRegex = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.-]+)?$`)
 
 // TransparencyContext holds all transparency-related information for a request.
 // This struct is populated throughout request processing and used to set headers.

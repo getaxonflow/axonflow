@@ -532,19 +532,20 @@ function emit(   state) {
     printf "SURFACE\t%s\t%s/%s\t%s\tBADVALUE: %s\n", file, res, cname, ckind, cmode_state
   }
 }
-function newcontainer() { emit(); cname = "?"; ckind = ""; cmode_state = ""; pending_mode = 0 }
-function flushres() { emit(); res = ""; istaskdef = 0; cname = ""; ckind = ""; cmode_state = ""; pending_mode = 0; cd_indent = -1; item_indent = -1 }
+function newcontainer() { emit(); cname = "?"; ckind = ""; cmode_state = ""; pending_mode = 0; image_indent = -1 }
+function flushres() { emit(); res = ""; istaskdef = 0; cname = ""; ckind = ""; cmode_state = ""; pending_mode = 0; cd_indent = -1; item_indent = -1; image_indent = -1 }
 function unquote(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); gsub(/^["'"'"']|["'"'"']$/, "", v); return v }
 BEGIN {
   attributed = 0; declares = 0; bad = 0
   n = split(modes, modelist, ",")
   for (i = 1; i <= n; i++) recognised[modelist[i]] = 1
   inparams = 0; param = ""; collecting_allowed = 0
-  cd_indent = -1; item_indent = -1
+  cd_indent = -1; item_indent = -1; image_indent = -1
 }
 {
   line = $0
-  if (line ~ /^[ ]*Image:.*axonflow-(agent|orchestrator)/) declares = 1
+  if (line ~ /^[ ]*Image:.*axonflow-(agent|orchestrator)/ ||
+      line ~ /^[ ]*-[[:space:]]*!Sub.*axonflow-(agent|orchestrator)/) declares = 1
   if (line ~ /^[ ]*\t/ || line ~ /^\t/) { printf "UNPARSEABLE\t%s\t\ttab character in indentation\n", file; bad = 1 }
   if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) next
 
@@ -580,6 +581,7 @@ BEGIN {
   # "- Name: x" too; keying on that string alone made every env var start a new
   # container and wiped the verdict of the real one.
   ind = indentof(line)
+  if (image_indent >= 0 && ind <= image_indent) image_indent = -1
   if (cd_indent >= 0 && ind <= cd_indent && line !~ /^[[:space:]]*-/) cd_indent = -1
   if (line ~ /^[[:space:]]*ContainerDefinitions:[[:space:]]*$/) { cd_indent = ind; item_indent = -1; next }
   if (cd_indent >= 0 && ind > cd_indent && line ~ /^[[:space:]]*-[[:space:]]/) {
@@ -591,8 +593,11 @@ BEGIN {
       if (v ~ /^[[:space:]]*-[[:space:]]*Name:/) { sub(/^[[:space:]]*-[[:space:]]*Name:[[:space:]]*/, "", v); cname = unquote(v) }
     }
   }
-  if (line ~ /Image:.*axonflow-agent/) ckind = "agent"
-  if (line ~ /Image:.*axonflow-orchestrator/) ckind = "orchestrator"
+  if (line ~ /^[[:space:]]*Image:/) image_indent = ind
+  if (image_indent >= 0 && (line ~ /Image:.*axonflow-agent/ ||
+                            line ~ /^[[:space:]]*-[[:space:]]*!Sub.*axonflow-agent/)) ckind = "agent"
+  if (image_indent >= 0 && (line ~ /Image:.*axonflow-orchestrator/ ||
+                            line ~ /^[[:space:]]*-[[:space:]]*!Sub.*axonflow-orchestrator/)) ckind = "orchestrator"
   # ANCHORED environment entry (#3170): "- Name: DEPLOYMENT_MODE" then "Value:".
   if (line ~ /^[[:space:]]*-?[[:space:]]*Name:[[:space:]]*"?DEPLOYMENT_MODE"?[[:space:]]*$/) { pending_mode = 1; next }
   if (pending_mode) {

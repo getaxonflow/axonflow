@@ -38,6 +38,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -50,7 +51,7 @@ import (
 
 	"axonflow/platform/testutil"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // Every RECOGNISED DEPLOYMENT_MODE spelling — canonical names plus the
@@ -95,6 +96,11 @@ func TestMigrationChainAppliesCleanly_RealPostgres(t *testing.T) {
 			t.Setenv("DEPLOYMENT_MODE", mode)
 
 			applyChain(t, pc.DB, migrationsPath)
+			if mode == "community-saas" {
+				if err := verifyHostedCustomerDataRLS(context.Background(), pc.DB); err != nil {
+					t.Fatalf("Community SaaS migrations must pass the live Hosted RLS boot verifier: %v", err)
+				}
+			}
 			seeded[mode] = seededPolicyIDs(t, pc.DB)
 		})
 	}
@@ -343,7 +349,10 @@ func applyChainUpTo(t *testing.T, db *sql.DB, migrationsPath string, stopBefore 
 	// a naive psql loop would not be a faithful gate.
 	setMigrationSessionVars(db, "test-db-password", getDeploymentOrgID(), getDeploymentKind())
 
-	applied := getAppliedMigrations(db)
+	applied, err := getAppliedMigrations(db)
+	if err != nil {
+		t.Fatalf("getAppliedMigrations: %v", err)
+	}
 
 	var ran, skipped int
 	for _, m := range migrations {
@@ -588,6 +597,7 @@ func TestMigrationChainReplaysWithFunctionsPresent_RealPostgres(t *testing.T) {
 
 	// Full chain first, so EVERY later object exists during the replay.
 	applyChain(t, pc.DB, migrationsPath)
+	assertOnceOnlyCapabilityIndexesRejectReplay(t, pc.DB, migrationsPath)
 	// Then the legacy shapes. On THIS leg the chain has already run, so the
 	// org-creation trigger writes through 150's canonical-storing choke point
 	// and every seeded grant lands already-canonical — i.e. the seed alone
@@ -747,8 +757,12 @@ func deCanonicalizeOwnerGrants(t *testing.T, db *sql.DB) int {
 	return divergent
 }
 
-// ownerChainMigrationFiles returns the core UP migrations with version >= from,
-// in the order the runner would apply them.
+// ownerChainMigrationFiles returns the repeatable core UP migrations with
+// version >= from, in the order the runner would apply them. The two online
+// capability index builds are intentionally once-only: their raw SQL must
+// reject an existing name, including an INVALID index after a failed build.
+// The runner skips applied files; assertOnceOnlyCapabilityIndexesRejectReplay
+// proves that this exclusion cannot mask a changed duplicate-index contract.
 func ownerChainMigrationFiles(t *testing.T, migrationsPath string, from int) []string {
 	t.Helper()
 	migs, err := collectMigrations(migrationsPath)
@@ -761,11 +775,37 @@ func ownerChainMigrationFiles(t *testing.T, migrationsPath string, from int) []s
 			continue
 		}
 		name := filepath.Base(m.Path)
+		if name == "193_capability_usage_unique_index.sql" || name == "194_capability_usage_read_index.sql" {
+			continue
+		}
 		if migrationVersionNumber(t, name, m.Version) >= from {
 			out = append(out, name)
 		}
 	}
 	return out
+}
+
+func assertOnceOnlyCapabilityIndexesRejectReplay(t *testing.T, db *sql.DB, migrationsPath string) {
+	t.Helper()
+	for _, spec := range []struct{ migration, index string }{
+		{"193_capability_usage_unique_index.sql", "ux_usage_events_capability_key"},
+		{"194_capability_usage_read_index.sql", "idx_usage_events_capability_tenant_window"},
+	} {
+		var valid, ready bool
+		if err := db.QueryRow(`SELECT i.indisvalid, i.indisready FROM pg_class c
+			JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1`, spec.index).Scan(&valid, &ready); err != nil || !valid || !ready {
+			t.Fatalf("once-only index %s is not ready and valid after the full chain: valid=%t ready=%t err=%v", spec.index, valid, ready, err)
+		}
+		body, err := os.ReadFile(filepath.Join(migrationsPath, "core", spec.migration))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec(string(body))
+		pgErr, ok := err.(*pq.Error)
+		if !ok || pgErr.Code != "42P07" {
+			t.Fatalf("raw replay of once-only %s must fail on an existing index name (42P07), got %v", spec.migration, err)
+		}
+	}
 }
 
 // #3003/#3015 BLOCKER 3: the contact_email owner-drift trigger must not exist
@@ -787,6 +827,7 @@ func TestContactEmailDriftTriggerStaysDropped_RealPostgres(t *testing.T) {
 	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	applyChain(t, pc.DB, migrationsPath)
+	assertOnceOnlyCapabilityIndexesRejectReplay(t, pc.DB, migrationsPath)
 
 	assertAbsent := func(stage string) {
 		t.Helper()

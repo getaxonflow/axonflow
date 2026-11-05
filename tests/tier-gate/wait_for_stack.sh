@@ -4,14 +4,12 @@
 #
 # Used by the tier-gate workflow after `docker compose up -d`.
 #
-# Why we check the response body, not just HTTP 200:
+# Why we check the response body as well as HTTP status:
 #   `platform/agent/run.go:initServerImmediately` registers /health BEFORE
-#   the rest of the agent's routes (so ECS/ALB health probes pass during the
-#   slow init). /health returns HTTP 200 with `{"status":"starting"}` until
-#   the body of `run.go` finishes and sets `appReady=true`, after which it
-#   returns `{"status":"healthy"}`. A raw curl pass on HTTP 200 was racing
-#   the route-registration loop in enterprise mode (slower init) and caused
-#   the tier-gate runner to see 404 for not-yet-registered routes.
+#   the rest of the agent's routes. It now returns HTTP 503 with
+#   `{"status":"starting"}` until `appReady=true`, then HTTP 200 with
+#   `{"status":"healthy"}`. The body assertion preserves that explicit
+#   contract and catches future status/body disagreement.
 #   We now require the body to contain `"status":"healthy"` before
 #   declaring readiness.
 #
