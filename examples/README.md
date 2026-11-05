@@ -134,15 +134,15 @@ rule applied at every auth boundary.
 
 ## SDK Versions
 
-All examples use the latest SDK versions:
+These examples target the current published SDKs. Python and TypeScript use compatible 9.x lower bounds; Go, Java, and Rust pin the release below:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| Python | `axonflow` | >=9.0.0 |
-| TypeScript | `@axonflow/sdk` | >=9.0.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v9` | v9.4.0 |
-| Java | `com.getaxonflow:axonflow-sdk` | 9.4.0 |
-| Rust _(preview)_ | `axonflow-sdk-rust` | 0.11.0 |
+| Python | `axonflow` | >=9.0.0 (current: 9.5.1) |
+| TypeScript | `@axonflow/sdk` | ^9.0.0 (current: 9.5.1) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v9` | v9.5.1 |
+| Java | `com.getaxonflow:axonflow-sdk` | 9.5.1 |
+| Rust _(preview)_ | `axonflow-sdk-rust` | 0.12.1 |
 
 ## Environment Configuration
 

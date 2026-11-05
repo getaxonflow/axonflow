@@ -17,8 +17,8 @@ func TestPinnedToReleaseTrain(t *testing.T) {
 		"java": "8.0.0", "rust": "0.7.0",
 	}
 	wantRecommended := map[string]string{
-		"python": "9.5.0", "typescript": "9.5.0", "go": "9.5.0",
-		"java": "9.5.0", "rust": "0.12.0",
+		"python": "9.5.1", "typescript": "9.5.1", "go": "9.5.1",
+		"java": "9.5.1", "rust": "0.12.1",
 	}
 	for id, want := range wantMin {
 		if got := MinVersions()[id]; got != want {

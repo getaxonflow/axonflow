@@ -10,12 +10,13 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
-## [11.4.0] - 2026-11-03: Hosted acquisition and bounded outcome foundations
+## [11.4.0] - 2026-11-05: Hosted acquisition and bounded outcome foundations
 
 > **Platform release with new capabilities kept dark or sandbox-only.** The
 > website-first Hosted purchase path and customer-neutral action contracts are
-> included, but this release does not activate a production provider action,
-> publish a client, or change a customer's execution authority.
+> included, but this release does not activate a production provider action or
+> change a customer's execution authority. Compatible client patches ship in
+> the coordinated release train.
 
 ### Community
 
@@ -83,10 +84,12 @@ community mirror, **Enterprise** changes are EE-only.
   tables and columns enforce tenant RLS where applicable. Retain the prior
   database snapshot as the rollback anchor; image rollback does not reverse
   schema migrations.
-- No SDK, plugin, or integration-package version changes are part of this
-  platform train. Existing client minimum floors and recommended versions stay
-  at the last verified public artifacts. New action authority remains closed
-  pending customer-specific evidence and a separate activation gate.
+- Keep existing client minimum floors. Recommend the verified public 9.5.1
+  Python, Go, TypeScript and Java SDKs, Rust 0.12.1, OpenClaw 2.10.3,
+  Claude Code 1.14.0, Cursor 1.10.0 and Codex 1.10.0. These client patch
+  releases carry Hosted policy-verdict and packaging fixes; they do not enable
+  new action authority, which remains closed pending customer-specific
+  evidence and a separate activation gate.
 
 ## [11.3.7] - 2026-10-29: Published client compatibility reconciliation
 

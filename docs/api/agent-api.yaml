@@ -6535,11 +6535,11 @@ components:
             type: string
           description: Per-language SDK version this platform was tested against.
           example:
-            python: "9.5.0"
-            typescript: "9.5.0"
-            go: "9.5.0"
-            java: "9.5.0"
-            rust: "0.12.0"
+            python: "9.5.1"
+            typescript: "9.5.1"
+            go: "9.5.1"
+            java: "9.5.1"
+            rust: "0.12.1"
 
     PluginCompatInfo:
       type: object
@@ -6578,10 +6578,10 @@ components:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.10.1"
-            claude-code: "1.13.0"
-            cursor: "1.9.0"
-            codex: "1.9.0"
+            openclaw: "2.10.3"
+            claude-code: "1.14.0"
+            cursor: "1.10.0"
+            codex: "1.10.0"
             claude-desktop: "0.4.1"
             n8n: "1.2.1"
             google-adk: "1.4.0"
