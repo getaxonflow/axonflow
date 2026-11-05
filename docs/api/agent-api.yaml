@@ -2410,7 +2410,7 @@ paths:
                   plan: {type: object, additionalProperties: true}
         '401': {description: Missing or invalid tenant credentials}
         '409': {description: Tenant already has an active entitlement or recent pending checkout}
-        '503': {description: Paid launch, entitlement storage, or billing configuration is unavailable}
+        '503': {description: "Paid launch, entitlement storage, or billing configuration is unavailable"}
 
   /api/v1/billing/status:
     post:
@@ -7869,7 +7869,8 @@ components:
         - expires_at
       properties:
         pending_approval:
-          $ref: '#/components/schemas/PendingApproval'
+          allOf:
+            - $ref: '#/components/schemas/PendingApproval'
           description: Set when the call is held for a person's approval (#4370); the verdict is `needs_approval` and nothing may run.
         approval_id:
           type: string
@@ -9322,7 +9323,8 @@ components:
       type: object
       properties:
         pending_approval:
-          $ref: '#/components/schemas/PendingApproval'
+          allOf:
+            - $ref: '#/components/schemas/PendingApproval'
           description: Set when the call is held for a person's approval (#4370); `allowed` is false and nothing ran.
         approval_id:
           type: string
