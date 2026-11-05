@@ -702,6 +702,29 @@ func TestGetPlatformVersionBakedWinsOverEnv(t *testing.T) {
 	}
 }
 
+func TestGetPlatformVersionBakedBuildMetadata(t *testing.T) {
+	previous := version.Version
+	t.Cleanup(func() { version.Version = previous })
+	t.Setenv("AXONFLOW_VERSION", "9.9.9-spoofed")
+
+	for _, tc := range []struct {
+		baked string
+		want  string
+	}{
+		{baked: "11.3.7+3b232c6b5a", want: "11.3.7+3b232c6b5a"},
+		{baked: "11.3.7-rc.1+3b232c6b5a", want: "11.3.7-rc.1+3b232c6b5a"},
+		{baked: "11.3.7+", want: defaultVersion},
+		{baked: "11.3.7+hash/unsafe", want: defaultVersion},
+	} {
+		t.Run(tc.baked, func(t *testing.T) {
+			version.Version = tc.baked
+			if got := GetPlatformVersion(); got != tc.want {
+				t.Errorf("GetPlatformVersion() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestGetPlatformVersionEnvFallbackWhenUnbaked covers the dev path: with no
 // baked version, the env var is used (existing behaviour preserved).
 func TestGetPlatformVersionEnvFallbackWhenUnbaked(t *testing.T) {

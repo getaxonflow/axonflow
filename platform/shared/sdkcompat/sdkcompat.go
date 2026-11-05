@@ -76,6 +76,9 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 11.4.0 train recommends the published 9.5.1 stable SDKs and
+//     0.12.1 Rust patch, which carry the Hosted policy verdict fixes.
+//
 //   - the 11.3.0 train keeps the 9.5.0 stable-SDK and 0.12.0 Rust
 //     recommendations. Existing SDKs fail closed on Hosted payment-required
 //     responses; OpenClaw 2.10.0 adds the coordinated Checkout experience.
@@ -122,11 +125,11 @@ var minVersion = map[string]string{
 // Nothing in this repository validates a recommended value against the registry
 // it names, so when an SDK publishes, move this map in the same round.
 var recommendedVersion = map[string]string{
-	"python":     "9.5.0",
-	"typescript": "9.5.0",
-	"go":         "9.5.0",
-	"java":       "9.5.0",
-	"rust":       "0.12.0",
+	"python":     "9.5.1",
+	"typescript": "9.5.1",
+	"go":         "9.5.1",
+	"java":       "9.5.1",
+	"rust":       "0.12.1",
 }
 
 // MinVersions returns the floor map.

@@ -9,10 +9,10 @@
 #
 # The portal cannot report healthy until the agent has applied every migration:
 # its owner bootstrap calls ensure_org_owner_assignment(), created by
-# core/149-150. It knows that and retries 24 x 5s (#3004). Its depends_on is
-# axonflow-agent:service_healthy, but the agent serves /health BEFORE its
-# migrations finish (ee/platform/customer-portal/main.go:1127-1145 records
-# exactly that), so the agent going healthy is not a signal that they are done.
+# core/149-150. It knows that and retries 24 x 5s (#3004). At the time of
+# this failure, the agent's /health returned 200 before migrations finished.
+# The current readiness gate waits for migrations, but this portal budget
+# preserves room for its own bootstrap on loaded hosts.
 #
 # With start_period 30s + interval 10s + retries 3 the container was declared
 # unhealthy at ~60s and compose's service_healthy dependency failed the stack.
@@ -40,9 +40,8 @@
 #
 # EXCLUDED, DELIBERATELY: axonflow-customer-portal-ui. Compose starts it only
 # after the portal is healthy, so the migrations are already applied by the
-# time its own window opens; its 30s is correct. And the agent/orchestrator,
-# which go healthy early BY DESIGN - that is the premise of this bug, not a
-# victim of it.
+# time its own window opens; its 30s is correct. The agent and orchestrator
+# have separate startup windows and are outside this portal check.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
@@ -92,8 +91,8 @@ root = sys.argv[1]
 floor_count = int(sys.argv[2])
 
 # The service that must wait: the portal itself. NOT the portal-UI, which only
-# starts once the portal is healthy, and not the agent, which is healthy early
-# by design.
+# starts once the portal is healthy, and not the agent, which has a separate
+# startup window.
 def is_portal(name):
     return 'portal' in name and 'portal-ui' not in name and not name.endswith('-ui')
 

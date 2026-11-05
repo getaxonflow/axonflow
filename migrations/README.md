@@ -77,6 +77,39 @@ for manual rollback during incident response. Keep them idempotent (DROP
 ... IF EXISTS, ALTER ... DROP NOT NULL guarded by an information_schema
 probe, etc.).
 
+## Capability usage rollout (core/192–194)
+
+Core/192 adds nullable columns, a `NOT VALID` constraint that checks new writes,
+RLS policies, and the billing rollup filter. It sets a 5-second local lock
+timeout so boot fails and can be retried if another transaction blocks the
+brief metadata lock. Core/193 builds the unique replay index concurrently in
+its own migration file: the agent executes each file with one `db.Exec`, and
+PostgreSQL forbids a concurrent index build inside the multi-statement
+transaction used by core/192. Keep capability writers disabled until both
+migrations are recorded as successful.
+
+If a concurrent build fails, PostgreSQL can leave an invalid index. The build
+can also succeed just before the agent crashes, leaving a valid index without
+its `schema_migrations` marker. Core/193 intentionally has no `IF NOT EXISTS`,
+so either replay fails instead of recording a false success. Inspect
+`pg_index.indisvalid` for `ux_usage_events_capability_key`; resolve any failed
+build's original cause, run
+`DROP INDEX CONCURRENTLY IF EXISTS ux_usage_events_capability_key` as a single
+statement outside a transaction, and retry the migration. This sequence is
+tested for both invalid and valid unmarked indexes. Keep capability writers
+disabled while the unique index is absent, and schedule this work when the
+database has headroom for an online index scan.
+
+Core/194 adds the Portal's tenant-window read index in a separate, single-
+statement concurrent migration. It has no `IF NOT EXISTS`: both a failed build
+that leaves an invalid index and a completed build without a migration marker
+must fail on retry. Inspect `pg_index.indisvalid` for
+`idx_usage_events_capability_tenant_window`, resolve any failed build's cause,
+run `DROP INDEX CONCURRENTLY IF EXISTS idx_usage_events_capability_tenant_window`
+outside a transaction, then retry core/194. The real PostgreSQL test covers
+both recovery states. This index improves reads; the org and tenant query
+predicates and RLS enforce isolation.
+
 ## The historical same-version-different-name pairs
 
 `migrations/core/` has four pairs from before the composite-key fix:

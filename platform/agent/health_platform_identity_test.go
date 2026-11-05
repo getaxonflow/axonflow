@@ -17,6 +17,9 @@ import (
 // getHealth drives the real handler and returns the decoded body.
 func getHealth(t *testing.T) map[string]any {
 	t.Helper()
+	previousReady := appReady.Load()
+	appReady.Store(true)
+	t.Cleanup(func() { appReady.Store(previousReady) })
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	readinessAwareHealthHandler(w, req)

@@ -15,7 +15,7 @@ import (
 // shared Community SaaS database. Boot refuses traffic if a migration drifted,
 // a policy was dropped, or FORCE RLS was relaxed on any table in this set.
 var hostedCustomerDataTables = []string{
-	"hosted_subscriptions", "hosted_governance_events",
+	"hosted_subscriptions", "hosted_governance_events", "hosted_checkout_attempts",
 	"audit_logs", "admin_audit_log", "llm_call_audits",
 	"plans", "plan_versions", "workflows", "workflow_steps", "workflow_checkpoints",
 	"evidence_exports", "plugin_user_licenses", "community_saas_daily_usage",

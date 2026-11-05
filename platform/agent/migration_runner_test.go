@@ -6,8 +6,106 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func expectMigrationBootstrap(mock sqlmock.Sqlmock, failSession bool) {
+	mock.ExpectQuery("SELECT EXISTS").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DO").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DO").WillReturnResult(sqlmock.NewResult(0, 0))
+	for i := 0; i < 3; i++ {
+		if failSession && i == 0 {
+			mock.ExpectExec("SELECT set_config").WillReturnError(errors.New("session config refused"))
+		} else {
+			mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
+		}
+	}
+}
+
+func TestOpenMigrationDBPinsSessionForMigrationSettings(t *testing.T) {
+	db, err := openMigrationDB("postgres://agent:example@127.0.0.1:5432/axonflow?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("migration pool max open connections = %d, want 1 for session-scoped set_config", got)
+	}
+}
+
+func TestRunMigrationsRequiresVerifiedLedgerAndFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ledgerInitErr bool
+		sessionErr    bool
+		ledgerErr     bool
+		missingFile   bool
+		recordErr     bool
+		wantStage     migrationStage
+		wantApplied   int
+	}{
+		{name: "ledger initialization failure", ledgerInitErr: true, wantStage: stageLedgerInit},
+		{name: "session variable failure", sessionErr: true, wantStage: stageSessionVars},
+		{name: "ledger query failure", ledgerErr: true, wantStage: stageAppliedRead},
+		{name: "unreadable selected file", missingFile: true, wantStage: stageFileRead},
+		{name: "success row insert failure", recordErr: true, wantStage: stageRecordSuccess},
+		{name: "verified success", wantApplied: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if tc.ledgerInitErr {
+				mock.ExpectQuery("SELECT EXISTS").WillReturnError(errors.New("ledger schema unavailable"))
+			} else {
+				expectMigrationBootstrap(mock, tc.sessionErr)
+			}
+			if tc.ledgerErr {
+				mock.ExpectQuery("SELECT version, name").WillReturnError(errors.New("ledger unavailable"))
+			} else if !tc.ledgerInitErr && !tc.sessionErr {
+				mock.ExpectQuery("SELECT version, name").WillReturnRows(sqlmock.NewRows([]string{"version", "name"}))
+			}
+
+			path := filepath.Join(t.TempDir(), "991_test.sql")
+			if !tc.missingFile {
+				if err := os.WriteFile(path, []byte("SELECT 1"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.ledgerInitErr && !tc.sessionErr && !tc.ledgerErr && !tc.missingFile {
+				mock.ExpectExec("SELECT 1").WillReturnResult(sqlmock.NewResult(0, 0))
+				if tc.recordErr {
+					mock.ExpectExec("INSERT INTO schema_migrations").WillReturnError(errors.New("ledger write refused"))
+				} else {
+					mock.ExpectExec("INSERT INTO schema_migrations").WillReturnResult(sqlmock.NewResult(0, 1))
+					mock.ExpectQuery("SELECT to_regprocedure").WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+				}
+			}
+
+			applied, skipped, err := RunMigrations(db, []MigrationFile{{Path: path, Category: "core", Version: "991", Name: "test"}}, MigrationSessionVars{})
+			if tc.wantStage == 0 {
+				if err != nil || applied != tc.wantApplied || skipped != 0 {
+					t.Fatalf("want verified success: applied=%d skipped=%d err=%v", applied, skipped, err)
+				}
+			} else {
+				var me *MigrationError
+				if !errors.As(err, &me) || me.stage != tc.wantStage || applied != 0 || skipped != 0 {
+					t.Fatalf("want stage %d before readiness: applied=%d skipped=%d err=%v", tc.wantStage, applied, skipped, err)
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 // TestTheBootPathKeepsEveryMigrationFatalMessageByteForByte pins #3894 clause
 // (a)'s extraction: the boot migration loop moved from run.go into

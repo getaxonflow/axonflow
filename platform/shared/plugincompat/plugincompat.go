@@ -93,6 +93,10 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the v11.4.0 train recommends the published OpenClaw 2.10.3,
+//     Claude Code 1.14.0, Cursor 1.10.0, and Codex 1.10.0 releases.
+//     No minimum moves: these are compatible hardening patches.
+//
 //   - the v11.3.7 compatibility reconciliation moves openclaw 2.10.0 ->
 //     2.10.1, claude-desktop 0.4.0 -> 0.4.1, and google-adk 1.3.1 -> 1.4.0.
 //     Those public releases completed after the v11.3.6 platform tag. Their
@@ -172,10 +176,10 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.10.1",
-	"claude-code":    "1.13.0",
-	"cursor":         "1.9.0",
-	"codex":          "1.9.0",
+	"openclaw":       "2.10.3",
+	"claude-code":    "1.14.0",
+	"cursor":         "1.10.0",
+	"codex":          "1.10.0",
 	"claude-desktop": "0.4.1",
 	"n8n":            "1.2.1",
 	"google-adk":     "1.4.0",

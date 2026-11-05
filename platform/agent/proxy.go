@@ -101,6 +101,12 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 	if auth == nil || auth.Kind != AuthKindCommunitySaaS {
 		return false
 	}
+	// Paid Hosted governance requests are admitted by the tenant-locked
+	// event ledger before Authenticate returns. A second check here would
+	// count billing reads and could refuse after monthly usage was committed.
+	if auth.Client != nil && auth.Client.HostedPaid {
+		return false
+	}
 
 	perMinute := minuteLimitForTenant(auth.Client)
 	if count := rateLimitCount(auth.TenantID); count > perMinute {
@@ -118,12 +124,6 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 		})
 		_, _ = w.Write(errBody)
 		return true
-	}
-	// Paid-first hosted tenants use the idempotent monthly governed-event
-	// ledger. Keep the per-minute safety cap above, but do not also apply the
-	// superseded Free/Pro daily quota from the prepaid plugin plan.
-	if auth.Client != nil && auth.Client.HostedPaid {
-		return false
 	}
 
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)

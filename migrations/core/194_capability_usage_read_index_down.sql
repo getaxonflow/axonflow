@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_usage_events_capability_tenant_window;

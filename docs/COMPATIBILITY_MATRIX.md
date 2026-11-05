@@ -2,16 +2,19 @@
 
 This document maps platform versions to minimum SDK versions and the features each release introduced.
 
-**Current (platform 11.3.4):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.0** (Go/Python/TypeScript/Java; Rust **0.12.0**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor and recommended versions are unchanged. Hosted payment-required responses remain fail-closed for existing SDKs; OpenClaw 2.10.1 provides the coordinated one-action Checkout flow.
+**Current (platform 11.4.0):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.1** (Go/Python/TypeScript/Java; Rust **0.12.1**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor is unchanged. Hosted payment-required responses remain fail-closed for existing SDKs; OpenClaw 2.10.3 provides the coordinated one-action Checkout flow.
+
+**LiteLLM current patch:** `axonflow-litellm` 1.1.1 fails closed on a Hosted monthly-cap 429 before any provider call in wrapper mode. Ordinary rate-limit 429s and an unreachable platform retain the documented availability fallback. The 1.1.0 rows below are historical v11.0.0 compatibility measurements, not a claim about 1.1.1.
 
 **The 10.0.0 platform major does NOT move the SDK floor.** The Go, Python, TypeScript and Java floor stays at 8.0.0, as it has continuously since v7.9.0 and across the v8.0.0 and v9.0.0 platform majors before it. The Rust floor stays at 0.7.0, which is the only value it has ever held: Rust was absent from `MinSDKVersion` at v7.9.0, v8.0.0, v9.0.0 and v9.6.1, and joined the compatibility maps at v9.7.0 (see the v9.7.0 row below). A platform major and an SDK floor are independent axes on this platform: the floor moves only when the platform stops speaking a wire contract an older SDK depends on, which 10.0.0 does not do.
 
-> **Note on version numbers:** SDK versions are deliberately decoupled from platform versions. The Go SDK's module path tracks its major: SDK 8.x is `github.com/getaxonflow/axonflow-sdk-go/v8`, SDK 9.x is `.../v9`. The Rust SDK is on an independent 0.x line (currently 0.12.0) and does not carry the 9.0.0 LangGraph/computer-use adapters. Its caret is **minor**-locked, so a dependant pinned `"0.9.0"` does NOT pick up 0.10.0 and has to be edited - unlike a 1.x pin, where the caret would absorb it.
+> **Note on version numbers:** SDK versions are deliberately decoupled from platform versions. The Go SDK's module path tracks its major: SDK 8.x is `github.com/getaxonflow/axonflow-sdk-go/v8`, SDK 9.x is `.../v9`. The Rust SDK is on an independent 0.x line (currently 0.12.1) and does not carry the 9.0.0 LangGraph/computer-use adapters. Its caret is **minor**-locked, so a dependant pinned `"0.9.0"` does NOT pick up 0.10.0 and has to be edited - unlike a 1.x pin, where the caret would absorb it.
 
 ## Version Compatibility
 
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
+| v11.4.0 | v8.0.0 (Rust v0.7.0) | v9.5.1 (Rust v0.12.1) | Community startup and capability-boundary guards, safe-off Hosted acquisition and customer-neutral bounded action contracts. Client recommendations move to the verified public patch releases; minimum floors remain unchanged. |
 | v11.3.4 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Security patch: upgrade Go JOSE to 4.1.6 for CVE-2026-116587 at the shared OIDC JWK verification boundary. No wire-contract, SDK-floor, capability, or recommended-SDK/plugin change. |
 | v11.3.3 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Platform-only patch: preserve HTTP connector URL filters, retry configured transient statuses for idempotent PUT/DELETE requests, and record the accepted Hosted workflow sub-gate. No wire-contract, SDK-floor, capability, or recommended-SDK change. |
 | v11.3.2 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Safe-off Hosted patch: preserve global control-plane audit rows through the reviewed platform-admin pool under FORCE RLS and audit tenantless SCIM denials at the authentication boundary. No wire-contract, SDK-floor, or recommended-SDK change. |

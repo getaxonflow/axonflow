@@ -336,6 +336,58 @@ func TestHTTPStripeCustomerArchiver_NonOKReturnsError(t *testing.T) {
 	}
 }
 
+func TestHTTPStripeCustomerArchiver_CheckoutExpiryVerifiesStripeState(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial, afterPost string
+		wantError                bool
+		wantPosts                int
+	}{
+		{name: "open session is expired", initial: "open", afterPost: "expired", wantPosts: 1},
+		{name: "already expired session is safe", initial: "expired", wantPosts: 0},
+		{name: "payment completes between lookup and expiry", initial: "open", afterPost: "complete", wantError: true, wantPosts: 1},
+		{name: "completed session cannot be erased", initial: "complete", wantError: true, wantPosts: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const sessionID = "cs_test_deletion_expiry"
+			var mu sync.Mutex
+			status := tc.initial
+			posts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/checkout/sessions/"+sessionID && r.Method == http.MethodGet {
+					mu.Lock()
+					current := status
+					mu.Unlock()
+					_, _ = fmt.Fprintf(w, `{"id":%q,"status":%q}`, sessionID, current)
+					return
+				}
+				if r.URL.Path == "/v1/checkout/sessions/"+sessionID+"/expire" && r.Method == http.MethodPost {
+					mu.Lock()
+					posts++
+					status = tc.afterPost
+					current := status
+					mu.Unlock()
+					_, _ = fmt.Fprintf(w, `{"id":%q,"status":%q}`, sessionID, current)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+			archiver := &HTTPStripeCustomerArchiver{APIKey: "sk_test_simulated", HTTPClient: &http.Client{
+				Transport: &urlRewritingTransport{base: http.DefaultTransport, target: srv.URL},
+			}}
+			err := archiver.ExpireCheckoutSession(context.Background(), sessionID)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("expiry error=%v, want error=%v", err, tc.wantError)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if posts != tc.wantPosts {
+				t.Fatalf("expiry POST count=%d, want %d", posts, tc.wantPosts)
+			}
+		})
+	}
+}
+
 // urlRewritingTransport is a test-only http.RoundTripper that rewrites
 // any outbound request URL to point at `target`. Used to redirect
 // Stripe API calls at an httptest server.

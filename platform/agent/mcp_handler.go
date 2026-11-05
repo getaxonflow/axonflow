@@ -4,12 +4,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -1492,8 +1495,19 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	decoder := json.NewDecoder(r.Body)
+	if isCommunitySaasMode() {
+		// Authenticate meters this route after decode, so retain the bounded
+		// wire body for its idempotency fingerprint.
+		body, err := readMCPCheckBody(w, r, hostedMeteringBodyLimit)
+		if err != nil {
+			sendErrorResponse(w, "Invalid request body", mcpCheckBodyReadStatus(err), nil)
+			return
+		}
+		decoder = json.NewDecoder(bytes.NewReader(body))
+	}
 	var req MCPQueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
@@ -1521,6 +1535,14 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
 	auth, authErr := Authenticate(r, hints)
 	if authErr != nil {
+		if authErr.Code == "hosted_payment_required" {
+			writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+			return
+		}
+		if authErr.Code == "hosted_monthly_limit_reached" {
+			writeHostedMonthlyLimitReached(w)
+			return
+		}
 		if authErr.RetryAfter != "" {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
@@ -1950,8 +1972,19 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	decoder := json.NewDecoder(r.Body)
+	if isCommunitySaasMode() {
+		// Authenticate meters this route after decode, so retain the bounded
+		// wire body for its idempotency fingerprint.
+		body, err := readMCPCheckBody(w, r, hostedMeteringBodyLimit)
+		if err != nil {
+			sendErrorResponse(w, "Invalid request body", mcpCheckBodyReadStatus(err), nil)
+			return
+		}
+		decoder = json.NewDecoder(bytes.NewReader(body))
+	}
 	var req MCPExecuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
@@ -1988,6 +2021,14 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
 	auth, authErr := Authenticate(r, hints)
 	if authErr != nil {
+		if authErr.Code == "hosted_payment_required" {
+			writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+			return
+		}
+		if authErr.Code == "hosted_monthly_limit_reached" {
+			writeHostedMonthlyLimitReached(w)
+			return
+		}
 		if authErr.RetryAfter != "" {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
@@ -2512,6 +2553,27 @@ type MCPCheckOutputResponse struct {
 	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
 }
 
+// readMCPCheckBody keeps the exact bounded wire body available to hosted
+// metering after the handler decodes it. Fingerprinting decoded fields would
+// drop unknown fields and make distinct requests share an event ID.
+func readMCPCheckBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	bounded := http.MaxBytesReader(w, r.Body, limit)
+	body, err := io.ReadAll(bounded)
+	if err != nil {
+		return nil, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
+}
+
+func mcpCheckBodyReadStatus(err error) int {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
 // mcpCheckInputHandler evaluates dynamic + request-phase static policies for a proposed
 // MCP statement without executing any connector.
 // POST /api/v1/mcp/check-input
@@ -2522,10 +2584,14 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	// (decode here, plus the governance-metadata duplicate-key scan + re-serialize
 	// for create_override), so cap the input the same way the MCP-server endpoint
 	// does to avoid a large-body parse-amplification.
-	r.Body = http.MaxBytesReader(w, r.Body, mcpMaxRequestBody)
+	body, err := readMCPCheckBody(w, r, mcpMaxRequestBody)
+	if err != nil {
+		sendErrorResponse(w, "Invalid request body", mcpCheckBodyReadStatus(err), nil)
+		return
+	}
 
 	var req MCPCheckInputRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
@@ -2544,6 +2610,14 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
 	auth, authErr := Authenticate(r, hints)
 	if authErr != nil {
+		if authErr.Code == "hosted_payment_required" {
+			writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+			return
+		}
+		if authErr.Code == "hosted_monthly_limit_reached" {
+			writeHostedMonthlyLimitReached(w)
+			return
+		}
 		if authErr.RetryAfter != "" {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
@@ -3136,8 +3210,19 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
+	decoder := json.NewDecoder(r.Body)
+	if isCommunitySaasMode() {
+		// Hosted metering fingerprints the complete wire body after decode.
+		// Other deployment modes retain their existing response-size behavior.
+		body, err := readMCPCheckBody(w, r, hostedMeteringBodyLimit)
+		if err != nil {
+			sendErrorResponse(w, "Invalid request body", mcpCheckBodyReadStatus(err), nil)
+			return
+		}
+		decoder = json.NewDecoder(bytes.NewReader(body))
+	}
 	var req MCPCheckOutputRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
@@ -3156,6 +3241,14 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
 	auth, authErr := Authenticate(r, hints)
 	if authErr != nil {
+		if authErr.Code == "hosted_payment_required" {
+			writeHostedPaymentRequired(w, authErr.CheckoutURL, authErr.TenantID)
+			return
+		}
+		if authErr.Code == "hosted_monthly_limit_reached" {
+			writeHostedMonthlyLimitReached(w)
+			return
+		}
 		if authErr.RetryAfter != "" {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}

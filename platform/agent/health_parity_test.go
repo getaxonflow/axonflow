@@ -22,6 +22,9 @@ import (
 
 func driveAgentHealth(t *testing.T) map[string]any {
 	t.Helper()
+	previousReady := appReady.Load()
+	appReady.Store(true)
+	t.Cleanup(func() { appReady.Store(previousReady) })
 	rec := httptest.NewRecorder()
 	readinessAwareHealthHandler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if rec.Code != http.StatusOK {

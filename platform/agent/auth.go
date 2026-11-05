@@ -497,14 +497,19 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 			effectiveTier = string(license.TierPro)
 		}
 		if paidGateApplies && isMeteredHostedGovernancePath(r.URL.Path) {
+			burstLimit := minuteLimitForTier(effectiveTier)
 			fingerprint, fingerprintErr := hostedRequestFingerprint(r, nil)
 			if fingerprintErr != nil {
 				return nil, &CommunitySaasAuthError{StatusCode: http.StatusRequestEntityTooLarge, Code: "hosted_meter_unavailable", Message: "Hosted request could not be safely metered."}
 			}
-			allowed, reserveErr := reserveHostedGovernanceEvent(r.Context(), authDB, cID, hostedEventID(r), fingerprint, hostedMonthlyAllowance())
+			allowed, reserveErr := reserveHostedGovernanceEventWithBurst(r.Context(), authDB, cID, hostedEventID(r), fingerprint, hostedMonthlyAllowance(), int64(burstLimit))
 			if reserveErr != nil {
 				if errors.Is(reserveErr, errHostedEventIDConflict) {
 					return nil, &CommunitySaasAuthError{StatusCode: http.StatusConflict, Code: "hosted_event_id_conflict", Message: "This hosted event ID was already used for a different governance request."}
+				}
+				if errors.Is(reserveErr, errHostedMinuteLimitReached) {
+					log.Printf("[CSAAS-RL] hosted_per_minute tenant=%s limit=%d/min", logutil.Sanitize(cID), burstLimit)
+					return nil, &CommunitySaasAuthError{StatusCode: http.StatusTooManyRequests, Code: "hosted_per_minute_limit_reached", Message: "Hosted per-minute governance limit reached. Try again shortly.", RetryAfter: "60", Limit: burstLimit}
 				}
 				return nil, &CommunitySaasAuthError{StatusCode: http.StatusServiceUnavailable, Code: "hosted_meter_unavailable", Message: "Hosted usage metering is temporarily unavailable."}
 			}

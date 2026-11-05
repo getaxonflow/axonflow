@@ -379,6 +379,7 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// ── Admin-pool services by construction (same entries as the write
 		// audit's adminPoolAllowlist; the pools are wired via
 		// OpenPlatformAdminConnection / h.adminConn() / m.adminDB).
+		"ee/platform/customer-portal/api/hosted_signup.go::HandleConsume": "pre-auth active-session check by opaque session cookie; h.adminDB is wired to OpenPlatformAdminConnection in customer-portal/main.go, so the RLS-gated user_sessions read works before a tenant is known. Only a boolean is returned and an active session rejects the new link without consuming it.",
 		"platform/agent/marketplace/metering.go::*":                            "admin-pool: marketplace metering runs cross-org (meteringDB = OpenPlatformAdminConnection in run.go). Mirrors write allowlist.",
 		"ee/platform/agent/marketplace/metering.go::*":                         "admin-pool: EE mirror of marketplace metering.",
 		"platform/agent/node_enforcement/heartbeat.go::GetActiveNodeCount":     "admin-pool: cross-org node census consumed by NodeMonitor + metering, both on OpenPlatformAdminConnection pools (run.go).",

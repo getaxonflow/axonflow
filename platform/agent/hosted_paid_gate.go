@@ -30,8 +30,10 @@ const hostedBillingPortalPath = "/api/v1/billing/portal"
 
 const hostedMeteringBodyLimit = 16 << 20
 const hostedPublicBaseURLEnv = "AXONFLOW_HOSTED_PUBLIC_BASE_URL"
+const hostedPortalPublicBaseURLEnv = "AXONFLOW_HOSTED_PORTAL_PUBLIC_BASE_URL"
 
 var errHostedEventIDConflict = errors.New("hosted event ID was already used for a different request")
+var errHostedMinuteLimitReached = errors.New("hosted per-minute governance limit reached")
 
 const (
 	hostedSecurityAcceptanceEnv = "AXONFLOW_HOSTED_SECURITY_ACCEPTANCE"
@@ -58,6 +60,9 @@ func hostedPaidLaunchReady() bool {
 	if _, err := hostedPublicBaseURL(); err != nil {
 		return false
 	}
+	if _, err := hostedPortalPublicBaseURL(); err != nil {
+		return false
+	}
 	modules, err := hostedConfiguredModules()
 	if err != nil || len(modules) != len(hostedStarterRequiredModules) {
 		return false
@@ -74,11 +79,19 @@ func hostedPaidLaunchReady() bool {
 // Checkout redirects, recovery links, and billing Portal returns. Requiring an
 // HTTPS origin prevents staging from silently sending a tenant to production.
 func hostedPublicBaseURL() (string, error) {
-	raw := strings.TrimRight(strings.TrimSpace(os.Getenv(hostedPublicBaseURLEnv)), "/")
+	return hostedHTTPSOrigin(hostedPublicBaseURLEnv)
+}
+
+func hostedPortalPublicBaseURL() (string, error) {
+	return hostedHTTPSOrigin(hostedPortalPublicBaseURLEnv)
+}
+
+func hostedHTTPSOrigin(envName string) (string, error) {
+	raw := strings.TrimRight(strings.TrimSpace(os.Getenv(envName)), "/")
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
 		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New(hostedPublicBaseURLEnv + " must be an HTTPS origin")
+		return "", errors.New(envName + " must be an HTTPS origin")
 	}
 	return raw, nil
 }
@@ -285,7 +298,8 @@ func isHostedGovernanceRequest(r *http.Request) bool {
 func isMeteredHostedGovernancePath(path string) bool {
 	switch path {
 	case "/api/request", "/api/policy/pre-check", "/api/v1/decide",
-		"/api/v1/mcp/check-input", "/api/v1/mcp/check-output":
+		"/api/v1/mcp/check-input", "/api/v1/mcp/check-output",
+		"/mcp/resources/query", "/mcp/tools/execute":
 		return true
 	default:
 		return false
@@ -314,6 +328,9 @@ func hostedEventID(r *http.Request) string {
 }
 
 func hostedRequestFingerprint(r *http.Request, parsedPayload []byte) (string, error) {
+	if decoded, ok := r.Body.(*decodedRequestBody); ok && decoded.captureExceeded {
+		return "", errors.New("hosted governance request body is too large to meter")
+	}
 	body := parsedPayload
 	if body == nil && r.Body != nil {
 		limited := io.LimitReader(r.Body, hostedMeteringBodyLimit+1)
@@ -341,6 +358,13 @@ func hostedRequestFingerprint(r *http.Request, parsedPayload []byte) (string, er
 }
 
 func reserveHostedGovernanceEvent(ctx context.Context, db *sql.DB, tenantID, eventID, fingerprint string, limit int64) (bool, error) {
+	return reserveHostedGovernanceEventWithBurst(ctx, db, tenantID, eventID, fingerprint, limit, 0)
+}
+
+// reserveHostedGovernanceEventWithBurst checks new event IDs under the same
+// tenant lock as monthly metering. A refused burst rolls back the insertion;
+// exact same-request replays return above the count and remain idempotent.
+func reserveHostedGovernanceEventWithBurst(ctx context.Context, db *sql.DB, tenantID, eventID, fingerprint string, limit, minuteLimit int64) (bool, error) {
 	if limit <= 0 {
 		return false, errors.New("hosted monthly allowance is not configured")
 	}
@@ -358,7 +382,8 @@ func reserveHostedGovernanceEvent(ctx context.Context, db *sql.DB, tenantID, eve
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, tenantID); err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO hosted_governance_events (tenant_id, event_id, request_fingerprint) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, tenantID, eventID, fingerprint)
+	result, err := tx.ExecContext(ctx, `INSERT INTO hosted_governance_events (tenant_id, event_id, request_fingerprint, occurred_at)
+		VALUES ($1, $2, $3, statement_timestamp()) ON CONFLICT DO NOTHING`, tenantID, eventID, fingerprint)
 	if err != nil {
 		return false, err
 	}
@@ -372,6 +397,17 @@ func reserveHostedGovernanceEvent(ctx context.Context, db *sql.DB, tenantID, eve
 			return false, errHostedEventIDConflict
 		}
 		return true, tx.Commit()
+	}
+	if minuteLimit > 0 {
+		var minuteCount int64
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM hosted_governance_events
+			WHERE tenant_id = $1 AND occurred_at >= statement_timestamp() - INTERVAL '1 minute'`, tenantID).Scan(&minuteCount)
+		if err != nil {
+			return false, err
+		}
+		if minuteCount > minuteLimit {
+			return false, errHostedMinuteLimitReached
+		}
 	}
 	var count int64
 	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM hosted_governance_events WHERE tenant_id = $1 AND occurred_at >= date_trunc('month', NOW())`, tenantID).Scan(&count)

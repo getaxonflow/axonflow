@@ -10,6 +10,87 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.4.0] - 2026-11-05: Hosted acquisition and bounded outcome foundations
+
+> **Platform release with new capabilities kept dark or sandbox-only.** The
+> website-first Hosted purchase path and customer-neutral action contracts are
+> included, but this release does not activate a production provider action or
+> change a customer's execution authority. Compatible client patches ship in
+> the coordinated release train.
+
+### Community
+
+#### Changed
+
+- Keep the new capability route family unavailable in Community with an explicit
+  501 response. Existing client and workflow behavior remains compatible.
+- Carry additive core capability-usage schema and indexes without enabling an
+  Enterprise capability or changing Community billing.
+- Report the version baked into Agent images consistently on `/health`.
+
+#### Fixed
+
+- Keep Agent `/health` unavailable until startup migrations and route
+  registration finish. A migration failure now stops startup instead of leaving
+  a healthy-looking task; the Compose health budget allows this guarded boot to
+  complete before declaring the Agent unhealthy.
+
+### Enterprise
+
+#### Added
+
+- Add a verified, website-first Hosted account path: one-use email verification
+  creates the tenant and owner only after consumption, then a tenant-bound Portal
+  session can start Checkout, complete onboarding, and link a client or device.
+- Record tenant-scoped Checkout attempts, expiry and cancellation observations,
+  signed completion, and conversion attribution. A browser return alone never
+  grants an entitlement; an expired session can be replaced safely.
+- Add a versioned, customer-neutral Agent capability and external-action
+  reference with bounded discovery, governance, evidence, durable reservation,
+  delivery and reconciliation contracts. Live capability registration, customer
+  authority enrollment, and provider Send remain disabled.
+- Add an explicit sandbox-only, tenant-scoped read-only registry for payment-case
+  and FinCrime investigation. The Portal can show separate advisory capability
+  usage when durable events exist, while empty tenants see no invented usage.
+- Add evidence-linked synthetic payment-exception, support-refund, and
+  failed-disbursement workflows and buyer-labeled replay reports. These use fake
+  provider actions and make no customer outcome or savings claim.
+
+#### Fixed
+
+- Keep Hosted sign-in, paid entitlement, revocation, tenant erasure, MCP
+  metering, and event replay tenant-bound through error, retry, cancellation,
+  and billing-outage paths. Preserve structured 402 and 429 refusals.
+- Require fresh policy authorization on cached capability replay; reject
+  unbound tenants, absent customer authority, or mismatched grants. Preserve
+  typed policy denials through the synthetic refund gateway.
+- Limit advisory model output to sourced, bounded suggestions. Displayed facts
+  and unknowns come from deterministic evidence, so injected source text cannot
+  claim that a refund was approved or sent.
+
+#### Operations
+
+- Guard existing Hosted stack updates with full live-parameter preservation,
+  explicit account and stack identity, digest-pinned task images, and an audited
+  no-execute change set. Applying a production preview requires the exact
+  retained change-set ARN and source, parameter, and processed-plan fingerprints.
+- Add guarded staging DNS lifecycle and teardown procedures. No DNS or
+  production resource changes are made by the release source itself.
+
+#### Migration and compatibility
+
+- Apply additive core migrations 192–194, Enterprise migrations 162–165, and
+  Community SaaS migrations 199–204 before the new Agent tasks start. The new
+  tables and columns enforce tenant RLS where applicable. Retain the prior
+  database snapshot as the rollback anchor; image rollback does not reverse
+  schema migrations.
+- Keep existing client minimum floors. Recommend the verified public 9.5.1
+  Python, Go, TypeScript and Java SDKs, Rust 0.12.1, OpenClaw 2.10.3,
+  Claude Code 1.14.0, Cursor 1.10.0 and Codex 1.10.0. These client patch
+  releases carry Hosted policy-verdict and packaging fixes; they do not enable
+  new action authority, which remains closed pending customer-specific
+  evidence and a separate activation gate.
+
 ## [11.3.7] - 2026-10-29: Published client compatibility reconciliation
 
 > **Platform metadata patch.** This release reconciles the plugin versions

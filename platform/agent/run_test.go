@@ -167,16 +167,19 @@ func TestReadinessAwareHealthHandler(t *testing.T) {
 		name           string
 		appReadyState  bool
 		expectedStatus string
+		expectedCode   int
 	}{
 		{
 			name:           "app not ready - returns starting",
 			appReadyState:  false,
 			expectedStatus: "starting",
+			expectedCode:   http.StatusServiceUnavailable,
 		},
 		{
 			name:           "app ready - returns healthy",
 			appReadyState:  true,
 			expectedStatus: "healthy",
+			expectedCode:   http.StatusOK,
 		},
 	}
 
@@ -190,8 +193,8 @@ func TestReadinessAwareHealthHandler(t *testing.T) {
 
 			readinessAwareHealthHandler(w, req)
 
-			if w.Code != http.StatusOK {
-				t.Errorf("expected status 200, got %d", w.Code)
+			if w.Code != tt.expectedCode {
+				t.Errorf("expected HTTP status %d, got %d", tt.expectedCode, w.Code)
 			}
 
 			var response map[string]interface{}
@@ -1782,44 +1785,44 @@ func TestCalculateFileChecksum(t *testing.T) {
 
 // TestEnsureSchemaMigrationsTable tests table creation
 func TestEnsureSchemaMigrationsTable(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create mock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	tests := []struct {
 		name      string
 		setupMock func(sqlmock.Sqlmock)
+		wantErr   bool
 	}{
 		{
 			name: "successful creation",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 				mock.ExpectExec(`CREATE TABLE IF NOT EXISTS schema_migrations`).
 					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec(`DO`).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec(`DO`).WillReturnResult(sqlmock.NewResult(0, 0))
 			},
 		},
 		{
-			name: "table already exists",
+			name: "schema probe error",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec(`CREATE TABLE IF NOT EXISTS schema_migrations`).
-					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT EXISTS`).WillReturnError(sql.ErrConnDone)
 			},
-		},
-		{
-			name: "database error",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec(`CREATE TABLE IF NOT EXISTS schema_migrations`).
-					WillReturnError(sql.ErrConnDone)
-			},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
 			tt.setupMock(mock)
-			ensureSchemaMigrationsTable(db)
-			// Should not panic
+			if err := ensureSchemaMigrationsTable(db); (err != nil) != tt.wantErr {
+				t.Fatalf("ensureSchemaMigrationsTable error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }
@@ -1882,7 +1885,14 @@ func TestGetAppliedMigrations(t *testing.T) {
 			defer func() { _ = db.Close() }()
 
 			tt.setupMock(mock)
-			applied := getAppliedMigrations(db)
+			applied, readErr := getAppliedMigrations(db)
+			if tt.name == "query error" {
+				if readErr == nil {
+					t.Fatal("expected applied-migrations query error")
+				}
+			} else if readErr != nil {
+				t.Fatalf("getAppliedMigrations: %v", readErr)
+			}
 
 			if len(applied) != tt.wantLength {
 				t.Errorf("got %d migrations, want %d", len(applied), tt.wantLength)

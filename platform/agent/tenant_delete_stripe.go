@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,13 @@ import (
 // Reference: https://docs.stripe.com/api/customers/delete
 type StripeCustomerArchiver interface {
 	ArchiveCustomer(ctx context.Context, customerID string) error
+}
+
+// StripeCheckoutSessionExpirer is required before erasing a tenant with an
+// open Checkout attempt. An unknown create outcome has no session ID to
+// expire and must instead remain for reconciliation.
+type StripeCheckoutSessionExpirer interface {
+	ExpireCheckoutSession(ctx context.Context, sessionID string) error
 }
 
 // NoopStripeCustomerArchiver returns nil for all calls. Used when
@@ -89,6 +97,76 @@ func (s *HTTPStripeCustomerArchiver) ArchiveCustomer(ctx context.Context, custom
 		resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
+// ExpireCheckoutSession only succeeds after Stripe reports the Session as
+// expired. A completed Session, network failure, or unknown status leaves the
+// tenant and its deletion token intact for payment reconciliation.
+func (s *HTTPStripeCustomerArchiver) ExpireCheckoutSession(ctx context.Context, sessionID string) error {
+	if s == nil || s.APIKey == "" || !strings.HasPrefix(sessionID, "cs_") {
+		return fmt.Errorf("Stripe Checkout expiry is not configured or session ID is invalid")
+	}
+	status, err := s.checkoutSessionStatus(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if status == "expired" {
+		return nil
+	}
+	if status != "open" {
+		return fmt.Errorf("Stripe Checkout Session is not open")
+	}
+	endpoint := "https://api.stripe.com/v1/checkout/sessions/" + url.PathEscape(sessionID) + "/expire"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.APIKey)
+	client := s.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, postErr := client.Do(req)
+	if postErr == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		_ = resp.Body.Close()
+	}
+	// Even an ambiguous POST outcome is safe to accept only when a fresh GET
+	// proves that Stripe can no longer accept payment on this Session.
+	status, err = s.checkoutSessionStatus(ctx, sessionID)
+	if err != nil || status != "expired" {
+		return fmt.Errorf("Stripe Checkout Session expiry is unverified")
+	}
+	return nil
+}
+
+func (s *HTTPStripeCustomerArchiver) checkoutSessionStatus(ctx context.Context, sessionID string) (string, error) {
+	endpoint := "https://api.stripe.com/v1/checkout/sessions/" + url.PathEscape(sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.APIKey)
+	client := s.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Stripe Checkout Session lookup returned %d", resp.StatusCode)
+	}
+	var session struct{ ID, Status string }
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&session); err != nil {
+		return "", err
+	}
+	if session.ID != sessionID {
+		return "", fmt.Errorf("Stripe Checkout Session ID mismatch")
+	}
+	return session.Status, nil
+}
+
 // NewStripeCustomerArchiverFromEnv returns an HTTPStripeCustomerArchiver if
 // STRIPE_SECRET_KEY is set; otherwise a Noop archiver. STRIPE_SECRET_KEY is
 // the same env var the billing webhook expects, so this is a no-config-add
@@ -99,4 +177,18 @@ func NewStripeCustomerArchiverFromEnv() StripeCustomerArchiver {
 		return NoopStripeCustomerArchiver{}
 	}
 	return &HTTPStripeCustomerArchiver{APIKey: key}
+}
+
+// stripeCustomerArchiverConfigured prevents a paid deletion from treating the
+// development no-op as a completed Stripe customer archive. Injected test
+// archivers are configured by construction.
+func stripeCustomerArchiverConfigured(archiver StripeCustomerArchiver) bool {
+	switch a := archiver.(type) {
+	case nil, NoopStripeCustomerArchiver, *NoopStripeCustomerArchiver:
+		return false
+	case *HTTPStripeCustomerArchiver:
+		return a != nil && a.APIKey != ""
+	default:
+		return true
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -356,7 +357,15 @@ func RegisterCommunityRegistrationHandler(router *mux.Router, db *sql.DB) {
 	// Start the bounded activity update worker
 	startActivityUpdateWorker()
 
-	router.HandleFunc("/api/v1/register", handleCommunityRegister(db)).Methods("POST")
+	register := handleCommunityRegister(db)
+	router.HandleFunc("/api/v1/register", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("AXONFLOW_HOSTED_PAID_GATE") == "enforce" &&
+			os.Getenv("AXONFLOW_HOSTED_LEGACY_REGISTRATION") != "enabled" {
+			writeJSONError(w, "Start Hosted Starter at https://getaxonflow.com/saas-pricing/ and link your client from the Portal", http.StatusGone)
+			return
+		}
+		register(w, r)
+	}).Methods("POST")
 	// Reject non-POST with 405
 	router.HandleFunc("/api/v1/register", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Method not allowed. Use POST to register.", http.StatusMethodNotAllowed)
@@ -728,14 +737,45 @@ func validateCommunityRegistration(ctx context.Context, db *sql.DB, tenantID, se
 
 	// Check expiry
 	if time.Now().After(expiresAt) {
-		return ErrRegistrationExpired
+		var paid bool
+		paidErr := db.QueryRowContext(ctx, `SELECT csaas_paid_auth_lookup($1)`, tenantID).Scan(&paid)
+		if paidErr != nil {
+			var pqErr *pq.Error
+			if errors.As(paidErr, &pqErr) && pqErr.Code == "42883" {
+				return ErrRegistrationExpired // schema predates Hosted subscriptions
+			}
+			return fmt.Errorf("paid registration lifetime lookup failed: %w", paidErr)
+		}
+		if !paid {
+			return ErrRegistrationExpired
+		}
 	}
 
-	// Verify secret
-	if err := bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(secret)); err != nil {
+	// Legacy registration credentials remain valid after a new device links.
+	// A device has a separate owner-revocable hash; pairing another client does
+	// not rotate the registration secret or disconnect earlier devices.
+	if bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(secret)) == nil {
+		return nil
+	}
+	if len(secret) != 64 {
 		return ErrInvalidSecret
 	}
-
+	var deviceHash string
+	err = db.QueryRowContext(ctx,
+		`SELECT secret_hash FROM csaas_device_auth_lookup($1,$2)`, tenantID, secret[:8]).Scan(&deviceHash)
+	if err == sql.ErrNoRows {
+		return ErrInvalidSecret
+	}
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "42883" {
+			return ErrInvalidSecret // older schema without Hosted device pairing
+		}
+		return fmt.Errorf("device credential lookup failed: %w", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(deviceHash), []byte(secret)) != nil {
+		return ErrInvalidSecret
+	}
 	return nil
 }
 

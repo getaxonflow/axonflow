@@ -430,7 +430,11 @@ const (
 	// hand-back #4427 (#4264) shipped as a schema version of the handshake
 	// vocabulary with no route of its own. UP by one on the same three counts
 	// (agent /health entries 32, edition-blind adverts 7) for the same reason.
-	pinnedCapabilities        = 86
+	// 87 for the v11.4.0 preparation: governance.agent_capabilities accounts
+	// for the route added after v11.3.7. The production registry is empty, so
+	// this row is deliberately absent from /health. Only the capability count
+	// rises; the health-gap and edition-blind counts do not move.
+	pinnedCapabilities        = 87
 	pinnedFamilies            = 20
 	pinnedMatrixDisagreements = 16
 	pinnedHealthGaps          = 9

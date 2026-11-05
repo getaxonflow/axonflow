@@ -60,7 +60,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>9.2.0</version>
+            <version>9.5.1</version>
         </dependency>
 
         <!-- OpenAI for Gateway Mode demo -->

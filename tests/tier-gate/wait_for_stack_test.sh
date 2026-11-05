@@ -2,16 +2,12 @@
 # Regression test for the JSON-body readiness check in
 # tests/tier-gate/wait_for_stack.sh.
 #
-# Failure mode this test pins:
-#   wait_for_stack.sh used to declare the agent ready as soon as /health
-#   returned HTTP 200. But platform/agent/run.go:initServerImmediately
-#   registers /health BEFORE the rest of the agent's routes (so ALB/ECS
-#   probes pass during slow init). The handler returns HTTP 200 with
-#   `{"status":"starting"}` until the body of run.go finishes route
-#   registration and sets `appReady=true`, after which it returns
-#   `{"status":"healthy"}`. In enterprise mode the init takes long enough
-#   that the tier-gate runner started executing while routes were still
-#   registering — every late-registered agent endpoint returned 404.
+# Historical failure mode this test pins:
+#   The Agent once returned HTTP 200 with `{"status":"starting"}` before
+#   migrations and route registration. It now returns HTTP 503 during that
+#   window and HTTP 200 with `{"status":"healthy"}` after `appReady=true`.
+#   The tier-gate still asserts the body so status/body disagreement cannot
+#   silently return, and so the test names the condition it needs.
 #
 #   The fix: wait_for_stack.sh now greps the response body for
 #   `"status":"healthy"` and only declares readiness when the body matches.
