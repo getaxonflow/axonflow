@@ -10,6 +10,35 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.5.1] - 2026-11-14: Deployable RDS engine versions for fresh stacks
+
+> **Patch over v11.5.0.** Same source and behaviour as v11.5.0; the binaries
+> are rebuilt only to carry the new version string, and the deployment
+> templates change so a fresh installation can create its database.
+
+### Community
+
+#### Added / changed
+
+- No functional changes. Released in lockstep at v11.5.1; the Community agent
+  and orchestrator behave exactly as in v11.5.0 (only the baked version string
+  moves).
+
+### Enterprise
+
+#### Fixed / hardened
+
+- Allow the PostgreSQL 15 minors RDS currently offers (15.15 through 15.19) in
+  both deployment templates and default to 15.17, the version the live fleet
+  runs. Every allowed value in v11.5.0 had been retired by RDS, so a fresh
+  stack rolled back on database creation; an existing stack keeps its own
+  version.
+
+### Migration
+
+- Additive. No schema change; upgrading from v11.5.0 only moves the version
+  string and, for a new stack, the database engine version.
+
 ## [11.5.0] - 2026-11-12: Independent commercial-module foundations
 
 > **Safe-off platform release.** This release adds the independently licensed
