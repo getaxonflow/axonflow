@@ -87,6 +87,12 @@ var mcpInputPolicyCategories = append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategorySensitiveData,
 	sharedpolicy.CategoryFinCrime,
+	// These categories are carried only by the Enterprise image's private,
+	// per-tenant outcome-module packs. Listing them on the input pass lets an
+	// explicitly resolved pack bind on /decide; it does not install either
+	// pack deployment-wide (or add one to a Community image).
+	sharedpolicy.PolicyCategory("payment-exception"),
+	sharedpolicy.PolicyCategory("support-refund"),
 }, sharedpolicy.AllComplianceCategories()...)
 
 func init() {

@@ -5,6 +5,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,52 @@ func TestNewUnifiedRouter(t *testing.T) {
 
 	if router.GetRoutingStrategy() != RoutingStrategyWeighted {
 		t.Errorf("expected weighted strategy, got %s", router.GetRoutingStrategy())
+	}
+}
+
+func TestUnifiedRouter_PreservesProviderAttemptOnCompletionError(t *testing.T) {
+	factory := NewFactoryManager()
+	factory.Register(ProviderTypeOpenAI, func(config ProviderConfig) (Provider, error) {
+		return NewMockProvider(config.Name, config.Type), nil
+	})
+	registry := NewRegistry(WithFactoryManager(factory))
+	ctx := context.Background()
+	if err := registry.Register(ctx, &ProviderConfig{
+		Name: "parse-failure", Type: ProviderTypeOpenAI, APIKey: "test", Model: "gpt-test", Enabled: true,
+	}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	if err := registry.Register(ctx, &ProviderConfig{
+		Name: "would-succeed-fallback", Type: ProviderTypeOpenAI, APIKey: "test", Model: "gpt-fallback", Enabled: true,
+	}); err != nil {
+		t.Fatalf("register fallback provider: %v", err)
+	}
+	provider, err := registry.Get(ctx, GlobalTenant, "parse-failure")
+	if err != nil {
+		t.Fatalf("get provider: %v", err)
+	}
+	mock := provider.(*MockProvider)
+	mock.healthStatus = HealthStatusHealthy
+	mock.completeErr = errors.New("malformed provider response")
+	registry.HealthCheck(ctx, GlobalTenant)
+
+	router := NewUnifiedRouter(UnifiedRouterConfig{
+		Registry: registry,
+		RoutingConfig: RoutingConfig{
+			Strategy:        RoutingStrategyWeighted,
+			ProviderWeights: map[string]float64{"parse-failure": 1},
+		},
+	})
+	defer router.Close()
+
+	response, info, err := router.RouteRequest(ctx, RequestContext{
+		Query: "hello", Provider: "parse-failure", Model: "gpt-test", DisableFailover: true,
+	})
+	if err == nil || response != nil {
+		t.Fatalf("expected provider error and no response, got response=%v err=%v", response, err)
+	}
+	if info == nil || info.Provider != "parse-failure" || info.Model != "gpt-test" {
+		t.Fatalf("legacy provider attempt was lost: %#v", info)
 	}
 }
 

@@ -544,6 +544,10 @@ type ClientRequest struct {
 	Context     map[string]interface{} `json:"context"`
 	PlanID      string                 `json:"plan_id,omitempty"` // For execute-plan requests
 	Media       []MediaContentRequest  `json:"media,omitempty"`   // Optional media (images) for multimodal governance
+	// RequestID is minted by the Agent after authentication and is never read
+	// from client JSON. It binds the Orchestrator forward, canonical usage row
+	// and governed-model receipt to one identifier.
+	RequestID string `json:"-"`
 }
 
 // MediaContentRequest represents a media item in the client API request.
@@ -555,19 +559,24 @@ type MediaContentRequest struct {
 }
 
 type ClientResponse struct {
-	Success       bool                   `json:"success"`
-	Data          interface{}            `json:"data,omitempty"`
-	Result        string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
-	PlanID        string                 `json:"plan_id,omitempty"`  // For multi-agent planning
-	Steps         []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
-	Metadata      map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
-	Error         string                 `json:"error,omitempty"`
-	Code          string                 `json:"code,omitempty"` // #4276: a tier-limit refusal's ERR_TIER_LIMIT_<DIMENSION> (writeTierLimitClientRefusal)
-	Blocked       bool                   `json:"blocked"`
-	BlockReason   string                 `json:"block_reason,omitempty"`
-	PolicyInfo    *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
-	BudgetInfo    *BudgetInfo            `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
-	MediaAnalysis interface{}            `json:"media_analysis,omitempty"` // Media governance analysis results
+	Success                bool                        `json:"success"`
+	Data                   interface{}                 `json:"data,omitempty"`
+	Result                 string                      `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
+	PlanID                 string                      `json:"plan_id,omitempty"`  // For multi-agent planning
+	Steps                  []interface{}               `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
+	Metadata               map[string]interface{}      `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
+	Error                  string                      `json:"error,omitempty"`
+	Code                   string                      `json:"code,omitempty"` // #4276: a tier-limit refusal's ERR_TIER_LIMIT_<DIMENSION> (writeTierLimitClientRefusal)
+	Blocked                bool                        `json:"blocked"`
+	BlockReason            string                      `json:"block_reason,omitempty"`
+	PolicyInfo             *PolicyEvaluationInfo       `json:"policy_info,omitempty"`
+	BudgetInfo             *BudgetInfo                 `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
+	MediaAnalysis          interface{}                 `json:"media_analysis,omitempty"` // Media governance analysis results
+	RequestID              string                      `json:"request_id,omitempty"`
+	TraceID                string                      `json:"trace_id,omitempty"`
+	ProviderInfo           map[string]interface{}      `json:"provider_info,omitempty"`
+	AuthenticatedPrincipal *AuthenticatedPrincipalInfo `json:"authenticated_principal,omitempty"`
+	UsageReceipt           *ModelUsageReceipt          `json:"usage_receipt,omitempty"`
 }
 
 type PolicyEvaluationInfo struct {
@@ -1611,6 +1620,14 @@ func Run() {
 
 	// Main client request endpoint - all requests flow through here
 	globalRouter.HandleFunc("/api/request", clientRequestHandler).Methods("POST")
+	// Subject-bound internal services use the same governed proxy pipeline
+	// without placing service, tenant or organization identity in request JSON.
+	globalRouter.HandleFunc("/api/v1/governed/model", governedModelRequestHandler).Methods("POST")
+	globalRouter.HandleFunc("/api/v1/governed/model/readiness", governedModelReadinessHandler).Methods("GET")
+	globalRouter.HandleFunc("/api/v1/governed/model/status", governedModelStatusHandler).Methods("GET")
+	if err := RegisterHostedActionGatewayRoutes(globalRouter, usageDB); err != nil {
+		log.Fatalf("Hosted action gateway startup refused: %v", err)
+	}
 
 	// Client management endpoints
 	globalRouter.Handle("/api/clients", apiAuthMiddleware(http.HandlerFunc(listClientsHandler))).Methods("GET")
@@ -2217,6 +2234,7 @@ func decodeClientRequestPreservingBody(r *http.Request, req *ClientRequest) erro
 
 func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	strictGovernedModel := isGovernedModelRequest(r.Context())
 	atomic.AddInt64(&agentMetrics.totalRequests, 1)
 
 	// Log incoming request with headers
@@ -2233,6 +2251,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
+	// This is an Agent-owned transport control, not caller context. Erase any
+	// caller value on every route. The authenticated strict seam is asserted
+	// later on a fresh, trusted hop header rather than in caller JSON. Strict
+	// calls make one provider attempt so the canonical receipt never loses a
+	// failed primary attempt behind fallback behavior.
+	if req.Context == nil {
+		req.Context = make(map[string]interface{})
+	}
+	delete(req.Context, governedModelDisableFailoverContextKey)
 	parseTime := time.Since(startTime)
 	log.Printf("[TIMING] Request parse: %v", parseTime)
 	log.Printf("   Request body: ClientID='%s', RequestType='%s', SkipLLM=%v, Query='%s'",
@@ -2241,7 +2268,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 1. Validate client authentication via unified authenticator
 	validateClientStart := time.Now()
 
-	auth, authErr := Authenticate(r, &AuthHints{ClientID: req.ClientID})
+	authHints := &AuthHints{ClientID: req.ClientID}
+	if isGovernedModelRequest(r.Context()) {
+		// The governed model seam has no body identity. Its subject-bound
+		// internal-service pair is lifted from the established credential
+		// headers and Authenticate verifies that pair against the entire
+		// canonical subject before deriving org/tenant/principal.
+		authHints = internalServiceHints(r)
+	}
+	auth, authErr := Authenticate(r, authHints)
 	if authErr != nil {
 		// /api/request authenticates in this handler rather than through
 		// apiAuthMiddleware. Keep its Hosted refusal contract identical to the
@@ -2337,6 +2372,18 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		proxyTraceID = newW3CTraceID()
 	}
 	proxyDecisionID := uuid.New().String()
+	var governedCorrelation GovernedModelCorrelation
+	if strictGovernedModel {
+		var ok bool
+		governedCorrelation, ok = governedModelCorrelation(r.Context())
+		if !ok {
+			sendErrorResponse(w, "Governed model correlation is missing", http.StatusBadRequest, nil)
+			return
+		}
+		proxyDecisionID = governedCorrelation.RequestID
+		proxyTraceID = governedCorrelation.TraceID
+	}
+	req.RequestID = proxyDecisionID
 	proxyAudit := &decisionAuditInput{
 		clientID:      client.ClientID,
 		requestID:     proxyDecisionID,
@@ -2514,8 +2561,24 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if costService != nil {
 		ctx := r.Context()
 		log.Printf("💰 [clientRequestHandler] Checking budget: OrgID=%s, TenantID=%s, UserID=%d", client.OrgID, client.TenantID, user.ID)
-		budgetDecision, err := costService.CheckBudget(ctx, client.OrgID, "", "", fmt.Sprintf("%d", user.ID), client.TenantID)
+		var budgetDecision *cost.BudgetDecision
+		var err error
+		if strictGovernedModel {
+			budgetDecision, err = costService.CheckBudgetStrict(ctx, client.OrgID, "", "", fmt.Sprintf("%d", user.ID), client.TenantID)
+		} else {
+			budgetDecision, err = costService.CheckBudget(ctx, client.OrgID, "", "", fmt.Sprintf("%d", user.ID), client.TenantID)
+		}
 		if err != nil {
+			if strictGovernedModel {
+				log.Printf("❌ [clientRequestHandler] Governed model budget check failed closed: %v", err)
+				auditProxyDeny(AuditVerdictError, []string{"budget_check_unavailable"}, []string{err.Error()})
+				writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
+					Success: false, Blocked: true, BlockReason: "Budget enforcement unavailable",
+					RequestID: proxyDecisionID, TraceID: proxyTraceID,
+					AuthenticatedPrincipal: principalPointer(authenticatedPrincipalFor(auth, client, r)),
+				}, proxyEnforced)
+				return
+			}
 			log.Printf("⚠️ [clientRequestHandler] Budget check failed: %v (allowing request)", err)
 		} else {
 			log.Printf("💰 [clientRequestHandler] Budget decision: Allowed=%v, BudgetID=%s, UsedUSD=%.4f, LimitUSD=%.4f, Percentage=%.2f",
@@ -2565,6 +2628,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Budget-Warning", budgetDecision.Message)
 			}
 		}
+	} else if strictGovernedModel {
+		log.Printf("❌ [clientRequestHandler] Governed model budget enforcement unavailable")
+		auditProxyDeny(AuditVerdictError, []string{"budget_check_unavailable"}, []string{"cost service is not configured"})
+		writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
+			Success: false, Blocked: true, BlockReason: "Budget enforcement unavailable",
+			RequestID: proxyDecisionID, TraceID: proxyTraceID,
+			AuthenticatedPrincipal: principalPointer(authenticatedPrincipalFor(auth, client, r)),
+		}, proxyEnforced)
+		return
 	}
 	budgetCheckTime := time.Since(budgetCheckStart)
 	log.Printf("[TIMING] Budget check: %v", budgetCheckTime)
@@ -2600,12 +2672,43 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// have both had their say, and what follows
 	// is the forward and the orchestrator's own answer. An orchestrator failure
 	// is not a policy verdict, so the allow is counted before it (#3564).
+	if strictGovernedModel {
+		if costService == nil {
+			writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
+				Success: false, Blocked: true, BlockReason: "Model attempt journal unavailable",
+				Error:     "Governed model was not forwarded because durable intent could not be recorded",
+				RequestID: proxyDecisionID, TraceID: proxyTraceID,
+				AuthenticatedPrincipal: principalPointer(authenticatedPrincipalFor(auth, client, r)),
+				UsageReceipt:           &ModelUsageReceipt{RequestID: proxyDecisionID, Status: "not_attempted"},
+			}, proxyEnforced)
+			return
+		}
+		journalContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), governedModelUsageCommitTimeout)
+		journalErr := costService.BeginGovernedModelAttempt(journalContext, &cost.GovernedModelAttempt{
+			RequestID: proxyDecisionID, OrgID: client.OrgID, TenantID: client.TenantID, Status: "forwarding",
+			TraceID: governedCorrelation.TraceID, Module: governedCorrelation.Module,
+			CaseID: governedCorrelation.CaseID, EvidenceVersion: governedCorrelation.EvidenceVersion,
+			InvestigationKey: governedCorrelation.InvestigationKey,
+		})
+		cancel()
+		if journalErr != nil {
+			log.Printf("❌ [clientRequestHandler] Governed model attempt intent failed: %v", journalErr)
+			writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
+				Success: false, Blocked: true, BlockReason: "Model attempt journal unavailable",
+				Error:     "Governed model was not forwarded because durable intent could not be recorded",
+				RequestID: proxyDecisionID, TraceID: proxyTraceID,
+				AuthenticatedPrincipal: principalPointer(authenticatedPrincipalFor(auth, client, r)),
+				UsageReceipt:           &ModelUsageReceipt{RequestID: proxyDecisionID, Status: "not_attempted"},
+			}, proxyEnforced)
+			return
+		}
+	}
 	recordAnchoredEnforcement(proxyRequestSeamScope, proxyEnforced.engine, VerdictAllow, proxyReason)
 
 	// 6. Forward to AxonFlow Orchestrator (include skip_llm flag for hourly tests)
 	orchestratorStart := time.Now()
 	log.Printf("🚀 Forwarding request to orchestrator: ClientID=%s, RequestType=%s", req.ClientID, req.RequestType)
-	orchestratorResp, err := forwardToOrchestrator(req, user, client, auth.Synthetic)
+	orchestratorResp, err := forwardToOrchestrator(req, user, client, auth.Synthetic, strictGovernedModel)
 	orchestratorTime := time.Since(orchestratorStart)
 	if err != nil {
 		log.Printf("❌ Orchestrator forward failed: %v (time: %v)", err, orchestratorTime)
@@ -2625,6 +2728,27 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		if strictGovernedModel {
+			journalContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), governedModelUsageCommitTimeout)
+			journalErr := costService.FinishGovernedModelAttempt(journalContext, &cost.GovernedModelAttempt{
+				RequestID: proxyDecisionID, OrgID: client.OrgID, TenantID: client.TenantID,
+				Status: "outcome_unknown", Error: err.Error(),
+				UsageReceipt: modelUsageReceiptMap(ModelUsageReceipt{Attempted: true, Recorded: false,
+					RequestID: proxyDecisionID, Status: "outcome_unknown"}),
+			})
+			cancel()
+			if journalErr != nil {
+				log.Printf("❌ [clientRequestHandler] Governed model unknown-outcome reconciliation failed: %v", journalErr)
+			}
+			writeProxyResponse(w, http.StatusServiceUnavailable, ClientResponse{
+				Success: false, Blocked: true, BlockReason: "Governed model outcome unknown",
+				Error:     "Orchestrator response was unavailable after durable forward intent; provider spend may require reconciliation",
+				RequestID: proxyDecisionID, TraceID: proxyTraceID,
+				AuthenticatedPrincipal: principalPointer(authenticatedPrincipalFor(auth, client, r)),
+				UsageReceipt:           &ModelUsageReceipt{Attempted: true, Recorded: false, RequestID: proxyDecisionID, Status: "outcome_unknown"},
+			}, proxyEnforced)
+			return
+		}
 		// Track failed request
 		if agentMetrics != nil {
 			atomic.AddInt64(&agentMetrics.failedRequests, 1)
@@ -2709,59 +2833,42 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	promPolicyEvaluations.Inc()
 	promRequestDuration.WithLabelValues("dynamic").Observe(float64(latencyMs))
 
-	// Issue #1082: Record cost tracking after successful LLM call
-	// This updates budget usage so enforcement works on subsequent requests
-	// Skip cost recording for orchestrator errors (no LLM call was made)
-	if costService != nil && orchSuccess && orchMap != nil {
-		if providerInfoRaw, exists := orchMap["provider_info"]; exists {
-			if providerInfoMap, ok := providerInfoRaw.(map[string]interface{}); ok {
-				// Extract provider info
-				provider := ""
-				model := ""
-				tokensUsed := 0
-				costUSD := 0.0
-
-				if p, ok := providerInfoMap["provider"].(string); ok {
-					provider = p
-				}
-				if m, ok := providerInfoMap["model"].(string); ok {
-					model = m
-				}
-				if t, ok := providerInfoMap["tokens_used"].(float64); ok {
-					tokensUsed = int(t)
-				}
-				if c, ok := providerInfoMap["cost"].(float64); ok {
-					costUSD = c
-				}
-
-				// Record usage if we have token info
-				if tokensUsed > 0 || costUSD > 0 {
-					// Generate request ID (ClientRequest doesn't have one, generate based on timestamp)
-					requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
-					usageRecord := &cost.UsageRecord{
-						RequestID: requestID,
-						Timestamp: time.Now().UTC(),
-						OrgID:     client.OrgID,
-						TenantID:  user.TenantID,
-						UserID:    fmt.Sprintf("%d", user.ID),
-						Provider:  provider,
-						Model:     model,
-						TokensIn:  tokensUsed / 2, // Approximate split (tokens_used is total)
-						TokensOut: tokensUsed / 2,
-						CostUSD:   costUSD,
-					}
-
-					// Issue #1082: Record synchronously so budget enforcement works on subsequent requests
-					// This ensures budget check sees updated usage before allowing next request
-					ctx := context.Background()
-					if err := costService.RecordUsage(ctx, usageRecord); err != nil {
-						log.Printf("💰 [clientRequestHandler] Failed to record usage: %v", err)
-					} else {
-						log.Printf("💰 [clientRequestHandler] Recorded cost: provider=%s model=%s tokens=%d cost=$%.6f",
-							usageRecord.Provider, usageRecord.Model, usageRecord.TokensIn+usageRecord.TokensOut, usageRecord.CostUSD)
-					}
-				}
-			}
+	// Record canonical provider usage before answering. The strict governed-model
+	// seam treats provider_info as an attempt receipt even when the Orchestrator
+	// subsequently rejects malformed model output or withholds it by policy.
+	var providerInfo map[string]interface{}
+	usageReceipt := ModelUsageReceipt{RequestID: proxyDecisionID, Status: "not_attempted"}
+	var usageErr error
+	if strictGovernedModel || orchSuccess {
+		providerInfo, usageReceipt, usageErr = recordCanonicalModelUsage(
+			r.Context(), orchMap, proxyDecisionID, client, user, strictGovernedModel,
+		)
+	}
+	if usageErr != nil {
+		log.Printf("💰 [clientRequestHandler] Failed to record canonical model usage: %v", usageErr)
+	} else if usageReceipt.Recorded {
+		log.Printf("💰 [clientRequestHandler] Recorded canonical model attempt request_id=%s", proxyDecisionID)
+	}
+	if strictGovernedModel && orchSuccess && !usageReceipt.Attempted {
+		usageErr = fmt.Errorf("successful model response omitted provider attempt metadata")
+	}
+	if strictGovernedModel {
+		status := "completed"
+		journalError := ""
+		if usageErr != nil {
+			status, journalError = "usage_record_failed", usageErr.Error()
+		} else if !orchSuccess {
+			status, journalError = "provider_rejected", orchError
+		}
+		journalContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), governedModelUsageCommitTimeout)
+		journalErr := costService.FinishGovernedModelAttempt(journalContext, &cost.GovernedModelAttempt{
+			RequestID: proxyDecisionID, OrgID: client.OrgID, TenantID: client.TenantID,
+			Status: status, ProviderInfo: providerInfo, UsageReceipt: modelUsageReceiptMap(usageReceipt),
+			Error: journalError,
+		})
+		cancel()
+		if journalErr != nil {
+			usageErr = fmt.Errorf("reconcile governed model attempt journal: %w", journalErr)
 		}
 	}
 
@@ -2803,6 +2910,36 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			CodeArtifact:      codeArtifact,
 		},
 		BudgetInfo: budgetInfo, // Issue #1082: Include budget status in response
+	}
+	if strictGovernedModel {
+		principal := authenticatedPrincipalFor(auth, client, r)
+		response.RequestID = proxyDecisionID
+		response.TraceID = proxyTraceID
+		response.ProviderInfo = providerInfo
+		response.AuthenticatedPrincipal = &principal
+		response.UsageReceipt = &usageReceipt
+		if !orchSuccess {
+			// A failed or governance-withheld model result is not caller output.
+			// Keep only the authenticated principal and attempt/usage evidence.
+			response.Data = nil
+			response.Result = ""
+			response.Steps = nil
+			response.Metadata = nil
+		}
+		if usageErr != nil {
+			response.Success = false
+			response.Blocked = true
+			response.BlockReason = "Canonical usage commit unavailable"
+			response.Error = "Governed model attempt could not be committed: " + usageErr.Error()
+			// Do not release a model result whose provider attempt could not be
+			// attributed durably. Provider/receipt evidence remains available for
+			// reconciliation, but the paid output does not fail open.
+			response.Data = nil
+			response.Result = ""
+			response.Steps = nil
+			response.Metadata = nil
+			orchHTTPStatus = http.StatusServiceUnavailable
+		}
 	}
 
 	// A withheld response did not come back, so the wire says so with the flag
@@ -2897,6 +3034,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[DEBUG] Full response length: %d bytes", len(responseBytes))
 
 	w.Header().Set("Content-Type", "application/json")
+	if strictGovernedModel && orchHTTPStatus != http.StatusOK {
+		w.WriteHeader(orchHTTPStatus)
+	}
 	if _, err := w.Write(responseBytes); err != nil {
 		log.Printf("Error writing response: %v", err)
 	}
@@ -3079,7 +3219,7 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 
 // checkRateLimit moved to auth.go as part of license-based authentication
 
-func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthetic bool) (interface{}, error) {
+func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthetic, disableLLMFailover bool) (interface{}, error) {
 	// Prepare orchestrator request
 	// Copy context and add plan_id if present (for execute-plan requests)
 	context := req.Context
@@ -3089,6 +3229,10 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 		}
 		context["plan_id"] = req.PlanID
 	}
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = fmt.Sprintf("req_%d", time.Now().UnixNano())
+	}
 	orchestratorReq := map[string]interface{}{
 		"query":        req.Query,
 		"user":         user,
@@ -3096,7 +3240,7 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 		"request_type": req.RequestType,
 		"skip_llm":     req.SkipLLM,
 		"context":      context,
-		"request_id":   fmt.Sprintf("req_%d", time.Now().UnixNano()),
+		"request_id":   requestID,
 	}
 
 	// Forward media items (images) to orchestrator for media governance analysis
@@ -3133,6 +3277,12 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthe
 		return nil, fmt.Errorf("failed to create orchestrator request: %v", err)
 	}
 	orchReq.Header.Set("Content-Type", "application/json")
+	// Platform-owned, trusted-hop transport control. orchReq is constructed
+	// fresh above, so no inbound header can survive onto it. The Orchestrator
+	// consumes this assertion only after the proxy HMAC validates.
+	if disableLLMFailover {
+		orchReq.Header.Set(sharedidentity.HeaderDisableLLMFailover, sharedidentity.DisableLLMFailoverAsserted)
+	}
 
 	// #3179: stamp the VALIDATED per-user identity onto this hop.
 	//

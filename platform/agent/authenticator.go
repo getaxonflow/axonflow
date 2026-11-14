@@ -89,12 +89,12 @@ type AuthResult struct {
 	ClientID string // canonical client ID (from credentials)
 	// Synthetic marks a request driven by AxonFlow's own canary
 	// (X-Axonflow-Synthetic-Probe). It is never an authorization input, never
-	// consulted by admission, and never reaches an audit attribution field. It
-	// is carried on the AuthResult because this function is the one that sees
-	// the request, and the governed forward to the orchestrator re-sends it from
-	// here (forwardToOrchestrator), so a probe is marked on both planes or on
-	// neither. Nothing reads the mark yet; #4120 labels enforcement decisions
-	// with it.
+	// consulted by admission, and never changes a policy verdict. Engine B's
+	// optional canary gate requires this mark together with an exact configured
+	// tenant allowlist before making its advisory scorer network call. It is
+	// carried on the AuthResult because this function is the one that sees the
+	// request, and the governed forward to the orchestrator re-sends it from here
+	// (forwardToOrchestrator), so a probe is marked on both planes or on neither.
 	Synthetic bool
 }
 
@@ -144,11 +144,15 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 	// Tier scale limit (#3593): the authenticated client is a SERVICE
 	// PRINCIPAL of its organization, admitted here - on the one function every
 	// client-credential path traverses - against the signed licence's ceiling.
-	// An internal-service call
-	// is the orchestrator calling back, not a principal. A refusal is a 402
+	// A fleet-wide internal-service call is the orchestrator calling back, not
+	// a principal. A successful Hosted outcome delegation is different: it is
+	// an organization- and tenant-bound service credential and must consume the
+	// organization's service-principal capacity like every other service.
+	// A refusal is a 402
 	// with its own code (admission.HTTPStatus / ERR_TIER_LIMIT_SERVICE_PRINCIPAL),
 	// never a 401: the credential was VALID.
-	if auth != nil && authErr == nil && auth.Kind != AuthKindInternalService {
+	hostedDelegation := r.Header.Get(serviceauth.SubjectHeader) != ""
+	if auth != nil && authErr == nil && (auth.Kind != AuthKindInternalService || hostedDelegation) {
 		if refusal := admitPrincipal(r.Context(), admission.ServicePrincipal, auth.OrgID, auth.ClientID); refusal != nil {
 			return nil, refusal.AuthError()
 		}
@@ -167,49 +171,64 @@ func authenticateLegacy(r *http.Request, hints *AuthHints) (*AuthResult, *AuthEr
 	// orchestrator doesn't have community-saas bcrypt credentials or enterprise
 	// license keys — it uses its own HMAC token for authentication.
 	if hints != nil && hints.ClientID != "" && hints.UserToken != "" {
-		// Allow the static fallback token only in Community / Community-SaaS deployments,
-		// where shipping with no shared secret is part of the dev experience. Enterprise
-		// deployments must always validate against a configured HMAC secret — otherwise
-		// the literal TokenFallback could be used to impersonate the orchestrator.
-		allowFallback := isCommunityMode() || isCommunitySaasMode()
-		if serviceauth.IsValidInternalServiceRequest(hints.ClientID, hints.UserToken, internalTokenValidator, allowFallback) {
-			tenantID := hints.TenantID
-			if tenantID == "" {
-				tenantID = hints.ClientID
+		// The Hosted outcome sidecar uses the existing subject-bound service
+		// credential so its per-request organization and tenant are properties
+		// of the credential, not mutable routing headers or request JSON. A
+		// subject-bearing request never falls back to the weaker fleet-wide
+		// token path when parsing or validation fails.
+		if delegated, attempted := authenticateHostedOutcomeDelegation(r, hints); attempted {
+			if delegated != nil {
+				return delegated, nil
 			}
+			// This request declared a bound delegation and cannot be reinterpreted
+			// as an unbound internal-service or anonymous Community credential.
+			return nil, &AuthError{Code: "invalid_credentials",
+				Message: "Invalid internal service delegation", HTTPStatus: http.StatusUnauthorized}
+		} else {
+			// Allow the static fallback token only in Community / Community-SaaS deployments,
+			// where shipping with no shared secret is part of the dev experience. Enterprise
+			// deployments must always validate against a configured HMAC secret — otherwise
+			// the literal TokenFallback could be used to impersonate the orchestrator.
+			allowFallback := isCommunityMode() || isCommunitySaasMode()
+			if serviceauth.IsValidInternalServiceRequest(hints.ClientID, hints.UserToken, internalTokenValidator, allowFallback) {
+				tenantID := hints.TenantID
+				if tenantID == "" {
+					tenantID = hints.ClientID
+				}
 
-			// Internal service org: read from the X-Org-ID header an internal
-			// caller sets when forwarding.
-			//
-			// AN EARLIER VERSION OF THIS COMMENT SAID "trusted because internal
-			// service auth already proved the caller is the orchestrator via
-			// HMAC". That is true on an ENTERPRISE deployment and false on
-			// community / community-SaaS, where `allowFallback` above is true and
-			// the branch accepts the PUBLIC fallback constants when no
-			// AXONFLOW_INTERNAL_SERVICE_SECRET is configured. Corrected here
-			// because this is the line that actually reads the header, and it was
-			// being cited as the authority for the claim (R3 round 3, H4).
-			//
-			// What the value can and cannot do is traced once, on ResolveUser's
-			// internal-service arm below. Do not restate it here: three revisions
-			// of a short summary were wrong in three different ways.
-			orgID := r.Header.Get("X-Org-ID")
+				// Internal service org: read from the X-Org-ID header an internal
+				// caller sets when forwarding.
+				//
+				// AN EARLIER VERSION OF THIS COMMENT SAID "trusted because internal
+				// service auth already proved the caller is the orchestrator via
+				// HMAC". That is true on an ENTERPRISE deployment and false on
+				// community / community-SaaS, where `allowFallback` above is true and
+				// the branch accepts the PUBLIC fallback constants when no
+				// AXONFLOW_INTERNAL_SERVICE_SECRET is configured. Corrected here
+				// because this is the line that actually reads the header, and it was
+				// being cited as the authority for the claim (R3 round 3, H4).
+				//
+				// What the value can and cannot do is traced once, on ResolveUser's
+				// internal-service arm below. Do not restate it here: three revisions
+				// of a short summary were wrong in three different ways.
+				orgID := r.Header.Get("X-Org-ID")
 
-			return &AuthResult{
-				Kind: AuthKindInternalService,
-				Client: &Client{
-					ID:          serviceauth.ClientID,
-					ClientID:    serviceauth.ClientID,
-					Name:        "Orchestrator Internal",
-					OrgID:       orgID,
-					TenantID:    tenantID,
-					Permissions: []string{"query", "execute", "mcp"},
-					Enabled:     true,
-				},
-				TenantID: tenantID,
-				OrgID:    orgID,
-				ClientID: serviceauth.ClientID,
-			}, nil
+				return &AuthResult{
+					Kind: AuthKindInternalService,
+					Client: &Client{
+						ID:          serviceauth.ClientID,
+						ClientID:    serviceauth.ClientID,
+						Name:        "Orchestrator Internal",
+						OrgID:       orgID,
+						TenantID:    tenantID,
+						Permissions: []string{"query", "execute", "mcp"},
+						Enabled:     true,
+					},
+					TenantID: tenantID,
+					OrgID:    orgID,
+					ClientID: serviceauth.ClientID,
+				}, nil
+			}
 		}
 		// Invalid HMAC falls through to mode-specific auth (not an error by itself —
 		// the body fields may just happen to be present in a normal client request)

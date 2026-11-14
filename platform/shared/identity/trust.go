@@ -83,6 +83,26 @@ const IdentityGatedTrue = "true"
 // client-assertable.
 const HeaderIdentitySource = "X-Axonflow-Identity-Source"
 
+// HeaderDisableLLMFailover is the Agent-owned transport assertion that a
+// governed model request must make exactly one provider attempt. It is never a
+// caller JSON control: the Agent strips any inbound spelling through
+// NeverClientAssertableHeaders, mints it only on the authenticated governed
+// model forward, and the Orchestrator reads it only after proxy-auth succeeds.
+//
+// Keeping this on the trusted hop rather than request context prevents legacy
+// /api/v1/process callers from suppressing provider failover by sending a
+// platform-owned context key.
+const HeaderDisableLLMFailover = "X-Axonflow-Disable-LLM-Failover"
+
+// DisableLLMFailoverAsserted is deliberately an exact value. Any other value
+// degrades to normal router behavior rather than widening caller control.
+const DisableLLMFailoverAsserted = "1"
+
+// DisableLLMFailoverIsAsserted applies the exact trusted-hop parse contract.
+func DisableLLMFailoverIsAsserted(headerValue string) bool {
+	return headerValue == DisableLLMFailoverAsserted
+}
+
 // IdentitySourceValidatedToken is the one HeaderIdentitySource value that
 // establishes segment membership.
 const IdentitySourceValidatedToken = "validated_token"

@@ -695,6 +695,16 @@ func TestTelemetryMiddleware_NormalizesEndpointPath(t *testing.T) {
 			want: "/api/v1/hitl/queue/{id}/override",
 		},
 		{
+			name: "hosted square admin grant persists case id as template",
+			raw:  "/api/v1/admin/outcomes/support-refund/cases/case_123/square-sandbox/grant",
+			want: "/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant",
+		},
+		{
+			name: "hosted refund internal execute persists case id as template",
+			raw:  "/api/v1/internal/outcomes/support-refund/cases/case_456/actions/refund/execute",
+			want: "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute",
+		},
+		{
 			name: "unknown path fail-closed (as-is)",
 			raw:  "/api/v1/unmapped/fancy-thing",
 			want: "/api/v1/unmapped/fancy-thing",

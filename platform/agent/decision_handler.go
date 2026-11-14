@@ -1317,8 +1317,11 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if observation != nil {
 		decisionAudit.decisionCapabilityScoped = observation.CapabilityScoped
 	}
+	modulePacks, modulePacksResolved, observation, moduleActivationErr := resolveOutcomeModulePolicy(
+		ctx, usageDB, client.OrgID, client.TenantID, stage, req.Target, req.Context, observation)
 	enforced := enforceRequestPass(ctx, decideSeamScope, requestPassInput{
 		orgID:               client.OrgID,
+		tenantID:            client.TenantID,
 		decisionID:          decisionID,
 		stage:               stage,
 		query:               req.Query,
@@ -1331,6 +1334,9 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		finCrime:            fincrimeParams,
 		finCrimeTarget:      fincrimeTarget,
 		refundFacts:         refundMoneyFacts(stage, req.Target, req.Context),
+		modulePacks:         modulePacks,
+		modulePacksResolved: modulePacksResolved,
+		moduleActivationErr: moduleActivationErr,
 	})
 	// A release workflow may require the exact policy set it was reviewed
 	// against. Refuse drift before the approval hold sees the request: otherwise
@@ -1500,6 +1506,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if seamFallback != nil {
 		decisionAudit.suppressedObligations = seamFallback.suppressed
 		decisionAudit.obligationFallback = string(seamFallback.action)
+	}
+	decisionAudit.approvalID = spentApprovalID(held)
+	if decisionAudit.approvalID != "" {
+		decisionAudit.approvalBindingDigest = held.bindingDigest
 	}
 
 	traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, verdict, evaluatedPolicies, time.Since(startTime).Milliseconds(), reasons, traceID, reqContext, contextTruncated, decisionAudit)
@@ -2283,6 +2293,12 @@ type decisionAuditInput struct {
 	// decisionPolicyPacks are the installed policy packs that bound, at
 	// policy_details->'policy_packs' (PRD v11 §1.9).
 	decisionPolicyPacks []string
+	// approvalID names the single-use HITL grant consumed for this decision.
+	// It is copied from the server-side approval hold result, never from the
+	// request selector, so downstream action gateways can bind a final allow to
+	// the exact durable human approval without trusting the workflow body.
+	approvalID            string
+	approvalBindingDigest string
 	// fincrimeRiskScore is what the pass stated for the Engine B risk score and
 	// why (#3330), at policy_details->'fincrime_risk_score'; nil - so omitted -
 	// when no control read the score.
@@ -2583,6 +2599,10 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 	}
 	if len(audit.decisionPolicyPacks) > 0 {
 		details["policy_packs"] = audit.decisionPolicyPacks
+	}
+	if audit.approvalID != "" {
+		details["approval_id"] = audit.approvalID
+		details["approval_binding_digest"] = audit.approvalBindingDigest
 	}
 	if audit.fincrimeRiskScore != nil {
 		details[riskScoreAuditKey] = audit.fincrimeRiskScore

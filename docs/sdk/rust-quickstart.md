@@ -2,7 +2,7 @@
 
 **Last Updated:** November 2026
 
-**SDK Version:** v0.12.1 (preview) | **Platform Version:** v11.4.0
+**SDK Version:** v0.12.1 (preview) | **Platform Version:** v11.5.0
 
 > The Rust SDK is in **preview**. v0.12.1 covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix. Track upcoming work on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues) page.
 

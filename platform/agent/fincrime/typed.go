@@ -62,7 +62,7 @@ type Result struct {
 }
 
 var decimal = regexp.MustCompile(`^(0|[1-9][0-9]*)(?:\.([0-9]+))?$`)
-var country = regexp.MustCompile(`^[A-Z]{2}(?:-[A-Z0-9]{1,4})?$`)
+var country = regexp.MustCompile(`^([A-Z]{2}|[A-Z]{3})(?:-([A-Z0-9]{1,4}))?$`)
 var mcc = regexp.MustCompile(`^[0-9]{4}$`)
 
 var detectorIDs = []string{
@@ -134,7 +134,7 @@ func ParseRegistry(raw []byte) (*Registry, error) {
 			}
 		}
 		for _, c := range append(append([]string{}, cfg.ProhibitedCountries...), cfg.HighRiskCountries...) {
-			if !country.MatchString(c) {
+			if !validCountryLocation(c) {
 				return nil, fmt.Errorf("fincrime registry: invalid country %q", c)
 			}
 		}
@@ -189,6 +189,59 @@ func field(m map[string]interface{}, key string) (string, bool) {
 func member(s string, list []string) bool {
 	for _, v := range list {
 		if s == v || strings.HasPrefix(s, v+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalCountryLocation accepts a currently assigned ISO 3166-1 alpha-2 or
+// alpha-3 country code, plus the alpha-2-prefix form used by ISO 3166-2
+// subdivisions. The explicit membership maps exclude BCP 47/CLDR exceptional,
+// reserved, private-use and withdrawn regions.
+func canonicalCountryLocation(s string) (string, bool) {
+	parts := country.FindStringSubmatch(s)
+	if parts == nil {
+		return "", false
+	}
+	base := parts[1]
+	var alpha2 string
+	if len(base) == 2 {
+		if _, ok := iso3166Alpha2ToAlpha3[base]; !ok {
+			return "", false
+		}
+		alpha2 = base
+	} else {
+		var ok bool
+		alpha2, ok = iso3166Alpha3ToAlpha2[base]
+		if !ok {
+			return "", false
+		}
+	}
+	// ISO 3166-2 subdivision identifiers always use an alpha-2 prefix.
+	if parts[2] != "" && len(base) != 2 {
+		return "", false
+	}
+	canonical := alpha2
+	if parts[2] != "" {
+		canonical += "-" + parts[2]
+	}
+	return canonical, true
+}
+
+func validCountryLocation(s string) bool {
+	_, ok := canonicalCountryLocation(s)
+	return ok
+}
+
+func countryMember(s string, list []string) bool {
+	s, ok := canonicalCountryLocation(s)
+	if !ok {
+		return false
+	}
+	for _, v := range list {
+		v, ok := canonicalCountryLocation(v)
+		if ok && (s == v || strings.HasPrefix(s, v+"-")) {
 			return true
 		}
 	}
@@ -255,7 +308,7 @@ func (r *Registry) Evaluate(t Target, parameters map[string]interface{}) Result 
 	sender, sok := field(tx, "sender_location")
 	receiver, rok := field(tx, "receiver_location")
 	stamp, tok := field(tx, "timestamp")
-	if !aok || !uok || unit != "major" || !cok || !iok || !bok || !pok || !sok || !rok || !tok || !country.MatchString(sender) || !country.MatchString(receiver) {
+	if !aok || !uok || unit != "major" || !cok || !iok || !bok || !pok || !sok || !rok || !tok || !validCountryLocation(sender) || !validCountryLocation(receiver) {
 		return invalid("missing_required_transaction_field")
 	}
 	if paymentType != "transfer" && paymentType != "wire" && paymentType != "card" {
@@ -296,12 +349,12 @@ func (r *Registry) Evaluate(t Target, parameters map[string]interface{}) Result 
 	if selected.Class == "execute" || selected.Class == "retry" {
 		out.Facts["fincrime_payment_execution_stepup"] = true
 	}
-	if member(sender, cfg.ProhibitedCountries) || member(receiver, cfg.ProhibitedCountries) {
+	if countryMember(sender, cfg.ProhibitedCountries) || countryMember(receiver, cfg.ProhibitedCountries) {
 		out.Facts["fincrime_prohibited_geography_block"] = true
 	}
 	out.Facts["fincrime_high_value_amount_cap"] = value.Cmp(cap) >= 0
 	out.Facts["fincrime_structuring_pattern_stepup"] = (paymentType == "transfer" || paymentType == "wire") && value.Cmp(floor) >= 0 && value.Cmp(cap) < 0
-	out.Facts["fincrime_geo_corridor_stepup"] = member(receiver, cfg.HighRiskCountries)
+	out.Facts["fincrime_geo_corridor_stepup"] = countryMember(receiver, cfg.HighRiskCountries)
 	if codeMCC, present := tx["merchant_category_code"]; present {
 		s, ok := codeMCC.(string)
 		if !ok || !mcc.MatchString(s) {

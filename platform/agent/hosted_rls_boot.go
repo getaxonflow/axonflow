@@ -36,6 +36,16 @@ var hostedCustomerDataTables = []string{
 	"user_sessions", "execution_history", "hitl_approval_queue",
 	"hitl_approval_history", "llm_providers", "llm_provider_usage",
 	"usage_events", "usage_hourly", "usage_daily", "usage_monthly",
+	"governed_model_attempts",
+	// Outcome workflow tables are product prerequisites, not optional census
+	// discoveries. Keep every table with a specialised composite guard, plus
+	// the direct rate counter, here so dropping one cannot make it disappear
+	// from pg_class and pass boot.
+	"hosted_outcome_cases", "hosted_outcome_action_results",
+	"hosted_outcome_rate_windows", "hosted_outcome_monthly_usage",
+	"hosted_outcome_module_grants", "hosted_outcome_self_hosted_eligibility",
+	"hosted_customer_authority_keys", "hosted_module_authority_audit",
+	"hosted_outcome_operation_admissions", "hosted_outcome_investigations",
 	"grafana_organizations", "api_keys", "hosted_portal_members",
 	"hosted_portal_login_tokens",
 	// Legacy child tables carry no direct customer key. Keep them explicit so
@@ -208,6 +218,22 @@ var hostedCompositeGuardExpressions = map[string]string{
 		AND tenant_id = current_setting('app.current_tenant_id', true)`,
 	"hosted_outcome_action_results": `org_id = current_setting('app.current_org_id', true)
 		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_outcome_monthly_usage": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_outcome_module_grants": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_outcome_self_hosted_eligibility": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_customer_authority_keys": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_module_authority_audit": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_outcome_operation_admissions": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"hosted_outcome_investigations": `org_id = current_setting('app.current_org_id', true)
+		AND tenant_id = current_setting('app.current_tenant_id', true)`,
+	"governed_model_attempts": `org_id = current_setting('app.current_org_id', true)
+			AND tenant_id = current_setting('app.current_tenant_id', true)`,
 }
 
 func validHostedGuardExpression(table, keyColumn, usingExpr, checkExpr string) bool {

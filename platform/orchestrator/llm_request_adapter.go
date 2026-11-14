@@ -103,12 +103,13 @@ func (w *UnifiedRouterWrapper) RouteRequest(ctx context.Context, req Orchestrato
 
 	// Route through unified router
 	legacyResp, legacyInfo, err := w.router.RouteRequest(ctx, reqCtx)
+	providerInfo := LegacyProviderInfoToProviderInfo(legacyInfo)
 	if err != nil {
-		return nil, nil, err
+		return nil, providerInfo, err
 	}
 
 	// Convert back to orchestrator types
-	return LegacyResponseToLLMResponse(legacyResp), LegacyProviderInfoToProviderInfo(legacyInfo), nil
+	return LegacyResponseToLLMResponse(legacyResp), providerInfo, nil
 }
 
 // IsHealthy implements LLMRouterInterface.
@@ -141,6 +142,7 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 	temperature := 0.0
 	systemPrompt := ""
 	strictProvider := strictProviderDefaultFromEnv()
+	disableFailover := req.disableLLMFailover
 
 	// Policy routing hints (Issue #883 - strict provider enforcement)
 	policyPreferredProvider := ""
@@ -177,7 +179,6 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		if strict, provided := parseStrictProviderFlag(req.Context); provided {
 			strictProvider = strict
 		}
-
 		// Extract policy routing hints injected by dynamic policy evaluation
 		if pp, ok := req.Context["policy_preferred_provider"].(string); ok {
 			policyPreferredProvider = pp
@@ -211,6 +212,7 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		TenantID:                req.Client.TenantID,
 		Provider:                provider,
 		StrictProvider:          strictProvider,
+		DisableFailover:         disableFailover,
 		Model:                   model,
 		MaxTokens:               maxTokens,
 		Temperature:             temperature,

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +267,43 @@ func Register(r *mux.Router, c cfg, h http.HandlerFunc) {
 	if got := len(d.Unresolved()); got != 4 {
 		t.Errorf("expected exactly 4 unresolved sites (two parents, two poisoned children), "+
 			"got %d: %+v", got, d.Unresolved())
+	}
+}
+
+func TestRouteExemptionKeysSurviveUnrelatedLineInsertions(t *testing.T) {
+	const source = `package svc
+
+import "github.com/gorilla/mux"
+
+var globalRouter *mux.Router
+
+func Run() {
+	globalRouter.HandleFunc("/api/v1/planted", nil)
+}
+`
+	derive := func(body string) RouteSite {
+		t.Helper()
+		d, err := DeriveSources([]Source{{Rel: "svc/run.go", Content: []byte(body)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unresolved := d.Unresolved()
+		if len(unresolved) != 1 {
+			t.Fatalf("expected one unresolved planted site, got %d: %+v", len(unresolved), unresolved)
+		}
+		return unresolved[0]
+	}
+
+	before := derive(source)
+	after := derive("// unrelated release note\n// another unrelated line\n" + source)
+	if before.Line == after.Line {
+		t.Fatal("control: the planted edit did not shift the registration line")
+	}
+	if before.SiteKey() != after.SiteKey() {
+		t.Fatalf("an unrelated line insertion invalidated the reviewed exemption key:\n before %q\n after  %q", before.SiteKey(), after.SiteKey())
+	}
+	if strings.Contains(before.SiteKey(), ":"+strconv.Itoa(before.Line)+" ") {
+		t.Fatalf("direct-call exemption key is still line-bound: %q", before.SiteKey())
 	}
 }
 

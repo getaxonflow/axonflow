@@ -193,8 +193,11 @@ type MigrationFile struct {
 	Name     string // Human-readable name
 }
 
-// getMigrationPaths returns the migration directories to scan based on
-// DEPLOYMENT_MODE, or an error if the configured value is not recognised.
+// getMigrationPaths returns the migration locations to scan based on
+// DEPLOYMENT_MODE and AXONFLOW_BACKEND_PROFILE, or an error if either
+// configured value is not recognised. A location is normally a category
+// directory, but a narrowly reviewed backend profile may add one or more exact
+// SQL files without importing the rest of their category.
 //
 // The error is fatal to the boot (see run.go). Refusal is the point: the
 // previous default arm applied core + enterprise + all three industry
@@ -259,13 +262,32 @@ func getMigrationPaths(basePath string) ([]string, error) {
 	}
 
 	categories := canonicalDeploymentModes[mode]
-	paths := make([]string, 0, len(categories))
+	profile := os.Getenv(deploymode.EnvBackendProfile)
+	profileLocations, ok := deploymode.BackendProfileMigrationLocations(profile, raw)
+	if !ok {
+		return nil, fmt.Errorf(
+			"invalid %s=%q for DEPLOYMENT_MODE=%q — refusing to widen the database schema. "+
+				"Accepted non-empty profiles (matched exactly and only with their reviewed mode): %s",
+			deploymode.EnvBackendProfile, profile, raw,
+			strings.Join(deploymode.RecognisedBackendProfiles(), ", "))
+	}
+
+	paths := make([]string, 0, len(categories)+len(profileLocations))
 	for _, category := range categories {
 		paths = append(paths, filepath.Join(basePath, filepath.FromSlash(category)))
 	}
+	for _, location := range profileLocations {
+		paths = append(paths, filepath.Join(basePath, filepath.FromSlash(location)))
+	}
 
-	log.Printf("📦 DEPLOYMENT_MODE=%s: running migration categories %s",
-		mode, strings.Join(categories, " + "))
+	if profile == "" {
+		log.Printf("📦 DEPLOYMENT_MODE=%s: running migration categories %s",
+			mode, strings.Join(categories, " + "))
+	} else {
+		log.Printf("📦 DEPLOYMENT_MODE=%s %s=%s: running migration categories %s plus exact profile migrations %s",
+			mode, deploymode.EnvBackendProfile, profile, strings.Join(categories, " + "),
+			strings.Join(profileLocations, " + "))
+	}
 
 	return paths, nil
 }
@@ -279,19 +301,32 @@ func collectMigrations(basePath string) ([]MigrationFile, error) {
 	var migrations []MigrationFile
 
 	for _, path := range paths {
-		// Check if directory exists
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			log.Printf("ℹ️  Migration directory not found: %s (skipping)", path)
+		info, statErr := os.Stat(path)
+		if os.IsNotExist(statErr) {
+			if filepath.Ext(path) == ".sql" {
+				return nil, fmt.Errorf("required exact backend-profile migration not found: %s", path)
+			}
+			log.Printf("ℹ️  Migration location not found: %s (skipping)", path)
 			continue
 		}
+		if statErr != nil {
+			return nil, fmt.Errorf("failed to inspect migration location %s: %w", path, statErr)
+		}
 
-		// Get category from path (e.g., "core", "enterprise", "healthcare", "banking")
+		var files []string
 		category := filepath.Base(path)
-
-		// Find all SQL files
-		files, err := filepath.Glob(filepath.Join(path, "*.sql"))
-		if err != nil {
-			return nil, fmt.Errorf("failed to list migrations in %s: %w", path, err)
+		if info.IsDir() {
+			var err error
+			files, err = filepath.Glob(filepath.Join(path, "*.sql"))
+			if err != nil {
+				return nil, fmt.Errorf("failed to list migrations in %s: %w", path, err)
+			}
+		} else {
+			if filepath.Ext(path) != ".sql" {
+				return nil, fmt.Errorf("exact migration location %s is not a SQL file", path)
+			}
+			files = []string{path}
+			category = filepath.Base(filepath.Dir(path))
 		}
 
 		for _, file := range files {

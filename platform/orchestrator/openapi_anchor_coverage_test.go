@@ -51,7 +51,24 @@ var unanchoredSchemaBudget = map[string]int{
 	// only its own pair and descended into nothing". The schema is flat - a
 	// bool, strings, an integer and arrays of strings - so an anchor on it adds
 	// nothing to the walk this budget measures. Raised deliberately.
-	"agent-api.yaml": 59,
+	//
+	// 66, not 59: #4486 documents seven Hosted Square Sandbox wire shapes.
+	// HostedSquareExecuteRequest, HostedSquareBindingRequest and
+	// HostedSquareRevokeRequest are flat request objects decoded by the
+	// Enterprise image overlay. HostedSquareReadinessReceipt,
+	// SquareSandboxAcceptanceReceipt and HostedSquareGrantReceipt are likewise
+	// flat receipts. The parity guard rejects roots that reach only their own
+	// pair, so none of those six can add a meaningful anchor.
+	//
+	// HostedSquarePrepareReceipt does descend into
+	// SquareSandboxPreflightReceipt, but both real Go types live in the
+	// enterprise-only axonflow/ee actiongateway module. That module already
+	// depends on axonflow/platform; importing it into this platform-module test
+	// would reverse the dependency and the community tag has no buildable copy.
+	// A test-local mirror would only compare the schema with a third declaration,
+	// not the type the packaged image marshals. Counted deliberately until the
+	// parity walker has an Enterprise-overlay anchor mechanism.
+	"agent-api.yaml": 66,
 	// 141, not 140: #3949 added `TripletErrorResponse` - the third error
 	// envelope, named so two workflow-step operations could stop documenting a
 	// combination that matched neither of their two writers. It is a schema a

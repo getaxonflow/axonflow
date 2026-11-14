@@ -99,7 +99,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.4.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.5.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -333,7 +333,7 @@ services:
       # runs) and `conformance` (the ADR-065 fixture world, publishable against
       # and NEVER activatable).
       AXONFLOW_TYPED_AUTHORING_CATALOG: ${AXONFLOW_TYPED_AUTHORING_CATALOG:-deployment}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.4.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.5.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -420,7 +420,15 @@ services:
 
   # Prometheus - Metrics collection
   prometheus:
-    image: prom/prometheus:v3.15.1
+    # The published upstream tag for the SAME release the shipped image is
+    # compiled from: platform/monitoring/Dockerfile pins PROMETHEUS_VERSION and
+    # tests/regression-test-required/prometheus_runtime_contract_test.sh holds
+    # this tag to it. The dev stack cannot `build:` that Dockerfile - the
+    # Community mirror excludes platform/monitoring/ and fails a compose
+    # service whose build context is absent - so this one service stays on a
+    # registry tag. The shipped image is the from-source build with the x/net
+    # floor; this dev-only container is upstream's own binary of that version.
+    image: prom/prometheus:v3.16.0
     container_name: axonflow-prometheus
     restart: unless-stopped
     command:

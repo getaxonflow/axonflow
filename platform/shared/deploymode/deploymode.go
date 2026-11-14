@@ -58,6 +58,17 @@
 // recognised spelling and requires this partition, and
 // TestUnsetDisagreesAcrossTheTwoAxes covers the unset row the table cannot.
 //
+// # BACKEND PROFILES ARE A NARROW SCHEMA EXTENSION, NOT A FOURTH MODE
+//
+// An AxonFlow-operated fleet name is not an edition. AXONFLOW_BACKEND_PROFILE
+// can add one or more reviewed, exact migrations to one compatible mode
+// without changing that mode's posture, importing a whole unrelated category
+// or granting an Enterprise limit. BackendProfileMigrationLocations is the
+// selector seam; the Has*BackendSchema predicates are the corresponding
+// schema-availability questions.
+// Tenant entitlement still comes from authenticated server-side authority and
+// durable quota, never from either environment variable.
+//
 // Until #3713 the posture half had no home. It was written out at each site
 // that needed it: TWICE byte-identically, as
 // `os.Getenv("DEPLOYMENT_MODE") == "community"` in platform/agent/run.go and
@@ -87,6 +98,73 @@ import (
 
 // EnvDeploymentMode is the variable every deployment surface sets.
 const EnvDeploymentMode = "DEPLOYMENT_MODE"
+
+// EnvBackendProfile selects an explicitly reviewed backend capability profile
+// within a deployment fleet. It is a separate axis from DEPLOYMENT_MODE: a
+// fleet name is not an edition, and adding a narrowly scoped schema capability
+// must not silently grant the fleet every Enterprise table or limit.
+const EnvBackendProfile = "AXONFLOW_BACKEND_PROFILE"
+
+// BackendProfileHostedFinCrime is the Enterprise-backed FinCrime profile for
+// the AxonFlow-operated community-saas fleet. The profile adds only the
+// reviewed FinCrime admission schema. It does not grant any tenant the
+// capability; subscription, owner approval and durable quota remain separate
+// server-side admission legs.
+const BackendProfileHostedFinCrime = "hosted-fincrime"
+
+// BackendProfileHostedCommercial is the paid shared-Hosted profile. Shared
+// multi-tenant Hosted may install the FinCrime admission schema, but it must
+// never acquire the dedicated Square action gateway's broker, grant roles,
+// secret registry, or durable send authority. The latter remains exclusive to
+// a dedicated Enterprise deployment and is hard-disabled in shared Hosted.
+const BackendProfileHostedCommercial = "hosted-commercial"
+
+// BackendProfileSelfHostedOutcomes installs the durable schema used by the
+// independently entitled payment_exception and support_refund modules on an
+// Enterprise self-hosted deployment.  It selects only the eight reviewed
+// outcome migrations that make up the current schema and its tenant-isolation
+// boundary; it does not import the
+// rest of the AxonFlow-operated community-SaaS category and it grants no
+// module to any tenant.  A seller-issued deployment licence, a separately
+// authenticated tenant grant and self-hosted eligibility proof remain the
+// runtime authority (ADR-070 / #4486).
+const BackendProfileSelfHostedOutcomes = "self-hosted-outcomes"
+
+const hostedFinCrimeMigration = "enterprise/166_fincrime_score_admission.sql"
+
+var hostedCommercialMigrations = []string{
+	hostedFinCrimeMigration,
+}
+
+var selfHostedOutcomeMigrations = []string{
+	"community-saas/189_hosted_subscriptions.sql",
+	"community-saas/191_hosted_billing_rls.sql",
+	"community-saas/195_hosted_outcome_case_store.sql",
+	"community-saas/205_hosted_outcome_module_quota.sql",
+	"community-saas/206_hosted_billing_app_role_boundary.sql",
+	"community-saas/207_self_hosted_outcome_authority_references.sql",
+	"community-saas/208_hosted_outcome_investigation_receipts.sql",
+}
+
+type backendProfile struct {
+	requiredMode       string
+	migrationLocations []string
+}
+
+var backendProfiles = map[string]backendProfile{
+	BackendProfileHostedFinCrime: {
+		requiredMode:       ModeCommunitySaas,
+		migrationLocations: []string{hostedFinCrimeMigration},
+	},
+	BackendProfileHostedCommercial: {
+		requiredMode:       ModeCommunitySaas,
+		migrationLocations: hostedCommercialMigrations,
+	},
+	BackendProfileSelfHostedOutcomes: {
+		requiredMode:       "in-vpc-enterprise",
+		migrationLocations: selfHostedOutcomeMigrations,
+	},
+}
 
 // EnvLicenceTransition is how an operator whose Enterprise licence has ENDED
 // tells this process WHY it is in the community posture.
@@ -235,6 +313,115 @@ func RecognisedModes() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RecognisedBackendProfiles returns every accepted non-empty backend profile,
+// sorted. An empty profile is the safe default and adds no schema.
+func RecognisedBackendProfiles() []string {
+	out := make([]string, 0, len(backendProfiles))
+	for profile := range backendProfiles {
+		out = append(out, profile)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// BackendProfileMigrationLocations resolves a backend profile for a deployment
+// mode and returns its exact migration locations relative to migrations/.
+//
+// Empty is accepted and adds nothing. Unknown profiles and profiles paired
+// with the wrong mode are refused: widening a schema on configuration error is
+// not recoverable. Returned slices are copies so callers cannot mutate this
+// package's migration selector input.
+func BackendProfileMigrationLocations(rawProfile, rawMode string) ([]string, bool) {
+	mode, recognised := Resolve(rawMode)
+	if !recognised {
+		return nil, false
+	}
+	if rawProfile == "" {
+		return nil, true
+	}
+	profile, ok := backendProfiles[rawProfile]
+	if !ok {
+		return nil, false
+	}
+	if mode != profile.requiredMode {
+		return nil, false
+	}
+	return append([]string(nil), profile.migrationLocations...), true
+}
+
+// HasFinCrimeBackendSchema reports whether a mode/profile pair installs the
+// FinCrime admission schema. This is a schema-availability predicate, not a
+// tenant entitlement predicate. Full Enterprise-schema modes already include
+// migration 166; community-saas includes it only through the explicit Hosted
+// FinCrime profile.
+func HasFinCrimeBackendSchema(rawMode, rawProfile string) bool {
+	mode, recognised := Resolve(rawMode)
+	if !recognised {
+		return false
+	}
+	if AppliesCategory(mode, CategoryEnterprise) {
+		return rawProfile == ""
+	}
+	locations, ok := BackendProfileMigrationLocations(rawProfile, rawMode)
+	if !ok {
+		return false
+	}
+	for _, location := range locations {
+		if location == hostedFinCrimeMigration {
+			return true
+		}
+	}
+	return false
+}
+
+// CurrentHasFinCrimeBackendSchema applies HasFinCrimeBackendSchema to this
+// process's deployment mode and backend profile.
+func CurrentHasFinCrimeBackendSchema() bool {
+	return HasFinCrimeBackendSchema(Current(), os.Getenv(EnvBackendProfile))
+}
+
+// HasHostedSquareSandboxBackendSchema reports whether a dedicated Enterprise
+// deployment carries the action-gateway migration chain. Shared Hosted never
+// does, including with the hosted-commercial profile.
+func HasHostedSquareSandboxBackendSchema(rawMode, rawProfile string) bool {
+	mode, recognised := Resolve(rawMode)
+	if !recognised {
+		return false
+	}
+	if AppliesCategory(mode, CategoryEnterprise) {
+		return rawProfile == ""
+	}
+	return false
+}
+
+// HasSelfHostedOutcomeBackendSchema reports whether a mode/profile pair
+// installs the durable payment/refund module schema.  This is schema
+// availability only: it never implies that either module is licensed,
+// granted, within quota or operationally ready.
+func HasSelfHostedOutcomeBackendSchema(rawMode, rawProfile string) bool {
+	mode, recognised := Resolve(rawMode)
+	if !recognised || mode != "in-vpc-enterprise" {
+		return false
+	}
+	locations, ok := BackendProfileMigrationLocations(rawProfile, rawMode)
+	if !ok || len(locations) != len(selfHostedOutcomeMigrations) {
+		return false
+	}
+	for i, location := range selfHostedOutcomeMigrations {
+		if locations[i] != location {
+			return false
+		}
+	}
+	return true
+}
+
+// CurrentHasSelfHostedOutcomeBackendSchema applies
+// HasSelfHostedOutcomeBackendSchema to this process's deployment mode and
+// backend profile.
+func CurrentHasSelfHostedOutcomeBackendSchema() bool {
+	return HasSelfHostedOutcomeBackendSchema(Current(), os.Getenv(EnvBackendProfile))
 }
 
 // AppliesCategory reports whether a deployment running under the raw

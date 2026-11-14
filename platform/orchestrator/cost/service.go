@@ -467,6 +467,18 @@ func (s *Service) statusForBudget(ctx context.Context, budget *Budget) (*BudgetS
 
 // CheckBudget checks if a request should be allowed based on budgets
 func (s *Service) CheckBudget(ctx context.Context, orgID, teamID, agentID, userID, tenantID string) (*BudgetDecision, error) {
+	return s.checkBudget(ctx, orgID, teamID, agentID, userID, tenantID, false)
+}
+
+// CheckBudgetStrict checks the same canonical budget scopes as CheckBudget,
+// but returns repository/status errors instead of treating an unreadable
+// budget as absent. Inline governed provider calls use this before any outbound
+// call; existing callers retain CheckBudget's historical availability posture.
+func (s *Service) CheckBudgetStrict(ctx context.Context, orgID, teamID, agentID, userID, tenantID string) (*BudgetDecision, error) {
+	return s.checkBudget(ctx, orgID, teamID, agentID, userID, tenantID, true)
+}
+
+func (s *Service) checkBudget(ctx context.Context, orgID, teamID, agentID, userID, tenantID string, strict bool) (*BudgetDecision, error) {
 	decision := &BudgetDecision{Allowed: true}
 	s.logger.Printf("💰 [CheckBudget] Called: orgID=%s, teamID=%s, agentID=%s, userID=%s, tenantID=%s", orgID, teamID, agentID, userID, tenantID)
 
@@ -490,6 +502,9 @@ func (s *Service) CheckBudget(ctx context.Context, orgID, teamID, agentID, userI
 		budgets, err := s.repo.GetBudgetsForScope(ctx, s2.scope, s2.scopeID, orgID, tenantID)
 		if err != nil {
 			s.logger.Printf("💰 [CheckBudget] Error getting budgets for scope %s: %v", s2.scope, err)
+			if strict {
+				return nil, fmt.Errorf("read %s budget: %w", s2.scope, err)
+			}
 			continue
 		}
 		s.logger.Printf("💰 [CheckBudget] Found %d budgets for scope %s", len(budgets), s2.scope)
@@ -497,6 +512,9 @@ func (s *Service) CheckBudget(ctx context.Context, orgID, teamID, agentID, userI
 		for _, budget := range budgets {
 			status, err := s.GetBudgetStatus(ctx, budget.ID)
 			if err != nil {
+				if strict {
+					return nil, fmt.Errorf("read budget %s status: %w", budget.ID, err)
+				}
 				continue
 			}
 

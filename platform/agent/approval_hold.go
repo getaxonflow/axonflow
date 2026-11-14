@@ -260,6 +260,11 @@ type approvalHoldResult struct {
 	// whenever the hold acted (queued, reused, spent or refused a retry).
 	approvalID string
 	outcome    string
+	// bindingDigest is the server-computed digest of the exact held call. It is
+	// carried to the decision audit row so an execution boundary can prove the
+	// final allow consumed the same queue row without reimplementing the hold's
+	// canonicalization.
+	bindingDigest string
 }
 
 type approvalIDHeaderKey struct{}

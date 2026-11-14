@@ -105,7 +105,8 @@ func TestOversizedAPIRequestDecodeKeepsNonHostedCompatibilityAndDeniesHostedFing
 func setHostedStarterTestConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv(hostedSecurityAcceptanceEnv, "4488")
-	t.Setenv(hostedWorkflowAcceptanceEnv, "4486")
+	t.Setenv(hostedOutcomeWorkflowAcceptanceEnv, "4486")
+	t.Setenv(hostedFinCrimeAcceptanceEnv, "4611")
 	t.Setenv(hostedModuleCapabilitiesEnv, "fincrime,payment_exception,support_refund")
 	t.Setenv(hostedPublicBaseURLEnv, "https://try-staging.getaxonflow.com")
 	t.Setenv(hostedPortalPublicBaseURLEnv, "https://portal.try-staging.getaxonflow.com")
@@ -142,7 +143,8 @@ func TestHostedPaidLaunchReadyRequiresBothAcceptedDependencies(t *testing.T) {
 	if hostedPaidLaunchReady() {
 		t.Fatal("security acceptance alone must not make the paid workflow launchable")
 	}
-	t.Setenv(hostedWorkflowAcceptanceEnv, "4486")
+	t.Setenv(hostedOutcomeWorkflowAcceptanceEnv, "4486")
+	t.Setenv(hostedFinCrimeAcceptanceEnv, "4611")
 	if hostedPaidLaunchReady() {
 		t.Fatal("dependency acceptance without deployed module capabilities must not make the launch gate ready")
 	}
@@ -187,6 +189,35 @@ func TestHostedConfiguredModulesRejectsUnknownAndDoesNotAdvertiseMissingModules(
 	t.Setenv(hostedModuleCapabilitiesEnv, "fincrime,not-a-module")
 	if _, err := hostedConfiguredModules(); err == nil {
 		t.Fatal("an unknown module must fail closed")
+	}
+}
+
+func TestHostedModuleConfiguredIntentIsIndependentDefaultOffAndNotReadiness(t *testing.T) {
+	t.Setenv(hostedSecurityAcceptanceEnv, "4488")
+	t.Setenv(hostedOutcomeWorkflowAcceptanceEnv, "4486")
+	if hostedModuleConfiguredIntent("payment_exception") {
+		t.Fatal("an absent server-side module must remain off")
+	}
+	t.Setenv(hostedModuleCapabilitiesEnv, "payment_exception")
+	if !hostedModuleConfiguredIntent("payment_exception") {
+		t.Fatal("configured payment module should report operator intent")
+	}
+	if hostedModuleConfiguredIntent("support_refund") {
+		t.Fatal("payment deployment must not imply refund deployment")
+	}
+	if hostedModuleConfiguredIntent("caller_asserted") {
+		t.Fatal("unknown caller-asserted module must never become ready")
+	}
+	t.Setenv(hostedModuleCapabilitiesEnv, "fincrime")
+	if hostedModuleConfiguredIntent("fincrime") {
+		t.Fatal("FinCrime config intent requires its independent #4611 acceptance")
+	}
+	t.Setenv(hostedFinCrimeAcceptanceEnv, "4611")
+	if !hostedModuleConfiguredIntent("fincrime") {
+		t.Fatal("FinCrime config intent should use #4611, not #4486")
+	}
+	if hostedPaidLaunchReady() {
+		t.Fatal("one independently deployed module must not advertise the complete Starter offer")
 	}
 }
 

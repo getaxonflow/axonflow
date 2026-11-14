@@ -79,8 +79,12 @@ var minVersion = map[string]string{
 	"google-adk":     "1.2.0",
 }
 
-// recommendedVersion is the newest release of each client that is live on its
-// registry. A client below it keeps working and receives an upgrade hint; the
+// recommendedVersion is the release selected by the current train for each
+// client. Every value must resolve live before the train completes. During the
+// release-prep window a value may name an integration package that is explicitly
+// scheduled later in the same train; the release manifest must distinguish that
+// planned publication from artifacts already live. A client below the
+// recommendation keeps working and receives an upgrade hint; the
 // MinPluginVersion floor above is what actually gates.
 //
 // Same attribution as the floor: the original recommended-version bump landed
@@ -92,6 +96,12 @@ var minVersion = map[string]string{
 // codex on ClawHub).
 //
 // Release-train history, newest first:
+//
+//   - the v11.5.0 train reconciles the already-published OpenClaw 2.10.4
+//     release and keeps n8n at the verified public 1.2.1 artifact. The tested
+//     1.3.0 source is deferred because its canonical npm provenance path
+//     requires GitHub OIDC and GitHub Actions is unavailable for this train.
+//     No minimum moves and no unpublished package is advertised.
 //
 //   - the v11.4.0 train recommends the published OpenClaw 2.10.3,
 //     Claude Code 1.14.0, Cursor 1.10.0, and Codex 1.10.0 releases.
@@ -176,7 +186,7 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.10.3",
+	"openclaw":       "2.10.4",
 	"claude-code":    "1.14.0",
 	"cursor":         "1.10.0",
 	"codex":          "1.10.0",

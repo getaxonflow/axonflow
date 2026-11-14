@@ -255,7 +255,7 @@ func RenderCensus(r *Registry, narratives Narratives) string {
 
 	p("# AxonFlow Edition Capability Census\n\n")
 	p("**Platform version:** %s\\\n", r.Platform)
-	p("**Registry schema:** %s  \n", r.Schema)
+	p("**Registry schema:** %s\\\n", r.Schema)
 	p("**Generated:** %s\n\n", r.Generated)
 	p("> GENERATED FILE — do not edit. Every number, row and finding below is\n")
 	p("> computed from `platform/shared/capability/registry.json` by\n")
@@ -492,6 +492,37 @@ func RenderCensus(r *Registry, narratives Narratives) string {
 		}
 	}
 
+	p("## Declared module contracts\n\n")
+	p("These rows describe stable deployment shapes, limit DIMENSIONS and refusal\n")
+	p("vocabulary. They do not grant a capability, publish a numeric allowance or\n")
+	p("claim that a named fleet has deployed it; runtime authority remains the signed\n")
+	p("licence or server-side grant and durable usage store.\n\n")
+	p("| ID | Topologies | Limit dimensions | Refusal reasons |\n")
+	p("|---|---|---|---|\n")
+	for _, e := range r.Entries {
+		if len(e.Topologies) == 0 && len(e.Limits) == 0 && len(e.RefusalReasons) == 0 {
+			continue
+		}
+		topologies := make([]string, 0, len(e.Topologies))
+		for _, topology := range e.Topologies {
+			topologies = append(topologies, "`"+string(topology)+"`")
+		}
+		limits := make([]string, 0, len(e.Limits))
+		for _, limit := range e.Limits {
+			limits = append(limits, fmt.Sprintf("`%s` (%s/%s/%s)",
+				limit.ID, limit.Unit, limit.Scope, limit.Window))
+		}
+		reasons := make([]string, 0, len(e.RefusalReasons))
+		for _, reason := range e.RefusalReasons {
+			reasons = append(reasons, "`"+string(reason)+"`")
+		}
+		p("| `%s` | %s | %s | %s |\n", e.ID,
+			blankCell(strings.Join(topologies, ", ")),
+			blankCell(strings.Join(limits, ", ")),
+			blankCell(strings.Join(reasons, ", ")))
+	}
+	p("\n")
+
 	p("## The census\n\n")
 	p("`Min` is the least edition that can use the capability. `Class` is the ADR-066\n")
 	p("source classification. `Tag` and `Sync` are derived from the build constraints\n")
@@ -525,6 +556,13 @@ func RenderCensus(r *Registry, narratives Narratives) string {
 	}
 	p("\n")
 	return b.String()
+}
+
+func blankCell(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
 }
 
 func dash(a Availability) string {

@@ -38,6 +38,10 @@ type RequestContext struct {
 	// When true, failover is disabled and the requested provider must succeed.
 	StrictProvider bool
 
+	// DisableFailover is a platform transport control used by a strict governed
+	// call that must represent every reached provider with one canonical receipt.
+	DisableFailover bool
+
 	// Model is the explicitly requested model (if any)
 	Model string
 

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"os"
@@ -382,6 +383,7 @@ CREATE TABLE...`,
 // TestGetMigrationPaths tests migration path selection based on deployment mode
 func TestGetMigrationPaths(t *testing.T) {
 	basePath := "/test/migrations"
+	t.Setenv(deploymode.EnvBackendProfile, "")
 
 	tests := []struct {
 		name          string
@@ -499,6 +501,277 @@ func TestGetMigrationPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGetMigrationPathsHostedFinCrimeProfileAddsOnlyExactMigration(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedFinCrime)
+
+	paths, err := getMigrationPaths("/test/migrations")
+	if err != nil {
+		t.Fatalf("getMigrationPaths: %v", err)
+	}
+	want := []string{
+		"/test/migrations/core",
+		"/test/migrations/community-saas",
+		"/test/migrations/enterprise/166_fincrime_score_admission.sql",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("profile paths = %v, want %v", paths, want)
+	}
+	for _, path := range paths {
+		if path == "/test/migrations/enterprise" {
+			t.Fatal("Hosted FinCrime profile selected the whole Enterprise migration directory")
+		}
+	}
+}
+
+func TestGetMigrationPathsHostedCommercialProfileAddsExactPaidModuleChain(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedCommercial)
+	paths, err := getMigrationPaths("/test/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/test/migrations/core",
+		"/test/migrations/community-saas",
+		"/test/migrations/enterprise/166_fincrime_score_admission.sql",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("Hosted commercial paths = %v, want %v", paths, want)
+	}
+	for _, path := range paths {
+		if path == "/test/migrations/enterprise" {
+			t.Fatal("Hosted commercial profile imported the Enterprise directory")
+		}
+	}
+}
+
+func TestGetMigrationPathsRefusesUnknownOrIncompatibleBackendProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, profile string
+	}{
+		{name: "unknown", mode: deploymode.ModeCommunitySaas, profile: "unknown"},
+		{name: "wrong mode", mode: "community", profile: deploymode.BackendProfileHostedFinCrime},
+		{name: "enterprise fleet must not layer hosted profile", mode: "saas", profile: deploymode.BackendProfileHostedFinCrime},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", tc.mode)
+			t.Setenv(deploymode.EnvBackendProfile, tc.profile)
+			paths, err := getMigrationPaths("/test/migrations")
+			if err == nil || paths != nil {
+				t.Fatalf("getMigrationPaths = (%v, %v), want nil error", paths, err)
+			}
+			if !strings.Contains(err.Error(), tc.profile) || !strings.Contains(err.Error(), tc.mode) {
+				t.Fatalf("error %q does not name rejected profile %q and mode %q", err, tc.profile, tc.mode)
+			}
+		})
+	}
+}
+
+func TestCollectMigrationsHostedFinCrimeProfileDoesNotImportEnterpriseSiblings(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsRoot := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedFinCrime)
+
+	migrations, err := collectMigrations(migrationsRoot)
+	if err != nil {
+		t.Fatalf("collectMigrations: %v", err)
+	}
+	var enterpriseFiles []string
+	for _, migration := range migrations {
+		if migration.Category == deploymode.CategoryEnterprise {
+			enterpriseFiles = append(enterpriseFiles, filepath.Base(migration.Path))
+		}
+	}
+	want := []string{"166_fincrime_score_admission.sql"}
+	if !reflect.DeepEqual(enterpriseFiles, want) {
+		t.Fatalf("Enterprise files selected by Hosted FinCrime profile = %v, want %v", enterpriseFiles, want)
+	}
+}
+
+func TestCollectMigrationsHostedFinCrimeProfileRefusesMissingExactMigration(t *testing.T) {
+	root := t.TempDir()
+	for _, category := range []string{"core", "community-saas", "enterprise"} {
+		if err := os.MkdirAll(filepath.Join(root, category), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedFinCrime)
+
+	migrations, err := collectMigrations(root)
+	if err == nil || migrations != nil {
+		t.Fatalf("collectMigrations = (%v, %v), want fatal missing exact migration", migrations, err)
+	}
+	if !strings.Contains(err.Error(), "166_fincrime_score_admission.sql") {
+		t.Fatalf("error %q does not name the missing required migration", err)
+	}
+}
+
+func TestGetMigrationPathsSelfHostedOutcomeProfileAddsOnlyExactMigrations(t *testing.T) {
+	for _, mode := range []string{"in-vpc-enterprise", "enterprise", "invpc"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", mode)
+			t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileSelfHostedOutcomes)
+
+			paths, err := getMigrationPaths("/test/migrations")
+			if err != nil {
+				t.Fatalf("getMigrationPaths: %v", err)
+			}
+			want := []string{
+				"/test/migrations/core",
+				"/test/migrations/enterprise",
+				"/test/migrations/community-saas/189_hosted_subscriptions.sql",
+				"/test/migrations/community-saas/191_hosted_billing_rls.sql",
+				"/test/migrations/community-saas/195_hosted_outcome_case_store.sql",
+				"/test/migrations/community-saas/205_hosted_outcome_module_quota.sql",
+				"/test/migrations/community-saas/206_hosted_billing_app_role_boundary.sql",
+				"/test/migrations/community-saas/207_self_hosted_outcome_authority_references.sql",
+				"/test/migrations/community-saas/208_hosted_outcome_investigation_receipts.sql",
+			}
+			if !reflect.DeepEqual(paths, want) {
+				t.Fatalf("profile paths = %v, want %v", paths, want)
+			}
+			for _, path := range paths {
+				if path == "/test/migrations/community-saas" {
+					t.Fatal("self-hosted outcome profile imported the whole community-saas category")
+				}
+			}
+		})
+	}
+}
+
+func TestCollectMigrationsSelfHostedOutcomeProfileDoesNotImportCommunitySaasSiblings(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsRoot := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+	t.Setenv("DEPLOYMENT_MODE", "in-vpc-enterprise")
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileSelfHostedOutcomes)
+
+	migrations, err := collectMigrations(migrationsRoot)
+	if err != nil {
+		t.Fatalf("collectMigrations: %v", err)
+	}
+	var hostedFiles []string
+	for _, migration := range migrations {
+		if migration.Category == "community-saas" {
+			hostedFiles = append(hostedFiles, filepath.Base(migration.Path))
+		}
+	}
+	want := []string{
+		"189_hosted_subscriptions.sql",
+		"191_hosted_billing_rls.sql",
+		"195_hosted_outcome_case_store.sql",
+		"205_hosted_outcome_module_quota.sql",
+		"206_hosted_billing_app_role_boundary.sql",
+		"207_self_hosted_outcome_authority_references.sql",
+		"208_hosted_outcome_investigation_receipts.sql",
+	}
+	if !reflect.DeepEqual(hostedFiles, want) {
+		t.Fatalf("community-saas files selected by self-hosted outcome profile = %v, want %v", hostedFiles, want)
+	}
+}
+
+func TestCollectMigrationsSelfHostedOutcomeProfileRefusesMissingExactMigration(t *testing.T) {
+	root := t.TempDir()
+	for _, category := range []string{"core", "enterprise", "community-saas"} {
+		if err := os.MkdirAll(filepath.Join(root, category), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{
+		"189_hosted_subscriptions.sql",
+		"191_hosted_billing_rls.sql",
+		"195_hosted_outcome_case_store.sql",
+		"205_hosted_outcome_module_quota.sql",
+		"206_hosted_billing_app_role_boundary.sql",
+		"207_self_hosted_outcome_authority_references.sql",
+	} {
+		if err := os.WriteFile(filepath.Join(root, "community-saas", file), []byte("SELECT 1;"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DEPLOYMENT_MODE", "in-vpc-enterprise")
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileSelfHostedOutcomes)
+
+	migrations, err := collectMigrations(root)
+	if err == nil || migrations != nil {
+		t.Fatalf("collectMigrations = (%v, %v), want fatal missing exact migration", migrations, err)
+	}
+	if !strings.Contains(err.Error(), "208_hosted_outcome_investigation_receipts.sql") {
+		t.Fatalf("error %q does not name the missing required migration", err)
+	}
+}
+
+func TestOutcomeRuntimeE2EUsesProductionMigrationProfile(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	compose, err := os.ReadFile(filepath.Join(repoRoot, "runtime-e2e", "4477_payment_exception", "docker-compose.payment.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(compose, []byte("AXONFLOW_BACKEND_PROFILE: self-hosted-outcomes")) {
+		t.Fatal("payment/refund runtime E2E does not boot through the supported self-hosted outcome migration profile")
+	}
+	script, err := os.ReadFile(filepath.Join(repoRoot, "runtime-e2e", "4477_payment_exception", "test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		`< "$ROOT/migrations/community-saas/189_hosted_subscriptions.sql"`,
+		`< "$ROOT/migrations/community-saas/191_hosted_billing_rls.sql"`,
+		`< "$ROOT/migrations/community-saas/195_hosted_outcome_case_store.sql"`,
+		`< "$ROOT/migrations/community-saas/205_hosted_outcome_module_quota.sql"`,
+		`< "$ROOT/migrations/community-saas/206_hosted_billing_app_role_boundary.sql"`,
+		`< "$ROOT/migrations/community-saas/207_self_hosted_outcome_authority_references.sql"`,
+		`< "$ROOT/migrations/community-saas/208_hosted_outcome_investigation_receipts.sql"`,
+	} {
+		if bytes.Contains(script, []byte(forbidden)) {
+			t.Fatalf("runtime E2E still repairs the schema manually with %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"hosted_outcome_cases",
+		"hosted_outcome_module_grants",
+		"hosted_outcome_self_hosted_eligibility",
+		"hosted_outcome_investigations",
+		"hosted_outcome_admit_operation(character varying,character varying,text)",
+	} {
+		if !bytes.Contains(script, []byte(required)) {
+			t.Errorf("runtime E2E readiness gate does not require %q", required)
+		}
+	}
+	if bytes.Contains(script, []byte("app-role-repair.sql")) {
+		t.Fatal("runtime E2E still masks production migration posture with app-role repair SQL")
+	}
+	postureCheck, err := os.ReadFile(filepath.Join(
+		repoRoot, "runtime-e2e", "4477_payment_exception", "app-role-posture-check.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upperPostureCheck := bytes.ToUpper(postureCheck)
+	for _, forbidden := range [][]byte{
+		[]byte("ALTER FUNCTION"),
+		[]byte("CREATE POLICY"),
+		[]byte("DROP POLICY"),
+		[]byte("GRANT "),
+		[]byte("REVOKE "),
+	} {
+		if bytes.Contains(upperPostureCheck, forbidden) {
+			t.Fatalf("runtime posture check mutates the database with %q", forbidden)
+		}
 	}
 }
 

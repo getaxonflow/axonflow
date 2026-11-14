@@ -23,8 +23,9 @@ type MockRepository struct {
 	records    []UsageRecord
 
 	// Error injection
-	saveUsageErr error
-	pingErr      error
+	saveUsageErr       error
+	pingErr            error
+	budgetsForScopeErr error
 }
 
 func NewMockRepository() *MockRepository {
@@ -131,6 +132,9 @@ func (m *MockRepository) ListBudgets(ctx context.Context, opts ListBudgetsOption
 func (m *MockRepository) GetBudgetsForScope(ctx context.Context, scope BudgetScope, scopeID string, orgID, tenantID string) ([]Budget, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.budgetsForScopeErr != nil {
+		return nil, m.budgetsForScopeErr
+	}
 
 	var result []Budget
 	for _, b := range m.budgets {
@@ -139,6 +143,19 @@ func (m *MockRepository) GetBudgetsForScope(ctx context.Context, scope BudgetSco
 		}
 	}
 	return result, nil
+}
+
+func TestCheckBudgetStrictFailsClosedOnUnreadableBudgetScope(t *testing.T) {
+	repo := NewMockRepository()
+	repo.budgetsForScopeErr = errors.New("budget store unavailable")
+	service := NewService(repo, nil)
+
+	if decision, err := service.CheckBudget(context.Background(), "org-1", "", "", "", "tenant-1"); err != nil || decision == nil || !decision.Allowed {
+		t.Fatalf("legacy CheckBudget posture changed: decision=%+v err=%v", decision, err)
+	}
+	if decision, err := service.CheckBudgetStrict(context.Background(), "org-1", "", "", "", "tenant-1"); err == nil || decision != nil {
+		t.Fatalf("strict budget check failed open: decision=%+v err=%v", decision, err)
+	}
 }
 
 func (m *MockRepository) SaveUsage(ctx context.Context, record *UsageRecord) error {

@@ -171,9 +171,26 @@ func requireInternalProxyAuth(next http.Handler) http.Handler {
 		// selects dynamic rows (the route request, the WCP step gate and its
 		// checkpoint resume, MAP) hands the fact producer this request's context,
 		// and a struct field would be one more thing a JSON body could set.
-		next.ServeHTTP(w, r.WithContext(withIdentityEstablished(r.Context(),
-			sharedidentity.IdentityIsEstablished(r.Header.Get(sharedidentity.HeaderIdentitySource)))))
+		ctx := withIdentityEstablished(r.Context(),
+			sharedidentity.IdentityIsEstablished(r.Header.Get(sharedidentity.HeaderIdentitySource)))
+		ctx = withLLMFailoverDisabled(ctx,
+			sharedidentity.DisableLLMFailoverIsAsserted(r.Header.Get(sharedidentity.HeaderDisableLLMFailover)))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type llmFailoverDisabledKey struct{}
+
+func withLLMFailoverDisabled(ctx context.Context, disabled bool) context.Context {
+	return context.WithValue(ctx, llmFailoverDisabledKey{}, disabled)
+}
+
+func llmFailoverDisabledFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(llmFailoverDisabledKey{}).(bool)
+	return disabled
 }
 
 // identityEstablishedKey carries whether the agent vouched that the request's

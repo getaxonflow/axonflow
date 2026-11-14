@@ -72,6 +72,14 @@ var (
 	installedPolicyPacks      []*policypack.Pack
 	installedPackDetectors    []sharedpolicy.CompiledPolicy
 	installedFincrimeRegistry *fincrime.Registry
+	// installedPaymentExceptionPack is carried by the Enterprise image but is
+	// never composed deployment-wide. The authenticated org+tenant module
+	// projection resolves it per request.
+	installedPaymentExceptionPack     *policypack.Pack
+	instantiatedPaymentExceptionPack  *activation.InstalledPack
+	installedSupportRefundPack        *policypack.Pack
+	instantiatedSupportRefundPack     *activation.InstalledPack
+	instantiatedDeploymentPolicyPacks []activation.InstalledPack
 )
 
 // installPolicyPacks loads the installed packs and compiles their detectors, or
@@ -84,6 +92,18 @@ func installPolicyPacks() error {
 	detectors, err := sharedpolicy.CompileInstalledDetectors(packs)
 	if err != nil {
 		return fmt.Errorf("%s: %w", EnvPolicyPacks, err)
+	}
+	var paymentPack *policypack.Pack
+	var supportRefundPack *policypack.Pack
+	if edition.Current == edition.Enterprise {
+		paymentPack, err = loadPolicyPack("payment-exception")
+		if err != nil {
+			return fmt.Errorf("payment_exception module policy: %w", err)
+		}
+		supportRefundPack, err = loadPolicyPack("support-refund")
+		if err != nil {
+			return fmt.Errorf("support_refund module policy: %w", err)
+		}
 	}
 	var fincrimeRegistry *fincrime.Registry
 	for _, p := range packs {
@@ -108,6 +128,8 @@ func installPolicyPacks() error {
 	}
 	installedPolicyPacks, installedPackDetectors = packs, detectors
 	installedFincrimeRegistry = fincrimeRegistry
+	installedPaymentExceptionPack = paymentPack
+	installedSupportRefundPack = supportRefundPack
 	for _, p := range packs {
 		log.Printf("✅ [POLICY-PACK] installed %s v%d: %d detector(s) (PRD v11 §1.9)", p.Source.ID, p.Source.Version, len(p.Source.Detectors))
 	}
@@ -131,6 +153,39 @@ func instantiatePolicyPacks(packs []*policypack.Pack) ([]activation.InstalledPac
 		return nil, fmt.Errorf("%s (%s §1.9): %w", EnvPolicyPacks, retiredenv.PRD, err)
 	}
 	return installed, nil
+}
+
+func deploymentWidePolicyPacks(packs []*policypack.Pack) []*policypack.Pack {
+	out := make([]*policypack.Pack, 0, len(packs))
+	for _, p := range packs {
+		if p.Source.ID != "payment-exception" && p.Source.ID != "support-refund" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func loadPolicyPack(name string) (*policypack.Pack, error) {
+	dir := filepath.Join(policyPackDir, name)
+	source, err := os.ReadFile(filepath.Join(dir, "pack.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("image carries no such pack %q", name)
+		}
+		return nil, fmt.Errorf("read %s source: %w", name, err)
+	}
+	committed, err := os.ReadFile(filepath.Join(dir, "document.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read %s committed document: %w", name, err)
+	}
+	pack, err := policypack.Load(source, committed)
+	if err != nil {
+		return nil, err
+	}
+	if pack.Source.ID != name {
+		return nil, fmt.Errorf("the pack in that directory is %q, not %q", pack.Source.ID, name)
+	}
+	return pack, nil
 }
 
 // loadInstalledPolicyPacks reads EnvPolicyPacks and loads each named pack, or
@@ -192,21 +247,9 @@ func loadInstalledPolicyPacks() ([]*policypack.Pack, error) {
 		if n != filepath.Base(n) || strings.ContainsAny(n, `/\`) {
 			return nil, refuse(fmt.Sprintf("names %q, which is not a pack name", n))
 		}
-		dir := filepath.Join(policyPackDir, n)
-		source, err := os.ReadFile(filepath.Join(dir, "pack.json"))
-		if err != nil {
-			return nil, refuse(fmt.Sprintf("names %q, and this image carries no such pack (%v)", n, err))
-		}
-		committed, err := os.ReadFile(filepath.Join(dir, "document.json"))
-		if err != nil {
-			return nil, refuse(fmt.Sprintf("names %q, whose compiled document this image does not carry (%v)", n, err))
-		}
-		p, err := policypack.Load(source, committed)
+		p, err := loadPolicyPack(n)
 		if err != nil {
 			return nil, refuse(fmt.Sprintf("names %q, which does not load: %v", n, err))
-		}
-		if p.Source.ID != n {
-			return nil, refuse(fmt.Sprintf("names %q, and the pack in that directory is %q", n, p.Source.ID))
 		}
 		packs = append(packs, p)
 	}

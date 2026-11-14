@@ -3,7 +3,11 @@
 
 package capability
 
-import "sort"
+import (
+	"sort"
+
+	"axonflow/platform/shared/capabilityresolution"
+)
 
 // SchemaVersion is the registry schema version. It is stated in the registry
 // file itself and checked on load: a reader compiled against one schema and
@@ -12,7 +16,7 @@ import "sort"
 //
 // Bump the MINOR component for an additive field; bump MAJOR when a field
 // changes meaning or is removed, and update Loader compatibility below.
-const SchemaVersion = "1.0"
+const SchemaVersion = "1.1"
 
 // Edition is the minimum edition a deployment needs for a capability to be
 // available. This is the ADR-066 vocabulary (the enforcement response quotes
@@ -245,6 +249,69 @@ type Score struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// Topology is a deployment shape the capability contract supports. It says
+// where a capability is designed to run, not whether any named fleet has
+// deployed or enabled it.
+type Topology string
+
+const (
+	TopologySelfHosted Topology = "self_hosted"
+	TopologyHosted     Topology = "hosted"
+)
+
+var validTopology = map[Topology]bool{
+	TopologySelfHosted: true,
+	TopologyHosted:     true,
+}
+
+// LimitKind classifies a declared limit dimension. The registry names the
+// dimension only; concrete values and authoritative enforcement live in the
+// signed licence or server-side grant and usage store.
+type LimitKind string
+
+const (
+	LimitQuota LimitKind = "quota"
+)
+
+var validLimitKind = map[LimitKind]bool{LimitQuota: true}
+
+// LimitScope names the isolation boundary at which a limit is counted.
+type LimitScope string
+
+const (
+	LimitScopeTenant LimitScope = "tenant"
+)
+
+var validLimitScope = map[LimitScope]bool{LimitScopeTenant: true}
+
+// LimitWindow names the reset window of a quota. It is part of the stable
+// contract even though a plan-specific numeric value is deliberately not.
+type LimitWindow string
+
+const (
+	LimitWindowCalendarMonth LimitWindow = "calendar_month"
+)
+
+var validLimitWindow = map[LimitWindow]bool{LimitWindowCalendarMonth: true}
+
+// Limit describes one stable usage dimension without publishing a product
+// price or allowance. Values are resolved server-side at request time.
+type Limit struct {
+	// ID is a stable family-qualified identifier.
+	ID string `json:"id"`
+	// Kind is the limit mechanism.
+	Kind LimitKind `json:"kind"`
+	// Unit is the singular counted operation as a lower_snake token, for
+	// example score_request.
+	Unit string `json:"unit"`
+	// Scope is the isolation boundary of the count.
+	Scope LimitScope `json:"scope"`
+	// Window is the quota reset window.
+	Window LimitWindow `json:"window"`
+	// Description states what consumes one unit.
+	Description string `json:"description"`
+}
+
 // Entry is one capability.
 //
 // Every field is populated for every entry; the omitempty tags exist so the
@@ -268,6 +335,17 @@ type Entry struct {
 	Classification Classification `json:"source_classification"`
 	BuildTag       BuildTag       `json:"build_tag"`
 	Sync           Sync           `json:"sync"`
+
+	// Topologies are supported deployment shapes, not a deployment-status
+	// claim. Empty preserves older registry entries that predate this contract.
+	Topologies []Topology `json:"topologies,omitempty"`
+	// Limits name stable usage dimensions. Numeric allowances and enforcement
+	// never live in this descriptive registry.
+	Limits []Limit `json:"limits,omitempty"`
+	// RefusalReasons are the stable machine reasons this capability promises
+	// when effective access cannot be resolved. Runtime code imports the same
+	// vocabulary package; this list does not itself authorize anything.
+	RefusalReasons []capabilityresolution.Reason `json:"refusal_reasons,omitempty"`
 
 	// Implementation are repo-relative paths or directories holding the
 	// backing code. At least one is required; the derivation checks that the

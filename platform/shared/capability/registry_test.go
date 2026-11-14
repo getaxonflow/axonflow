@@ -27,6 +27,85 @@ func TestEmbeddedRegistryIsValid(t *testing.T) {
 	}
 }
 
+func TestGovernedModelRouteFamilyStaysCensused(t *testing.T) {
+	entry := Load().ByID("governance.proxy_request")
+	if entry == nil {
+		t.Fatal("governance.proxy_request is missing")
+	}
+	for _, route := range []string{
+		"/api/v1/governed/model",
+		"/api/v1/governed/model/readiness",
+		"/api/v1/governed/model/status",
+	} {
+		if !slices.Contains(entry.Routes, route) {
+			t.Errorf("governance.proxy_request does not claim %s", route)
+		}
+	}
+}
+
+func TestHostedSquareRoutesBelongOnlyToSupportRefund(t *testing.T) {
+	registry := Load()
+	support := registry.ByID("support_refund.workflow")
+	payment := registry.ByID("payment_exception.workflow")
+	if support == nil || payment == nil {
+		t.Fatalf("outcome module entries missing: support=%v payment=%v", support != nil, payment != nil)
+	}
+	for _, route := range []string{
+		"/api/v1/internal/outcomes/action-gateway/readiness",
+		"/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute",
+		"/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/recover",
+		"/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/resume",
+		"/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/reconcile",
+		"/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant",
+		"/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant/revoke",
+	} {
+		if !slices.Contains(support.Routes, route) {
+			t.Errorf("support_refund must claim exact route %s; a shared prefix can hide a missing or cross-module claim", route)
+		}
+		owner := registry.CapabilityForRoute(route)
+		if owner == nil || owner.ID != support.ID {
+			got := "<none>"
+			if owner != nil {
+				got = owner.ID
+			}
+			t.Errorf("route %s owner = %s, want %s", route, got, support.ID)
+		}
+	}
+	if len(payment.Routes) != 0 {
+		t.Fatalf("payment_exception must remain independently routeless; got %v", payment.Routes)
+	}
+	if owner := registry.CapabilityForRoute("/api/v1/internal/outcomes/payment-exception/cases/example"); owner != nil {
+		t.Fatalf("support_refund must not own a future payment_exception route through a shared prefix; got %s", owner.ID)
+	}
+}
+
+func TestHostedSquareOwnershipFailsClosedWhenAnExactClaimIsDeleted(t *testing.T) {
+	const missing = "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute"
+	var doc map[string]any
+	if err := json.Unmarshal(registryJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	capability := capByID(t, doc, "support_refund.workflow")
+	var kept []any
+	for _, raw := range capability["routes"].([]any) {
+		if raw.(string) != missing {
+			kept = append(kept, raw)
+		}
+	}
+	capability["routes"] = kept
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutant, err := Parse(encoded)
+	if err != nil {
+		t.Fatalf("fixture mutation should remain valid: %v", err)
+	}
+	if owner := mutant.CapabilityForRoute(missing); owner != nil {
+		t.Fatalf("deleted exact claim %s still resolves to %s; a broad prefix is masking the missing ownership", missing, owner.ID)
+	}
+}
+
 // TestEveryOwnerAndImplementationPathExists is the tree-side half of
 // validation: a registry can be internally perfect and still name files that
 // are not there.

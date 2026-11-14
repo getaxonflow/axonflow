@@ -68,7 +68,7 @@ func TestTheActivationTakesTheEditionBoundaryFromTheProcess(t *testing.T) {
 	}
 }
 
-// editionBoundaryWiring reports why src does not build ActivationFor's
+// editionBoundaryWiring reports why src does not build ActivationForPacks's
 // activation.Inputs from the enforcer's editionBoundary, or nil when it does.
 func editionBoundaryWiring(src []byte) error {
 	fset := token.NewFileSet()
@@ -78,12 +78,12 @@ func editionBoundaryWiring(src []byte) error {
 	}
 	var fn *ast.FuncDecl
 	for _, d := range f.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "ActivationFor" && fd.Recv != nil {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "ActivationForPacks" && fd.Recv != nil {
 			fn = fd
 		}
 	}
 	if fn == nil {
-		return fmt.Errorf("no Enforcer.ActivationFor method")
+		return fmt.Errorf("no Enforcer.ActivationForPacks method")
 	}
 	var profileVar, refuseVar string
 	var profileVal, refuseVal string

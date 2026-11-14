@@ -135,6 +135,29 @@ else
   bad "control: a newly registered undocumented route went UNDETECTED"
 fi
 
+# 1b. The release-critical Square routes must stay attached to agent-api.yaml.
+#     A generic planted route proves discovery, but not that deleting one of
+#     these exact contracts becomes new debt rather than being masked by a
+#     prefix or by another spec.
+seed
+SQUARE_PATH='/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute'
+SQUARE_CENSUS_PATH='/api/v1/internal/outcomes/support-refund/cases/{}/actions/refund/execute'
+python3 - "$TMP/tree/docs/api/agent-api.yaml" "$SQUARE_PATH" <<'PY'
+import pathlib, sys, yaml
+spec, path = pathlib.Path(sys.argv[1]), sys.argv[2]
+doc = yaml.safe_load(spec.read_text())
+if path not in doc.get("paths", {}):
+    raise SystemExit(f"planted control has no subject: {path}")
+del doc["paths"][path]
+spec.write_text(yaml.safe_dump(doc, sort_keys=False))
+PY
+python3 "$CENSUS" --root "$TMP/tree" --tsv 2>/dev/null | sort > "$TMP/square-missing.tsv"
+if grep -Fq "$SQUARE_CENSUS_PATH" "$TMP/square-missing.tsv"; then
+  ok "control: deleting an exact Hosted Square spec path is caught"
+else
+  bad "control: deleting $SQUARE_PATH from agent-api.yaml went UNDETECTED"
+fi
+
 # 2. Documenting a route must make its baseline row stale - the ratchet turning.
 #    Uses a route that really is in the baseline today, chosen from the file rather
 #    than named: the first version named /api/v1/auth/login, and the PR that

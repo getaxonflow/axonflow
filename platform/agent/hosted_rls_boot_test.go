@@ -19,7 +19,7 @@ func TestVerifyHostedCustomerDataRLS(t *testing.T) {
 	defer db.Close()
 	for _, table := range hostedCustomerDataTables {
 		mock.ExpectQuery(`SELECT c.relrowsecurity`).WithArgs(table).
-			WillReturnRows(safeHostedGuardRow())
+			WillReturnRows(safeHostedGuardRow(table))
 	}
 	mock.ExpectQuery(`SELECT c.relname, c.relrowsecurity`).
 		WillReturnRows(hostedCensusRows())
@@ -39,7 +39,7 @@ func TestVerifyHostedCustomerDataRLSRejectsUncataloguedUnsafeTable(t *testing.T)
 	defer db.Close()
 	for _, table := range hostedCustomerDataTables {
 		mock.ExpectQuery(`SELECT c.relrowsecurity`).WithArgs(table).
-			WillReturnRows(safeHostedGuardRow())
+			WillReturnRows(safeHostedGuardRow(table))
 	}
 	mock.ExpectQuery(`SELECT c.relname, c.relrowsecurity`).
 		WillReturnRows(hostedCensusRows().AddRow("future_customer_table", true, true, true, true,
@@ -72,7 +72,7 @@ func TestVerifyHostedCustomerDataRLSAcceptsMissingOptionalLegacyTables(t *testin
 	}
 	defer db.Close()
 	for _, table := range hostedCustomerDataTables {
-		rows := safeHostedGuardRow()
+		rows := safeHostedGuardRow(table)
 		if _, optional := hostedOptionalLegacyCustomerDataTables[table]; optional {
 			rows = sqlmock.NewRows(hostedGuardColumns())
 		}
@@ -103,6 +103,18 @@ func TestVerifyHostedCustomerDataRLSRejectsMissingRequiredTable(t *testing.T) {
 	}
 }
 
+func TestHostedCompositeGuardTablesAreMandatory(t *testing.T) {
+	mandatory := make(map[string]struct{}, len(hostedCustomerDataTables))
+	for _, table := range hostedCustomerDataTables {
+		mandatory[table] = struct{}{}
+	}
+	for table := range hostedCompositeGuardExpressions {
+		if _, ok := mandatory[table]; !ok {
+			t.Errorf("composite-guard table %q is not in the mandatory Hosted inventory", table)
+		}
+	}
+}
+
 func TestVerifyHostedCustomerDataRLSRejectsUnsafeOptionalLegacyTableWhenPresent(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -110,7 +122,7 @@ func TestVerifyHostedCustomerDataRLSRejectsUnsafeOptionalLegacyTableWhenPresent(
 	}
 	defer db.Close()
 	for _, table := range hostedCustomerDataTables {
-		rows := safeHostedGuardRow()
+		rows := safeHostedGuardRow(table)
 		if table == "customer_agent_versions" {
 			expr := hostedIndirectGuardExpressions[table]
 			rows = sqlmock.NewRows(hostedGuardColumns()).AddRow(
@@ -132,8 +144,11 @@ func hostedGuardColumns() []string {
 	return []string{"enabled", "forced", "permissive", "restrictive", "key_column", "guard_using", "guard_check"}
 }
 
-func safeHostedGuardRow() *sqlmock.Rows {
+func safeHostedGuardRow(table string) *sqlmock.Rows {
 	expr := "org_id = current_setting('app.current_org_id', true)"
+	if composite, ok := hostedCompositeGuardExpressions[table]; ok {
+		expr = composite
+	}
 	return sqlmock.NewRows(hostedGuardColumns()).AddRow(true, true, true, true, "org_id", expr, expr)
 }
 

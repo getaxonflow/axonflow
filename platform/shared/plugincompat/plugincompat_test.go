@@ -15,7 +15,7 @@ func TestPinnedToReleaseTrain(t *testing.T) {
 		"n8n": "1.2.0", "google-adk": "1.2.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw": "2.10.3", "claude-code": "1.14.0", "cursor": "1.10.0",
+		"openclaw": "2.10.4", "claude-code": "1.14.0", "cursor": "1.10.0",
 		"codex": "1.10.0", "claude-desktop": "0.4.1",
 		"n8n": "1.2.1", "google-adk": "1.4.0",
 	}

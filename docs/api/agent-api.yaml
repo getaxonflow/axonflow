@@ -48,7 +48,7 @@ info:
   # 1.1.0 through 139 commits between them. Kept true by
   # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
   # scripts/docs/stamp-docs-versions.py.
-  version: 11.4.0
+  version: 11.5.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -82,6 +82,12 @@ tags:
     description: Model Context Protocol data connector operations
   - name: Agent Capabilities
     description: Versioned, bounded Enterprise capability discovery and invocation
+  - name: Hosted Outcome Action Gateway
+    description: |
+      Enterprise-only, tenant-isolated action-gateway operations for the
+      support-refund module's explicitly granted Square Sandbox acceptance.
+      These operations never target Square production. Provider Send remains
+      default-off and every execution requires a separately issued one-run grant.
   - name: Metrics
     description: Performance monitoring and observability
   - name: HITL
@@ -174,6 +180,326 @@ tags:
       license, never from OTLP resource attributes.
 
 paths:
+  /api/v1/internal/outcomes/action-gateway/readiness:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Verify the tenant-isolated Square Sandbox action gateway
+      operationId: hostedSquareActionGatewayReadiness
+      description: |
+        Checks durable stores, grant authority, audit/usage custody and secret
+        metadata without reading provider credential values or calling Square.
+        Available only in the Enterprise Agent overlay when the dedicated
+        tenant-isolated Sandbox runtime is enabled.
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeDelegation'
+      responses:
+        '200':
+          description: Readiness receipt. `operational=false` is a fail-closed result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostedSquareReadinessReceipt'
+        '401':
+          description: Internal-service authentication or subject binding refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '403':
+          description: The signed delegation does not match the dedicated tenant runtime.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Prepare and execute one explicitly granted Square Sandbox refund
+      operationId: executeHostedSquareSandboxRefund
+      description: |
+        Reloads the durable support-refund case, Decision, HITL approval,
+        entitlement and one-run grant, then executes at most one Square Sandbox
+        Provider Send. A post-claim failure returns `202` and must be reconciled;
+        callers must never retry Provider Send.
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeDelegation'
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostedSquareExecuteRequest'}
+      responses:
+        '200':
+          description: Provider result was recorded and authoritatively verified.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '202':
+          description: Provider Send was claimed; reconciliation is required and retry is forbidden.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '400':
+          description: Invalid or non-JSON request body.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '401':
+          description: Internal-service authentication or subject binding refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: Preparation or authority was refused, or a safe non-send preparation was returned.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/HostedSquarePrepareReceipt'
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/recover:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Recover a claimed Square Sandbox refund after interruption
+      operationId: recoverHostedSquareSandboxRefund
+      description: Recovers from durable state without issuing a second Provider Send.
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeDelegation'
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostedSquareBindingRequest'}
+      responses:
+        '200':
+          description: Durable action state was recovered and reconciled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '400':
+          description: Invalid or non-JSON request body.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '401':
+          description: Internal-service authentication or subject binding refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: The durable preparation or binding was refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/resume:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Resume a prepared Square Sandbox refund
+      operationId: resumeHostedSquareSandboxRefund
+      description: |
+        Resumes the existing durable preparation. A post-claim failure returns
+        `202`; callers must reconcile it and must not retry Provider Send.
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeDelegation'
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostedSquareBindingRequest'}
+      responses:
+        '200':
+          description: Provider result was recorded and authoritatively verified.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '202':
+          description: Provider Send was claimed; reconciliation is required and retry is forbidden.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '400':
+          description: Invalid or non-JSON request body.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '401':
+          description: Internal-service authentication or subject binding refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: Binding was refused, or a safe non-send preparation was returned.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/HostedSquarePrepareReceipt'
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/reconcile:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Reconcile a Square Sandbox refund from authoritative provider state
+      operationId: reconcileHostedSquareSandboxRefund
+      description: Reads and reconciles authoritative Square Sandbox state without another Provider Send.
+      security:
+        - InternalServiceID: []
+          InternalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeDelegation'
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostedSquareBindingRequest'}
+      responses:
+        '200':
+          description: Authoritative provider state was reconciled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SquareSandboxAcceptanceReceipt'}
+        '400':
+          description: Invalid or non-JSON request body.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '401':
+          description: Internal-service authentication or subject binding refused.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: Binding was refused or authoritative state was unavailable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Issue one explicit one-run Square Sandbox grant
+      operationId: issueHostedSquareSandboxGrant
+      description: |
+        Requires an authenticated Enterprise tenant credential plus a verified
+        owner or administrator per-user token. The grant is scoped to one case
+        and one Sandbox run; it never authorizes Square production.
+      security:
+        - BasicAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+        - $ref: '#/components/parameters/AdministrativeUserToken'
+      responses:
+        '200':
+          description: One-run grant issued.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HostedSquareGrantReceipt'}
+        '400':
+          description: A supplied body was not an empty JSON object.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '403':
+          description: Verified tenant owner or administrator authority was absent.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: The one-run grant could not be issued for this case.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  /api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant/revoke:
+    post:
+      tags: [Hosted Outcome Action Gateway]
+      summary: Revoke a one-run Square Sandbox grant
+      operationId: revokeHostedSquareSandboxGrant
+      description: Requires the same verified tenant owner or administrator authority as issuance.
+      security:
+        - BasicAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HostedOutcomeCaseID'
+        - $ref: '#/components/parameters/AdministrativeUserToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostedSquareRevokeRequest'}
+      responses:
+        '200':
+          description: One-run grant revoked.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HostedSquareGrantReceipt'}
+        '400':
+          description: The revocation reason was missing or invalid.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '403':
+          description: Verified tenant owner or administrator authority was absent.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '409':
+          description: The one-run grant could not be revoked for this case.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        '503':
+          description: The tenant runtime could not be resolved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+
   /api/v1/capabilities:
     get:
       tags:
@@ -625,6 +951,270 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientResponse'
+
+  /api/v1/governed/model/readiness:
+    get:
+      tags:
+        - Proxy Mode
+      summary: Verify governed-model recovery readiness without model spend
+      description: |
+        Authenticates the same subject-bound internal-service credential used
+        by the governed model invocation, then verifies that the composite
+        organization-and-tenant-scoped durable attempt journal is queryable.
+        This operation never forwards to the Orchestrator or provider and does
+        not create an attempt or usage record, so it is safe on fresh start and
+        after restart.
+      operationId: getGovernedModelReadiness
+      parameters:
+        - in: query
+          name: module
+          required: true
+          description: Independently enabled paid outcome module whose model seam is being checked.
+          schema:
+            type: string
+            enum: [payment_exception, support_refund]
+        - in: header
+          name: X-Internal-Service-ID
+          required: true
+          description: Fixed internal-service credential identifier.
+          schema: {type: string}
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          description: HMAC token bound to the canonical subject header.
+          schema: {type: string}
+        - in: header
+          name: X-Axonflow-Internal-Subject
+          required: true
+          description: Canonical tenant-delegation subject covered by the token signature.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Authenticated non-spending readiness receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [operational, spending, journal_ready, contract, route, module, authenticated_principal]
+                properties:
+                  operational: {type: boolean, enum: [true]}
+                  spending: {type: boolean, enum: [false]}
+                  journal_ready: {type: boolean, enum: [true]}
+                  contract: {type: string, enum: [agent-governed-model-v1]}
+                  route: {type: string, enum: [/api/v1/governed/model]}
+                  module: {type: string, enum: [payment_exception, support_refund]}
+                  authenticated_principal:
+                    type: object
+                    additionalProperties: false
+                    required: [kind, principal_id, organization_id, tenant_id]
+                    properties:
+                      kind: {type: string}
+                      principal_id: {type: string}
+                      organization_id: {type: string}
+                      tenant_id: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503':
+          description: The durable governed-model attempt journal is unavailable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JSONError'}
+
+  /api/v1/governed/model:
+    post:
+      tags:
+        - Proxy Mode
+      summary: Governed model invocation for an authenticated internal service
+      description: |
+        A narrow, edition-neutral service-to-service adapter over the same
+        policy, budget, Orchestrator-router and canonical cost-ledger pipeline
+        as `POST /api/request`. It is intended for optional product modules
+        that need a bounded model recommendation without implementing another
+        provider client, router or usage ledger.
+
+        The entire encoded JSON body MUST NOT exceed 1,000,000 bytes. A larger
+        body is rejected with `413` before authentication-derived identity,
+        budget, policy, Orchestrator or provider processing.
+
+        The caller MUST present `X-Internal-Service-ID`,
+        `X-Internal-Service-Token` and `X-Axonflow-Internal-Subject`. The token
+        is verified against the entire canonical subject. Organization, tenant
+        and service-principal identity come only from that credential; identity
+        keys anywhere in `context` are rejected.
+
+        Budget enforcement is fail-closed before the Orchestrator call. After
+        a provider attempt, canonical usage is written synchronously even when
+        response parsing or response governance fails. The response preserves
+        `provider_info`, `request_id` and `usage_receipt` so the caller can
+        prove whether a provider attempt occurred and was committed.
+      operationId: invokeGovernedModel
+      parameters:
+        - in: header
+          name: X-Internal-Service-ID
+          required: true
+          description: Fixed internal-service credential identifier.
+          schema:
+            type: string
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          description: HMAC token bound to the canonical subject header.
+          schema:
+            type: string
+        - in: header
+          name: X-Axonflow-Internal-Subject
+          required: true
+          description: Canonical tenant-delegation subject covered by the token signature.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - query
+                - correlation
+              properties:
+                query:
+                  type: string
+                  minLength: 1
+                  maxLength: 100000
+                  description: The bounded prompt routed through the existing governed Orchestrator path.
+                context:
+                  type: object
+                  additionalProperties: true
+                  description: |
+                    Non-identity model context. Identity-bearing keys such as client,
+                    organization, tenant, user, principal or service principal are
+                    rejected at any nesting depth. Although ordinary module-specific
+                    keys are permitted, these exact platform-owned keys are reserved
+                    and rejected at any nesting depth: `policy_preferred_provider`,
+                    `policy_allowed_providers`, `policy_routing_reason`, and
+                    `_axonflow_disable_llm_failover`. Only authenticated platform and
+                    anchored-policy processing may supply those effects internally.
+                correlation:
+                  type: object
+                  additionalProperties: false
+                  required: [request_id, trace_id, module, case_id, evidence_version, investigation_key]
+                  description: Deterministic Hosted reservation identity persisted before the forward.
+                  properties:
+                    request_id:
+                      type: string
+                      format: uuid
+                    trace_id:
+                      type: string
+                      pattern: '^[0-9a-f]{32}$'
+                    module:
+                      type: string
+                      maxLength: 64
+                    case_id:
+                      type: string
+                      maxLength: 255
+                    evidence_version:
+                      type: string
+                      pattern: '^[0-9a-f]{64}$'
+                    investigation_key:
+                      type: string
+                      pattern: '^[0-9a-f]{64}$'
+      responses:
+        '200':
+          description: Governed model response whose canonical usage was committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: A configured spend budget denied the request before any provider call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '403':
+          description: The authenticated request was denied by policy before any provider call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '413':
+          description: The encoded JSON request body exceeds 1,000,000 bytes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '500':
+          description: The Orchestrator reported a post-provider or other processing failure; attempt metadata remains in the body when a provider was reached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '503':
+          description: Budget enforcement, policy enforcement, or synchronous canonical usage commit was unavailable; the route fails closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+
+  /api/v1/governed/model/status:
+    get:
+      tags:
+        - Proxy Mode
+      summary: Reconcile a governed model attempt in the authenticated tenant
+      description: |
+        Reads the durable pre-forward/terminal journal for one deterministic
+        request ID. A stale forwarding intent is atomically reconciled to
+        `outcome_unknown`; it is never retried. The same subject-bound internal
+        service authentication as the POST route is required, and a request in
+        another tenant is returned as not found.
+      operationId: getGovernedModelAttemptStatus
+      parameters:
+        - in: query
+          name: request_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: X-Internal-Service-ID
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: X-Internal-Service-Token
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: X-Axonflow-Internal-Subject
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tenant-scoped durable attempt receipt.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No attempt exists in the authenticated org and tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+        '503':
+          description: Durable attempt journal is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
 
   /api/policy/pre-check:
     post:
@@ -6251,6 +6841,35 @@ components:
         exact minting snippet.
 
   parameters:
+    HostedOutcomeDelegation:
+      name: X-Axonflow-Internal-Subject
+      in: header
+      required: true
+      description: |
+        Canonical signed tenant delegation minted by the Hosted outcome
+        service. Its organization and tenant must match the internal-service
+        credential and the dedicated action-gateway runtime.
+      schema:
+        type: string
+        minLength: 1
+    HostedOutcomeCaseID:
+      name: case_id
+      in: path
+      required: true
+      description: Durable support-refund case identifier.
+      schema:
+        type: string
+        minLength: 1
+    AdministrativeUserToken:
+      name: X-User-Token
+      in: header
+      required: true
+      description: |
+        Verified per-user token for an owner or administrator in the same
+        organization and tenant as the authenticated Enterprise credential.
+      schema:
+        type: string
+        minLength: 1
     LicenseKey:
       name: Authorization
       in: header
@@ -6416,6 +7035,132 @@ components:
         type: string
 
   schemas:
+    HostedSquareReadinessReceipt:
+      type: object
+      required: [operational, module, environment, provider_send, one_run_grant, reconciliation]
+      properties:
+        operational: {type: boolean}
+        module: {type: string, enum: [support_refund]}
+        environment: {type: string, enum: [sandbox]}
+        provider_send:
+          type: string
+          enum: [default_off, enabled_with_explicit_one_run_grant]
+        one_run_grant: {type: string, enum: [required]}
+        reconciliation: {type: string, enum: [authoritative_read_required]}
+        blockers:
+          type: array
+          items: {type: string}
+
+    HostedSquareExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [binding, decision_id, approval_id, policy_bundle]
+      properties:
+        binding:
+          type: string
+          minLength: 1
+          description: Opaque binding copied from the durable support-refund case.
+        decision_id: {type: string, minLength: 1}
+        approval_id: {type: string, minLength: 1}
+        policy_bundle:
+          type: string
+          minLength: 1
+          description: Digest of the admitted policy bundle.
+
+    HostedSquareBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [binding]
+      properties:
+        binding:
+          type: string
+          minLength: 1
+          description: Opaque binding from the existing durable preparation.
+
+    HostedSquareRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1}
+
+    HostedSquarePrepareReceipt:
+      type: object
+      description: Durable non-send preparation; this receipt is not authority to call Square.
+      required:
+        - status
+        - case_id
+        - intent_id
+        - intent_digest
+        - grant_id
+        - grant_digest
+        - delivery_id
+        - prepared_request_digest
+        - grant_expires_at
+        - connector
+      properties:
+        status: {type: string, enum: [prepared_requires_one_run_grant]}
+        case_id: {type: string}
+        intent_id: {type: string}
+        intent_digest: {type: string}
+        grant_id: {type: string}
+        grant_digest: {type: string}
+        delivery_id: {type: string}
+        prepared_request_digest: {type: string}
+        grant_expires_at: {type: string, format: date-time}
+        connector: {$ref: '#/components/schemas/SquareSandboxPreflightReceipt'}
+
+    SquareSandboxPreflightReceipt:
+      type: object
+      required:
+        - status
+        - module
+        - connector_id
+        - environment
+        - provider_send_default_off
+        - provider_send_enabled
+        - one_run_grant_required
+      properties:
+        status: {type: string}
+        module: {type: string, enum: [support_refund]}
+        connector_id: {type: string}
+        environment: {type: string, enum: [sandbox]}
+        provider_send_default_off: {type: boolean}
+        provider_send_enabled: {type: boolean}
+        one_run_grant_required: {type: boolean}
+        execute_secret_version_id: {type: string}
+        read_secret_version_id: {type: string}
+        blockers:
+          type: array
+          items: {type: string}
+
+    SquareSandboxAcceptanceReceipt:
+      type: object
+      required: [status, intent_id, intent_digest, delivery_id, reconciliation]
+      properties:
+        status:
+          type: string
+          enum: [blocked, claimed, ambiguous, receipt_recorded, verified]
+        intent_id: {type: string}
+        intent_digest: {type: string}
+        delivery_id: {type: string}
+        provider_action_ref: {type: string}
+        provider_status: {type: string}
+        receipt_digest: {type: string}
+        reconciliation:
+          type: string
+          enum: [not_started, required, pending, verified]
+        terminal_outcome: {type: string}
+
+    HostedSquareGrantReceipt:
+      type: object
+      required: [status, case_id]
+      properties:
+        status:
+          type: string
+          enum: [one_run_grant_issued, one_run_grant_revoked]
+        case_id: {type: string}
+
     OAuthDiscoveryNotSupported:
       type: object
       description: |
@@ -6578,7 +7323,7 @@ components:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.10.3"
+            openclaw: "2.10.4"
             claude-code: "1.14.0"
             cursor: "1.10.0"
             codex: "1.10.0"
@@ -7195,6 +7940,38 @@ components:
             request carried a `media` payload. Shape mirrors
             `MediaAnalysisResponse`.
           additionalProperties: true
+        request_id:
+          type: string
+          description: Agent-minted identifier shared by the Orchestrator request, canonical usage row and usage receipt.
+        trace_id:
+          type: string
+          description: W3C trace identifier for the Agent decision.
+        provider_info:
+          type: object
+          additionalProperties: true
+          description: Existing Orchestrator provider-attempt metadata, preserved on post-provider failures.
+        authenticated_principal:
+          type: object
+          required: [kind, principal_id, organization_id, tenant_id]
+          properties:
+            kind:
+              type: string
+            principal_id:
+              type: string
+            organization_id:
+              type: string
+            tenant_id:
+              type: string
+        usage_receipt:
+          type: object
+          required: [attempted, recorded, request_id]
+          properties:
+            attempted:
+              type: boolean
+            recorded:
+              type: boolean
+            request_id:
+              type: string
         engine:
           type: string
           enum: [anchored]

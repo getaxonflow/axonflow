@@ -714,7 +714,7 @@ func TestForwardToOrchestrator(t *testing.T) {
 		Enabled: true,
 	}
 
-	result, err := forwardToOrchestrator(req, user, client, false)
+	result, err := forwardToOrchestrator(req, user, client, false, false)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

@@ -167,7 +167,7 @@ var (
 	// platform/agent evaluateInputPolicies: mcpInputPolicyCategories plus the
 	// categories EnabledPIICategories derives.
 	inputPoliciesAdmission = CategoryAdmission{
-		Categories: joinCategories([]string{"security-sqli", "security-dangerous", "sensitive-data", "fincrime"}, complianceCategories),
+		Categories: joinCategories([]string{"security-sqli", "security-dangerous", "sensitive-data", "fincrime", "payment-exception", "support-refund"}, complianceCategories),
 		PIIFamily:  true,
 	}
 	// platform/agent evaluateOutputPolicies: EnabledPIICategories +

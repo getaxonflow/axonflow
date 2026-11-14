@@ -85,6 +85,11 @@ type RouteSite struct {
 	// File is repo-relative; Line is 1-indexed.
 	File string
 	Line int
+	// Scope is the enclosing function. Ordinal distinguishes repeated calls
+	// with the same method and expression inside that function. Together they
+	// form an exemption key that survives unrelated line insertions.
+	Scope   string
+	Ordinal int
 	// Edition is "enterprise" when the file is deleted from the community
 	// mirror by one of the sync's three mechanisms, "community" otherwise.
 	Edition string
@@ -319,6 +324,19 @@ func DeriveSources(srcs []Source) (*Derivation, error) {
 		}
 		return d.Routes[i].Line < d.Routes[j].Line
 	})
+	// Exemption identities are structural, not positional. Number repeated
+	// calls with the same signature inside one function after source ordering
+	// so inserting unrelated lines does not invalidate a reviewed exemption.
+	ordinals := map[string]int{}
+	for i := range d.Routes {
+		s := &d.Routes[i]
+		if s.Scope == "" {
+			continue
+		}
+		key := strings.Join([]string{s.File, s.Scope, s.Method, s.Expr}, "\x00")
+		ordinals[key]++
+		s.Ordinal = ordinals[key]
+	}
 	return d, nil
 }
 
@@ -610,11 +628,12 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 	consts map[string]string, pkg packageScope) []RouteSite {
 	var out []RouteSite
 
-	record := func(method string, arg ast.Expr, pos token.Pos, prefix string, shadowed map[string]bool) {
+	record := func(method string, arg ast.Expr, pos token.Pos, prefix, scope string, shadowed map[string]bool) {
 		site := RouteSite{
 			Method:  method,
 			File:    rel,
 			Line:    fset.Position(pos).Line,
+			Scope:   scope,
 			Edition: edition,
 			Expr:    exprText(arg),
 		}
@@ -653,11 +672,11 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 	// shadows. Scanning a FuncLit with an empty map loses a real prefix;
 	// scanning it with the outer map and no shadowing invents one, which is
 	// what the first version did.
-	var scanBody func(body ast.Node, params map[string]bool,
+	var scanBody func(body ast.Node, scope string, params map[string]bool,
 		inheritedSub map[string]string, inheritedShadow map[string]bool,
 		inheritedMV map[string]RouteSite, inheritedRoots map[string]bool)
 
-	scanBody = func(body ast.Node, params map[string]bool,
+	scanBody = func(body ast.Node, scope string, params map[string]bool,
 		inheritedSub map[string]string, inheritedShadow map[string]bool,
 		inheritedMV map[string]RouteSite, inheritedRoots map[string]bool) {
 
@@ -833,7 +852,7 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 		ast.Inspect(body, func(n ast.Node) bool {
 			switch v := n.(type) {
 			case *ast.FuncLit:
-				scanBody(v.Body, boundNames(nil, v.Type), subPrefix, shadowed, methodValues, roots)
+				scanBody(v.Body, scope, boundNames(nil, v.Type), subPrefix, shadowed, methodValues, roots)
 				return false
 			case *ast.AssignStmt:
 				for i, rhs := range v.Rhs {
@@ -967,6 +986,7 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 				if callee, isIdent := v.Fun.(*ast.Ident); isIdent {
 					if site, isMV := methodValues[callee.Name]; isMV && !unambiguousRouteMethods[site.Method] {
 						site.Line = fset.Position(v.Lparen).Line
+						site.Scope = scope
 						out = append(out, site)
 						return true
 					}
@@ -1017,7 +1037,7 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 						prefix = p
 					}
 				}
-				record(sel.Sel.Name, v.Args[0], v.Lparen, prefix, shadowed)
+				record(sel.Sel.Name, v.Args[0], v.Lparen, prefix, scope, shadowed)
 				return true
 			}
 			return true
@@ -1030,12 +1050,12 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 			if v.Body == nil {
 				return false
 			}
-			scanBody(v.Body, boundNames(v.Recv, v.Type), nil, nil, nil, nil)
+			scanBody(v.Body, v.Name.Name, boundNames(v.Recv, v.Type), nil, nil, nil, nil)
 			return false
 		case *ast.FuncLit:
 			// A top-level FuncLit, in a package-level initialiser. One inside a
 			// function is reached by that function's own walk, with its scope.
-			scanBody(v.Body, boundNames(nil, v.Type), nil, nil, nil, nil)
+			scanBody(v.Body, "<package-init>", boundNames(nil, v.Type), nil, nil, nil, nil)
 			return false
 		}
 		return true
@@ -1229,7 +1249,7 @@ func scanFile(fset *token.FileSet, f *ast.File, rel, dir, edition string,
 					prefix = p
 				}
 			}
-			record(sel.Sel.Name, v.Args[0], v.Lparen, prefix, nil)
+			record(sel.Sel.Name, v.Args[0], v.Lparen, prefix, "<package>", nil)
 			return true
 		}
 		return true
@@ -1691,10 +1711,14 @@ func dedupeSorted(in []string) []string {
 }
 
 // SiteKey is the stable identifier of one route-registration call site, used
-// by the registry's route_exemptions. It names the file, the line, the method
-// and the expression, because all four are what a reviewer needs in order to
-// decide whether an exemption is still deserved.
+// by the registry's route_exemptions. Direct calls name the file, enclosing
+// function, method, expression and same-signature ordinal. That identity is
+// stable across unrelated line insertions. The line-number fallback is only
+// for method values that cannot yet be attributed to an enclosing function.
 func (s RouteSite) SiteKey() string {
+	if s.Scope != "" && s.Ordinal > 0 {
+		return fmt.Sprintf("%s:%s %s(%s)#%d", s.File, s.Scope, s.Method, s.Expr, s.Ordinal)
+	}
 	return fmt.Sprintf("%s:%d %s(%s)", s.File, s.Line, s.Method, s.Expr)
 }
 

@@ -70,6 +70,7 @@ import (
 	"axonflow/platform/decision/authoringcatalog"
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/legacycompile"
+	"axonflow/platform/decision/policypack"
 	"axonflow/platform/decision/registry"
 	"axonflow/platform/shared/anchoredenforcer"
 	"axonflow/platform/shared/authoringedition"
@@ -336,8 +337,31 @@ func installAnchoredEnforcer(db *sql.DB, boot *sharedidentity.AdmissionBootstrap
 	// The installed policy packs, instantiated for the realms this deployment
 	// mints principals in. A pack whose approver pool would name nobody refuses
 	// the process here rather than every request later.
-	if e.Packs, err = instantiatePolicyPacks(installedPolicyPacks); err != nil {
+	if e.Packs, err = instantiatePolicyPacks(deploymentWidePolicyPacks(installedPolicyPacks)); err != nil {
 		return err
+	}
+	instantiatedDeploymentPolicyPacks = append([]activation.InstalledPack(nil), e.Packs...)
+	instantiatedPaymentExceptionPack = nil
+	instantiatedSupportRefundPack = nil
+	if installedPaymentExceptionPack != nil {
+		resolved, resolveErr := instantiatePolicyPacks([]*policypack.Pack{installedPaymentExceptionPack})
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if len(resolved) != 1 {
+			return errors.New("payment-exception policy pack did not instantiate exactly once")
+		}
+		instantiatedPaymentExceptionPack = &resolved[0]
+	}
+	if installedSupportRefundPack != nil {
+		resolved, resolveErr := instantiatePolicyPacks([]*policypack.Pack{installedSupportRefundPack})
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if len(resolved) != 1 {
+			return errors.New("support-refund policy pack did not instantiate exactly once")
+		}
+		instantiatedSupportRefundPack = &resolved[0]
 	}
 	anchoredEnforcerInstance.Store(e)
 	return nil
@@ -351,9 +375,12 @@ func (e *anchoredEnforcer) activationFor(ctx context.Context, scope legacycompil
 
 // anchoredCall is one request an enforcing seam hands the anchored engine.
 type anchoredCall struct {
-	scope     legacycompile.EnforcementScope
-	orgID     string
-	requestID string
+	scope         legacycompile.EnforcementScope
+	orgID         string
+	tenantID      string
+	resolvedPacks []activation.InstalledPack
+	packsResolved bool
+	requestID     string
 	// action is the registered action's local name; actionErr, when set, says
 	// why the plane could not name one, and the request fails closed on it.
 	action    string
@@ -476,8 +503,10 @@ func (e *anchoredEnforcer) evaluate(ctx context.Context, call anchoredCall) anch
 // crosses, the facts set unchanged (TestEvaluateCarriesTheCallsFactsToTheSharedEnforcer).
 func sharedCall(call anchoredCall) anchoredenforcer.Call {
 	shared := anchoredenforcer.Call{
-		Scope: call.scope, OrgID: call.orgID, RequestID: call.requestID,
-		Action: call.action, ActionErr: call.actionErr,
+		Scope: call.scope, OrgID: call.orgID, TenantID: call.tenantID,
+		ResolvedPacks: call.resolvedPacks, PacksResolved: call.packsResolved,
+		RequestID: call.requestID,
+		Action:    call.action, ActionErr: call.actionErr,
 		Query: call.query, Observation: call.observation, EmptyContent: call.emptyContent, PEP: call.pep,
 		Facts: call.facts, AdmittedFacts: call.admittedFacts,
 	}
@@ -502,7 +531,8 @@ func recordAnchoredEnforcement(scope legacycompile.EnforcementScope, engine, ver
 // runs: handleDecide, the gateway pre-check, /api/request's Phase 1 and the
 // OpenAI-compatible route.
 type requestPassInput struct {
-	orgID string
+	orgID    string
+	tenantID string
 	// decisionID names the request the decision is taken for.
 	decisionID string
 	// stage is the Decision API stage the request is evaluated as, which names
@@ -541,6 +571,12 @@ type requestPassInput struct {
 	// refundFacts are caller-typed money arguments for the exact refund tool on
 	// the decide plane. The payment and detector facts remain separate.
 	refundFacts contract.AttributeSet
+	// modulePacks is resolved only from the authenticated org+tenant and the
+	// signed module projection. modulePacksResolved distinguishes an explicit
+	// empty set from the deployment-wide default.
+	modulePacks         []activation.InstalledPack
+	modulePacksResolved bool
+	moduleActivationErr error
 }
 
 // requestPassEnforcement is the seam's answer for one request, rendered on the
@@ -629,6 +665,11 @@ func enforceRequestPass(ctx context.Context, scope legacycompile.EnforcementScop
 // decideRequestPass maps one request on scope onto the enforcer and its answer
 // back onto the Decision API.
 func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacycompile.EnforcementScope, in requestPassInput, out requestPassEnforcement) requestPassEnforcement {
+	if in.moduleActivationErr != nil {
+		out.unavailable = enforceCauseRequest
+		failClosed(scope, in.orgID, enforceCauseRequest, in.moduleActivationErr)
+		return out
+	}
 	if installedFincrimeRegistry != nil && in.finCrimeTarget.Plane != "" {
 		target := in.finCrimeTarget
 		target.OrgID = in.orgID
@@ -645,9 +686,11 @@ func (e *anchoredEnforcer) decideRequestPass(ctx context.Context, scope legacyco
 		}
 	}
 	call := anchoredCall{
-		scope: scope, orgID: in.orgID, requestID: in.decisionID,
-		subject: requestSubject(in.orgID, in.auth, in.user, in.userIdentity),
-		query:   in.query, observation: in.observation, pep: in.pep,
+		scope: scope, orgID: in.orgID, tenantID: in.tenantID,
+		resolvedPacks: in.modulePacks, packsResolved: in.modulePacksResolved,
+		requestID: in.decisionID,
+		subject:   requestSubject(in.orgID, in.auth, in.user, in.userIdentity),
+		query:     in.query, observation: in.observation, pep: in.pep,
 		facts: in.refundFacts,
 	}
 	if in.subject != nil {

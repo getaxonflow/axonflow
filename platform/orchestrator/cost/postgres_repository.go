@@ -457,6 +457,123 @@ func (r *PostgresRepository) SaveUsage(ctx context.Context, record *UsageRecord)
 	return nil
 }
 
+func (r *PostgresRepository) BeginGovernedModelAttempt(ctx context.Context, attempt *GovernedModelAttempt) error {
+	if err := tenantscope.ValidateRowKeys(attempt.OrgID, attempt.TenantID); err != nil {
+		return err
+	}
+	return rls.WithOrgAndTenantScope(ctx, r.db, attempt.OrgID, attempt.TenantID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO governed_model_attempts
+				(request_id,org_id,tenant_id,trace_id,module,case_id,evidence_version,investigation_key,
+				 status,provider_info,usage_receipt,error_text,created_at,updated_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'forwarding','{}'::jsonb,'{}'::jsonb,'',NOW(),NOW())
+				ON CONFLICT (org_id,tenant_id,request_id) DO NOTHING`,
+			attempt.RequestID, attempt.OrgID, attempt.TenantID, attempt.TraceID, attempt.Module,
+			attempt.CaseID, attempt.EvidenceVersion, attempt.InvestigationKey)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil || rows != 1 {
+			return fmt.Errorf("governed model attempt intent already exists")
+		}
+		return nil
+	})
+}
+
+func (r *PostgresRepository) FinishGovernedModelAttempt(ctx context.Context, attempt *GovernedModelAttempt) error {
+	if err := tenantscope.ValidateRowKeys(attempt.OrgID, attempt.TenantID); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(attempt.ProviderInfo)
+	if err != nil {
+		return fmt.Errorf("encode governed model provider info: %w", err)
+	}
+	receipt, err := json.Marshal(attempt.UsageReceipt)
+	if err != nil {
+		return fmt.Errorf("encode governed model usage receipt: %w", err)
+	}
+	return rls.WithOrgAndTenantScope(ctx, r.db, attempt.OrgID, attempt.TenantID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE governed_model_attempts
+				   SET status=$1,provider_info=$2::jsonb,usage_receipt=$3::jsonb,error_text=$4,updated_at=NOW()
+				 WHERE org_id=$5 AND tenant_id=$6 AND request_id=$7 AND status='forwarding'`,
+			attempt.Status, string(encoded), string(receipt), attempt.Error,
+			attempt.OrgID, attempt.TenantID, attempt.RequestID)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil || rows != 1 {
+			return fmt.Errorf("governed model attempt intent is missing or already reconciled")
+		}
+		return nil
+	})
+}
+
+func (r *PostgresRepository) GetGovernedModelAttempt(ctx context.Context, orgID, tenantID, requestID string,
+	staleAfter time.Duration) (*GovernedModelAttempt, error) {
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(requestID) == "" || staleAfter <= 0 {
+		return nil, fmt.Errorf("governed model attempt lookup requires request and stale interval")
+	}
+	var attempt GovernedModelAttempt
+	var provider, receipt []byte
+	err := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		// A forwarding row older than the bounded provider/commit window is no
+		// longer safe to retry. Reconcile it to explicit outcome_unknown before
+		// returning it to Hosted recovery.
+		_, err := tx.ExecContext(ctx, `
+			UPDATE governed_model_attempts
+			   SET status='outcome_unknown',error_text='stale forwarding intent reconciled',updated_at=NOW(),
+			       usage_receipt=jsonb_build_object('attempted',true,'recorded',false,
+			           'request_id',request_id,'status','outcome_unknown')
+			 WHERE org_id=$1 AND tenant_id=$2 AND request_id=$3 AND status='forwarding'
+			   AND updated_at <= NOW() - ($4 * interval '1 second')`,
+			orgID, tenantID, requestID, staleAfter.Seconds())
+		if err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `
+			SELECT request_id,org_id,tenant_id,trace_id,module,case_id,evidence_version,investigation_key,
+			       status,provider_info,usage_receipt,error_text,created_at,updated_at
+			  FROM governed_model_attempts
+			 WHERE org_id=$1 AND tenant_id=$2 AND request_id=$3`, orgID, tenantID, requestID).Scan(
+			&attempt.RequestID, &attempt.OrgID, &attempt.TenantID, &attempt.TraceID, &attempt.Module,
+			&attempt.CaseID, &attempt.EvidenceVersion, &attempt.InvestigationKey, &attempt.Status,
+			&provider, &receipt, &attempt.Error, &attempt.CreatedAt, &attempt.UpdatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(provider, &attempt.ProviderInfo); err != nil {
+		return nil, fmt.Errorf("decode governed model provider info: %w", err)
+	}
+	if err := json.Unmarshal(receipt, &attempt.UsageReceipt); err != nil {
+		return nil, fmt.Errorf("decode governed model usage receipt: %w", err)
+	}
+	return &attempt, nil
+}
+
+// CheckGovernedModelAttemptJournal proves that the durable attempt table and
+// its composite tenant scope are queryable. It is deliberately read-only: a
+// readiness probe must never create a billable or possibly billable attempt.
+func (r *PostgresRepository) CheckGovernedModelAttemptJournal(ctx context.Context, orgID, tenantID string) error {
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		return err
+	}
+	return rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		var exists bool
+		return tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM governed_model_attempts
+				 WHERE org_id=$1 AND tenant_id=$2
+			)`, orgID, tenantID).Scan(&exists)
+	})
+}
+
 // GetUsageForPeriod gets total usage cost for a budget period
 func (r *PostgresRepository) GetUsageForPeriod(ctx context.Context, scope BudgetScope, scopeID string, periodStart time.Time, orgID, tenantID string) (float64, error) {
 	if err := requireBudgetScope(orgID, tenantID); err != nil {

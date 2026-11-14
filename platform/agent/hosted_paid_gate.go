@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"axonflow/platform/agent/rls"
+	"axonflow/platform/shared/capabilityresolution"
 )
 
 const hostedCheckoutPath = "/api/v1/billing/checkout"
@@ -36,12 +37,17 @@ var errHostedEventIDConflict = errors.New("hosted event ID was already used for 
 var errHostedMinuteLimitReached = errors.New("hosted per-minute governance limit reached")
 
 const (
-	hostedSecurityAcceptanceEnv = "AXONFLOW_HOSTED_SECURITY_ACCEPTANCE"
-	hostedWorkflowAcceptanceEnv = "AXONFLOW_HOSTED_WORKFLOW_ACCEPTANCE"
-	hostedModuleCapabilitiesEnv = "AXONFLOW_HOSTED_MODULE_CAPABILITIES"
+	hostedSecurityAcceptanceEnv        = "AXONFLOW_HOSTED_SECURITY_ACCEPTANCE"
+	hostedOutcomeWorkflowAcceptanceEnv = "AXONFLOW_HOSTED_WORKFLOW_ACCEPTANCE"
+	hostedFinCrimeAcceptanceEnv        = "AXONFLOW_HOSTED_FINCRIME_ACCEPTANCE"
+	hostedModuleCapabilitiesEnv        = "AXONFLOW_HOSTED_MODULE_CAPABILITIES"
 )
 
-var hostedStarterRequiredModules = []string{"fincrime", "payment_exception", "support_refund"}
+var hostedStarterRequiredModules = []string{
+	capabilityresolution.FinCrimeModuleID,
+	capabilityresolution.PaymentExceptionModuleID,
+	capabilityresolution.SupportRefundModuleID,
+}
 
 type hostedStarterLimits struct {
 	GovernedEvents int64
@@ -54,7 +60,8 @@ type hostedStarterLimits struct {
 
 func hostedPaidLaunchReady() bool {
 	if os.Getenv(hostedSecurityAcceptanceEnv) != "4488" ||
-		os.Getenv(hostedWorkflowAcceptanceEnv) != "4486" {
+		os.Getenv(hostedOutcomeWorkflowAcceptanceEnv) != "4486" ||
+		os.Getenv(hostedFinCrimeAcceptanceEnv) != "4611" {
 		return false
 	}
 	if _, err := hostedPublicBaseURL(); err != nil {
@@ -73,6 +80,38 @@ func hostedPaidLaunchReady() bool {
 		}
 	}
 	return true
+}
+
+// hostedModuleConfiguredIntent reports only that an operator has declared an
+// issue-scoped intent to configure a module. It is not deployment readiness:
+// the signed manifest, immutable artifact, health and readiness procedure have
+// not been verified here. It never grants a tenant the module.
+func hostedModuleConfiguredIntent(module string) bool {
+	if os.Getenv(hostedSecurityAcceptanceEnv) != "4488" {
+		return false
+	}
+	switch module {
+	case capabilityresolution.FinCrimeModuleID:
+		if os.Getenv(hostedFinCrimeAcceptanceEnv) != "4611" {
+			return false
+		}
+	case capabilityresolution.PaymentExceptionModuleID, capabilityresolution.SupportRefundModuleID:
+		if os.Getenv(hostedOutcomeWorkflowAcceptanceEnv) != "4486" {
+			return false
+		}
+	default:
+		return false
+	}
+	modules, err := hostedConfiguredModules()
+	if err != nil {
+		return false
+	}
+	for _, configured := range modules {
+		if configured == module {
+			return true
+		}
+	}
+	return false
 }
 
 // hostedPublicBaseURL is the single public origin for paid-action links,
