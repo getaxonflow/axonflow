@@ -146,7 +146,7 @@ func TestForwardToOrchestrator_IdentitySourceMarkerOverResolvedUsers(t *testing.
 			defer func() { orchestratorURL = prev }()
 
 			client := &Client{ClientID: utrTestClientID, OrgID: mrsOrg, TenantID: utrTestTenant}
-			if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, user, client, false); err != nil {
+			if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, user, client, false, false); err != nil {
 				t.Fatalf("forward failed: %v", err)
 			}
 			if got.Get("X-User-Email") != user.Email {
@@ -192,7 +192,7 @@ func TestForwardToOrchestrator_IdentitySourceMarkerOnlyForVerifiedClaims(t *test
 			defer func() { orchestratorURL = prev }()
 
 			client := &Client{ClientID: "client-1", OrgID: "org-a", TenantID: "tenant-a"}
-			if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, tc.user, client, false); err != nil {
+			if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, tc.user, client, false, false); err != nil {
 				t.Fatalf("forward failed: %v", err)
 			}
 			mark := got.Get(sharedidentity.HeaderIdentitySource)

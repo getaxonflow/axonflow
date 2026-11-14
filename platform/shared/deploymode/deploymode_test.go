@@ -239,6 +239,184 @@ func TestCurrentPosturePredicatesReadTheEnvironment(t *testing.T) {
 	}
 }
 
+func TestHostedFinCrimeBackendProfileIsNarrowAndModeBound(t *testing.T) {
+	wantLocation := "enterprise/166_fincrime_score_admission.sql"
+	profiles := RecognisedBackendProfiles()
+	if !reflect.DeepEqual(profiles, []string{BackendProfileHostedCommercial, BackendProfileHostedFinCrime, BackendProfileSelfHostedOutcomes}) {
+		t.Fatalf("RecognisedBackendProfiles() = %v, want the three reviewed profiles", profiles)
+	}
+
+	for _, mode := range append(RecognisedModes(), "") {
+		locations, ok := BackendProfileMigrationLocations(BackendProfileHostedFinCrime, mode)
+		if mode == ModeCommunitySaas {
+			if !ok || !reflect.DeepEqual(locations, []string{wantLocation}) {
+				t.Errorf("mode %q profile locations = (%v, %v), want exact FinCrime migration", mode, locations, ok)
+			}
+			continue
+		}
+		if ok || locations != nil {
+			t.Errorf("mode %q accepted Hosted FinCrime profile: (%v, %v); only community-saas may select it", mode, locations, ok)
+		}
+	}
+
+	locations, ok := BackendProfileMigrationLocations(BackendProfileHostedFinCrime, ModeCommunitySaas)
+	if !ok {
+		t.Fatal("Hosted FinCrime profile was not accepted for community-saas")
+	}
+	locations[0] = "enterprise"
+	again, _ := BackendProfileMigrationLocations(BackendProfileHostedFinCrime, ModeCommunitySaas)
+	if again[0] != wantLocation {
+		t.Fatal("caller mutated the backend profile migration definition")
+	}
+}
+
+func TestHostedCommercialBackendProfileExcludesSquareSendAuthority(t *testing.T) {
+	want := []string{
+		"enterprise/166_fincrime_score_admission.sql",
+	}
+	locations, ok := BackendProfileMigrationLocations(BackendProfileHostedCommercial, ModeCommunitySaas)
+	if !ok || !reflect.DeepEqual(locations, want) {
+		t.Fatalf("Hosted commercial profile = (%v, %v), want exact reviewed chain", locations, ok)
+	}
+	if !HasFinCrimeBackendSchema(ModeCommunitySaas, BackendProfileHostedCommercial) {
+		t.Fatal("paid shared Hosted profile omitted FinCrime schema")
+	}
+	if HasHostedSquareSandboxBackendSchema(ModeCommunitySaas, BackendProfileHostedCommercial) {
+		t.Fatal("shared Hosted profile acquired dedicated Square Sandbox schema")
+	}
+	if IsEnterpriseEntitled(ModeCommunitySaas) || AppliesCategory(ModeCommunitySaas, CategoryEnterprise) {
+		t.Fatal("paid shared Hosted profile changed edition entitlement or imported Enterprise")
+	}
+	for _, tc := range []struct{ mode, profile string }{
+		{ModeCommunitySaas, ""},
+		{ModeCommunitySaas, BackendProfileHostedFinCrime},
+		{ModeCommunity, BackendProfileHostedCommercial},
+		{"not-a-mode", BackendProfileHostedCommercial},
+	} {
+		if HasHostedSquareSandboxBackendSchema(tc.mode, tc.profile) {
+			t.Errorf("mode/profile %q/%q exposed Hosted Square schema", tc.mode, tc.profile)
+		}
+	}
+	locations[0] = "enterprise"
+	again, _ := BackendProfileMigrationLocations(BackendProfileHostedCommercial, ModeCommunitySaas)
+	if !reflect.DeepEqual(again, want) {
+		t.Fatal("caller mutated Hosted commercial migration selection")
+	}
+}
+
+func TestSelfHostedOutcomeBackendProfileIsNarrowAndModeBound(t *testing.T) {
+	want := []string{
+		"community-saas/189_hosted_subscriptions.sql",
+		"community-saas/191_hosted_billing_rls.sql",
+		"community-saas/195_hosted_outcome_case_store.sql",
+		"community-saas/205_hosted_outcome_module_quota.sql",
+		"community-saas/206_hosted_billing_app_role_boundary.sql",
+		"community-saas/207_self_hosted_outcome_authority_references.sql",
+		"community-saas/208_hosted_outcome_investigation_receipts.sql",
+	}
+	for _, mode := range append(RecognisedModes(), "") {
+		locations, ok := BackendProfileMigrationLocations(BackendProfileSelfHostedOutcomes, mode)
+		resolved, recognised := Resolve(mode)
+		allowed := recognised && resolved == "in-vpc-enterprise"
+		if allowed {
+			if !ok || !reflect.DeepEqual(locations, want) {
+				t.Errorf("mode %q profile locations = (%v, %v), want exact outcome migration chain", mode, locations, ok)
+			}
+			continue
+		}
+		if ok || locations != nil {
+			t.Errorf("mode %q accepted self-hosted outcome profile: (%v, %v)", mode, locations, ok)
+		}
+	}
+
+	locations, ok := BackendProfileMigrationLocations(BackendProfileSelfHostedOutcomes, "enterprise")
+	if !ok {
+		t.Fatal("self-hosted outcome profile was not accepted through the enterprise alias")
+	}
+	locations[0] = "community-saas"
+	again, _ := BackendProfileMigrationLocations(BackendProfileSelfHostedOutcomes, "enterprise")
+	if !reflect.DeepEqual(again, want) {
+		t.Fatal("caller mutated the self-hosted outcome profile migration definition")
+	}
+}
+
+func TestSelfHostedOutcomeBackendSchemaIsAvailabilityNotEntitlement(t *testing.T) {
+	for _, mode := range []string{"in-vpc-enterprise", "enterprise", "invpc"} {
+		if !HasSelfHostedOutcomeBackendSchema(mode, BackendProfileSelfHostedOutcomes) {
+			t.Errorf("mode %q did not expose the explicitly selected outcome schema", mode)
+		}
+		if !IsEnterpriseEntitled(mode) {
+			t.Errorf("test premise: mode %q is not Enterprise entitled", mode)
+		}
+	}
+	for _, tc := range []struct{ mode, profile string }{
+		{mode: "in-vpc-enterprise", profile: ""},
+		{mode: ModeCommunitySaas, profile: BackendProfileSelfHostedOutcomes},
+		{mode: ModeCommunity, profile: BackendProfileSelfHostedOutcomes},
+		{mode: "not-a-mode", profile: BackendProfileSelfHostedOutcomes},
+		{mode: "in-vpc-enterprise", profile: "self-hosted-outcomes "},
+	} {
+		if HasSelfHostedOutcomeBackendSchema(tc.mode, tc.profile) {
+			t.Errorf("mode/profile %q/%q exposed outcome schema without the exact reviewed pairing", tc.mode, tc.profile)
+		}
+	}
+
+	t.Setenv(EnvDeploymentMode, "enterprise")
+	t.Setenv(EnvBackendProfile, BackendProfileSelfHostedOutcomes)
+	if !CurrentHasSelfHostedOutcomeBackendSchema() {
+		t.Fatal("current self-hosted outcome profile was not observed")
+	}
+	t.Setenv(EnvBackendProfile, "")
+	if CurrentHasSelfHostedOutcomeBackendSchema() {
+		t.Fatal("clearing the backend profile left the outcome schema enabled")
+	}
+}
+
+func TestBackendProfilesFailClosedAndDoNotGrantEntitlement(t *testing.T) {
+	for _, raw := range []string{"Hosted-fincrime", "hosted-fincrime ", "enterprise", "unknown"} {
+		if locations, ok := BackendProfileMigrationLocations(raw, ModeCommunitySaas); ok || locations != nil {
+			t.Errorf("unrecognised profile %q resolved to (%v, %v)", raw, locations, ok)
+		}
+		if HasFinCrimeBackendSchema(ModeCommunitySaas, raw) {
+			t.Errorf("unrecognised profile %q enabled the FinCrime schema", raw)
+		}
+	}
+
+	if !HasFinCrimeBackendSchema(ModeCommunitySaas, BackendProfileHostedFinCrime) {
+		t.Fatal("reviewed Hosted FinCrime profile did not expose its schema")
+	}
+	if IsEnterpriseEntitled(ModeCommunitySaas) {
+		t.Fatal("backend profile work changed community-saas Enterprise entitlement")
+	}
+	if AppliesCategory(ModeCommunitySaas, CategoryEnterprise) {
+		t.Fatal("backend profile work imported the whole Enterprise category")
+	}
+	if HasFinCrimeBackendSchema(ModeCommunitySaas, "") {
+		t.Fatal("community-saas gained FinCrime schema without the explicit profile")
+	}
+
+	for _, mode := range []string{"saas", "in-vpc-enterprise", "enterprise"} {
+		if !HasFinCrimeBackendSchema(mode, "") {
+			t.Errorf("full Enterprise-schema mode %q stopped exposing migration 166", mode)
+		}
+	}
+	if HasFinCrimeBackendSchema("not-a-mode", BackendProfileHostedFinCrime) {
+		t.Fatal("unrecognised deployment mode enabled the FinCrime schema")
+	}
+}
+
+func TestCurrentHostedFinCrimeBackendProfileReadsEnvironment(t *testing.T) {
+	t.Setenv(EnvDeploymentMode, ModeCommunitySaas)
+	t.Setenv(EnvBackendProfile, BackendProfileHostedFinCrime)
+	if !CurrentHasFinCrimeBackendSchema() {
+		t.Fatal("current Hosted FinCrime profile was not observed")
+	}
+	t.Setenv(EnvBackendProfile, "")
+	if CurrentHasFinCrimeBackendSchema() {
+		t.Fatal("clearing the backend profile left the FinCrime schema enabled")
+	}
+}
+
 // TestUnsetResolvesToTheCommunitySchema pins the one case an operator most
 // often lands in by accident.
 //

@@ -119,9 +119,17 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'axonflow_app_role') THEN
         REVOKE EXECUTE ON FUNCTION csaas_auth_lookup(VARCHAR) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION csaas_auth_lookup(VARCHAR) TO axonflow_app_role;
+        -- The authenticated application reads this FORCE-RLS table only
+        -- through its org-scoped policy. Keep the table privilege explicit so
+        -- a changed migration owner cannot make the production role unable to
+        -- reach rows that RLS already authorizes.
+        GRANT SELECT ON community_saas_registrations TO axonflow_app_role;
         RAISE NOTICE 'Migration 105: granted EXECUTE on csaas_auth_lookup to axonflow_app_role';
     ELSE
         RAISE NOTICE 'Migration 105: axonflow_app_role not present; SECURITY DEFINER helper installed but unbound';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'axonflow_platform_admin') THEN
+        GRANT SELECT ON community_saas_registrations TO axonflow_platform_admin;
     END IF;
 END
 $$;

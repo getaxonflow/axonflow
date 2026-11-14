@@ -30,7 +30,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.4.0 | **SDK Version:** 9.5.1
+**Platform Version:** 11.5.0 | **SDK Version:** 9.5.1
 
 ## Overview
 
@@ -200,7 +200,8 @@ services:
               capabilities: [gpu]
 
   axonflow-orchestrator:
-    image: axonflow/orchestrator:latest
+    # Replace abc1234 with the immutable Git SHA tag for the reviewed release.
+    image: axonflow/orchestrator:abc1234
     depends_on:
       - ollama
     environment:

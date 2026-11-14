@@ -5,6 +5,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"testing"
@@ -34,6 +35,38 @@ func setupTestRouter(t *testing.T) *Router {
 
 	registry := NewRegistry(WithFactoryManager(fm))
 	return NewRouter(WithRouterRegistry(registry))
+}
+
+func TestRouter_RouteRequest_PreservesProviderAttemptOnCompletionError(t *testing.T) {
+	ctx := context.Background()
+	router := setupTestRouter(t)
+	defer router.Close()
+
+	if err := router.registry.Register(ctx, &ProviderConfig{
+		Name: "parse-failure", Type: ProviderTypeOpenAI, APIKey: "test", Model: "gpt-test", Enabled: true,
+	}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	provider, err := router.registry.Get(ctx, GlobalTenant, "parse-failure")
+	if err != nil {
+		t.Fatalf("get provider: %v", err)
+	}
+	mock := provider.(*MockProvider)
+	mock.healthStatus = HealthStatusHealthy
+	mock.completeErr = errors.New("malformed provider response")
+	router.registry.HealthCheck(ctx, GlobalTenant)
+
+	response, info, err := router.RouteRequest(ctx, CompletionRequest{Prompt: "hello", Model: "gpt-test"},
+		WithPreferredProvider("parse-failure"), WithDisableFailover())
+	if err == nil || response != nil {
+		t.Fatalf("expected provider error and no response, got response=%v err=%v", response, err)
+	}
+	if info == nil || info.ProviderName != "parse-failure" || info.Model != "gpt-test" {
+		t.Fatalf("provider attempt was lost: %#v", info)
+	}
+	if info.TokensUsed != 0 || info.EstimatedCost != 0 {
+		t.Fatalf("failed attempt invented usage: %#v", info)
+	}
 }
 
 func TestNewRouter(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/shared/serviceauth"
 )
 
@@ -40,6 +41,41 @@ func installProxyTokenValidator(t *testing.T, secret string) {
 func validProxyToken(t *testing.T) string {
 	t.Helper()
 	return serviceauth.GetInternalServiceToken(serviceauth.NewTokenGenerator(proxyGuardTestSecret, nil))
+}
+
+func TestProxyAuthBindsFailoverControlOnlyFromTrustedHop(t *testing.T) {
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "absent", want: false},
+		{name: "invalid value fails closed", header: "true", want: false},
+		{name: "agent assertion", header: sharedidentity.DisableLLMFailoverAsserted, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = llmFailoverDisabledFrom(r.Context())
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/process", strings.NewReader(`{}`))
+			req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+			if tc.header != "" {
+				req.Header.Set(sharedidentity.HeaderDisableLLMFailover, tc.header)
+			}
+			rr := httptest.NewRecorder()
+			requireInternalProxyAuth(next).ServeHTTP(rr, req)
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			if got != tc.want {
+				t.Fatalf("trusted failover control=%v want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestVerifyAgentProxyAuth(t *testing.T) {

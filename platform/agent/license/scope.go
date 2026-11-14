@@ -3,7 +3,12 @@
 
 package license
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"axonflow/platform/shared/capabilityresolution"
+)
 
 // scope.go — ADR-050 §2/§3/§4. Helpers for the canonical aud values and the
 // X-Axonflow-Client header convention, callable from both community and
@@ -158,4 +163,289 @@ func DeriveScopeFromClientHeader(header string) string {
 		return ScopeSDK
 	}
 	return ScopeFull
+}
+
+const (
+	SelfHostedCapabilityGrantVersion = "1.0"
+	FinCrimeCapabilityVersion        = "1.0"
+	FinCrimeScoreRequestsPeriod      = "calendar_month"
+	OutcomeCapabilityVersion         = "1.0"
+	OutcomeCasesPeriod               = "calendar_month"
+)
+
+type SelfHostedCapabilityClaim struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+}
+
+type SelfHostedLimitClaim struct {
+	ID        string `json:"id"`
+	Period    string `json:"period"`
+	Allowance int64  `json:"allowance"`
+}
+
+// SelfHostedCapabilityGrant is part of the signed service-license payload.
+// Repeating DeploymentID inside the grant makes extracted grants unusable in
+// another deployment; TenantID is the exact customer tenant it may serve.
+type SelfHostedCapabilityGrant struct {
+	Version      string                      `json:"version"`
+	DeploymentID string                      `json:"deployment_id"`
+	TenantID     string                      `json:"tenant_id"`
+	Module       string                      `json:"module"`
+	Capabilities []SelfHostedCapabilityClaim `json:"capabilities"`
+	Limits       []SelfHostedLimitClaim      `json:"limits"`
+}
+
+type FinCrimeSelfHostedLicenseInput struct {
+	Tier          Tier
+	DeploymentID  string
+	TenantID      string
+	ServiceName   string
+	ServiceType   string
+	Permissions   []string
+	ValidityDays  int
+	Audience      string
+	ScoreRequests int64
+}
+
+// OutcomeModuleGrantInput describes one independently purchasable outcome
+// module. Module must be payment_exception or support_refund.
+type OutcomeModuleGrantInput struct {
+	Module        string
+	CaseAllowance int64
+}
+
+// OutcomeSelfHostedLicenseInput mints one signed service license containing
+// one or both independent outcome-module grants.
+type OutcomeSelfHostedLicenseInput struct {
+	Tier         Tier
+	DeploymentID string
+	TenantID     string
+	ServiceName  string
+	ServiceType  string
+	Permissions  []string
+	ValidityDays int
+	Audience     string
+	Modules      []OutcomeModuleGrantInput
+	// FinCrimeScoreRequests optionally includes the independently licensed
+	// FinCrime grant in the same signed deployment license.
+	FinCrimeScoreRequests int64
+}
+
+func newFinCrimeSelfHostedGrant(deploymentID, tenantID string, scoreRequests int64) (SelfHostedCapabilityGrant, error) {
+	grant := SelfHostedCapabilityGrant{
+		Version:      SelfHostedCapabilityGrantVersion,
+		DeploymentID: deploymentID,
+		TenantID:     tenantID,
+		Module:       capabilityresolution.FinCrimeModuleID,
+		Capabilities: []SelfHostedCapabilityClaim{
+			{ID: capabilityresolution.FinCrimePolicyPackCapabilityID, Version: FinCrimeCapabilityVersion},
+			{ID: capabilityresolution.FinCrimeRiskScoringCapabilityID, Version: FinCrimeCapabilityVersion},
+		},
+		Limits: []SelfHostedLimitClaim{{
+			ID:        capabilityresolution.FinCrimeScoreRequestsLimitID,
+			Period:    FinCrimeScoreRequestsPeriod,
+			Allowance: scoreRequests,
+		}},
+	}
+	if err := validateSelfHostedCapabilityGrant(grant, deploymentID); err != nil {
+		return SelfHostedCapabilityGrant{}, err
+	}
+	return grant, nil
+}
+
+func newOutcomeSelfHostedGrant(deploymentID, tenantID string, in OutcomeModuleGrantInput) (SelfHostedCapabilityGrant, error) {
+	capabilityID, limitID, ok := outcomeModuleVocabulary(in.Module)
+	if !ok {
+		return SelfHostedCapabilityGrant{}, fmt.Errorf("unknown self-hosted capability module %q", in.Module)
+	}
+	grant := SelfHostedCapabilityGrant{
+		Version:      SelfHostedCapabilityGrantVersion,
+		DeploymentID: deploymentID,
+		TenantID:     tenantID,
+		Module:       in.Module,
+		Capabilities: []SelfHostedCapabilityClaim{{ID: capabilityID, Version: OutcomeCapabilityVersion}},
+		Limits: []SelfHostedLimitClaim{{
+			ID:        limitID,
+			Period:    OutcomeCasesPeriod,
+			Allowance: in.CaseAllowance,
+		}},
+	}
+	if err := validateSelfHostedCapabilityGrant(grant, deploymentID); err != nil {
+		return SelfHostedCapabilityGrant{}, err
+	}
+	return grant, nil
+}
+
+// validateSelfHostedCapabilityGrants runs only after signature verification.
+// An absent field is the legacy-compatible no-grant state; once present, its
+// vocabulary is closed and any ambiguity refuses the whole license.
+func validateSelfHostedCapabilityGrants(payload *ServiceLicensePayload, tier Tier) error {
+	if len(payload.SelfHostedCapabilityGrants) == 0 {
+		return nil
+	}
+	if !IsPaidTier(tier) {
+		return fmt.Errorf("self-hosted capability grants require a paid license tier; %s is not eligible", tier)
+	}
+	if payload.Aud == "" || payload.HostingMode() != HostingModeSelfHosted {
+		return fmt.Errorf("self-hosted capability grants require an explicit self-hosted audience")
+	}
+	if strings.TrimSpace(payload.DeploymentID) == "" || payload.DeploymentID != strings.TrimSpace(payload.DeploymentID) {
+		return fmt.Errorf("self-hosted capability grants require an explicit canonical deployment_id")
+	}
+	seenScopes := make(map[string]struct{}, len(payload.SelfHostedCapabilityGrants))
+	for _, grant := range payload.SelfHostedCapabilityGrants {
+		if err := validateSelfHostedCapabilityGrant(grant, payload.DeploymentID); err != nil {
+			return err
+		}
+		scope := grant.TenantID + "\x00" + grant.Module
+		if _, exists := seenScopes[scope]; exists {
+			return fmt.Errorf("duplicate self-hosted capability grant for tenant %q and module %q", grant.TenantID, grant.Module)
+		}
+		seenScopes[scope] = struct{}{}
+	}
+	return nil
+}
+
+func validateSelfHostedCapabilityGrant(grant SelfHostedCapabilityGrant, deploymentID string) error {
+	if grant.Version != SelfHostedCapabilityGrantVersion {
+		return fmt.Errorf("unknown self-hosted capability grant version %q", grant.Version)
+	}
+	if grant.DeploymentID == "" || grant.DeploymentID != deploymentID {
+		return fmt.Errorf("self-hosted capability grant deployment scope does not match its license")
+	}
+	if strings.TrimSpace(grant.TenantID) == "" || grant.TenantID != strings.TrimSpace(grant.TenantID) {
+		return fmt.Errorf("self-hosted capability grant has an invalid tenant scope")
+	}
+	if grant.Module == capabilityresolution.FinCrimeModuleID {
+		return validateFinCrimeSelfHostedCapabilityGrant(grant)
+	}
+	return validateOutcomeSelfHostedCapabilityGrant(grant)
+}
+
+func validateFinCrimeSelfHostedCapabilityGrant(grant SelfHostedCapabilityGrant) error {
+	if len(grant.Capabilities) == 0 {
+		return fmt.Errorf("self-hosted FinCrime grant has no capabilities")
+	}
+	seenCapabilities := make(map[string]struct{}, len(grant.Capabilities))
+	hasPolicyPack, hasRiskScoring := false, false
+	for _, capability := range grant.Capabilities {
+		switch capability.ID {
+		case capabilityresolution.FinCrimePolicyPackCapabilityID:
+			hasPolicyPack = true
+		case capabilityresolution.FinCrimeRiskScoringCapabilityID:
+			hasRiskScoring = true
+		default:
+			return fmt.Errorf("unknown self-hosted FinCrime capability %q", capability.ID)
+		}
+		if capability.Version != FinCrimeCapabilityVersion {
+			return fmt.Errorf("unknown version %q for self-hosted FinCrime capability %q", capability.Version, capability.ID)
+		}
+		if _, exists := seenCapabilities[capability.ID]; exists {
+			return fmt.Errorf("duplicate self-hosted FinCrime capability %q", capability.ID)
+		}
+		seenCapabilities[capability.ID] = struct{}{}
+	}
+	if !hasPolicyPack {
+		return fmt.Errorf("self-hosted FinCrime grant is missing %q", capabilityresolution.FinCrimePolicyPackCapabilityID)
+	}
+	if !hasRiskScoring {
+		return fmt.Errorf("self-hosted FinCrime grant is missing %q", capabilityresolution.FinCrimeRiskScoringCapabilityID)
+	}
+	if len(grant.Limits) != 1 {
+		return fmt.Errorf("self-hosted FinCrime scoring requires exactly one score-request allowance")
+	}
+	limit := grant.Limits[0]
+	if limit.ID != capabilityresolution.FinCrimeScoreRequestsLimitID {
+		return fmt.Errorf("unknown self-hosted FinCrime limit %q", limit.ID)
+	}
+	if limit.Period != FinCrimeScoreRequestsPeriod {
+		return fmt.Errorf("unknown self-hosted FinCrime score-request period %q", limit.Period)
+	}
+	if limit.Allowance <= 0 {
+		return fmt.Errorf("self-hosted FinCrime score-request allowance must be finite and positive")
+	}
+	return nil
+}
+
+func validateOutcomeSelfHostedCapabilityGrant(grant SelfHostedCapabilityGrant) error {
+	capabilityID, limitID, ok := outcomeModuleVocabulary(grant.Module)
+	if !ok {
+		return fmt.Errorf("unknown self-hosted capability module %q", grant.Module)
+	}
+	if len(grant.Capabilities) != 1 {
+		return fmt.Errorf("self-hosted %s grant requires exactly one workflow capability", grant.Module)
+	}
+	capability := grant.Capabilities[0]
+	if capability.ID != capabilityID {
+		return fmt.Errorf("unknown self-hosted %s capability %q", grant.Module, capability.ID)
+	}
+	if capability.Version != OutcomeCapabilityVersion {
+		return fmt.Errorf("unknown version %q for self-hosted %s capability %q", capability.Version, grant.Module, capability.ID)
+	}
+	if len(grant.Limits) != 1 {
+		return fmt.Errorf("self-hosted %s requires exactly one case allowance", grant.Module)
+	}
+	limit := grant.Limits[0]
+	if limit.ID != limitID {
+		return fmt.Errorf("unknown self-hosted %s limit %q", grant.Module, limit.ID)
+	}
+	if limit.Period != OutcomeCasesPeriod {
+		return fmt.Errorf("unknown self-hosted %s case period %q", grant.Module, limit.Period)
+	}
+	if limit.Allowance <= 0 {
+		return fmt.Errorf("self-hosted %s case allowance must be finite and positive", grant.Module)
+	}
+	return nil
+}
+
+func outcomeModuleVocabulary(module string) (capabilityID, limitID string, ok bool) {
+	switch module {
+	case capabilityresolution.PaymentExceptionModuleID:
+		return capabilityresolution.PaymentExceptionWorkflowCapabilityID, capabilityresolution.PaymentExceptionCasesLimitID, true
+	case capabilityresolution.SupportRefundModuleID:
+		return capabilityresolution.SupportRefundWorkflowCapabilityID, capabilityresolution.SupportRefundCasesLimitID, true
+	default:
+		return "", "", false
+	}
+}
+
+// FinCrimeScoreRequestAllowance returns authority only for an exact tenant and
+// deployment match. A manually constructed or malformed result grants none.
+func (r *ValidationResult) FinCrimeScoreRequestAllowance(tenantID string) (int64, bool) {
+	if r == nil || !r.Valid || tenantID == "" || !IsPaidTier(r.Tier) {
+		return 0, false
+	}
+	for _, grant := range r.selfHostedCapabilityGrants {
+		if grant.Module != capabilityresolution.FinCrimeModuleID || grant.TenantID != tenantID || grant.DeploymentID != r.LicenseDeploymentID() {
+			continue
+		}
+		if err := validateSelfHostedCapabilityGrant(grant, r.LicenseDeploymentID()); err != nil {
+			continue
+		}
+		return grant.Limits[0].Allowance, true
+	}
+	return 0, false
+}
+
+// OutcomeCaseAllowance returns authority only for an exact tenant, deployment,
+// and independent module match. The requested module comes from the trusted
+// operation route, never from a caller-provided entitlement assertion.
+func (r *ValidationResult) OutcomeCaseAllowance(module, tenantID string) (int64, bool) {
+	if r == nil || !r.Valid || tenantID == "" || !IsPaidTier(r.Tier) {
+		return 0, false
+	}
+	if _, _, ok := outcomeModuleVocabulary(module); !ok {
+		return 0, false
+	}
+	for _, grant := range r.selfHostedCapabilityGrants {
+		if grant.Module != module || grant.TenantID != tenantID || grant.DeploymentID != r.LicenseDeploymentID() {
+			continue
+		}
+		if err := validateSelfHostedCapabilityGrant(grant, r.LicenseDeploymentID()); err != nil {
+			continue
+		}
+		return grant.Limits[0].Allowance, true
+	}
+	return 0, false
 }

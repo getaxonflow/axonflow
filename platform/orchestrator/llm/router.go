@@ -196,18 +196,18 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 				response, err = fallback.Complete(ctx, req)
 				if err != nil {
 					r.metricsTracker.recordError(fallback.Name())
-					return nil, nil, fmt.Errorf("all providers failed: %w", err)
+					return nil, routeAttemptInfo(fallback, req, startTime), fmt.Errorf("all providers failed: %w", err)
 				}
 				provider = fallback
 			} else {
 				// Include compliance context in error message
 				if len(routeOpts.allowedProviders) > 0 {
-					return nil, nil, fmt.Errorf("primary provider failed and no compliant fallback available (allowed: %v): %w", routeOpts.allowedProviders, err)
+					return nil, routeAttemptInfo(provider, req, startTime), fmt.Errorf("primary provider failed and no compliant fallback available (allowed: %v): %w", routeOpts.allowedProviders, err)
 				}
-				return nil, nil, fmt.Errorf("primary provider failed and no fallback: %w", err)
+				return nil, routeAttemptInfo(provider, req, startTime), fmt.Errorf("primary provider failed and no fallback: %w", err)
 			}
 		} else {
-			return nil, nil, fmt.Errorf("provider failed: %w", err)
+			return nil, routeAttemptInfo(provider, req, startTime), fmt.Errorf("provider failed: %w", err)
 		}
 	}
 
@@ -248,6 +248,28 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 	}
 
 	return response, routeInfo, nil
+}
+
+// routeAttemptInfo preserves which selected provider was reached even when it
+// could not return a parseable completion. Token and cost fields remain zero;
+// callers can therefore durably record an attempt without inventing usage.
+func routeAttemptInfo(provider Provider, req CompletionRequest, started time.Time) *RouteInfo {
+	if provider == nil {
+		return nil
+	}
+	model := req.Model
+	if model == "" {
+		if configurable, ok := provider.(ConfigurableProvider); ok {
+			model = configurable.GetConfig().Model
+		}
+	}
+	if model == "" {
+		model = "unknown"
+	}
+	return &RouteInfo{
+		ProviderName: provider.Name(), ProviderType: provider.Type(), Model: model,
+		ResponseTimeMs: time.Since(started).Milliseconds(),
+	}
 }
 
 // selectProvider selects the best provider for a request.

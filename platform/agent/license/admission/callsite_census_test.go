@@ -209,6 +209,10 @@ func TestEveryPrincipalCreationPathReachesAdmitAndNothingElseCallsIt(t *testing.
 		"Authenticate": "the admitting boundary ITSELF: authenticator.go:186 calls " +
 			"admitPrincipal(ServicePrincipal) on the result before returning it. If this name ever " +
 			"leaves `creators`, that check has gone and the census above fails on it first.",
+		"authenticateHostedOutcomeDelegation": "constructs a tenant-bound internal-service result only after " +
+			"validating the canonical subject and its HMAC, and returns only through authenticateLegacy to " +
+			"Authenticate. Authenticate detects the subject-bearing result and admits it as a service principal " +
+			"before it can leave the authentication boundary.",
 		"authenticateMCPSession": "returns the *AuthResult that Authenticate produced (mcp_server_handler.go:1316, " +
 			"`auth = authResult`) and mints nothing: no composite literal, no new(), no var declaration of the " +
 			"type anywhere in it. The credential was admitted inside Authenticate before this returns.",

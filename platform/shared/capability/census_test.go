@@ -133,6 +133,21 @@ func TestTheCensusReportsWhatTheRegistryHolds(t *testing.T) {
 	}
 }
 
+func TestGovernedModelHandlerHasProxyCapabilityOwnership(t *testing.T) {
+	const handler = "platform/agent/governed_model_handler.go"
+	var owners []string
+	for _, entry := range Load().Entries {
+		for _, implementation := range entry.Implementation {
+			if implementation == handler {
+				owners = append(owners, entry.ID)
+			}
+		}
+	}
+	if len(owners) != 1 || owners[0] != "governance.proxy_request" {
+		t.Fatalf("%s capability owners=%v, want only governance.proxy_request", handler, owners)
+	}
+}
+
 // TestBandsExcludeUnscorableCapabilities pins the one arithmetic choice that
 // could quietly move the published numbers.
 //
@@ -434,8 +449,13 @@ const (
 	// for the route added after v11.3.7. The production registry is empty, so
 	// this row is deliberately absent from /health. Only the capability count
 	// rises; the health-gap and edition-blind counts do not move.
-	pinnedCapabilities        = 87
-	pinnedFamilies            = 20
+	// 90 for the Model 1 productization entry gate: the FinCrime family is
+	// represented by separate shared-protocol, Enterprise policy-pack and
+	// Enterprise risk-scoring identities. Independent payment_exception and
+	// support_refund module identities add two more families. The /health wire
+	// and its gap count do not move.
+	pinnedCapabilities        = 92
+	pinnedFamilies            = 23
 	pinnedMatrixDisagreements = 16
 	pinnedHealthGaps          = 9
 	pinnedEditionBlindAdverts = 7
@@ -449,7 +469,11 @@ const (
 	// Each has an exemption naming the literal path it registers, so the URL
 	// space is still accounted for — by inspection, which is what an exemption
 	// is, instead of by a derivation that could not prove what it was asserting.
-	pinnedRouteExemptions    = 8
+	// The v11.5.0 Square action-gateway wiring moved the three registrations
+	// below the governed-model family and added its readiness and status sites.
+	// The scanner still cannot prove the package-level globalRouter receiver,
+	// so the exact live call sites rise by two while every URL remains claimed.
+	pinnedRouteExemptions    = 11
 	pinnedOutOfScopeSections = 12
 )
 

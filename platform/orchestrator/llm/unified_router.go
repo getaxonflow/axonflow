@@ -105,16 +105,22 @@ func (u *UnifiedRouter) RouteRequest(ctx context.Context, reqCtx RequestContext)
 		u.logger.Printf("Policy routing: allowed providers=%v (strict enforcement)",
 			reqCtx.PolicyAllowedProviders)
 	}
+	if reqCtx.DisableFailover {
+		opts = append(opts, WithDisableFailover())
+	}
 
 	// Route using new router
 	resp, routeInfo, err := u.router.RouteRequest(ctx, req, opts...)
+	legacyInfo := RouteInfoToLegacyProviderInfo(routeInfo)
 	if err != nil {
-		return nil, nil, err
+		// A selected provider can fail after an outbound attempt (including while
+		// parsing its response). Preserve that attempt metadata for canonical
+		// usage/reconciliation; selection failures still have nil routeInfo.
+		return nil, legacyInfo, err
 	}
 
 	// Convert response back to legacy format
 	legacyResp := CompletionResponseToLegacyResponse(resp)
-	legacyInfo := RouteInfoToLegacyProviderInfo(routeInfo)
 
 	return legacyResp, legacyInfo, nil
 }

@@ -45,7 +45,7 @@ Top level:
 
 | Field | Meaning |
 |---|---|
-| `schema` | Schema version. Checked on load - a reader compiled against one schema refuses a file written for another rather than reading moved fields. |
+| `schema` | Schema version. Checked on load - a reader compiled against one schema refuses a file written for another rather than reading moved fields. Schema 1.1 adds descriptive module topology, limit-dimension and refusal-reason fields. |
 | `platform_version` | The release the census was taken against. |
 | `generated` | ISO date. |
 | `scan_roots` | Repo-relative directories the route and build-tag derivation walks. Declared in the data so the SCOPE of the census is reviewable in the same diff as the census. |
@@ -64,6 +64,9 @@ Per capability:
 | `source_classification` | yes | ADR-066 decision 2: `community_core` \| `evaluation_preview` \| `enterprise_protocol` \| `enterprise_implementation`. Where the SOURCE may live, which is a different question from which edition may run it. |
 | `build_tag` | yes | `none` \| `enterprise` \| `split`. Checked against the files `implementation` names. |
 | `sync` | yes | `mirrored` \| `excluded` \| `stub` - disposition towards the community mirror. |
+| `topologies` | optional | Supported deployment shapes: `self_hosted` and/or `hosted`. This is an architecture contract, not a claim that a named fleet has deployed the capability. |
+| `limits` | optional | Stable structured limit dimensions: registry-unique family-qualified ID, `kind`, lower-snake counted `unit`, isolation `scope`, reset `window`, and description. Concrete allowances and enforcement never live in this registry. |
+| `refusal_reasons` | optional | Stable machine-readable reasons from `platform/shared/capabilityresolution`. The list is descriptive and never grants access. |
 | `implementation` | yes | Repo-relative paths or directories holding the backing code. |
 | `owner` | yes | The test that exercises it. ADR-066 conformance item 10 wants every capability EXERCISED rather than merely compiled. |
 | `routes`, `planes` | when it serves HTTP | Path patterns in the gorilla/mux spelling, and the binaries that serve them. A prefix covers the paths beneath it, at a path boundary. |
@@ -84,6 +87,10 @@ Per capability:
 - An empty or unknown `minimum_edition`, `source_classification`, `build_tag`,
   `sync`, `score.basis` or availability. `""`, `"unknown"` and `"tbd"` are all
   rejected.
+- Unknown or duplicate topologies, registry-wide duplicate limit IDs, duplicate
+  refusal reasons, or malformed lower-snake limit units; malformed
+  limit dimensions; a quota refusal with no declared limit; or a declared
+  limit with no `quota_exhausted` refusal.
 - A classification that contradicts the edition, the build tag or the sync
   disposition - `enterprise_implementation` cannot be `build_tag: none`,
   `sync: mirrored`, or `minimum_edition: community`.

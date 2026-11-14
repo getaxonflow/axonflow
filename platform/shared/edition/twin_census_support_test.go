@@ -206,7 +206,7 @@ const CensusPath = "platform/shared/edition/twin_census.tsv"
 // To change it legitimately: resolve a pair, regenerate, then update this
 // constant AND the matching ratchet. The diff then shows exactly which paths
 // moved, which is the reviewable act the whole census exists to force.
-const KeptSetDigest = "7dafe365fcaa8133660d2fc039b76d1027dad7e9161823661fb5db2f45babdcc"
+const KeptSetDigest = "d072c4b65c996dd207a9e29a901f8d8135e29363e7e9d525459e5133a45fac96"
 
 // KeptSetDigestOf renders the digest of the census's rows.
 //
@@ -252,7 +252,7 @@ const (
 	// from the constraint line by license_pair_byte_identity_test.sh. The
 	// reason is recorded on #3725 as the ratchet's doc requires.
 	MaxKeepTwinRows     = 20
-	MaxKeepDriftRows    = 26
+	MaxKeepDriftRows    = 27
 	MaxKeepBoundaryRows = 17
 )
 

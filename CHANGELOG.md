@@ -10,6 +10,188 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [11.5.0] - 2026-11-12: Independent commercial-module foundations
+
+> **Safe-off platform release.** This release adds the independently licensed
+> `payment_exception` and `support_refund` module contracts and their governed
+> execution foundations. Neither module is enabled by the release itself.
+> Provider Send stays disabled except for the separately authorized Square
+> Sandbox acceptance action; this release authorizes no Square production use
+> and makes no customer-outcome claim.
+
+### Community
+
+#### Added / changed
+
+- Add shared, non-entitling FinCrime protocol semantics and capability metadata,
+  including explicit Enterprise ownership and stable refusal vocabulary.
+  Community receives no FinCrime pack, scorer, grant, quota, model bundle,
+  commercial outcome module, or Square connector.
+- Add the subject-bound governed-model service adapter over the existing policy,
+  budget, Orchestrator router, usage, and attempt path. It accepts identity only
+  through verified service delegation and rejects caller-selected platform
+  routing controls.
+- Register the documented dynamic outcome and Hosted administration paths in
+  the shared route-template vocabulary. Community SaaS telemetry now persists
+  bounded OpenAPI templates for those paths instead of concrete case identifiers
+  when they are observed.
+- Update the shared Go networking modules, isolated gateway health-probe graph,
+  and checksum-pinned MinIO/MC source builds so shipped binaries no longer
+  carry the fixed `golang.org/x/net` HTML-parser denial-of-service vulnerability
+  reported as CVE-2026-78661.
+- Replace the pre-release Excelize dependency with `v2.11.1` so release images
+  no longer carry the unbounded column-expansion denial-of-service
+  vulnerability reported as CVE-2026-107223.
+- Build the Prometheus image from the checksum-pinned upstream 3.16.0 source
+  commit with `golang.org/x/net` moved to v0.62.0 before compilation, and prove
+  that floor on both the `prometheus` and `promtool` binaries at build time.
+  No published Prometheus tag is free of CVE-2026-78661 (3.15.1 ships x/net
+  v0.60.0 and 3.16.0 ships v0.61.0), so the release pipeline's HIGH/CRITICAL
+  scan could not pass on any registry tag. The local compose stack moves to the
+  matching upstream `v3.16.0` tag.
+- Move the Grafana image to upstream 13.3.1-slim (the first 13.3 release whose
+  server embeds `golang.org/x/net` v0.62.0) and rebuild both data-source
+  backends, Prometheus 13.2.6 and PostgreSQL, from their pinned upstream source
+  commits with x/net moved to v0.62.0, proving the floor on the server and both
+  backends at build time. Every published release of those plugins still carries
+  CVE-2026-78661, so the release scan could not pass on the upstream backends.
+
+#### Compatibility
+
+- Keep every SDK and plugin minimum floor unchanged. Reconcile the platform's
+  OpenClaw recommendation with the already-published 2.10.4 artifact without a
+  plugin republish.
+- Keep the n8n recommendation at the verified public 1.2.1 artifact. Defer
+  1.3.0 rather than advertise an unpublished package: its source is prepared
+  and tested, but the mandatory runtime-E2E publication gate and canonical npm
+  provenance path require GitHub Actions/OIDC, which is unavailable for this
+  train.
+
+### Enterprise
+
+#### Added
+
+- Upgrade `krb5-libs` to 1.22.3-r0 in the `case-workflows` image with a versioned
+  constraint and an installed-version readback, so the image no longer carries
+  the sixteen HIGH-severity Kerberos vulnerabilities the pinned
+  python:3.12-alpine3.23 base ships and the release scan refuses.
+
+- Add company-signed private-module manifest, trust-chain, artifact-admission,
+  lifecycle, and rollback contracts for independently licensed
+  `payment_exception` and `support_refund` 1.0.0 bundles.
+- Add the fail-closed acceptance-plan validator and private parameter renderer
+  foundation for three isolated fresh-install modes. It binds exact source,
+  template, image, module-authority, tenant, licence, and secret identities;
+  refuses wildcard or reused tenant boundaries; and renders an operator
+  acceptance matrix. Validation is preflight only and does not claim a
+  deployment, provider action, or accepted outcome. Release completion still
+  requires the signed CI-down cohort, three isolated fresh-install modes, and
+  the bounded Square Sandbox acceptance evidence described by the release
+  plan.
+- Add default-off Hosted and self-hosted authority and persistence paths that
+  keep tenant grants, quotas, policies, case evidence, Decision/HITL, audit,
+  usage, readiness, and lifecycle identity independent for the two modules.
+- Route payment and refund investigation through the existing Agent governed
+  model seam and Orchestrator provider router while preserving provider, model,
+  token, attempt, and deterministic fail-closed receipts.
+- Add the default-off Square Sandbox refund action-gateway path with durable
+  reservation, claim, receipt, authoritative reread, reconciliation, restart
+  recovery, and one-run tenant/module/action-scoped authority in a dedicated
+  tenant-isolated deployment. Shared multi-tenant Hosted remains hard-off;
+  payment retry remains no-send.
+- Add safe-off FinCrime Model 1 and Engine B foundations: canonical runtime
+  vocabulary, authenticated artifact loading, admission and quota rails, signed
+  self-hosted grants, production custody, isolated shared infrastructure,
+  separated operator roles, and a digest-pinned service created at desired
+  count zero. Activation and product completion remain outside this release.
+
+#### Fixed / hardened
+
+- Bind the outcome-module acceptance-plan validator to the two identities the
+  platform pins instead of demanding invented unique values: a module's quota identity
+  is the database-constrained `<module>.cases` limit, and a row's licence
+  deployment identity is its organization id. The sealed combined row could
+  not previously pass against the shipped code.
+- Correct the dedicated Enterprise template's Square Sandbox rule so Provider
+  Send requires `AppRoleProvisioned=true`, as its description and the paid
+  module sidecar rule already did. The inverted assertion made every refund
+  activation change set unsatisfiable.
+- Keep the CI-down release pipeline's sealed multi-architecture index in the
+  registry until its release tags exist: the index-seal step removed the
+  index's only tag, which deletes the image, so the promotion step could not
+  fetch the digest it had just sealed.
+- Apply the self-hosted outcome authority schema on dedicated Enterprise
+  stacks: the template sets the self-hosted outcomes backend profile for
+  `in-vpc-enterprise` deployments and refuses granted outcome modules under any
+  other mode, so a fresh install has the module-grant tables the authority
+  operator writes and the Agent and sidecar read.
+- Let a self-hosted deployment's Square Sandbox send proceed on its own
+  `self_hosted` module grant. The entitlement guard bound every send to a
+  Hosted grant, which a licence-backed dedicated stack can never hold; it now
+  requires the grant posture that matches the runtime's backend profile.
+- Verify the prior consumed-cohort ledger correctly in the CI-down release
+  pipeline: the reservation step handed the signature verifier a key file
+  path instead of the key bytes, so every cohort after the first failed
+  before promotion.
+- Record the platform manifest, not the per-architecture attestation wrapper
+  index, as each native build's child digest in the CI-down release pipeline,
+  so the sealed multi-architecture index and the signed build receipts name the
+  same manifests and admission can verify them.
+- Make CloudFormation deployment secret-payload cleanup exit on HUP, INT, and
+  TERM after deleting its temporary file, so an interrupted deployment cannot
+  resume with missing licence material.
+- Make the alternate KMS-signed CI-down image-admission path operational and
+  fail closed while GitHub Actions is unavailable. Four distinct live signing
+  keys and exact CodeBuild identities bind the coordinator, native architecture
+  receipts, index seal, atomic replay reservation, and retained admission
+  evidence. The reviewed trust policy is enabled only for that reconciled
+  provider; it grants no deployment, secret, or provider-action authority, and
+  every release still requires an independently reviewed exact-head board and
+  successful signed cohort admission before tagging.
+- Bind each native CI-down Trivy and Syft remote scan to its exact
+  `linux/amd64` or `linux/arm64` child and pass Syft an explicit, ephemeral ECR
+  credential. A scanner can no longer default an arm64 child to amd64 or rely
+  on a container-runtime socket that is intentionally absent.
+- Fail closed when generating a combined FinCrime and outcome-module licence
+  unless authenticated organization scope is present and the two tenant
+  identities match. Single-module licence generation remains independent.
+- Require every specialized outcome table and the direct rate counter in the
+  Hosted Agent's startup RLS inventory. A missing investigation or composite
+  table now prevents boot instead of disappearing from the dynamic catalog
+  census.
+- Preserve real governed-model answers from the established `data.data`
+  response envelope, accept valid fenced JSON with trailing whitespace, and
+  give schema-complete advisory results a bounded 1,536-token default while
+  retaining fail-closed attempt evidence on malformed or rejected output.
+- Make immutable ECR promotion and deployment retries resumable: exact existing
+  digests are skipped only after readback, conflicting tags fail before writes,
+  deployment markers are run-scoped, and every active destination remains
+  explicitly immutable and digest-pinned.
+- Allow the CI-down promoter to perform the repository-scoped ECR blob
+  availability checks required to assemble a multi-architecture index from the
+  two already-scanned native children, without granting layer-upload authority.
+- Close known FinCrime scorer cryptography and runtime-image vulnerabilities,
+  reject non-current country codes, bind scan receipts to image architecture,
+  and fail closed on stale or unapproved OS-risk disposition.
+- Make the Compose Portal UI healthcheck probe the IPv4 listener directly.
+- Correct outcome-module upgrade and rollback guidance so additive schema is
+  preserved and image rollback does not imply destructive down-migrations.
+
+#### Compatibility
+
+- Ship no new SDK, plugin, or integration package. Resolve every unchanged
+  client named by the train live without retagging or republishing it. n8n
+  remains at the verified public 1.2.1 artifact; 1.3.0 is deferred.
+
+### Migration
+
+- Apply additive core migration 195 in every edition, Community SaaS migrations
+  205-208 where applicable, and Enterprise migrations 166-168 and 170 before
+  new tasks start. Enterprise migration 169 was deliberately removed and is
+  not a gap to fill. The update to historical core migration 105 provides
+  fresh-install bootstrap parity and does not re-run on an existing database.
+  Image rollback retains this schema.
+
 ## [11.4.0] - 2026-11-05: Hosted acquisition and bounded outcome foundations
 
 > **Platform release with new capabilities kept dark or sandbox-only.** The

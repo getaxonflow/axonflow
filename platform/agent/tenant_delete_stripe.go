@@ -102,7 +102,7 @@ func (s *HTTPStripeCustomerArchiver) ArchiveCustomer(ctx context.Context, custom
 // tenant and its deletion token intact for payment reconciliation.
 func (s *HTTPStripeCustomerArchiver) ExpireCheckoutSession(ctx context.Context, sessionID string) error {
 	if s == nil || s.APIKey == "" || !strings.HasPrefix(sessionID, "cs_") {
-		return fmt.Errorf("Stripe Checkout expiry is not configured or session ID is invalid")
+		return fmt.Errorf("stripe Checkout expiry is not configured or session ID is invalid")
 	}
 	status, err := s.checkoutSessionStatus(ctx, sessionID)
 	if err != nil {
@@ -112,7 +112,7 @@ func (s *HTTPStripeCustomerArchiver) ExpireCheckoutSession(ctx context.Context, 
 		return nil
 	}
 	if status != "open" {
-		return fmt.Errorf("Stripe Checkout Session is not open")
+		return fmt.Errorf("stripe Checkout Session is not open")
 	}
 	endpoint := "https://api.stripe.com/v1/checkout/sessions/" + url.PathEscape(sessionID) + "/expire"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
@@ -133,7 +133,7 @@ func (s *HTTPStripeCustomerArchiver) ExpireCheckoutSession(ctx context.Context, 
 	// proves that Stripe can no longer accept payment on this Session.
 	status, err = s.checkoutSessionStatus(ctx, sessionID)
 	if err != nil || status != "expired" {
-		return fmt.Errorf("Stripe Checkout Session expiry is unverified")
+		return fmt.Errorf("stripe Checkout Session expiry is unverified")
 	}
 	return nil
 }
@@ -155,14 +155,14 @@ func (s *HTTPStripeCustomerArchiver) checkoutSessionStatus(ctx context.Context, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Stripe Checkout Session lookup returned %d", resp.StatusCode)
+		return "", fmt.Errorf("stripe Checkout Session lookup returned %d", resp.StatusCode)
 	}
 	var session struct{ ID, Status string }
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&session); err != nil {
 		return "", err
 	}
 	if session.ID != sessionID {
-		return "", fmt.Errorf("Stripe Checkout Session ID mismatch")
+		return "", fmt.Errorf("stripe Checkout Session ID mismatch")
 	}
 	return session.Status, nil
 }

@@ -40,9 +40,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     github.com/prometheus/prometheus@v0.311.3 \
     github.com/rabbitmq/amqp091-go@v1.13.0 \
     go.opentelemetry.io/otel/sdk@v1.44.0 \
-    golang.org/x/crypto@v0.57.0 \
-    golang.org/x/net@v0.60.0 \
-    golang.org/x/text@v0.42.0 \
+    golang.org/x/crypto@v0.58.0 \
+    golang.org/x/net@v0.62.0 \
+    golang.org/x/text@v0.43.0 \
     google.golang.org/grpc@v1.83.2
 RUN --mount=type=cache,target=/go/pkg/mod \
   CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
@@ -62,9 +62,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   go get \
     github.com/klauspost/compress@v1.19.0 \
     github.com/prometheus/prometheus@v0.311.3 \
-    golang.org/x/crypto@v0.57.0 \
-    golang.org/x/net@v0.60.0 \
-    golang.org/x/text@v0.42.0 \
+    golang.org/x/crypto@v0.58.0 \
+    golang.org/x/net@v0.62.0 \
+    golang.org/x/text@v0.43.0 \
     google.golang.org/grpc@v1.83.2
 RUN --mount=type=cache,target=/go/pkg/mod \
   CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \

@@ -56,7 +56,8 @@ These are not action variables and are unchanged:
 ```yaml
 services:
   axonflow-agent:
-    image: getaxonflow/agent:latest
+    # Replace abc1234 with the immutable Git SHA tag for the reviewed release.
+    image: getaxonflow/agent:abc1234
     environment:
       GATEWAY_STATIC_POLICIES_ENABLED: "false"
 ```
@@ -65,7 +66,7 @@ services:
 ```yaml
 services:
   axonflow-agent:
-    image: getaxonflow/agent:latest
+    image: getaxonflow/agent:abc1234
     environment:
       GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES: pii-email,pii-phone
 ```

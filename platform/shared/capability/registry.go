@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"axonflow/platform/shared/capabilityresolution"
 )
 
 //go:embed registry.json
@@ -110,6 +112,7 @@ func (r *Registry) Validate() error {
 
 	seenID := map[string]int{}
 	seenHealthName := map[string]int{}
+	seenLimitID := map[string]int{}
 	healthOrder := map[string]map[int]string{}
 
 	for i, e := range r.Entries {
@@ -205,13 +208,85 @@ func (r *Registry) Validate() error {
 				"sync publicly, but sync is %q", where, e.Classification, e.Sync)
 		}
 
+		// --- module contract metadata --------------------------------------
+		seenTopology := map[Topology]bool{}
+		for _, topology := range e.Topologies {
+			switch {
+			case !validTopology[topology]:
+				add("%s: unknown topology %q (want self_hosted or hosted)", where, topology)
+			case seenTopology[topology]:
+				add("%s: topology %q is listed twice", where, topology)
+			}
+			seenTopology[topology] = true
+		}
+
+		seenLimit := map[string]bool{}
+		for limitIndex, limit := range e.Limits {
+			limitWhere := fmt.Sprintf("%s limit %d (%s)", where, limitIndex, orUnnamed(limit.ID))
+			switch {
+			case !idPattern(limit.ID):
+				add("%s: id %q is not lower snake case dotted (family.name)", limitWhere, limit.ID)
+			case !strings.HasPrefix(limit.ID, e.Family+"."):
+				add("%s: id %q does not start with capability family %q", limitWhere, limit.ID, e.Family)
+			case seenLimit[limit.ID]:
+				add("%s: limit id %q is listed twice", where, limit.ID)
+			}
+			seenLimit[limit.ID] = true
+			if previousEntry, duplicate := seenLimitID[limit.ID]; duplicate {
+				add("duplicate limit id %q: entries %d and %d. Limit identities are registry-wide contracts, not entry-local labels",
+					limit.ID, previousEntry, i)
+			} else if limit.ID != "" {
+				seenLimitID[limit.ID] = i
+			}
+			if !validLimitKind[limit.Kind] {
+				add("%s: unknown kind %q", limitWhere, limit.Kind)
+			}
+			if !lowerSnakeTokenPattern.MatchString(limit.Unit) {
+				add("%s: unit %q is not a lower_snake token", limitWhere, limit.Unit)
+			}
+			if !validLimitScope[limit.Scope] {
+				add("%s: unknown scope %q", limitWhere, limit.Scope)
+			}
+			if !validLimitWindow[limit.Window] {
+				add("%s: unknown window %q", limitWhere, limit.Window)
+			}
+			if strings.TrimSpace(limit.Description) == "" {
+				add("%s: description is empty", limitWhere)
+			}
+		}
+
+		seenReason := map[capabilityresolution.Reason]bool{}
+		for _, reason := range e.RefusalReasons {
+			switch {
+			case !capabilityresolution.Valid(reason):
+				add("%s: unknown refusal_reason %q (want one of %v)",
+					where, reason, capabilityresolution.Reasons())
+			case seenReason[reason]:
+				add("%s: refusal_reason %q is listed twice", where, reason)
+			}
+			seenReason[reason] = true
+		}
+		if seenReason[capabilityresolution.ReasonQuotaExhausted] && len(e.Limits) == 0 {
+			add("%s: refusal_reason %q is promised but the capability declares no limit dimension",
+				where, capabilityresolution.ReasonQuotaExhausted)
+		}
+		if len(e.Limits) > 0 && !seenReason[capabilityresolution.ReasonQuotaExhausted] {
+			add("%s: declares %d limit(s) but not the stable %q refusal_reason",
+				where, len(e.Limits), capabilityresolution.ReasonQuotaExhausted)
+		}
+		if len(e.RefusalReasons) > 0 && e.MinimumEdition != EditionCommunity &&
+			!seenReason[capabilityresolution.ReasonEditionRequired] {
+			add("%s: minimum_edition is %q but refusal_reasons omit %q",
+				where, e.MinimumEdition, capabilityresolution.ReasonEditionRequired)
+		}
+
 		// --- owner ----------------------------------------------------------
 		if e.Owner == "" {
 			add("%s: owner is empty. ADR-066 conformance item 10 requires every capability to "+
 				"be exercised by a named test; an unowned capability is one nothing is known "+
 				"to run", where)
-		} else if !strings.HasSuffix(e.Owner, "_test.go") && !strings.HasSuffix(e.Owner, ".sh") {
-			add("%s: owner %q is neither a Go test file nor a shell suite", where, e.Owner)
+		} else if !ownerIsTestPath(e.Owner) {
+			add("%s: owner %q is neither a Go test file nor a shell suite, and is not a test_*.py Python test", where, e.Owner)
 		}
 		if len(e.Implementation) == 0 {
 			add("%s: implementation is empty", where)
@@ -459,6 +534,14 @@ func orUnnamed(s string) string {
 		return "no id"
 	}
 	return s
+}
+
+var lowerSnakeTokenPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
+
+func ownerIsTestPath(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, ".sh") ||
+		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py"))
 }
 
 // idPattern reports whether id is `family.name` in lower snake case. Written

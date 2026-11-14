@@ -178,15 +178,16 @@ type ValidationResult struct {
 	// backward compatibility. Removal in v10.
 	//
 	// Deprecated: use LicenseDeploymentID() instead.
-	OrgID           string
-	MaxNodes        int
-	ExpiresAt       time.Time
-	DaysUntilExpiry int
-	GracePeriodDays int
-	Error           string
-	Message         string
-	Features        map[string]bool
-	Limits          TierLimits // Tier-specific resource limits
+	OrgID                      string
+	MaxNodes                   int
+	ExpiresAt                  time.Time
+	DaysUntilExpiry            int
+	GracePeriodDays            int
+	Error                      string
+	Message                    string
+	Features                   map[string]bool
+	Limits                     TierLimits // Tier-specific resource limits
+	selfHostedCapabilityGrants []SelfHostedCapabilityGrant
 
 	// Service identity fields (optional - only for service licenses)
 	ServiceName string   `json:"service_name,omitempty"`
@@ -226,16 +227,17 @@ type ServiceLicensePayload struct {
 	// deployment/licensee identity per ADR-052 §3 + ADR-054. New licenses
 	// ship both `deployment_id` and `org_id`; V3 readers prefer the new
 	// field. Carried in both community and enterprise builds.
-	DeploymentID string      `json:"deployment_id,omitempty"`
-	OrgID        string      `json:"org_id"`
-	ServiceName  string      `json:"service_name,omitempty"`
-	ServiceType  string      `json:"service_type,omitempty"`
-	Permissions  []string    `json:"permissions,omitempty"`
-	IssuedAt     string      `json:"issued_at,omitempty"` // Format: YYYYMMDD
-	ExpiresAt    string      `json:"expires_at"`          // Format: YYYYMMDD
-	Email        string      `json:"email,omitempty"`
-	Email2       string      `json:"email2,omitempty"`
-	Limits       *TierLimits `json:"limits,omitempty"`
+	DeploymentID               string                      `json:"deployment_id,omitempty"`
+	OrgID                      string                      `json:"org_id"`
+	ServiceName                string                      `json:"service_name,omitempty"`
+	ServiceType                string                      `json:"service_type,omitempty"`
+	Permissions                []string                    `json:"permissions,omitempty"`
+	IssuedAt                   string                      `json:"issued_at,omitempty"` // Format: YYYYMMDD
+	ExpiresAt                  string                      `json:"expires_at"`          // Format: YYYYMMDD
+	Email                      string                      `json:"email,omitempty"`
+	Email2                     string                      `json:"email2,omitempty"`
+	Limits                     *TierLimits                 `json:"limits,omitempty"`
+	SelfHostedCapabilityGrants []SelfHostedCapabilityGrant `json:"self_hosted_capability_grants,omitempty"`
 
 	// Plugin-claim / SaaS-quadrant claims. Only present in tokens issued for
 	// the SaaS Plugin path; self-hosted tokens leave them empty.

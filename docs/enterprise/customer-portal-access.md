@@ -400,7 +400,7 @@ Returns `sso_enabled`, `sso_provider`, `enforce_sso`, and `sso_login_url` if con
 
 ## CloudFormation Deployment Notes
 
-The CloudFormation template (`ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml`) includes a `LicenseKeyGenerator` Lambda that creates a license key and stores it in Secrets Manager. However, this Lambda does NOT create the organization in the database.
+The CloudFormation template (`ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml`) never receives a vendor signing seed and cannot mint licences. The seller issues the signed licence outside the buyer stack; the buyer stores it in a same-account Secrets Manager secret and supplies `EnterpriseLicenseSecretArn`. This licence does NOT create the organization in the database.
 
 After stack creation, the admin must call one of:
 

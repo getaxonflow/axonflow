@@ -19,10 +19,12 @@ func TestTheCommunityBuildHasNoRiskScorer(t *testing.T) {
 	if h := riskScoreFactHealth(); h != nil {
 		t.Fatalf("the Community /health gained a member: %v", h)
 	}
-	for _, name := range []string{envRiskFactURL, envRiskFactTimeoutMS} {
+	for _, name := range []string{envRiskFactURL, envRiskFactTimeoutMS, envRiskFactMode, envRiskFactCanaryTenants} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(envRiskFactURL, "")
 			t.Setenv(envRiskFactTimeoutMS, "")
+			t.Setenv(envRiskFactMode, "")
+			t.Setenv(envRiskFactCanaryTenants, "")
 			if err := wireRiskScoreFact(); err != nil {
 				t.Fatalf("nothing set refused boot: %v", err)
 			}

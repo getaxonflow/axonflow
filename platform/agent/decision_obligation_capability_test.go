@@ -800,6 +800,24 @@ func TestOrdinaryAllowCarriesNoSuppressionFields(t *testing.T) {
 	}
 }
 
+func TestDecisionAuditBindsConsumedApproval(t *testing.T) {
+	details := buildDecisionAuditDetails(
+		"dec-refund", "tool", []string{"support_refund.issue_approval"}, nil, nil, false,
+		decisionAuditInput{clientID: "hosted-outcome-service", requestID: "dec-refund",
+			plane: PlaneDecision, approvalID: "approval-7", approvalBindingDigest: "sha256:binding"})
+	if details["approval_id"] != "approval-7" {
+		t.Fatalf("approval_id = %v, want the server-consumed approval", details["approval_id"])
+	}
+	if details["approval_binding_digest"] != "sha256:binding" {
+		t.Fatalf("approval_binding_digest = %v", details["approval_binding_digest"])
+	}
+	without := buildDecisionAuditDetails("dec-no-approval", "tool", nil, nil, nil, false,
+		decisionAuditInput{clientID: "hosted-outcome-service", requestID: "dec-no-approval", plane: PlaneDecision})
+	if _, ok := without["approval_id"]; ok {
+		t.Fatal("an unapproved decision must not acquire approval_id")
+	}
+}
+
 // --- Fallback metric (#2958) ---
 
 // TestObligationFallbackMetric: a seam silently degrading to detect-and-log is

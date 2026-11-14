@@ -11,7 +11,7 @@ ARG EDITION=community
 # — the SAME source as the io.opencontainer.image.version label below, so the
 # baked binary version and the image label never drift. Re-declared here in the
 # builder stage (ARG scope is per-stage); the final stage declares it again.
-ARG AXONFLOW_VERSION=11.4.0
+ARG AXONFLOW_VERSION=11.5.0
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -78,6 +78,14 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/agent/hitl/* ./agent/hitl/ && \
         echo "  Copied enterprise HITL module (EU AI Act Article 14)"; \
       fi && \
+      if [ -d "/src/ee/platform/actiongateway" ] && [ -f "/src/ee/platform/agent/action_gateway_hosted_enterprise.go" ]; then \
+        mkdir -p ./actiongateway && \
+        cp -r /src/ee/platform/actiongateway/* ./actiongateway/ && \
+        cp /src/ee/platform/agent/action_gateway_hosted_enterprise.go ./agent/action_gateway_hosted_enterprise.go && \
+        echo "  Copied enterprise Hosted Square Sandbox action gateway and Agent composition"; \
+      else \
+        echo "ERROR: Enterprise Hosted action-gateway overlay is incomplete" && exit 1; \
+      fi && \
       if [ -d "/src/ee/platform/agent/sqli" ]; then \
         mkdir -p /go/src/axonflow/ee/platform/agent/sqli && \
         cp -r /src/ee/platform/agent/sqli/* /go/src/axonflow/ee/platform/agent/sqli/ && \
@@ -117,7 +125,7 @@ RUN --mount=type=bind,source=.,target=/src \
 # For Community builds, no tag is needed (uses Community stubs)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     -trimpath -ldflags="-s -w -X axonflow/platform/shared/version.Version=${AXONFLOW_VERSION}" \
-    $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
+    $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise,enterprise_image_overlay"; fi) \
     -o /app/agent ./cmd/agent
 
 # The add-on policy packs an Enterprise image carries (PRD v11 §1.9, #4126): each
@@ -173,7 +181,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=11.4.0
+ARG AXONFLOW_VERSION=11.5.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

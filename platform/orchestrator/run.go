@@ -349,6 +349,11 @@ type OrchestratorRequest struct {
 	// The two step adapters fill it from the step's own definition; every other
 	// plane leaves it nil and the fact is unstated.
 	stepCost *stepCostInputs
+
+	// disableLLMFailover comes only from the proxy-authenticated Agent hop.
+	// Unexported and populated from request context after JSON decode, so no
+	// /api/v1/process body can mint this platform routing control.
+	disableLLMFailover bool
 }
 
 // MediaContentRequest represents a media item in the API request.
@@ -2601,6 +2606,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	req.disableLLMFailover = llmFailoverDisabledFrom(r.Context())
 
 	// Add request ID if not provided
 	if req.RequestID == "" {
@@ -2710,6 +2716,9 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 1. The anchored engine decides the request, and the rows that apply
 	// carry its routing hints (route_request_enforcing_seam.go, #4254).
+	// Policy routing effects are platform-owned. Remove any values supplied in
+	// caller JSON before the anchored decision; only that decision may mint them.
+	clearCallerPolicyRoutingEffects(&req)
 	policyStartTime := time.Now()
 	decision := decideRouteRequest(ctx, r.Header, req, processRouteAction)
 	policyResult := decision.result
@@ -2880,17 +2889,36 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			auditLogger.LogFailedRequest(ctx, req, err)
 			latencyMsErr := time.Since(startTime).Milliseconds()
+			failedProvider := "unknown"
+			if providerInfo != nil && providerInfo.Provider != "" {
+				failedProvider = providerInfo.Provider
+			}
 
 			// Record failed LLM call
-			promLLMCalls.WithLabelValues("unknown", "error").Inc()
+			promLLMCalls.WithLabelValues(failedProvider, "error").Inc()
 			promRequestsTotal.WithLabelValues("error").Inc()
 			promRequestDuration.WithLabelValues("error").Observe(float64(latencyMsErr))
 
 			// Record comprehensive metrics
 			if orchestratorMetrics != nil {
-				orchestratorMetrics.recordRequest(req.RequestType, "unknown", latencyMsErr, false, false, 0, 0)
+				orchestratorMetrics.recordRequest(req.RequestType, failedProvider, latencyMsErr, false, false, 0, 0)
 			}
 
+			if providerInfo != nil {
+				// A provider was selected and reached, but it failed to return a
+				// usable completion (including provider-response parse failures).
+				// Preserve zero-token attempt metadata so the Agent can synchronously
+				// commit the canonical attempt instead of losing paid-call evidence.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				if encodeErr := json.NewEncoder(w).Encode(OrchestratorResponse{
+					RequestID: req.RequestID, Success: false, Error: "LLM routing failed",
+					ProviderInfo: providerInfo, ProcessingTime: time.Since(startTime).String(),
+				}); encodeErr != nil {
+					log.Printf("Error encoding failed-provider response: %v", encodeErr)
+				}
+				return
+			}
 			sendErrorResponse(w, "LLM routing failed", http.StatusInternalServerError)
 			return
 		}
@@ -2931,11 +2959,16 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		response := OrchestratorResponse{
-			RequestID:      req.RequestID,
-			Success:        false,
-			Error:          "Response blocked by response-plane governance",
-			Data:           processedResponse,
-			PolicyInfo:     policyResult,
+			RequestID:  req.RequestID,
+			Success:    false,
+			Error:      "Response blocked by response-plane governance",
+			Data:       processedResponse,
+			PolicyInfo: policyResult,
+			// A provider was reached before response governance withheld the
+			// result. Preserve the attempt metadata so the Agent can synchronously
+			// commit canonical usage and the caller can distinguish a pre-call
+			// refusal from a paid, post-provider refusal.
+			ProviderInfo:   providerInfo,
 			ProcessingTime: time.Since(startTime).String(),
 			Engine:         redactionInfo.Engine,
 			SubjectType:    redactionInfo.SubjectType,
@@ -2995,6 +3028,16 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+func clearCallerPolicyRoutingEffects(req *OrchestratorRequest) {
+	if req == nil || req.Context == nil {
+		return
+	}
+	delete(req.Context, "policy_preferred_provider")
+	delete(req.Context, "policy_allowed_providers")
+	delete(req.Context, "policy_routing_reason")
+	delete(req.Context, "_axonflow_disable_llm_failover")
 }
 
 func providerStatusHandler(w http.ResponseWriter, r *http.Request) {

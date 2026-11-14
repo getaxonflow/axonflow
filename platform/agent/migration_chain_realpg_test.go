@@ -45,14 +45,364 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
+	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/testutil"
 
 	"github.com/lib/pq"
 )
+
+func TestHostedFinCrimeProfileRealPostgresChainCoexistsWithHostedAuthority(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedFinCrime)
+	t.Setenv("ORG_ID", "profile-test-org")
+	t.Setenv("DEPLOYMENT_KIND", "hosted")
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsPath := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	applyChain(t, pc.DB, migrationsPath)
+
+	for _, table := range []string{
+		"community_saas_registrations",
+		"hosted_subscriptions",
+		"hosted_portal_members",
+		"fincrime_score_limits",
+		"fincrime_score_admissions",
+	} {
+		var relation sql.NullString
+		if err := pc.DB.QueryRow(`SELECT to_regclass($1)`, "public."+table).Scan(&relation); err != nil {
+			t.Fatalf("to_regclass(%s): %v", table, err)
+		}
+		if !relation.Valid {
+			t.Errorf("expected %s to exist after community-saas + Hosted FinCrime profile chain", table)
+		}
+	}
+
+	var unrelated sql.NullString
+	if err := pc.DB.QueryRow(`SELECT to_regclass('public.agent_capability_bindings')`).Scan(&unrelated); err != nil {
+		t.Fatalf("check unrelated Enterprise migration: %v", err)
+	}
+	if unrelated.Valid {
+		t.Fatal("Hosted FinCrime profile applied enterprise/164; only exact migration 166 is allowed")
+	}
+
+	var grants int
+	if err := pc.DB.QueryRow(`SELECT count(*) FROM fincrime_score_limits`).Scan(&grants); err != nil {
+		t.Fatalf("count fincrime_score_limits: %v", err)
+	}
+	if grants != 0 {
+		t.Fatalf("profile migration seeded %d FinCrime grants; safe-off requires zero", grants)
+	}
+}
+
+func TestHostedCommercialProfileRealPostgresChainIsExactAndSafeOff(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileHostedCommercial)
+	t.Setenv("ORG_ID", "commercial-profile-test-org")
+	t.Setenv("DEPLOYMENT_KIND", "hosted")
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsPath := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	applyChain(t, pc.DB, migrationsPath)
+
+	for _, table := range []string{
+		"community_saas_registrations",
+		"hosted_subscriptions",
+		"hosted_portal_members",
+		"fincrime_score_limits",
+		"fincrime_score_admissions",
+	} {
+		var relation sql.NullString
+		if err := pc.DB.QueryRow(`SELECT to_regclass($1)`, "public."+table).Scan(&relation); err != nil {
+			t.Fatalf("to_regclass(%s): %v", table, err)
+		}
+		if !relation.Valid {
+			t.Errorf("expected %s after community-saas + Hosted commercial profile chain", table)
+		}
+	}
+	// The shared Hosted commercial profile installs no dedicated Square send
+	// authority at all: not merely zero rows, but no broker/grant/preparation/
+	// secret-registry/result tables or associated role capabilities.
+	for _, table := range []string{
+		"external_action_intents",
+		"external_action_dispatch_claim_nonces",
+		"external_action_square_sandbox_grants",
+		"external_action_square_sandbox_grant_events",
+		"external_action_square_sandbox_preparations",
+		"external_action_square_events",
+		"hosted_square_sandbox_runtime_configs",
+		"external_action_results",
+	} {
+		var relation sql.NullString
+		if err := pc.DB.QueryRow(`SELECT to_regclass($1)`, "public."+table).Scan(&relation); err != nil {
+			t.Fatalf("to_regclass(%s): %v", table, err)
+		}
+		if relation.Valid {
+			t.Fatalf("shared Hosted commercial profile installed forbidden Square authority table %s", table)
+		}
+	}
+	var grants int
+	if err := pc.DB.QueryRow(`SELECT count(*) FROM fincrime_score_limits`).Scan(&grants); err != nil {
+		t.Fatalf("count fincrime_score_limits: %v", err)
+	}
+	if grants != 0 {
+		t.Fatalf("profile migration seeded %d FinCrime grants; safe-off requires zero", grants)
+	}
+
+	var unrelated sql.NullString
+	if err := pc.DB.QueryRow(`SELECT to_regclass('public.agent_capability_bindings')`).Scan(&unrelated); err != nil {
+		t.Fatalf("check unrelated Enterprise migration: %v", err)
+	}
+	if unrelated.Valid {
+		t.Fatal("Hosted commercial profile applied enterprise/164; only the exact reviewed profile chain is allowed")
+	}
+}
+
+func TestSelfHostedOutcomeProfileRealPostgresChainIsNarrowAndSafeOff(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "in-vpc-enterprise")
+	t.Setenv(deploymode.EnvBackendProfile, deploymode.BackendProfileSelfHostedOutcomes)
+	t.Setenv("ORG_ID", "self-hosted-outcome-profile-test-org")
+	t.Setenv("DEPLOYMENT_KIND", "self-hosted")
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsPath := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	for _, roleDDL := range []string{
+		`CREATE ROLE axonflow_platform_admin NOLOGIN`,
+		`CREATE ROLE axonflow_app_role NOLOGIN`,
+	} {
+		if _, err := pc.DB.Exec(roleDDL); err != nil {
+			t.Fatalf("create production role for fresh-install proof: %v", err)
+		}
+	}
+	applyChain(t, pc.DB, migrationsPath)
+
+	for _, relationName := range []string{
+		"hosted_outcome_cases",
+		"hosted_outcome_action_results",
+		"hosted_outcome_module_grants",
+		"hosted_outcome_self_hosted_eligibility",
+		"hosted_outcome_operation_admissions",
+	} {
+		var relation sql.NullString
+		if err := pc.DB.QueryRow(`SELECT to_regclass($1)`, "public."+relationName).Scan(&relation); err != nil {
+			t.Fatalf("to_regclass(%s): %v", relationName, err)
+		}
+		if !relation.Valid {
+			t.Errorf("expected %s after the self-hosted outcome profile chain", relationName)
+		}
+	}
+	for _, procedureName := range []string{
+		"hosted_outcome_admit_operation(character varying,character varying,text)",
+		"hosted_outcome_module_status(character varying)",
+		"hosted_outcome_module_identity(character varying)",
+	} {
+		var procedure sql.NullString
+		if err := pc.DB.QueryRow(`SELECT to_regprocedure($1)`, procedureName).Scan(&procedure); err != nil {
+			t.Fatalf("to_regprocedure(%s): %v", procedureName, err)
+		}
+		if !procedure.Valid {
+			t.Errorf("expected %s after the self-hosted outcome profile chain", procedureName)
+		}
+	}
+
+	// The profile must not import the rest of the AxonFlow-operated Hosted
+	// category. This table is migration community-saas/196 and is a useful
+	// canary immediately adjacent to the exact profile files.
+	var hostedPortal sql.NullString
+	if err := pc.DB.QueryRow(`SELECT to_regclass('public.hosted_portal_members')`).Scan(&hostedPortal); err != nil {
+		t.Fatalf("check unrelated Hosted migration: %v", err)
+	}
+	if hostedPortal.Valid {
+		t.Fatal("self-hosted outcome profile applied community-saas/196; only the exact reviewed outcome chain is allowed")
+	}
+
+	for _, reference := range []struct {
+		value string
+		valid bool
+	}{
+		{"arn:aws:secretsmanager:us-east-1:123456789012:secret:module-key", true},
+		{"file:///var/lib/axonflow/module-authority/secrets/deployment-license.jwt", true},
+		{"file://relative/license.jwt", false},
+		{"file:///var/lib/axonflow/license%2Ejwt", false},
+		{"https://example.test/license", false},
+	} {
+		var valid bool
+		if err := pc.DB.QueryRow(`SELECT hosted_module_authority_reference_valid($1)`,
+			reference.value).Scan(&valid); err != nil {
+			t.Fatalf("validate authority reference %q: %v", reference.value, err)
+		}
+		if valid != reference.valid {
+			t.Errorf("authority reference %q valid=%v, want %v", reference.value, valid, reference.valid)
+		}
+	}
+	authorityMigration := filepath.Join(migrationsPath, "community-saas",
+		"207_self_hosted_outcome_authority_references.sql")
+	applyMigrationFile(t, pc.DB, filepath.Join(migrationsPath, "community-saas",
+		"207_self_hosted_outcome_authority_references_down.sql"))
+	applyMigrationFile(t, pc.DB, authorityMigration)
+	var localReferenceRestored bool
+	if err := pc.DB.QueryRow(`SELECT hosted_module_authority_reference_valid(
+		'file:///var/lib/axonflow/module-authority/secrets/deployment-license.jwt')`).
+		Scan(&localReferenceRestored); err != nil || !localReferenceRestored {
+		t.Fatalf("authority-reference migration rollback/reapply = %v, %v",
+			localReferenceRestored, err)
+	}
+
+	var grants int
+	if err := pc.DB.QueryRow(`SELECT count(*) FROM hosted_outcome_module_grants`).Scan(&grants); err != nil {
+		t.Fatalf("count hosted_outcome_module_grants: %v", err)
+	}
+	if grants != 0 {
+		t.Fatalf("profile migration seeded %d module grants; schema availability must remain safe-off", grants)
+	}
+
+	// Migration 189 creates billing and governed-event tables after core/098
+	// has installed default app-role privileges.  Its paired migration 191 is
+	// therefore part of the indivisible profile boundary: without it those
+	// tenant tables are directly reachable without RLS on a fresh install.
+	var billingForcedTables int
+	if err := pc.DB.QueryRow(`
+		SELECT count(*)
+		  FROM pg_class
+		 WHERE relname IN ('hosted_subscriptions', 'hosted_governance_events')
+		   AND relrowsecurity AND relforcerowsecurity`).Scan(&billingForcedTables); err != nil {
+		t.Fatalf("inspect hosted billing RLS posture: %v", err)
+	}
+	if billingForcedTables != 2 {
+		t.Fatalf("only %d/2 hosted billing tables force RLS", billingForcedTables)
+	}
+	var appCanInsertSubscription, appCanUpdateSubscription, appCanDeleteSubscription bool
+	var appCanUpdateGovernanceEvent bool
+	if err := pc.DB.QueryRow(`
+		SELECT has_table_privilege('axonflow_app_role', 'hosted_subscriptions', 'INSERT'),
+		       has_table_privilege('axonflow_app_role', 'hosted_subscriptions', 'UPDATE'),
+		       has_table_privilege('axonflow_app_role', 'hosted_subscriptions', 'DELETE'),
+		       has_table_privilege('axonflow_app_role', 'hosted_governance_events', 'UPDATE')`).
+		Scan(&appCanInsertSubscription, &appCanUpdateSubscription,
+			&appCanDeleteSubscription, &appCanUpdateGovernanceEvent); err != nil {
+		t.Fatalf("inspect hosted billing app-role mutation grants: %v", err)
+	}
+	if appCanInsertSubscription || appCanUpdateSubscription || appCanDeleteSubscription || appCanUpdateGovernanceEvent {
+		t.Fatalf("app role retains hosted billing mutation authority: subscription insert=%v update=%v delete=%v, event update=%v",
+			appCanInsertSubscription, appCanUpdateSubscription, appCanDeleteSubscription, appCanUpdateGovernanceEvent)
+	}
+
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		if _, err := pc.DB.Exec(`
+			INSERT INTO community_saas_registrations
+			       (tenant_id, secret_hash, secret_prefix, org_id)
+			VALUES ($1, 'not-a-real-secret', 'test', $1)`, tenantID); err != nil {
+			t.Fatalf("seed registration %s: %v", tenantID, err)
+		}
+		if _, err := pc.DB.Exec(`
+			INSERT INTO hosted_subscriptions
+			       (tenant_id, stripe_subscription_id, status)
+			VALUES ($1, $2, 'active')`, tenantID, "sub-"+tenantID); err != nil {
+			t.Fatalf("seed subscription %s: %v", tenantID, err)
+		}
+	}
+	tx, err := pc.DB.Begin()
+	if err != nil {
+		t.Fatalf("begin tenant-isolation probe: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL ROLE axonflow_app_role`); err != nil {
+		t.Fatalf("assume app role: %v", err)
+	}
+	if _, err := tx.Exec(`SELECT set_config('app.current_org_id', 'tenant-a', true)`); err != nil {
+		t.Fatalf("set tenant scope: %v", err)
+	}
+	var visibleSubscriptions int
+	if err := tx.QueryRow(`SELECT count(*) FROM hosted_subscriptions`).Scan(&visibleSubscriptions); err != nil {
+		t.Fatalf("read subscriptions as tenant-scoped app role: %v", err)
+	}
+	if visibleSubscriptions != 1 {
+		t.Fatalf("app role saw %d subscriptions in tenant-a scope, want exactly 1", visibleSubscriptions)
+	}
+	if _, err := tx.Exec(`
+		UPDATE hosted_subscriptions
+		   SET status = 'active'
+		 WHERE tenant_id = 'tenant-a'`); err == nil {
+		t.Fatal("tenant-scoped app role updated its own subscription authority")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback tenant-isolation probe: %v", err)
+	}
+
+	crossTenantTx, err := pc.DB.Begin()
+	if err != nil {
+		t.Fatalf("begin cross-tenant write probe: %v", err)
+	}
+	defer crossTenantTx.Rollback()
+	if _, err := crossTenantTx.Exec(`SET LOCAL ROLE axonflow_app_role`); err != nil {
+		t.Fatalf("assume app role for write probe: %v", err)
+	}
+	if _, err := crossTenantTx.Exec(`SELECT set_config('app.current_org_id', 'tenant-a', true)`); err != nil {
+		t.Fatalf("set write-probe tenant scope: %v", err)
+	}
+	if _, err := crossTenantTx.Exec(`
+		INSERT INTO hosted_governance_events
+		       (tenant_id, event_id, request_fingerprint)
+		VALUES ('tenant-b', 'cross-tenant', repeat('0', 64))`); err == nil {
+		t.Fatal("app role inserted a tenant-b governance event while scoped to tenant-a")
+	}
+
+	var forcedTables int
+	if err := pc.DB.QueryRow(`
+		SELECT count(*)
+		  FROM pg_class
+		 WHERE relname IN ('hosted_outcome_module_grants',
+		                   'hosted_outcome_self_hosted_eligibility',
+		                   'hosted_outcome_operation_admissions')
+		   AND relrowsecurity AND relforcerowsecurity`).Scan(&forcedTables); err != nil {
+		t.Fatalf("inspect paid-outcome RLS posture: %v", err)
+	}
+	if forcedTables != 3 {
+		t.Fatalf("only %d/3 paid-outcome authority tables force RLS", forcedTables)
+	}
+
+	var appExec, appCanReadGrants, appCanWriteUsage bool
+	if err := pc.DB.QueryRow(`
+		SELECT has_function_privilege('axonflow_app_role',
+		           'hosted_outcome_admit_operation(character varying,character varying,text)', 'EXECUTE'),
+		       has_table_privilege('axonflow_app_role', 'hosted_outcome_module_grants', 'SELECT'),
+		       has_table_privilege('axonflow_app_role', 'hosted_outcome_monthly_usage', 'INSERT')`).
+		Scan(&appExec, &appCanReadGrants, &appCanWriteUsage); err != nil {
+		t.Fatalf("inspect paid-outcome app-role grants: %v", err)
+	}
+	if !appExec || appCanReadGrants || appCanWriteUsage {
+		t.Fatalf("app-role posture = execute:%v read-grants:%v write-usage:%v, want true/false/false",
+			appExec, appCanReadGrants, appCanWriteUsage)
+	}
+
+	var functionOwner string
+	if err := pc.DB.QueryRow(`
+		SELECT pg_get_userbyid(proowner)
+		  FROM pg_proc
+		 WHERE oid = 'hosted_outcome_admit_operation(character varying,character varying,text)'::regprocedure`).
+		Scan(&functionOwner); err != nil {
+		t.Fatalf("inspect admission function owner: %v", err)
+	}
+	if functionOwner != "axonflow_platform_admin" {
+		t.Fatalf("admission function owner = %q, want axonflow_platform_admin", functionOwner)
+	}
+}
 
 // Every RECOGNISED DEPLOYMENT_MODE spelling — canonical names plus the
 // `enterprise` / `invpc` aliases — with "" for unset (which still resolves to

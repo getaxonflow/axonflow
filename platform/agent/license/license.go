@@ -110,6 +110,9 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 	default:
 		return communityFallback("unknown license tier"), nil
 	}
+	if err := validateSelfHostedCapabilityGrants(&payload, tier); err != nil {
+		return communityFallback("invalid self-hosted capability grant: " + err.Error()), nil
+	}
 
 	// Parse expiry date
 	expiry, err := time.Parse("20060102", payload.ExpiresAt)
@@ -155,20 +158,21 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 		resolvedDeploymentID = payload.OrgID
 	}
 	result := &ValidationResult{
-		Valid:           true,
-		Tier:            tier,
-		DeploymentID:    resolvedDeploymentID,
-		OrgID:           resolvedDeploymentID,
-		MaxNodes:        maxNodes,
-		ExpiresAt:       expiry,
-		DaysUntilExpiry: daysUntilExpiry,
-		Features:        getFeatures(tier),
-		Limits:          limits,
-		ServiceName:     payload.ServiceName,
-		ServiceType:     payload.ServiceType,
-		Permissions:     payload.Permissions,
-		Email:           payload.Email,
-		LicenseID:       payload.LicenseID,
+		Valid:                      true,
+		Tier:                       tier,
+		DeploymentID:               resolvedDeploymentID,
+		OrgID:                      resolvedDeploymentID,
+		MaxNodes:                   maxNodes,
+		ExpiresAt:                  expiry,
+		DaysUntilExpiry:            daysUntilExpiry,
+		Features:                   getFeatures(tier),
+		Limits:                     limits,
+		ServiceName:                payload.ServiceName,
+		ServiceType:                payload.ServiceType,
+		Permissions:                payload.Permissions,
+		Email:                      payload.Email,
+		LicenseID:                  payload.LicenseID,
+		selfHostedCapabilityGrants: append([]SelfHostedCapabilityGrant(nil), payload.SelfHostedCapabilityGrants...),
 	}
 
 	// Check if expired (7-day grace period matches enterprise build)
@@ -182,6 +186,7 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 			result.Valid = false
 			result.Error = "LICENSE_EXPIRED"
 			result.Message = fmt.Sprintf("License expired on %s (grace period ended)", expiry.Format("2006-01-02"))
+			result.selfHostedCapabilityGrants = nil
 		}
 	} else if daysUntilExpiry <= 30 {
 		result.Message = fmt.Sprintf("License expires in %d days", daysUntilExpiry)

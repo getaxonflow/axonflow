@@ -39,7 +39,7 @@ func TestForwardToOrchestrator_StampsValidatedIdentityHeaders(t *testing.T) {
 	}
 	client := &Client{ClientID: "client-1", OrgID: "org-a", TenantID: "tenant-a"}
 
-	if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, user, client, false); err != nil {
+	if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, user, client, false, false); err != nil {
 		t.Fatalf("forward failed: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestForwardToOrchestrator_NoUser_StampsNoIdentity(t *testing.T) {
 	defer func() { orchestratorURL = prev }()
 
 	client := &Client{ClientID: "client-1", OrgID: "org-a", TenantID: "tenant-a"}
-	if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, nil, client, false); err != nil {
+	if _, err := forwardToOrchestrator(ClientRequest{RequestType: "chat"}, nil, client, false, false); err != nil {
 		t.Fatalf("forward failed: %v", err)
 	}
 

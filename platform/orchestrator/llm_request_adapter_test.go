@@ -22,6 +22,41 @@ func TestLLMRouterInterfaceCompliance(t *testing.T) {
 	t.Log("UnifiedRouterWrapper and MockLLMRouter both implement LLMRouterInterface")
 }
 
+func TestClearCallerPolicyRoutingEffects(t *testing.T) {
+	req := &OrchestratorRequest{Context: map[string]interface{}{
+		"case_id": "case-1", "policy_preferred_provider": "attacker",
+		"policy_allowed_providers": []string{"attacker"}, "policy_routing_reason": "caller claim",
+		"_axonflow_disable_llm_failover": true,
+	}}
+	clearCallerPolicyRoutingEffects(req)
+	if got := req.Context["case_id"]; got != "case-1" {
+		t.Fatalf("ordinary context changed: %#v", req.Context)
+	}
+	for _, key := range []string{"policy_preferred_provider", "policy_allowed_providers", "policy_routing_reason", "_axonflow_disable_llm_failover"} {
+		if _, exists := req.Context[key]; exists {
+			t.Fatalf("caller policy effect %q survived: %#v", key, req.Context)
+		}
+	}
+}
+
+func TestLLMFailoverControlCannotComeFromCallerJSON(t *testing.T) {
+	caller := OrchestratorRequest{Context: map[string]interface{}{
+		"_axonflow_disable_llm_failover": true,
+	}}
+	clearCallerPolicyRoutingEffects(&caller)
+	if got := OrchestratorRequestToLLMContext(caller).DisableFailover; got {
+		t.Fatal("caller JSON disabled provider failover")
+	}
+
+	trusted := OrchestratorRequest{
+		Context:            map[string]interface{}{},
+		disableLLMFailover: true,
+	}
+	if got := OrchestratorRequestToLLMContext(trusted).DisableFailover; !got {
+		t.Fatal("trusted Agent-hop assertion did not disable provider failover")
+	}
+}
+
 // TestNewUnifiedRouterWrapper tests wrapper creation
 func TestNewUnifiedRouterWrapper(t *testing.T) {
 	tests := []struct {

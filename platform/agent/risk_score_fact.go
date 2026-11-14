@@ -112,6 +112,8 @@ type riskScoreRequest struct {
 	plane       string
 	principal   string
 	subjectType string
+	tenantID    string
+	synthetic   bool
 	transaction interface{}
 	cohort      interface{}
 }
@@ -163,9 +165,14 @@ func riskScoreFacts(scorer riskScorer, in requestPassInput, plane string, rec *r
 			rec.Status = riskScoreNoTransaction
 			return absent
 		}
+		tenantID, synthetic := "", false
+		if in.auth != nil {
+			tenantID, synthetic = in.auth.TenantID, in.auth.Synthetic
+		}
 		result := scorer.score(ctx, riskScoreRequest{
 			decisionID: in.decisionID, plane: plane,
 			principal: admitted.Principal, subjectType: admitted.SubjectType,
+			tenantID: tenantID, synthetic: synthetic,
 			transaction: transaction, cohort: in.finCrime[fincrime.CohortContextKey],
 		})
 		rec.Status = result.status
@@ -234,6 +241,8 @@ func (r riskScoreRecord) auditDetail() *riskScoreRecord {
 // its configuration means without saying so. Enterprise only; the Community
 // build refuses to boot with either set (risk_score_fact_community.go).
 const (
-	envRiskFactURL       = "AXONFLOW_FINCRIME_RISK_FACT_URL"
-	envRiskFactTimeoutMS = "AXONFLOW_FINCRIME_RISK_FACT_TIMEOUT_MS"
+	envRiskFactURL           = "AXONFLOW_FINCRIME_RISK_FACT_URL"
+	envRiskFactTimeoutMS     = "AXONFLOW_FINCRIME_RISK_FACT_TIMEOUT_MS"
+	envRiskFactMode          = "AXONFLOW_FINCRIME_RISK_FACT_MODE"
+	envRiskFactCanaryTenants = "AXONFLOW_FINCRIME_RISK_FACT_CANARY_TENANTS"
 )

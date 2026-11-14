@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.4.0
+**Platform Version:** 11.5.0
 
 **Status:** Active in Production
 

@@ -59,6 +59,16 @@ func TestNormalize(t *testing.T) {
 			want: "/api/v1/euaiact/export",
 		},
 		{
+			name: "hosted square admin grant keeps case id templated",
+			path: "/api/v1/admin/outcomes/support-refund/cases/case_123/square-sandbox/grant",
+			want: "/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant",
+		},
+		{
+			name: "hosted refund internal execute keeps case id templated",
+			path: "/api/v1/internal/outcomes/support-refund/cases/case_456/actions/refund/execute",
+			want: "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute",
+		},
+		{
 			name: "two trailing params strips only ONE per epic decision",
 			path: "/api/v1/connectors/refresh/cs_abc/sap-connector",
 			want: "/api/v1/connectors/refresh/{tenant_id}",

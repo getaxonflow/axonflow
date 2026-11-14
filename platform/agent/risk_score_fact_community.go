@@ -24,7 +24,7 @@ func currentRiskScorer() riskScorer { return nil }
 // would believe transactions are scored, and nothing here calls one.
 func wireRiskScoreFact() error {
 	var set []string
-	for _, name := range []string{envRiskFactURL, envRiskFactTimeoutMS} {
+	for _, name := range []string{envRiskFactURL, envRiskFactTimeoutMS, envRiskFactMode, envRiskFactCanaryTenants} {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			set = append(set, fmt.Sprintf("%s=%q", name, v))
 		}

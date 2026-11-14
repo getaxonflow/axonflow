@@ -15,10 +15,10 @@ import (
 // # ITS FORGERY DIRECTION IS SAFE, WHICH IS WHY A HEADER CAN CARRY IT
 //
 // The header is caller-assertable, and it decides nothing: no admission,
-// verification or policy decision reads it. The mark exists so the canary's
-// decisions can be told apart from a tenant's (#4120 labels enforcement
-// decisions with it). A tenant that marked its own traffic synthetic would only
-// relabel it, and would gain nothing any decision reads.
+// verification or policy decision reads it. The optional Engine B canary uses
+// it only together with an operator-controlled exact tenant allowlist to scope
+// an advisory scorer network call. A caller cannot expand that allowlist or
+// gain a policy authorization by setting the header.
 const SyntheticProbeHeader = "X-Axonflow-Synthetic-Probe"
 
 // IsSyntheticProbeHeader reports whether a header value marks a synthetic
@@ -45,8 +45,8 @@ func IsSyntheticProbeHeader(value string) bool {
 // request does not, so it is stamped once here, at the root, rather than at
 // each call site. Both binaries wrap their served handler in it, and
 // TestTheAgentRootHandlerStampsTheSyntheticProbe and its orchestrator twin pin
-// the wrap in each. Nothing reads the mark yet; #4120's enforcement counter is
-// its consumer.
+// the wrap in each. Agent authentication carries the mark to the optional
+// Engine B canary call gate; it remains outside admission and verdict logic.
 //
 // # IT IS UNCONDITIONAL
 //

@@ -1,7 +1,7 @@
 {
-  "schema": "1.0",
-  "platform_version": "11.4.0",
-  "generated": "2026-09-03",
+  "schema": "1.1",
+  "platform_version": "11.5.0",
+  "generated": "2026-11-06",
   "scan_roots": [
     "platform/agent",
     "platform/orchestrator",
@@ -974,6 +974,115 @@
       "notes": "5 concurrent SSE connections per tenant on Community, 25 on Evaluation, unlimited on Enterprise."
     },
     {
+      "id": "fincrime.policy_pack",
+      "title": "FinCrime typed policy pack",
+      "family": "fincrime",
+      "summary": "The versioned Enterprise FinCrime policy artifact and the activation seam that binds its deterministic controls into typed-policy evaluation.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "topologies": [
+        "self_hosted",
+        "hosted"
+      ],
+      "refusal_reasons": [
+        "edition_required",
+        "capability_not_granted",
+        "dependency_unreachable"
+      ],
+      "implementation": [
+        "ee/policy-packs/fincrime"
+      ],
+      "owner": "platform/agent/policy_packs_enterprise_test.go",
+      "health_absent_reason": "Static /health is intentionally not used: it cannot report whether this Enterprise artifact is installed and effectively granted to the authenticated tenant. Advertising it there would turn artifact presence into a false entitlement claim; #4164 owns a tenant-effective installed/configured/in-force status surface.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "The stable commercial module grant remains fincrime. This technical entry identifies the pack artifact separately from shared protocol semantics and from Model 1 scoring. The registry is descriptive: it does not grant or activate the pack, and Gate 2 of #4611 still owns the signed/server-side grant."
+    },
+    {
+      "id": "fincrime.protocol",
+      "title": "FinCrime shared protocol semantics",
+      "family": "fincrime",
+      "summary": "Community-visible transaction/cohort keys, typed parsers and deterministic fact semantics used to integrate a first-party FinCrime module without granting its Enterprise artifacts.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "topologies": [
+        "self_hosted",
+        "hosted"
+      ],
+      "implementation": [
+        "platform/agent/fincrime/context_keys.go",
+        "platform/agent/fincrime/typed.go",
+        "platform/agent/policy_packs.go"
+      ],
+      "owner": "platform/agent/fincrime/protocol_community_test.go",
+      "health_absent_reason": "Shared parsing and semantic machinery is not an activatable product capability. Advertising it would imply that a Community or Evaluation deployment carries the Enterprise pack or scorer, which it does not.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "This entry deliberately carries no grant or quota reasons. It is the public protocol seam only; fincrime.policy_pack and fincrime.risk_scoring are the separately classified Enterprise artifacts."
+    },
+    {
+      "id": "fincrime.risk_scoring",
+      "title": "FinCrime Model 1 risk scoring",
+      "family": "fincrime",
+      "summary": "The Enterprise Agent caller and out-of-process Model 1 service that produce an admitted fraud-risk fact while typed policy remains the sole verdict authority.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "topologies": [
+        "self_hosted"
+      ],
+      "limits": [
+        {
+          "id": "fincrime.score_requests",
+          "kind": "quota",
+          "unit": "score_request",
+          "scope": "tenant",
+          "window": "calendar_month",
+          "description": "One admitted Model 1 scoring invocation for an authenticated tenant. Plan-specific numeric allowances are resolved outside this registry."
+        }
+      ],
+      "refusal_reasons": [
+        "edition_required",
+        "capability_not_granted",
+        "quota_exhausted",
+        "dependency_unreachable"
+      ],
+      "implementation": [
+        "platform/agent/risk_score_fact.go",
+        "platform/agent/risk_score_fact_community.go",
+        "platform/agent/risk_score_fact_enterprise.go",
+        "ee/platform/risk-scorer"
+      ],
+      "owner": "ee/platform/risk-scorer/tests/test_service.py",
+      "routes": [
+        "/v1/score"
+      ],
+      "planes": [
+        "risk-scorer"
+      ],
+      "health_absent_reason": "Static /health is intentionally not used: Agent health currently exposes only process-global scorer wiring/outcomes, not installed model identity plus effective tenant grant and quota. A static capability name would overstate Hosted readiness; #4164 and Gate 2 of #4611 own tenant-effective status readback.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "The limit and refusal vocabulary is descriptive only. No tenant grant or durable score quota exists yet, v1 is single-trust-domain only, and only self-hosted topology is declared until Hosted v2 tenant-binding proof closes Gate 2 of #4611. Engine B states a fact; it never authors an AxonFlow verdict."
+    },
+    {
       "id": "governance.agent_capabilities",
       "title": "Agent capability discovery and bounded invocation",
       "family": "governance",
@@ -1452,11 +1561,15 @@
       "build_tag": "none",
       "sync": "mirrored",
       "implementation": [
-        "platform/agent/proxy.go"
+        "platform/agent/proxy.go",
+        "platform/agent/governed_model_handler.go"
       ],
       "owner": "platform/agent/proxy_test.go",
       "routes": [
         "/api/request",
+        "/api/v1/governed/model",
+        "/api/v1/governed/model/readiness",
+        "/api/v1/governed/model/status",
         "/api/clients",
         "/api/policies/test"
       ],
@@ -2175,6 +2288,49 @@
       }
     },
     {
+      "id": "payment_exception.workflow",
+      "title": "Payment exception workflow module",
+      "family": "payment_exception",
+      "summary": "The independently licensed Enterprise payment-exception workflow, distributed as a company-signed private module artifact.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "topologies": [
+        "self_hosted",
+        "hosted"
+      ],
+      "limits": [
+        {
+          "id": "payment_exception.cases",
+          "kind": "quota",
+          "unit": "case",
+          "scope": "tenant",
+          "window": "calendar_month",
+          "description": "One admitted payment-exception case for an authenticated tenant. Numeric allowances come from a signed tenant grant."
+        }
+      ],
+      "refusal_reasons": [
+        "edition_required",
+        "capability_not_granted",
+        "quota_exhausted",
+        "dependency_unreachable"
+      ],
+      "implementation": [
+        "ee/examples/payment-exception-shadow",
+        "ee/platform/modulemanifest"
+      ],
+      "owner": "ee/examples/payment-exception-shadow/test_module_governance.py",
+      "health_absent_reason": "Static process health cannot assert a tenant grant. Tenant-effective installed, granted, healthy, quota and operation-admission status must be assembled from the verified private manifest, signed tenant authority and durable admission store.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "limited"
+      },
+      "notes": "The registry is descriptive and grants nothing. Limited means the signed packaging and entitlement foundation exists while end-to-end action execution and tenant-effective runtime health remain release gates."
+    },
+    {
       "id": "platform.health",
       "title": "Health endpoint",
       "family": "platform",
@@ -2883,6 +3039,64 @@
       }
     },
     {
+      "id": "support_refund.workflow",
+      "title": "Support refund workflow module",
+      "family": "support_refund",
+      "summary": "The independently licensed Enterprise support-refund workflow, distributed as a company-signed private module artifact.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "topologies": [
+        "self_hosted",
+        "hosted"
+      ],
+      "limits": [
+        {
+          "id": "support_refund.cases",
+          "kind": "quota",
+          "unit": "case",
+          "scope": "tenant",
+          "window": "calendar_month",
+          "description": "One admitted support-refund case for an authenticated tenant. Numeric allowances come from a signed tenant grant."
+        }
+      ],
+      "refusal_reasons": [
+        "edition_required",
+        "capability_not_granted",
+        "quota_exhausted",
+        "dependency_unreachable"
+      ],
+      "implementation": [
+        "ee/examples/payment-exception-shadow",
+        "ee/platform/modulemanifest",
+        "ee/platform/agent/action_gateway_hosted_enterprise.go",
+        "ee/platform/actiongateway"
+      ],
+      "owner": "ee/platform/agent/action_gateway_hosted_enterprise_overlay_test.go",
+      "routes": [
+        "/api/v1/internal/outcomes/action-gateway/readiness",
+        "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/execute",
+        "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/recover",
+        "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/resume",
+        "/api/v1/internal/outcomes/support-refund/cases/{case_id}/actions/refund/reconcile",
+        "/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant",
+        "/api/v1/admin/outcomes/support-refund/cases/{case_id}/square-sandbox/grant/revoke"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "health_absent_reason": "Static process health cannot assert a tenant grant. Tenant-effective installed, granted, healthy, quota and operation-admission status must be assembled from the verified private manifest, signed tenant authority and durable admission store.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "limited"
+      },
+      "notes": "This grant is independent from payment_exception. It owns exactly the five Hosted Square Sandbox readiness, execute, recover, resume and reconcile routes plus the two tenant-admin grant routes; it does not claim the shared internal outcome namespace. All seven routes are compiled only into the Enterprise Agent overlay, and RegisterHostedActionGatewayRoutes registers none while Provider Send is disabled. The registry is descriptive and grants nothing; end-to-end refund execution and tenant-effective runtime health remain release gates."
+    },
+    {
       "id": "wcp.checkpoints",
       "title": "Workflow checkpoints and resume",
       "family": "wcp",
@@ -3091,35 +3305,47 @@
   ],
   "route_exemptions": [
     {
-      "pattern": "platform/agent/static_policy_api_handlers.go:160 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
+      "pattern": "platform/agent/static_policy_api_handlers.go:RegisterStaticPolicyHandlers HandleFunc(<subrouter with an unresolved prefix>rt.suffix)#1",
       "reason": "Two unknowns in one call, and round 8 made the second one visible. The suffixes live in a struct slice, so the argument is a field read the scanner does not follow; and the receiver is the RANGE VARIABLE of `for _, sub := range []*mux.Router{legacy, successor}`, which is not a proven shape either, so the prefix is reported rather than guessed. Both subrouters it ranges over ARE priced where they are declared (/api/v1/system-policies and its /api/v1/static-policies legacy alias) and policy.system claims both, so the URL space is covered even though this one call site is not."
     },
     {
-      "pattern": "platform/agent/run.go:778 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
+      "pattern": "platform/agent/run.go:initServerImmediately HandleFunc(<subrouter with an unresolved prefix>\"/health\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /health, the readiness-aware handler registered before initialisation finishes so ECS health checks pass during boot, and platform.health claims exactly that route — the URL space is covered by that entry."
     },
     {
-      "pattern": "platform/agent/run.go:1589 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
+      "pattern": "platform/agent/run.go:Run HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /metrics, the JSON performance endpoint; platform.metrics claims it alongside /prometheus and /api/v1/metrics, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1592 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
+      "pattern": "platform/agent/run.go:Run Handle(<subrouter with an unresolved prefix>\"/prometheus\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /prometheus, the Prometheus exposition endpoint, which platform.metrics claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1595 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
+      "pattern": "platform/agent/run.go:Run HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/request, which every governed client call flows through; governance.proxy_request claims it, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1598 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:Run HandleFunc(<subrouter with an unresolved prefix>\"/api/v1/governed/model\")#1",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/v1/governed/model, the subject-bound governed model adapter over /api/request, which governance.proxy_request claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:Run HandleFunc(<subrouter with an unresolved prefix>\"/api/v1/governed/model/readiness\")#1",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/v1/governed/model/readiness, the subject-bound governed-model dependency probe, which governance.proxy_request claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:Run HandleFunc(<subrouter with an unresolved prefix>\"/api/v1/governed/model/status\")#1",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/v1/governed/model/status, the subject-bound governed-model tenant-status probe, which governance.proxy_request claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:Run Handle(<subrouter with an unresolved prefix>\"/api/clients\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on GET, the client listing, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1599 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:Run Handle(<subrouter with an unresolved prefix>\"/api/clients\")#2",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on POST, client creation on the same path, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1602 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
+      "pattern": "platform/agent/run.go:Run Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")#1",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint: it previews /api/request's verdict on the anchored engine (PRD v11 §1 item 10), so governance.proxy_request claims it beside /api/clients, and the URL space is covered."
     }
   ]

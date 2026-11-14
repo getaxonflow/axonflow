@@ -2,7 +2,7 @@
 
 This document maps platform versions to minimum SDK versions and the features each release introduced.
 
-**Current (platform 11.4.0):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.1** (Go/Python/TypeScript/Java; Rust **0.12.1**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor is unchanged. Hosted payment-required responses remain fail-closed for existing SDKs; OpenClaw 2.10.3 provides the coordinated one-action Checkout flow.
+**Current (platform 11.5.0):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.5.1** (Go/Python/TypeScript/Java; Rust **0.12.1**). These are the values the agent and orchestrator advertise on `/health`. The minimum floor and SDK recommendations are unchanged. The platform recommends the already-published OpenClaw 2.10.4 and n8n 1.2.1 releases. n8n 1.3.0 is deferred because the canonical npm provenance path requires GitHub OIDC and GitHub Actions is unavailable for this train.
 
 **LiteLLM current patch:** `axonflow-litellm` 1.1.1 fails closed on a Hosted monthly-cap 429 before any provider call in wrapper mode. Ordinary rate-limit 429s and an unreachable platform retain the documented availability fallback. The 1.1.0 rows below are historical v11.0.0 compatibility measurements, not a claim about 1.1.1.
 
@@ -14,6 +14,7 @@ This document maps platform versions to minimum SDK versions and the features ea
 
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
+| v11.5.0 | v8.0.0 (Rust v0.7.0) | v9.5.1 (Rust v0.12.1) | Safe-off foundations for independently licensed payment-exception and support-refund modules, governed model routing, durable authority, and sandbox-only external-action acceptance. SDK floors and recommendations remain unchanged; OpenClaw 2.10.4 and n8n 1.2.1 are the verified public recommendations, while n8n 1.3.0 is deferred. |
 | v11.4.0 | v8.0.0 (Rust v0.7.0) | v9.5.1 (Rust v0.12.1) | Community startup and capability-boundary guards, safe-off Hosted acquisition and customer-neutral bounded action contracts. Client recommendations move to the verified public patch releases; minimum floors remain unchanged. |
 | v11.3.4 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Security patch: upgrade Go JOSE to 4.1.6 for CVE-2026-116587 at the shared OIDC JWK verification boundary. No wire-contract, SDK-floor, capability, or recommended-SDK/plugin change. |
 | v11.3.3 | v8.0.0 (Rust v0.7.0) | v9.5.0 (Rust v0.12.0) | Platform-only patch: preserve HTTP connector URL filters, retry configured transient statuses for idempotent PUT/DELETE requests, and record the accepted Hosted workflow sub-gate. No wire-contract, SDK-floor, capability, or recommended-SDK change. |

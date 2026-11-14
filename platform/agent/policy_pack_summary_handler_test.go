@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ import (
 )
 
 const packSummaryOrg = "org-pack-summary"
+const packSummaryTenant = "tenant-pack-summary"
 
 // withPackSummaryEnforcer installs a process enforcer over docs for the test,
 // with packs installed.
@@ -45,14 +47,14 @@ func withPackSummaryEnforcer(t *testing.T, docs activeDocumentSource, install fu
 }
 
 // packSummaryRequest is a GET of the route as a caller of kind reaches the
-// handler, naming org in X-Org-ID ("" for none).
+// handler, with the identity apiAuthMiddleware derived from its credential.
 func packSummaryRequest(kind AuthKind, withKind bool, org string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, activationinputs.AgentSummaryPath, nil)
-	if org != "" {
-		r.Header.Set("X-Org-ID", org)
-	}
 	if withKind {
-		r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthKind, kind))
+		ctx := context.WithValue(r.Context(), ContextKeyAuthKind, kind)
+		ctx = context.WithValue(ctx, ContextKeyOrgID, org)
+		ctx = context.WithValue(ctx, ContextKeyTenantID, packSummaryTenant)
+		r = r.WithContext(ctx)
 	}
 	return r
 }
@@ -92,13 +94,13 @@ func TestThePolicyPackSummaryRouteAnswersOnlyTheInternalServiceCredential(t *tes
 		})
 	}
 
-	t.Run("no X-Org-ID is 400", func(t *testing.T) {
+	t.Run("no authenticated organization is 400", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 		policyPackSummaryHandler(rr, packSummaryRequest(AuthKindInternalService, true, ""))
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status %d, want 400: %s", rr.Code, rr.Body.String())
 		}
-		if !strings.Contains(rr.Body.String(), "X-Org-ID names the organization whose summary is read, and it is missing") {
+		if !strings.Contains(rr.Body.String(), "authenticated organization is missing") {
 			t.Fatalf("the 400 does not say why: %s", rr.Body.String())
 		}
 	})
@@ -110,8 +112,12 @@ func TestThePolicyPackSummaryRouteAnswersOnlyTheInternalServiceCredential(t *tes
 			t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
 		}
 		got := decodePackSummary(t, rr)
-		if got["success"] != true || got["scope"] != "decide" || got["packs_counted"] != true || got["pack"] != float64(0) {
-			t.Fatalf("summary %v; want success, scope decide, packs_counted true and pack 0", got)
+		if got["success"] != true || got["scope"] != "decide" || got["packs_counted"] != true ||
+			got["pack"] != float64(0) || !validPolicyBundleDigest(fmt.Sprint(got["policy_bundle"])) {
+			t.Fatalf("summary %v; want success, scope decide, its active policy bundle, packs_counted true and pack 0", got)
+		}
+		if got["organization_id"] != packSummaryOrg || got["tenant_id"] != packSummaryTenant {
+			t.Fatalf("summary %v did not echo the authenticated delegation", got)
 		}
 		if _, present := got["packs_uncounted_reason"]; present {
 			t.Fatalf("summary %v carries packs_uncounted_reason", got)
@@ -119,6 +125,21 @@ func TestThePolicyPackSummaryRouteAnswersOnlyTheInternalServiceCredential(t *tes
 		shipped, org, total := got["shipped"].(float64), got["organization"].(float64), got["total"].(float64)
 		if shipped == 0 || org != 0 || total != shipped+org {
 			t.Fatalf("summary %v; want the implicit baseline: total = shipped, nothing the organization's", got)
+		}
+	})
+
+	t.Run("hostile routing headers cannot select another organization", func(t *testing.T) {
+		r := packSummaryRequest(AuthKindInternalService, true, packSummaryOrg)
+		r.Header.Set("X-Org-ID", "victim-org")
+		r.Header.Set("X-Tenant-ID", "victim-tenant")
+		rr := httptest.NewRecorder()
+		policyPackSummaryHandler(rr, r)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+		got := decodePackSummary(t, rr)
+		if got["organization_id"] != packSummaryOrg || got["tenant_id"] != packSummaryTenant {
+			t.Fatalf("mutable headers rebound authenticated delegation: %v", got)
 		}
 	})
 }

@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: November 2026** | **Platform Version:** v11.4.0 | **SDK Version:** v9.5.1 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.12.1 (preview)
+**Last Updated: November 2026** | **Platform Version:** v11.5.0 | **SDK Version:** v9.5.1 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.12.1 (preview)
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -847,4 +847,4 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: November 2026 | Platform: v11.4.0 | SDKs: v9.5.1 (Rust v0.12.1)*
+*Last Updated: November 2026 | Platform: v11.5.0 | SDKs: v9.5.1 (Rust v0.12.1)*

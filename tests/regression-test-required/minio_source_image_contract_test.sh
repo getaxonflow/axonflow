@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-DOCKERFILE="$ROOT/minio/Dockerfile"
+DOCKERFILE="${MINIO_DOCKERFILE:-$ROOT/minio/Dockerfile}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -55,12 +55,46 @@ for hardened_module in \
   'github.com/prometheus/prometheus@v0.311.3' \
   'github.com/rabbitmq/amqp091-go@v1.13.0' \
   'go.opentelemetry.io/otel/sdk@v1.44.0' \
-  'golang.org/x/crypto@v0.57.0' \
-  'golang.org/x/net@v0.60.0' \
-  'golang.org/x/text@v0.42.0' \
+  'golang.org/x/crypto@v0.58.0' \
+  'golang.org/x/net@v0.62.0' \
+  'golang.org/x/text@v0.43.0' \
   'google.golang.org/grpc@v1.83.2'; do
   grep -Fq "$hardened_module" "$DOCKERFILE" \
     || fail "the source build does not pin hardened module $hardened_module"
+done
+
+# MinIO and MC are independent Go module graphs and produce separate binaries.
+# A pin in one graph cannot excuse its absence from the other: otherwise one
+# binary can silently regain a vulnerability while this contract still sees
+# the fixed version elsewhere in the Dockerfile.
+minio_graph=$(awk '
+  $0 == "WORKDIR /src/minio" { capture = 1; next }
+  capture && $0 == "WORKDIR /src/mc" { exit }
+  capture { print }
+' "$DOCKERFILE")
+mc_graph=$(awk '
+  $0 == "WORKDIR /src/mc" { capture = 1; next }
+  capture && /^FROM[[:space:]]/ { exit }
+  capture { print }
+' "$DOCKERFILE")
+
+test -n "$minio_graph" || fail "the MinIO build graph could not be extracted"
+test -n "$mc_graph" || fail "the MC build graph could not be extracted"
+for graph_name in minio mc; do
+  case "$graph_name" in
+    minio) graph=$minio_graph ;;
+    mc) graph=$mc_graph ;;
+  esac
+  for shared_pin in \
+    'github.com/klauspost/compress@v1.19.0' \
+    'github.com/prometheus/prometheus@v0.311.3' \
+    'golang.org/x/crypto@v0.58.0' \
+    'golang.org/x/net@v0.62.0' \
+    'golang.org/x/text@v0.43.0' \
+    'google.golang.org/grpc@v1.83.2'; do
+    grep -Fq "$shared_pin" <<<"$graph" \
+      || fail "the $graph_name source graph does not pin hardened module $shared_pin"
+  done
 done
 
 grep -Eq '^USER[[:space:]]+minio$' "$DOCKERFILE" \

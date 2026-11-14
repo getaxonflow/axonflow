@@ -282,6 +282,9 @@ type Enforcer struct {
 type enforcedKey struct {
 	scope legacycompile.EnforcementScope
 	orgID string
+	// tenantID is empty for deployment-wide policy packs and is the
+	// authenticated tenant for a module-resolved pack set.
+	tenantID string
 }
 
 type enforcedActivation struct {
@@ -421,6 +424,13 @@ func MemoizedDeploymentVocabulary(resolve func() (*authoringcatalog.Snapshot, er
 // a count of what is enforced (#4249, the policy summary's installed-pack
 // count). The cause of a failure is the one Evaluate would fail closed with.
 func (e *Enforcer) ActiveActivation(ctx context.Context, scope legacycompile.EnforcementScope, orgID string) (*activation.Activation, string, error) {
+	return e.ActiveActivationForPacks(ctx, scope, orgID, "", e.Packs)
+}
+
+// ActiveActivationForPacks is ActiveActivation for a pack set resolved by a
+// trusted, tenant-scoped module authority. Enforcement and authenticated
+// readiness use this same path.
+func (e *Enforcer) ActiveActivationForPacks(ctx context.Context, scope legacycompile.EnforcementScope, orgID, tenantID string, packs []activation.InstalledPack) (*activation.Activation, string, error) {
 	digest, _, err := e.documents.ActiveTip(ctx, orgID)
 	if err != nil {
 		return nil, CauseActiveDocument, err
@@ -429,7 +439,7 @@ func (e *Enforcer) ActiveActivation(ctx context.Context, scope legacycompile.Enf
 	if err != nil {
 		return nil, CauseOverrides, err
 	}
-	act, err := e.ActivationFor(ctx, scope, orgID, digest, assigned)
+	act, err := e.ActivationForPacks(ctx, scope, orgID, tenantID, digest, assigned, packs)
 	if err != nil {
 		return nil, CauseForActivation(err), err
 	}
@@ -444,6 +454,13 @@ func (e *Enforcer) ActiveActivation(ctx context.Context, scope legacycompile.Enf
 // implicit baseline, and an override recorded or deleted, once the override
 // cache serves it (#4045).
 func (e *Enforcer) ActivationFor(ctx context.Context, scope legacycompile.EnforcementScope, orgID, digest string, assigned legacycompile.CategoryActions) (*activation.Activation, error) {
+	return e.ActivationForPacks(ctx, scope, orgID, "", digest, assigned, e.Packs)
+}
+
+// ActivationForPacks builds one activation for an explicitly resolved pack
+// set. tenantID participates in the memo key even when two tenants currently
+// resolve to the same refs.
+func (e *Enforcer) ActivationForPacks(ctx context.Context, scope legacycompile.EnforcementScope, orgID, tenantID, digest string, assigned legacycompile.CategoryActions, selectedPacks []activation.InstalledPack) (*activation.Activation, error) {
 	overrides := ""
 	if len(assigned) > 0 {
 		d, err := contract.ExactDigest(assigned)
@@ -452,8 +469,8 @@ func (e *Enforcer) ActivationFor(ctx context.Context, scope legacycompile.Enforc
 		}
 		overrides = d
 	}
-	packs := installedPackKey(e.Packs)
-	key := enforcedKey{scope: scope, orgID: orgID}
+	packs := installedPackKey(selectedPacks)
+	key := enforcedKey{scope: scope, orgID: orgID, tenantID: tenantID}
 	e.mu.Lock()
 	if c, ok := e.activations[key]; ok && c.digest == digest && c.overrides == overrides && c.packs == packs {
 		e.mu.Unlock()
@@ -512,7 +529,7 @@ func (e *Enforcer) ActivationFor(ctx context.Context, scope legacycompile.Enforc
 		// activation refuses a scope whose restriction it cannot discharge.
 		Delivers: e.delivers(scope),
 		// The deployment's installed policy packs (PRD v11 §1.9).
-		Packs: e.Packs,
+		Packs: selectedPacks,
 		// The deployment's approval window (#4249 row 5774029945). It was never
 		// set, so every approval expired at the engine's 15-minute default.
 		ApprovalTTL: e.approvalTTL,
@@ -531,9 +548,15 @@ func (e *Enforcer) ActivationFor(ctx context.Context, scope legacycompile.Enforc
 
 // Call is one request an enforcing seam hands the anchored engine.
 type Call struct {
-	Scope     legacycompile.EnforcementScope
-	OrgID     string
-	RequestID string
+	Scope legacycompile.EnforcementScope
+	OrgID string
+	// TenantID and ResolvedPacks are supplied together only after a trusted
+	// module-authority lookup. When PacksResolved is false the deployment-wide
+	// pack set remains the backward-compatible default.
+	TenantID      string
+	ResolvedPacks []activation.InstalledPack
+	PacksResolved bool
+	RequestID     string
 	// action is the registered action's local name; actionErr, when set, says
 	// why the plane could not name one, and the request fails closed on it.
 	Action    string
@@ -661,7 +684,11 @@ func (e *Enforcer) Evaluate(ctx context.Context, call Call) Verdict {
 	if err != nil {
 		return fail(CauseOverrides, err)
 	}
-	act, err := e.ActivationFor(ctx, call.Scope, call.OrgID, digest, assigned)
+	packs, tenantID := e.Packs, ""
+	if call.PacksResolved {
+		packs, tenantID = call.ResolvedPacks, call.TenantID
+	}
+	act, err := e.ActivationForPacks(ctx, call.Scope, call.OrgID, tenantID, digest, assigned, packs)
 	if err != nil {
 		return fail(CauseForActivation(err), err)
 	}
