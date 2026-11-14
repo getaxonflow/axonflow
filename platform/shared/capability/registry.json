@@ -1,6 +1,6 @@
 {
   "schema": "1.1",
-  "platform_version": "11.5.0",
+  "platform_version": "11.5.1",
   "generated": "2026-11-06",
   "scan_roots": [
     "platform/agent",

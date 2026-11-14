@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 11.5.0 | **SDKs:** 9.5.1
+**Platform Version:** 11.5.1 | **SDKs:** 9.5.1
 
 AxonFlow offers three integration modes to fit different requirements. This guide helps you choose the right one for your application.
 
