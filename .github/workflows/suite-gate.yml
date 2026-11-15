@@ -87,7 +87,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Wait for the suites and fail on any red
         if: github.event_name == 'merge_group'

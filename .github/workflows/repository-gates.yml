@@ -85,7 +85,7 @@ jobs:
     steps:
       - name: Checkout
         id: checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history: the forbidden-files and stale-model-id checks diff
           # against the base, and the secret scan reads the PR's commit range.
@@ -413,7 +413,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Several of the suite's tests need tools the runner image does not ship.
       # Every install is unconditional and fails the job if it fails: a test
