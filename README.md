@@ -1,8 +1,10 @@
 # AxonFlow
 
-**AxonFlow is the execution authority and system of record for AI decisions in production workflows.**
+**Deploy AI agents faster with runtime governance.**
 
-It operates inside the execution path between your workflow logic and model or tool calls. Gateways can help at the request boundary and observability tools can tell you what happened later. AxonFlow records why an action was allowed, blocked, paused, or resumed while the workflow is running.
+Stop risky agent actions, clear reviews and audits faster, and roll agents out across teams and AI stacks.
+
+AxonFlow operates inside the execution path between your workflow logic and model or tool calls. Gateways can help at the request boundary and observability tools can tell you what happened later. AxonFlow records why an action was allowed, blocked, paused, or resumed while the workflow is running.
 
 It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, **Java**, and **Rust** (preview), plus governance plugins for **OpenClaw**, **Claude Code**, **Claude Desktop**, **Cursor**, **Codex**, **Google ADK**, **n8n**, and **LiteLLM**.
 
